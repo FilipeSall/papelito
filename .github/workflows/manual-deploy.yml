@@ -1,0 +1,134 @@
+name: Manual Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Ambiente de destino
+        required: true
+        default: production
+        type: choice
+        options:
+          - staging
+          - production
+      artifact:
+        description: Artefato para publicar
+        required: true
+        default: theme
+        type: choice
+        options:
+          - theme
+          - plugin
+      run_backup:
+        description: Gerar backup remoto antes do deploy
+        required: true
+        default: true
+        type: boolean
+      flush_cache:
+        description: Executar flush remoto via WP-CLI quando disponível
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Garantir dependências
+        run: sudo apt-get update && sudo apt-get install -y rsync zip
+
+      - name: Preparar variáveis do destino
+        shell: bash
+        env:
+          REMOTE_HOST_STAGING: ${{ secrets.REMOTE_HOST_STAGING }}
+          REMOTE_PORT_STAGING: ${{ secrets.REMOTE_PORT_STAGING }}
+          REMOTE_USER_STAGING: ${{ secrets.REMOTE_USER_STAGING }}
+          REMOTE_THEMES_DIR_STAGING: ${{ secrets.REMOTE_THEMES_DIR_STAGING }}
+          REMOTE_PLUGINS_DIR_STAGING: ${{ secrets.REMOTE_PLUGINS_DIR_STAGING }}
+          REMOTE_WP_PATH_STAGING: ${{ secrets.REMOTE_WP_PATH_STAGING }}
+          REMOTE_BACKUP_DIR_STAGING: ${{ secrets.REMOTE_BACKUP_DIR_STAGING }}
+          SSH_PRIVATE_KEY_STAGING: ${{ secrets.SSH_PRIVATE_KEY_STAGING }}
+          REMOTE_HOST_PRODUCTION: ${{ secrets.REMOTE_HOST_PRODUCTION }}
+          REMOTE_PORT_PRODUCTION: ${{ secrets.REMOTE_PORT_PRODUCTION }}
+          REMOTE_USER_PRODUCTION: ${{ secrets.REMOTE_USER_PRODUCTION }}
+          REMOTE_THEMES_DIR_PRODUCTION: ${{ secrets.REMOTE_THEMES_DIR_PRODUCTION }}
+          REMOTE_PLUGINS_DIR_PRODUCTION: ${{ secrets.REMOTE_PLUGINS_DIR_PRODUCTION }}
+          REMOTE_WP_PATH_PRODUCTION: ${{ secrets.REMOTE_WP_PATH_PRODUCTION }}
+          REMOTE_BACKUP_DIR_PRODUCTION: ${{ secrets.REMOTE_BACKUP_DIR_PRODUCTION }}
+          SSH_PRIVATE_KEY_PRODUCTION: ${{ secrets.SSH_PRIVATE_KEY_PRODUCTION }}
+        run: |
+          case "${{ inputs.target }}" in
+            staging)
+              echo "REMOTE_HOST=$REMOTE_HOST_STAGING" >> "$GITHUB_ENV"
+              echo "REMOTE_PORT=${REMOTE_PORT_STAGING:-22}" >> "$GITHUB_ENV"
+              echo "REMOTE_USER=$REMOTE_USER_STAGING" >> "$GITHUB_ENV"
+              echo "REMOTE_THEMES_DIR=$REMOTE_THEMES_DIR_STAGING" >> "$GITHUB_ENV"
+              echo "REMOTE_PLUGINS_DIR=$REMOTE_PLUGINS_DIR_STAGING" >> "$GITHUB_ENV"
+              echo "REMOTE_WP_PATH=$REMOTE_WP_PATH_STAGING" >> "$GITHUB_ENV"
+              echo "REMOTE_BACKUP_DIR=$REMOTE_BACKUP_DIR_STAGING" >> "$GITHUB_ENV"
+              {
+                echo "SSH_PRIVATE_KEY<<EOF"
+                echo "$SSH_PRIVATE_KEY_STAGING"
+                echo "EOF"
+              } >> "$GITHUB_ENV"
+              ;;
+            production)
+              echo "REMOTE_HOST=$REMOTE_HOST_PRODUCTION" >> "$GITHUB_ENV"
+              echo "REMOTE_PORT=${REMOTE_PORT_PRODUCTION:-22}" >> "$GITHUB_ENV"
+              echo "REMOTE_USER=$REMOTE_USER_PRODUCTION" >> "$GITHUB_ENV"
+              echo "REMOTE_THEMES_DIR=$REMOTE_THEMES_DIR_PRODUCTION" >> "$GITHUB_ENV"
+              echo "REMOTE_PLUGINS_DIR=$REMOTE_PLUGINS_DIR_PRODUCTION" >> "$GITHUB_ENV"
+              echo "REMOTE_WP_PATH=$REMOTE_WP_PATH_PRODUCTION" >> "$GITHUB_ENV"
+              echo "REMOTE_BACKUP_DIR=$REMOTE_BACKUP_DIR_PRODUCTION" >> "$GITHUB_ENV"
+              {
+                echo "SSH_PRIVATE_KEY<<EOF"
+                echo "$SSH_PRIVATE_KEY_PRODUCTION"
+                echo "EOF"
+              } >> "$GITHUB_ENV"
+              ;;
+          esac
+
+          echo "RUN_REMOTE_BACKUP=${{ inputs.run_backup }}" >> "$GITHUB_ENV"
+          echo "REMOTE_FLUSH_CACHE=${{ inputs.flush_cache }}" >> "$GITHUB_ENV"
+
+      - name: Preparar SSH
+        shell: bash
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "$REMOTE_PORT" "$REMOTE_HOST" >> ~/.ssh/known_hosts
+
+      - name: Permissões dos scripts
+        run: chmod +x scripts/*.sh scripts/lib/common.sh
+
+      - name: Gerar pacote
+        id: package
+        shell: bash
+        run: |
+          if [[ "${{ inputs.artifact }}" == "theme" ]]; then
+            artifact_path="$(./scripts/package-theme.sh)"
+          else
+            artifact_path="$(./scripts/package-plugin.sh)"
+          fi
+
+          echo "artifact_path=$artifact_path" >> "$GITHUB_OUTPUT"
+
+      - name: Publicar artefato do build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}-${{ inputs.target }}
+          path: ${{ steps.package.outputs.artifact_path }}
+
+      - name: Deploy
+        shell: bash
+        run: |
+          if [[ "${{ inputs.artifact }}" == "theme" ]]; then
+            ./scripts/deploy-theme.sh
+          else
+            ./scripts/deploy-plugin.sh
+          fi

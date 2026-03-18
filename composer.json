@@ -1,0 +1,19 @@
+{
+  "name": "papelito/wordpress-workflow",
+  "description": "Ferramentas de qualidade para o tema filho e plugin custom do projeto Papelito.",
+  "type": "project",
+  "require-dev": {
+    "dealerdirect/phpcodesniffer-composer-installer": "^1.1",
+    "phpcompatibility/phpcompatibility-wp": "^2.1",
+    "wp-coding-standards/wpcs": "^3.1"
+  },
+  "scripts": {
+    "phpcs": "phpcs --standard=phpcs.xml.dist",
+    "phpcbf": "phpcbf --standard=phpcs.xml.dist"
+  },
+  "config": {
+    "allow-plugins": {
+      "dealerdirect/phpcodesniffer-composer-installer": true
+    }
+  }
+}

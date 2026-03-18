@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<ruleset name="Papelito WordPress">
+	<description>WordPress Coding Standards para o tema filho e o plugin custom.</description>
+
+	<arg name="basepath" value="."/>
+	<arg name="colors"/>
+	<arg value="ps"/>
+
+	<file>public_html/wp-content/themes/jupiterx-child</file>
+	<file>public_html/wp-content/plugins/plugin_papelito</file>
+
+	<exclude-pattern>*/.git/*</exclude-pattern>
+	<exclude-pattern>*/vendor/*</exclude-pattern>
+	<exclude-pattern>*/node_modules/*</exclude-pattern>
+	<exclude-pattern>*/my_plugin_log.txt</exclude-pattern>
+
+	<config name="minimum_supported_wp_version" value="6.4"/>
+	<config name="testVersion" value="7.4-8.3"/>
+
+	<rule ref="WordPress-Core"/>
+	<rule ref="WordPress-Docs"/>
+	<rule ref="WordPress-Extra"/>
+	<rule ref="PHPCompatibilityWP"/>
+</ruleset>

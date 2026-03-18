@@ -1,0 +1,4 @@
+.select {
+    font-size: var(--wp--preset--font-size--small);
+    padding: 0.9rem 1.1rem !important;
+}
