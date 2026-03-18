@@ -313,3 +313,22 @@ function vendor_profile_fields_scripts()
     wp_enqueue_script('vendor-profile-fields', plugin_dir_url(__FILE__) . 'js/vendor_profile_fields.js', array('jquery-mask'), '1.1.5', true);
 }
 add_action('admin_enqueue_scripts', 'vendor_profile_fields_scripts');
+
+/**
+ * Enqueue frontend marketplace fixes.
+ */
+function papelito_enqueue_frontend_styles() {
+    if ( ! is_page( array( 289, 'lojaparceiro' ) ) ) {
+        return;
+    }
+
+    $style_path = plugin_dir_path( __FILE__ ) . 'css/frontend.css';
+
+    wp_enqueue_style(
+        'papelito-frontend',
+        plugin_dir_url( __FILE__ ) . 'css/frontend.css',
+        array(),
+        file_exists( $style_path ) ? (string) filemtime( $style_path ) : '1.1.5'
+    );
+}
+add_action( 'wp_enqueue_scripts', 'papelito_enqueue_frontend_styles', 100 );

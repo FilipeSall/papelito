@@ -1,0 +1,11 @@
+/*
+ * JetWoo still renders the legacy .swiper-container markup after recent Swiper updates.
+ * Keep clipping on the carousel container and release it from the wrapper so slides remain visible.
+ */
+.elementor-widget-jet-woo-products .jet-woo-carousel {
+    overflow: hidden !important;
+}
+
+.elementor-widget-jet-woo-products .jet-woo-carousel > .swiper-wrapper {
+    overflow: visible !important;
+}
