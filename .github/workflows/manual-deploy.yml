@@ -3,7 +3,7 @@ name: Deploy
 on:
   push:
     branches:
-      - main
+      - master
     paths:
       - 'public_html/wp-content/plugins/plugin_papelito/**'
       - 'public_html/wp-content/mu-plugins/**'
