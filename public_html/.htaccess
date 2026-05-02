@@ -1,0 +1,65 @@
+# BEGIN LSCACHE
+## LITESPEED WP CACHE PLUGIN - Do not edit the contents of this block! ##
+<IfModule mod_rewrite.c>
+RewriteEngine on
+RewriteRule litespeed/debug/.*\.log$ - [F,L]
+RewriteRule \.litespeed_conf\.dat - [F,L]
+</IfModule>
+<IfModule LiteSpeed>
+CacheLookup on
+RewriteRule .* - [E=Cache-Control:no-autoflush]
+
+### marker ASYNC start ###
+RewriteCond %{REQUEST_URI} /wp-admin/admin-ajax\.php
+RewriteCond %{QUERY_STRING} action=async_litespeed
+RewriteRule .* - [E=noabort:1]
+### marker ASYNC end ###
+
+### marker DROPQS start ###
+CacheKeyModify -qs:fbclid
+CacheKeyModify -qs:gclid
+CacheKeyModify -qs:utm*
+CacheKeyModify -qs:_ga
+### marker DROPQS end ###
+
+</IfModule>
+## LITESPEED WP CACHE PLUGIN - Do not edit the contents of this block! ##
+# END LSCACHE
+# BEGIN NON_LSCACHE
+## LITESPEED WP CACHE PLUGIN - Do not edit the contents of this block! ##
+## LITESPEED WP CACHE PLUGIN - Do not edit the contents of this block! ##
+# END NON_LSCACHE
+
+# BEGIN Papelito Hardening
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule ^readme\.html$ - [F,L,NC]
+RewriteRule ^xmlrpc\.php$ - [F,L,NC]
+RewriteRule ^wp-content/(plugins|themes)/.+/(?:readme|changelog|license|contributing)\.(?:txt|html|md)$ - [F,L,NC]
+RewriteRule ^wp-content/(?:ai1wm-backups|updraft|upgrade-temp-backup)/ - [F,L,NC]
+RewriteRule ^wp-content/debug\.log$ - [F,L,NC]
+RewriteRule ^wp-content/litespeed/debug/.*\.log$ - [F,L,NC]
+RewriteRule ^wp-content/uploads/(?:wc-logs|wp-rollback|papelito/logs)/ - [F,L,NC]
+RewriteRule ^wp-content/plugins/.+\.zip$ - [F,L,NC]
+</IfModule>
+# END Papelito Hardening
+
+# BEGIN WordPress
+# As diretrizes (linhas) entre "BEGIN WordPress" e "END WordPress" são
+# geradas dinamicamente e só devem ser modificadas através de filtros do WordPress.
+# Quaisquer alterações nas diretivas entre esses marcadores serão sobrescritas.
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+RewriteBase /
+RewriteRule ^index\.php$ - [L]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . /index.php [L]
+</IfModule>
+
+<Files xmlrpc.php>
+  Require all denied
+</Files>
+
+# END WordPress

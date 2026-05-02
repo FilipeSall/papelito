@@ -16,6 +16,7 @@
 !/scripts/
 !/scripts/**
 !/public_html/
+!/public_html/.htaccess
 !/public_html/wp-config.example.php
 !/public_html/wp-config-sample.php
 !/public_html/wp-content/
@@ -25,11 +26,20 @@
 !/public_html/wp-content/themes/
 !/public_html/wp-content/themes/jupiterx-child/
 !/public_html/wp-content/themes/jupiterx-child/**
+!/public_html/wp-content/mu-plugins/
+!/public_html/wp-content/mu-plugins/**
+!/public_html/wp-content/uploads/
+!/public_html/wp-content/uploads/.htaccess
+
+# mu-plugins de terceiros: ignorar
+public_html/wp-content/mu-plugins/elementor-safe-mode.php
+public_html/wp-content/mu-plugins/hostinger-auto-updates.php
 
 # Segredos e config local
 .env
 .env.local
 public_html/wp-config.php
+_pulled/
 
 # WordPress core e runtime
 public_html/wp-admin/
@@ -45,7 +55,8 @@ public_html/wp-content/languages/
 public_html/wp-content/litespeed/
 public_html/wp-content/object-cache.php
 public_html/wp-content/updraft/
-public_html/wp-content/uploads/
+public_html/wp-content/uploads/*
+!/public_html/wp-content/uploads/.htaccess
 public_html/wp-content/upgrade/
 public_html/wp-content/upgrade-temp-backup/
 
@@ -55,7 +66,6 @@ db/
 backup/
 .vendor-git-backups/
 public_html/wp-content/debug.log
-public_html/wp-content/mu-plugins/
 public_html/wp-content/plugins/plugin_papelito/my_plugin_log.txt
 wp-cli.phar
 

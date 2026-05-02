@@ -1,0 +1,26 @@
+name: Lint
+
+on:
+  pull_request:
+    paths:
+      - 'public_html/wp-content/themes/jupiterx-child/**'
+      - 'public_html/wp-content/plugins/plugin_papelito/**'
+      - 'public_html/wp-content/mu-plugins/**'
+      - 'composer.json'
+      - 'phpcs.xml.dist'
+
+jobs:
+  phpcs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          tools: composer
+      - uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.json') }}
+      - run: composer install --no-interaction --prefer-dist
+      - run: composer phpcs

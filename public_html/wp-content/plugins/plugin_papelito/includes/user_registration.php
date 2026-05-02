@@ -1,7 +1,5 @@
 <?php
 
-defined( 'ABSPATH' ) || exit;
-
 define(
     'brazilian_states',
     array(
@@ -49,7 +47,7 @@ function my_custom_woocommerce_register_fields_start()
             'placeholder' => 'Digite o nome de seu estabelecimento comercial',
             'class' => array('form-row-wide'),
         ),
-        esc_attr( papelito_posted_value( 'store_name' ) )
+        isset($_POST['store_name']) ? $_POST['store_name'] : ''
     );
 
     woocommerce_form_field(
@@ -62,7 +60,7 @@ function my_custom_woocommerce_register_fields_start()
             'placeholder' => 'Digite seu nome',
             'class' => array('form-row-wide'),
         ),
-        esc_attr( papelito_posted_value( 'account_first_name' ) )
+        isset($_POST['account_first_name']) ? $_POST['account_first_name'] : ''
     );
 
     woocommerce_form_field(
@@ -75,7 +73,7 @@ function my_custom_woocommerce_register_fields_start()
             'placeholder' => 'Digite seu sobrenome',
             'class' => array('form-row-wide'),
         ),
-        esc_attr( papelito_posted_value( 'account_last_name' ) )
+        isset($_POST['account_last_name']) ? $_POST['account_last_name'] : ''
     );
 }
 add_action('woocommerce_register_form_start', 'my_custom_woocommerce_register_fields_start');
@@ -175,18 +173,18 @@ add_action('woocommerce_register_form', 'my_custom_woocommerce_register_fields')
 function get_meta_or_post_data($key)
 {
     if (isset($_POST[$key])) {
-        return papelito_posted_value($key);
+        return $_POST[$key];
+    } else {
+        return get_user_meta(get_current_user_id(), $key, true);
     }
-
-    return get_user_meta(get_current_user_id(), $key, true);
 }
 
 function enqueue_user_register_scripts()
 {
     if (is_account_page() || is_wc_endpoint_url('edit-account')) {
-        wp_enqueue_script('jquery-mask', 'https://cdnjs.cloudflare.com/ajax/libs/jquery.mask/1.14.16/jquery.mask.min.js', array(), '1.14.16', true);
-        wp_enqueue_script('vendor-registration-fields', plugin_dir_url(__FILE__) . '../js/user_registration.js', array('jquery-mask'), '1.1.5', true);
-        wp_enqueue_style('vendor-registration-fields-styles', plugin_dir_url(__FILE__) . '../css/user_registration.css', array(), '1.1.5');
+        wp_enqueue_script('JQuery Mask', 'https://cdnjs.cloudflare.com/ajax/libs/jquery.mask/1.14.16/jquery.mask.min.js');
+        wp_enqueue_script('Vendor Registration Fields', plugin_dir_url(__FILE__) . '../js/user_registration.js', array('JQuery Mask'));
+        wp_enqueue_style('Vendor Registration Fields Styles', plugin_dir_url(__FILE__) . '../css/user_registration.css');
     }
 }
 add_action('wp_enqueue_scripts', 'enqueue_user_register_scripts');
@@ -198,44 +196,35 @@ function my_custom_validate_register_custom_fields($errors)
         $errors = $errors[0];
     }
 
-    $store_name = papelito_posted_value('store_name');
-    $first_name = papelito_posted_value('account_first_name');
-    $last_name = papelito_posted_value('account_last_name');
-    $phone_number = papelito_posted_value('phone_number');
-    $cnpj = papelito_posted_value('cnpj');
-    $state = papelito_posted_value('state');
-    $city = papelito_posted_value('city');
-    $cep = papelito_posted_value('cep');
-
-    if (empty($store_name)) {
+    if (!isset($_POST['store_name']) || empty($_POST['store_name'])) {
         $errors->add('store_name_error', 'Informe o nome da sua loja, por favor.');
     }
 
-    if (empty($first_name)) {
+    if (!isset($_POST['account_first_name']) || empty($_POST['account_first_name'])) {
         $errors->add('account_first_name_error', 'Informe o seu nome, por favor.');
     }
 
-    if (empty($last_name)) {
+    if (!isset($_POST['account_last_name']) || empty($_POST['account_last_name'])) {
         $errors->add('account_last_name_error', 'Informe o seu sobrenome, por favor.');
     }
 
-    if (empty($phone_number) || !preg_match('/^\(\d{2}\) 9?\d{4}\-?\d{4}$/', $phone_number)) {
+    if (!isset($_POST['phone_number']) || !preg_match('/^\(\d{2}\) 9?\d{4}\-?\d{4}$/', $_POST['phone_number'])) {
         $errors->add('phone_number_error', 'Informe um número de telefone válido, por favor.');
     }
 
-    if (empty($cnpj) || !preg_match('/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $cnpj)) {
+    if (!isset($_POST['cnpj']) || !preg_match('/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $_POST['cnpj'])) {
         $errors->add('cnpj_error', 'Informe um CNPJ válido, por favor.');
     }
 
-    if (empty($state) || !array_key_exists($state, brazilian_states)) {
+    if (!isset($_POST['state']) || !array_key_exists($_POST['state'], brazilian_states) || empty($_POST['state'])) {
         $errors->add('state_error', 'Informe o estado, por favor.');
     }
 
-    if (empty($city)) {
+    if (!isset($_POST['city']) || empty($_POST['city'])) {
         $errors->add('city_error', 'Informe a cidade, por favor.');
     }
 
-    if (empty($cep) || !preg_match('/^\d{2}\.\d{3}-\d{3}$/', $cep)) {
+    if (!isset($_POST['cep']) || !preg_match('/^\d{2}\.\d{3}-\d{3}$/', $_POST['cep'])) {
         $errors->add('cep_error', 'Informe o CEP válido, por favor.');
     }
 
@@ -249,54 +238,43 @@ function my_custom_save_register_custom_fields($customer_id, $new_customer_data)
 {
     $user_data = array();
     if (!is_edit_account_page()) {
-        $first_name = papelito_posted_value('account_first_name');
-        $last_name = papelito_posted_value('account_last_name');
-
-        if (!empty($first_name)) {
+        if (isset($_POST['account_first_name']) && !empty($_POST['account_first_name'])) {
             $user_data['ID'] = $customer_id;
-            $user_data['first_name'] = $first_name;
+            $user_data['first_name'] = $_POST['account_first_name'];
         }
 
-        if (!empty($last_name)) {
+        if (isset($_POST['account_last_name']) && !empty($_POST['account_last_name'])) {
             $user_data['ID'] = $customer_id;
-            $user_data['last_name'] = $last_name;
+            $user_data['last_name'] = $_POST['account_last_name'];
         }
     }
 
-    $store_name = papelito_posted_value('store_name');
-    $phone_number = papelito_posted_value('phone_number');
-    $cnpj = papelito_posted_value('cnpj');
-    $instagram = papelito_posted_value('instagram');
-    $state = papelito_posted_value('state');
-    $city = papelito_posted_value('city');
-    $cep = papelito_posted_value('cep');
-
-    if (!empty($store_name)) {
-        update_user_meta($customer_id, 'store_name', $store_name);
+    if (isset($_POST['store_name']) && !empty($_POST['store_name'])) {
+        update_user_meta($customer_id, 'store_name', sanitize_text_field($_POST['store_name']));
     }
 
-    if (!empty($phone_number)) {
-        update_user_meta($customer_id, 'phone_number', $phone_number);
+    if (isset($_POST['phone_number']) && !empty($_POST['phone_number'])) {
+        update_user_meta($customer_id, 'phone_number', sanitize_text_field($_POST['phone_number']));
     }
 
-    if (!empty($cnpj)) {
-        update_user_meta($customer_id, 'cnpj', $cnpj);
+    if (isset($_POST['cnpj']) && !empty($_POST['cnpj'])) {
+        update_user_meta($customer_id, 'cnpj', sanitize_text_field($_POST['cnpj']));
     }
 
-    if ('' !== $instagram) {
-        update_user_meta($customer_id, 'instagram', $instagram);
+    if (isset($_POST['instagram'])) {
+        update_user_meta($customer_id, 'instagram', sanitize_text_field($_POST['instagram']));
     }
 
-    if (!empty($state)) {
-        update_user_meta($customer_id, 'state', $state);
+    if (isset($_POST['state']) && !empty($_POST['state'])) {
+        update_user_meta($customer_id, 'state', sanitize_text_field($_POST['state']));
     }
 
-    if (!empty($city)) {
-        update_user_meta($customer_id, 'city', $city);
+    if (isset($_POST['city']) && !empty($_POST['city'])) {
+        update_user_meta($customer_id, 'city', sanitize_text_field($_POST['city']));
     }
 
-    if (!empty($cep)) {
-        update_user_meta($customer_id, 'cep', $cep);
+    if (isset($_POST['cep']) && !empty($_POST['cep'])) {
+        update_user_meta($customer_id, 'cep', sanitize_text_field($_POST['cep']));
     }
 
     if (!empty($user_data)) {
