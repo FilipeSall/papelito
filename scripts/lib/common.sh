@@ -51,3 +51,7 @@ papelito_artifacts_dir() {
 papelito_info() {
   printf '[papelito] %s\n' "$*"
 }
+
+papelito_warn() {
+  printf '[papelito][warn] %s\n' "$*" >&2
+}
