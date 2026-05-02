@@ -64,7 +64,7 @@ jobs:
   deploy:
     needs:
       - detect
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || github.event_name == 'push') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
