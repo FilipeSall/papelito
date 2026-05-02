@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Plugin Papelito
  * Description: Adiciona faixas de CEPs para distribuidores, filtragem de produtos com base no CEP do usuaário e novos campos de cadastro para clientes.
- * Version: 1.1.5
+ * Version: 1.2.0
  * Author: Nuplan
  * License: GPL2
  */
@@ -11,6 +11,7 @@ defined( 'ABSPATH' ) || exit;
 
 require_once(plugin_dir_path(__FILE__) . 'includes/user_registration.php');
 require_once(plugin_dir_path(__FILE__) . 'includes/products_filter.php');
+require_once __DIR__ . '/includes/rest_api.php';
 
 /**
  * Render the plugin nonce in profile forms.

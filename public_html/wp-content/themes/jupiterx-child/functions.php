@@ -1,7 +1,5 @@
 <?php
 
-defined( 'ABSPATH' ) || exit;
-
 // Include Jupiter X.
 require_once( get_template_directory() . '/lib/init.php' );
 
@@ -43,38 +41,18 @@ add_action( 'add_meta_boxes', 'sidebar_select_metabox' );
 
 function sidebar_select_metabox_callback( $post ) {
     $selected_sidebar = get_post_meta( $post->ID, 'selected_sidebar', true );
-    wp_nonce_field( 'jupiterx_child_sidebar_select', 'jupiterx_child_sidebar_select_nonce' );
-
     echo '<select id="sidebar_select" name="sidebar_select">';
     foreach ( $GLOBALS['wp_registered_sidebars'] as $sidebar ) {
-        $selected = selected( $selected_sidebar, $sidebar['id'], false );
-        echo '<option value="' . esc_attr( $sidebar['id'] ) . '" ' . $selected . '>' . esc_html( $sidebar['name'] ) . '</option>';
+        $selected = $selected_sidebar == $sidebar['id'] ? 'selected="selected"' : '';
+        echo '<option value="' . $sidebar['id'] . '" ' . $selected . '>' . $sidebar['name'] . '</option>';
     }
     echo '</select>';
 }
 
 function save_sidebar_select( $post_id ) {
-    if ( ! isset( $_POST['jupiterx_child_sidebar_select_nonce'] ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['jupiterx_child_sidebar_select_nonce'] ) ), 'jupiterx_child_sidebar_select' ) ) {
-        return;
+    if( isset( $_POST['sidebar_select'] ) ) {
+        update_post_meta( $post_id, 'selected_sidebar', $_POST['sidebar_select'] );
     }
-
-    if ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
-        return;
-    }
-
-    if ( ! current_user_can( 'edit_post', $post_id ) || ! isset( $_POST['sidebar_select'] ) ) {
-        return;
-    }
-
-    $sidebar_id = sanitize_key( wp_unslash( $_POST['sidebar_select'] ) );
-
-    if ( ! isset( $GLOBALS['wp_registered_sidebars'][ $sidebar_id ] ) ) {
-        delete_post_meta( $post_id, 'selected_sidebar' );
-
-        return;
-    }
-
-    update_post_meta( $post_id, 'selected_sidebar', $sidebar_id );
 }
 add_action( 'save_post', 'save_sidebar_select' );
 
