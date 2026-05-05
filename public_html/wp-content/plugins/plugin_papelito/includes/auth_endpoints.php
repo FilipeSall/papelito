@@ -223,18 +223,9 @@ function papelito_auth_validate_register_payload( array $data ) {
 		$errors->add( 'last_name', 'Informe o seu sobrenome.' );
 	}
 
-	if ( empty( $data['store_name'] ) ) {
-		$errors->add( 'store_name', 'Informe o nome da loja.' );
-	}
-
 	$phone = isset( $data['phone_number'] ) ? (string) $data['phone_number'] : '';
 	if ( ! preg_match( '/^\(\d{2}\) 9?\d{4}\-?\d{4}$/', $phone ) ) {
 		$errors->add( 'phone_number', 'Telefone inválido. Formato esperado: (11) 99999-9999.' );
-	}
-
-	$cnpj = isset( $data['cnpj'] ) ? (string) $data['cnpj'] : '';
-	if ( ! preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $cnpj ) ) {
-		$errors->add( 'cnpj', 'CNPJ inválido. Formato esperado: 12.345.678/0001-90.' );
 	}
 
 	$cep = isset( $data['cep'] ) ? (string) $data['cep'] : '';
@@ -242,12 +233,13 @@ function papelito_auth_validate_register_payload( array $data ) {
 		$errors->add( 'cep', 'CEP inválido. Formato esperado: 01.310-000.' );
 	}
 
-	if ( empty( $data['state'] ) || ! defined( 'brazilian_states' ) || ! array_key_exists( (string) $data['state'], brazilian_states ) ) {
-		$errors->add( 'state', 'Estado inválido.' );
+	// Campos de vendor (store_name, cnpj, state, city) são opcionais — só valida se fornecidos.
+	if ( ! empty( $data['cnpj'] ) && ! preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', (string) $data['cnpj'] ) ) {
+		$errors->add( 'cnpj', 'CNPJ inválido. Formato esperado: 12.345.678/0001-90.' );
 	}
 
-	if ( empty( $data['city'] ) ) {
-		$errors->add( 'city', 'Informe a cidade.' );
+	if ( ! empty( $data['state'] ) && defined( 'brazilian_states' ) && ! array_key_exists( (string) $data['state'], brazilian_states ) ) {
+		$errors->add( 'state', 'Estado inválido.' );
 	}
 
 	return $errors->has_errors() ? $errors : null;
