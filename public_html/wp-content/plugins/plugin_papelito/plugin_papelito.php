@@ -12,6 +12,7 @@ defined( 'ABSPATH' ) || exit;
 require_once(plugin_dir_path(__FILE__) . 'includes/user_registration.php');
 require_once(plugin_dir_path(__FILE__) . 'includes/products_filter.php');
 require_once __DIR__ . '/includes/rest_api.php';
+require_once __DIR__ . '/includes/auth_endpoints.php';
 
 /**
  * Render the plugin nonce in profile forms.
