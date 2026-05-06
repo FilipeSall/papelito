@@ -14,6 +14,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+add_filter(
+	'graphql_jwt_auth_expire',
+	static function () {
+		return 12 * HOUR_IN_SECONDS;
+	}
+);
+
 /**
  * Gera o par {authToken, refreshToken, user, profileComplete} para um WP_User.
  * Retorna WP_Error se o plugin de JWT não estiver disponível.

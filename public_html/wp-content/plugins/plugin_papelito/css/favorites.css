@@ -1,0 +1,139 @@
+.papelito-single-favorite {
+  margin-top: 1rem;
+}
+
+.papelito-single-favorite__button {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  color: #4b5563;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 0.625rem;
+  padding: 0.75rem 1rem;
+  transition: border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+
+.papelito-single-favorite__button:hover,
+.papelito-single-favorite__button.is-active {
+  border-color: #facc15;
+  color: #111827;
+}
+
+.papelito-single-favorite__button.is-busy {
+  opacity: 0.7;
+}
+
+.papelito-favorites-account {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.papelito-favorites-account__header h2 {
+  margin: 0 0 0.35rem;
+}
+
+.papelito-favorites-account__header p {
+  color: #6b7280;
+  margin: 0;
+}
+
+.papelito-favorites-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.papelito-favorites-card {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 1rem;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 96px minmax(0, 1fr);
+  padding: 1rem;
+}
+
+.papelito-favorites-card__media {
+  align-items: center;
+  background: #f9fafb;
+  border-radius: 0.875rem;
+  display: flex;
+  justify-content: center;
+  min-height: 96px;
+  overflow: hidden;
+}
+
+.papelito-favorites-card__media img {
+  display: block;
+  height: auto;
+  max-width: 100%;
+}
+
+.papelito-favorites-card__content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.papelito-favorites-card__title {
+  color: #111827;
+  font-weight: 700;
+  line-height: 1.35;
+  text-decoration: none;
+}
+
+.papelito-favorites-card__price {
+  color: #111827;
+  font-weight: 600;
+}
+
+.papelito-favorites-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.papelito-favorites-card__link,
+.papelito-favorites-card__remove {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.95rem;
+  justify-content: center;
+  min-height: 2.5rem;
+  padding: 0.6rem 1rem;
+  text-decoration: none;
+}
+
+.papelito-favorites-card__link {
+  background: #111827;
+  color: #ffffff;
+}
+
+.papelito-favorites-card__remove {
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  color: #4b5563;
+  cursor: pointer;
+}
+
+.papelito-favorites-empty {
+  background: #ffffff;
+  border: 1px solid rgba(17, 24, 39, 0.08);
+  border-radius: 1rem;
+  padding: 1.5rem;
+}
+
+.papelito-favorites-empty p {
+  margin: 0 0 1rem;
+}
+
+@media (max-width: 640px) {
+  .papelito-favorites-card {
+    grid-template-columns: 1fr;
+  }
+}
