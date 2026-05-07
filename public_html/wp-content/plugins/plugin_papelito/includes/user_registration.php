@@ -19,7 +19,7 @@ define(
         'MG' => 'Minas Gerais',
         'PA' => 'Pará',
         'PB' => 'Paraíba',
-        'PN' => 'Paraná',
+        'PR' => 'Paraná',
         'PE' => 'Pernambuco',
         'PI' => 'Piauí',
         'RJ' => 'Rio de Janeiro',

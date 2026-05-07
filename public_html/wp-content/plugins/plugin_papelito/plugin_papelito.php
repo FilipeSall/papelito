@@ -13,6 +13,7 @@ require_once(plugin_dir_path(__FILE__) . 'includes/user_registration.php');
 require_once(plugin_dir_path(__FILE__) . 'includes/products_filter.php');
 require_once __DIR__ . '/includes/rest_api.php';
 require_once __DIR__ . '/includes/auth_endpoints.php';
+require_once __DIR__ . '/includes/revendedor_application.php';
 require_once __DIR__ . '/includes/favorites.php';
 
 /**
@@ -76,7 +77,6 @@ add_action('edit_user_profile', 'vendor_profile_fields');
 // Add user meta fields to admin user edit page for customer role
 function add_user_meta_fields($user)
 {
-    // Only show fields for customers
     $store_name = get_user_meta($user->ID, 'store_name', true);
     $phone_number = get_user_meta($user->ID, 'phone_number', true);
     $cnpj = get_user_meta($user->ID, 'cnpj', true);
@@ -152,6 +152,15 @@ function add_user_meta_fields($user)
 
 function display_seller_CEP_form($user)
 {
+    $store_name = get_user_meta($user->ID, 'store_name', true);
+    $phone_number = get_user_meta($user->ID, 'phone_number', true);
+    $cnpj = get_user_meta($user->ID, 'cnpj', true);
+    $instagram = get_user_meta($user->ID, 'instagram', true);
+    $state = get_user_meta($user->ID, 'state', true);
+    $city = get_user_meta($user->ID, 'city', true);
+    $cep = get_user_meta($user->ID, 'cep', true);
+    $discovery_channel = get_user_meta($user->ID, 'discovery_channel', true);
+    $has_sold_papelito = get_user_meta($user->ID, 'has_sold_papelito', true);
     $min_cep = get_user_meta($user->ID, 'min_cep', false);
     $max_cep = get_user_meta($user->ID, 'max_cep', false);
     $count = count($min_cep);
@@ -163,8 +172,78 @@ function display_seller_CEP_form($user)
 
     <table class="form-table">
         <tr>
+            <th><label for="store_name">
+                    <?php esc_html_e('Nome da loja', 'vendor-profile-fields'); ?>
+                </label></th>
+            <td><input type="text" name="store_name" id="store_name" value="<?php echo esc_attr($store_name); ?>"
+                    class="regular-text" /></td>
+        </tr>
+        <tr>
+            <th><label for="phone_number">
+                    <?php esc_html_e('Telefone', 'vendor-profile-fields'); ?>
+                </label></th>
+            <td><input type="text" name="phone_number" id="phone_number" value="<?php echo esc_attr($phone_number); ?>"
+                    class="regular-text" /></td>
+        </tr>
+        <tr>
+            <th><label for="cnpj">
+                    <?php esc_html_e('CNPJ', 'vendor-profile-fields'); ?>
+                </label></th>
+            <td><input type="text" name="cnpj" id="cnpj" value="<?php echo esc_attr($cnpj); ?>"
+                    class="regular-text" /></td>
+        </tr>
+        <tr>
+            <th><label for="instagram">
+                    <?php esc_html_e('Instagram', 'vendor-profile-fields'); ?>
+                </label></th>
+            <td><input type="text" name="instagram" id="instagram" value="<?php echo esc_attr($instagram); ?>"
+                    class="regular-text" /></td>
+        </tr>
+        <tr>
+            <th><label for="state">
+                    <?php esc_html_e('Estado', 'vendor-profile-fields'); ?>
+                </label></th>
+            <td>
+                <select name="state" id="state">
+                    <?php foreach (brazilian_states as $value => $text): ?>
+                        <?php if (empty($value))
+                            continue; ?>
+                        <option value="<?php echo esc_attr($value); ?>" <?php selected($value, $state); ?>><?php echo esc_html($text); ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </td>
+        </tr>
+        <tr>
+            <th><label for="city">
+                    <?php esc_html_e('Cidade', 'vendor-profile-fields'); ?>
+                </label></th>
+            <td><input type="text" name="city" id="city" value="<?php echo esc_attr($city); ?>"
+                    class="regular-text" /></td>
+        </tr>
+        <tr>
+            <th><label for="cep">
+                    <?php esc_html_e('CEP da loja', 'vendor-profile-fields'); ?>
+                </label></th>
+            <td><input type="text" name="cep" id="cep" value="<?php echo esc_attr($cep); ?>"
+                    class="regular-text" /></td>
+        </tr>
+        <tr>
+            <th><label for="discovery_channel">
+                    <?php esc_html_e('Origem do contato', 'vendor-profile-fields'); ?>
+                </label></th>
+            <td><input type="text" name="discovery_channel" id="discovery_channel" value="<?php echo esc_attr($discovery_channel); ?>"
+                    class="regular-text" /></td>
+        </tr>
+        <tr>
+            <th><label for="has_sold_papelito">
+                    <?php esc_html_e('Já vende Papelito?', 'vendor-profile-fields'); ?>
+                </label></th>
+            <td><input type="text" name="has_sold_papelito" id="has_sold_papelito" value="<?php echo esc_attr($has_sold_papelito); ?>"
+                    class="regular-text" /></td>
+        </tr>
+        <tr>
             <th><label for="vendor_ceps">
-                    <?php esc_html_e('CEPs', 'vendor-profile-fields'); ?>
+                    <?php esc_html_e('Faixas de CEP', 'vendor-profile-fields'); ?>
                 </label></th>
             <td id="vendor_ceps">
                 <?php if ($min_cep && is_array($min_cep) && $max_cep && is_array($max_cep)): ?>
@@ -217,63 +296,51 @@ function save_vendor_profile_fields($user_id)
         return;
     }
 
-    if ( in_array( 'seller', $user->roles, true ) && isset( $_POST['vendor_min_ceps'], $_POST['vendor_max_ceps'] ) ) {
-        delete_user_meta($user_id, "min_cep");
-        delete_user_meta($user_id, "max_cep");
+    if ( in_array( 'seller', $user->roles, true ) || in_array( 'customer', $user->roles, true ) ) {
+        $shared_keys = array( 'store_name', 'phone_number', 'cnpj', 'instagram', 'state', 'city', 'cep' );
 
-        $min_ceps = array_map(
-            static function ( $value ) {
-                return preg_replace( '/\D+/', '', sanitize_text_field( wp_unslash( $value ) ) );
-            },
-            (array) wp_unslash( $_POST['vendor_min_ceps'] )
-        );
-        $max_ceps = array_map(
-            static function ( $value ) {
-                return preg_replace( '/\D+/', '', sanitize_text_field( wp_unslash( $value ) ) );
-            },
-            (array) wp_unslash( $_POST['vendor_max_ceps'] )
-        );
-        $count = min( count( $min_ceps ), count( $max_ceps ) );
-
-        for ($i = 0; $i < $count; $i++) {
-            if ( '' === $min_ceps[ $i ] || '' === $max_ceps[ $i ] ) {
-                continue;
+        foreach ( $shared_keys as $meta_key ) {
+            if ( isset( $_POST[ $meta_key ] ) ) {
+                update_user_meta( $user_id, $meta_key, papelito_posted_value( $meta_key ) );
             }
-
-            add_user_meta($user_id, 'min_cep', $min_ceps[$i], false);
-            add_user_meta($user_id, 'max_cep', $max_ceps[$i], false);
         }
-
-        return;
     }
 
-    if ( in_array( 'customer', $user->roles, true ) ) {
-        if (isset($_POST['store_name'])) {
-            update_user_meta($user_id, 'store_name', papelito_posted_value('store_name'));
+    if ( in_array( 'seller', $user->roles, true ) ) {
+        if ( isset( $_POST['discovery_channel'] ) ) {
+            update_user_meta( $user_id, 'discovery_channel', papelito_posted_value( 'discovery_channel' ) );
         }
 
-        if (isset($_POST['phone_number'])) {
-            update_user_meta($user_id, 'phone_number', papelito_posted_value('phone_number'));
+        if ( isset( $_POST['has_sold_papelito'] ) ) {
+            update_user_meta( $user_id, 'has_sold_papelito', papelito_posted_value( 'has_sold_papelito' ) );
         }
 
-        if (isset($_POST['cnpj'])) {
-            update_user_meta($user_id, 'cnpj', papelito_posted_value('cnpj'));
-        }
+        if ( isset( $_POST['vendor_min_ceps'], $_POST['vendor_max_ceps'] ) ) {
+            delete_user_meta($user_id, "min_cep");
+            delete_user_meta($user_id, "max_cep");
 
-        if (isset($_POST['instagram'])) {
-            update_user_meta($user_id, 'instagram', papelito_posted_value('instagram'));
-        }
+            $min_ceps = array_map(
+                static function ( $value ) {
+                    return preg_replace( '/\D+/', '', sanitize_text_field( wp_unslash( $value ) ) );
+                },
+                (array) wp_unslash( $_POST['vendor_min_ceps'] )
+            );
+            $max_ceps = array_map(
+                static function ( $value ) {
+                    return preg_replace( '/\D+/', '', sanitize_text_field( wp_unslash( $value ) ) );
+                },
+                (array) wp_unslash( $_POST['vendor_max_ceps'] )
+            );
+            $count = min( count( $min_ceps ), count( $max_ceps ) );
 
-        if (isset($_POST['state'])) {
-            update_user_meta($user_id, 'state', papelito_posted_value('state'));
-        }
+            for ($i = 0; $i < $count; $i++) {
+                if ( '' === $min_ceps[ $i ] || '' === $max_ceps[ $i ] ) {
+                    continue;
+                }
 
-        if (isset($_POST['city'])) {
-            update_user_meta($user_id, 'city', papelito_posted_value('city'));
-        }
-
-        if (isset($_POST['cep'])) {
-            update_user_meta($user_id, 'cep', papelito_posted_value('cep'));
+                add_user_meta($user_id, 'min_cep', $min_ceps[$i], false);
+                add_user_meta($user_id, 'max_cep', $max_ceps[$i], false);
+            }
         }
     }
 }

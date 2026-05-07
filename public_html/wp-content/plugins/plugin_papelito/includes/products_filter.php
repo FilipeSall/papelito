@@ -404,62 +404,8 @@ add_filter('woocommerce_product_related_posts_query', 'my_related_products_query
 
 function duplicate_products_for_vendor($user_id)
 {
-    try {
-        $user = get_userdata($user_id);
-        $user_roles = $user->roles;
-
-        // Check if the new user is a seller
-        if (in_array('seller', $user_roles)) {
-            $admin_id = 0;
-            $admins = get_users(array('role' => 'administrator')); // Get all admin users
-
-            $products = [];
-
-            foreach ($admins as $admin) {
-                $admin_id = $admin->ID;
-
-                // Get all WooCommerce products belonging to the admin
-                $args = array(
-                    'post_type' => 'product',
-                    'posts_per_page' => -1,
-                    'author' => $admin_id
-                );
-
-                $products = get_posts($args);
-
-                if (count($products) > 0) {
-                    break;
-                }
-            }
-
-            // Duplicate the products for the new vendor
-            if (! class_exists('\Dokan_SPMV_Product_Duplicator')) {
-                return;
-            }
-
-            $duplicator = new \Dokan_SPMV_Product_Duplicator();
-            $product_title_counter = array();
-
-            foreach ($products as $product) {
-                if (in_array($product->post_title, $product_title_counter)) {
-                    continue;
-                }
-
-                $id = $duplicator->clone_product($product->ID, $user_id);
-
-                if (is_wp_error($id)) {
-                    my_plugin_log_json($id);
-                    my_plugin_log_json($product);
-                    my_plugin_log_json($user_id);
-                    my_plugin_log_json('\n\n');
-                    continue;
-                }
-
-                array_push($product_title_counter, $product->post_title);
-            }
-        }
-    } catch (\Throwable $ex) {
-        my_plugin_log_json($ex);
-    }
+    // Legado do modelo antigo de catálogo duplicado por vendor.
+    // Mantido como no-op para não recriar acoplamento com Dokan no novo onboarding.
+    return;
 }
 add_action('user_register', 'duplicate_products_for_vendor', 10, 1);
