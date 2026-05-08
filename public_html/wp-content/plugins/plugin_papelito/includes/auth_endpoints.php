@@ -2,8 +2,9 @@
 /**
  * Endpoints REST de autenticação headless.
  *
- * Expõe POST /wp-json/papelito/v1/auth/google, /auth/register e /auth/register-seller.
- * Ambos retornam o mesmo par {authToken, refreshToken} usado pela mutation `login`
+ * Expoe GET /wp-json/papelito/v1/auth/me e POST /auth/google, /auth/register
+ * e /auth/register-seller. Os fluxos de autenticacao retornam o mesmo par
+ * {authToken, refreshToken} usado pela mutation `login`
  * do plugin wp-graphql-jwt-authentication, mantendo compatibilidade total com o
  * Apollo Client do front Next.js.
  *
@@ -112,6 +113,59 @@ function papelito_auth_build_token_response( WP_User $user ) {
 			'lastName'   => (string) get_user_meta( $user->ID, 'last_name', true ),
 		),
 		'profileComplete' => $profile_complete,
+	);
+}
+
+/**
+ * Normalize the primary Papelito role for the authenticated user.
+ *
+ * Prioritizes administrator over seller/customer when a user has multiple roles.
+ *
+ * @param WP_User $user
+ * @return string
+ */
+function papelito_auth_normalize_primary_role( WP_User $user ): string {
+	$roles = array_values(
+		array_filter(
+			array_map( 'sanitize_key', (array) $user->roles )
+		)
+	);
+
+	if ( in_array( 'administrator', $roles, true ) ) {
+		return 'administrator';
+	}
+
+	if ( in_array( 'seller', $roles, true ) ) {
+		return 'seller';
+	}
+
+	if ( in_array( 'customer', $roles, true ) ) {
+		return 'customer';
+	}
+
+	return isset( $roles[0] ) ? $roles[0] : '';
+}
+
+/**
+ * Build the authenticated identity payload consumed by the headless frontend.
+ *
+ * @param WP_User $user
+ * @return array<string, mixed>
+ */
+function papelito_auth_build_identity_response( WP_User $user ): array {
+	$primary_role = papelito_auth_normalize_primary_role( $user );
+
+	return array(
+		'user' => array(
+			'databaseId'      => $user->ID,
+			'email'           => $user->user_email,
+			'displayName'     => $user->display_name,
+			'firstName'       => (string) get_user_meta( $user->ID, 'first_name', true ),
+			'lastName'        => (string) get_user_meta( $user->ID, 'last_name', true ),
+			'roles'           => array_values( array_map( 'sanitize_key', (array) $user->roles ) ),
+			'role'            => $primary_role,
+			'isAdministrator' => 'administrator' === $primary_role,
+		),
 	);
 }
 
@@ -480,6 +534,33 @@ function papelito_auth_create_registered_seller( array $data ) {
 add_action(
 	'rest_api_init',
 	static function (): void {
+		register_rest_route(
+			'papelito/v1',
+			'/auth/me',
+			array(
+				'methods'             => 'GET',
+				'permission_callback' => static function (): bool {
+					return is_user_logged_in();
+				},
+				'callback'            => static function () {
+					$user = wp_get_current_user();
+
+					if ( ! $user instanceof WP_User || ! $user->exists() ) {
+						return new WP_Error(
+							'papelito_not_authenticated',
+							'Usuario nao autenticado.',
+							array( 'status' => 401 )
+						);
+					}
+
+					return new WP_REST_Response(
+						papelito_auth_build_identity_response( $user ),
+						200
+					);
+				},
+			)
+		);
+
 		register_rest_route(
 			'papelito/v1',
 			'/auth/google',
