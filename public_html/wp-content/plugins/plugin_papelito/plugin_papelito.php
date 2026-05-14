@@ -16,6 +16,7 @@ require_once __DIR__ . '/includes/auth_endpoints.php';
 require_once __DIR__ . '/includes/revendedor_application.php';
 require_once __DIR__ . '/includes/favorites.php';
 require_once __DIR__ . '/includes/catalog-pdf.php';
+require_once __DIR__ . '/includes/flash_sale.php';
 
 /**
  * Render the plugin nonce in profile forms.
