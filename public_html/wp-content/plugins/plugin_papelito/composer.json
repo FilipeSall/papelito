@@ -1,0 +1,8 @@
+{
+  "name": "papelito/plugin-papelito",
+  "description": "Dependencias de runtime do plugin Papelito.",
+  "type": "wordpress-plugin",
+  "require": {
+    "phpoffice/phpspreadsheet": "^2.4"
+  }
+}
