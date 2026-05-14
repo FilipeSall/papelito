@@ -664,6 +664,39 @@ function papelito_admin_reports_require_spreadsheet() {
 }
 
 /**
+ * Corrige texto com mojibake comum de UTF-8 lido como Latin-1/Windows-1252.
+ *
+ * Mantem valores ja saudaveis intactos e aplica o reparo apenas quando
+ * encontra marcadores tipicos como "Ã", "Â", "â" ou caractere de substituicao.
+ *
+ * @param mixed $value Valor cru.
+ * @return string
+ */
+function papelito_admin_reports_normalize_export_text( $value ): string {
+	if ( null === $value ) {
+		return '';
+	}
+
+	$text = (string) $value;
+
+	if ( '' === $text ) {
+		return '';
+	}
+
+	if ( 1 !== preg_match( '/(?:Ã.|Â.|â.|ð.|�)/u', $text ) ) {
+		return $text;
+	}
+
+	$decoded = utf8_decode( $text );
+
+	if ( ! is_string( $decoded ) || '' === $decoded ) {
+		return $text;
+	}
+
+	return $decoded;
+}
+
+/**
  * Gera o binario XLSX para as linhas filtradas.
  *
  * @param array<int, array<string, mixed>> $rows Linhas.
@@ -705,17 +738,17 @@ function papelito_admin_reports_generate_users_xlsx( array $rows ) {
 			$sheet->fromArray(
 				array(
 					isset( $row['id'] ) ? (int) $row['id'] : 0,
-					isset( $row['name'] ) ? (string) $row['name'] : '',
-					isset( $row['email'] ) ? (string) $row['email'] : '',
-					isset( $row['roleLabel'] ) ? (string) $row['roleLabel'] : '',
-					isset( $row['applicationStatusLabel'] ) ? (string) $row['applicationStatusLabel'] : '',
-					isset( $row['storeName'] ) ? (string) $row['storeName'] : '',
-					isset( $row['phoneNumber'] ) ? (string) $row['phoneNumber'] : '',
-					isset( $row['cnpj'] ) ? (string) $row['cnpj'] : '',
-					isset( $row['city'] ) ? (string) $row['city'] : '',
-					isset( $row['state'] ) ? (string) $row['state'] : '',
-					isset( $row['coverageSummary'] ) ? (string) $row['coverageSummary'] : '',
-					isset( $row['registeredAt'] ) ? (string) $row['registeredAt'] : '',
+					papelito_admin_reports_normalize_export_text( $row['name'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['email'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['roleLabel'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['applicationStatusLabel'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['storeName'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['phoneNumber'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['cnpj'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['city'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['state'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['coverageSummary'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['registeredAt'] ?? '' ),
 				),
 				null,
 				'A' . $row_index
@@ -830,12 +863,12 @@ function papelito_admin_reports_generate_simple_users_xlsx( array $rows ) {
 			$sheet->fromArray(
 				array(
 					$row['user_id'],
-					$row['username'],
-					$row['email'],
-					$row['phone'],
-					$row['postcode'],
-					$row['city'],
-					$row['state'],
+					papelito_admin_reports_normalize_export_text( $row['username'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['email'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['phone'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['postcode'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['city'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['state'] ?? '' ),
 				),
 				null,
 				'A' . $row_index
@@ -877,6 +910,7 @@ function papelito_admin_reports_generate_simple_users_csv( array $rows ): string
 		return '';
 	}
 
+	fwrite( $stream, "\xEF\xBB\xBF" );
 	fputcsv( $stream, array( 'user_id', 'username', 'email', 'phone', 'postcode', 'city', 'state' ) );
 
 	foreach ( $rows as $row ) {
@@ -884,12 +918,12 @@ function papelito_admin_reports_generate_simple_users_csv( array $rows ): string
 			$stream,
 			array(
 				$row['user_id'],
-				$row['username'],
-				$row['email'],
-				$row['phone'],
-				$row['postcode'],
-				$row['city'],
-				$row['state'],
+				papelito_admin_reports_normalize_export_text( $row['username'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['email'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['phone'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['postcode'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['city'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['state'] ?? '' ),
 			)
 		);
 	}
@@ -997,15 +1031,15 @@ function papelito_admin_reports_generate_simple_sales_xlsx( array $rows ) {
 			$sheet->fromArray(
 				array(
 					$row['order_id'],
-					$row['order_number'],
-					$row['created_at'],
-					$row['status'],
-					$row['customer_name'],
-					$row['phone'],
-					$row['postcode'],
-					$row['city'],
-					$row['state'],
-					$row['payment_method'],
+					papelito_admin_reports_normalize_export_text( $row['order_number'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['created_at'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['status'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['customer_name'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['phone'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['postcode'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['city'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['state'] ?? '' ),
+					papelito_admin_reports_normalize_export_text( $row['payment_method'] ?? '' ),
 					$row['total'],
 				),
 				null,
@@ -1048,6 +1082,7 @@ function papelito_admin_reports_generate_simple_sales_csv( array $rows ): string
 		return '';
 	}
 
+	fwrite( $stream, "\xEF\xBB\xBF" );
 	fputcsv(
 		$stream,
 		array(
@@ -1070,15 +1105,15 @@ function papelito_admin_reports_generate_simple_sales_csv( array $rows ): string
 			$stream,
 			array(
 				$row['order_id'],
-				$row['order_number'],
-				$row['created_at'],
-				$row['status'],
-				$row['customer_name'],
-				$row['phone'],
-				$row['postcode'],
-				$row['city'],
-				$row['state'],
-				$row['payment_method'],
+				papelito_admin_reports_normalize_export_text( $row['order_number'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['created_at'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['status'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['customer_name'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['phone'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['postcode'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['city'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['state'] ?? '' ),
+				papelito_admin_reports_normalize_export_text( $row['payment_method'] ?? '' ),
 				$row['total'],
 			)
 		);
