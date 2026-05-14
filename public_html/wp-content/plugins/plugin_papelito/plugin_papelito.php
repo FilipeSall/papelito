@@ -63,6 +63,122 @@ function my_plugin_log_json($data)
 }
 
 /**
+ * Check whether a REST route should be logged for products debugging.
+ */
+function papelito_should_log_products_rest_route( $route ) {
+    if ( ! is_string( $route ) || '' === $route ) {
+        return false;
+    }
+
+    return 0 === strpos( $route, '/wc/v3/products' ) || 0 === strpos( $route, '/wc/v3/products/categories' );
+}
+
+/**
+ * Normalize REST params for logs.
+ */
+function papelito_rest_log_params( $params ) {
+    if ( ! is_array( $params ) ) {
+        return array();
+    }
+
+    $keys = array( 'search', 'category', 'status', 'stock_status', 'page', 'per_page', 'orderby', 'order' );
+    $normalized = array();
+
+    foreach ( $keys as $key ) {
+        if ( array_key_exists( $key, $params ) ) {
+            $normalized[ $key ] = $params[ $key ];
+        }
+    }
+
+    return $normalized;
+}
+
+add_filter(
+    'rest_request_before_callbacks',
+    function( $response, $handler, $request ) {
+        if ( ! $request instanceof WP_REST_Request ) {
+            return $response;
+        }
+
+        $route = $request->get_route();
+
+        if ( ! papelito_should_log_products_rest_route( $route ) ) {
+            return $response;
+        }
+
+        my_plugin_log_json(
+            array(
+                'timestamp' => gmdate( 'c' ),
+                'source'    => 'wordpress',
+                'stage'     => 'rest_request_before_callbacks',
+                'method'    => $request->get_method(),
+                'route'     => $route,
+                'params'    => papelito_rest_log_params( $request->get_params() ),
+            )
+        );
+
+        return $response;
+    },
+    10,
+    3
+);
+
+add_filter(
+    'rest_post_dispatch',
+    function( $result, $server, $request ) {
+        if ( ! $request instanceof WP_REST_Request ) {
+            return $result;
+        }
+
+        $route = $request->get_route();
+
+        if ( ! papelito_should_log_products_rest_route( $route ) ) {
+            return $result;
+        }
+
+        $status = 200;
+        $data   = null;
+
+        if ( is_wp_error( $result ) ) {
+            $status = 500;
+            $data   = $result->get_error_messages();
+        } elseif ( $result instanceof WP_HTTP_Response ) {
+            $status = $result->get_status();
+            $data   = $result->get_data();
+        }
+
+        $item_count = is_array( $data ) ? count( $data ) : null;
+        $sample_ids = array();
+
+        if ( is_array( $data ) ) {
+            foreach ( array_slice( $data, 0, 10 ) as $item ) {
+                if ( is_array( $item ) && isset( $item['id'] ) ) {
+                    $sample_ids[] = $item['id'];
+                }
+            }
+        }
+
+        my_plugin_log_json(
+            array(
+                'timestamp'  => gmdate( 'c' ),
+                'source'     => 'wordpress',
+                'stage'      => 'rest_post_dispatch',
+                'method'     => $request->get_method(),
+                'route'      => $route,
+                'params'     => papelito_rest_log_params( $request->get_params() ),
+                'status'     => $status,
+                'item_count' => $item_count,
+                'sample_ids' => $sample_ids,
+            )
+        );
+
+        return $result;
+    },
+    10,
+    3
+);
+
+/**
  * Add custom fields to the user profile page for users with the "vendor" role.
  */
 function vendor_profile_fields($user)
