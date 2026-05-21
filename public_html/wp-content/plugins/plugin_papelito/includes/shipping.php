@@ -91,7 +91,6 @@ function papelito_correios_credentials() {
 		'access_code'  => papelito_correios_env( 'ACCESS_CODE' ),
 		'posting_card' => papelito_correios_env( 'POSTING_CARD' ),
 		'contract'     => papelito_correios_env( 'CONTRACT' ),
-		'admin_code'   => papelito_correios_env( 'ADMIN_CODE' ),
 		'environment'  => papelito_correios_env( 'ENV', 'production' ),
 	);
 
@@ -99,6 +98,14 @@ function papelito_correios_credentials() {
 		return new WP_Error(
 			'papelito_correios_missing_credentials',
 			'Credenciais dos Correios nao configuradas.',
+			array( 'status' => 500 )
+		);
+	}
+
+	if ( 1 !== preg_match( '/^00\d{8}$/', $credentials['posting_card'] ) ) {
+		return new WP_Error(
+			'papelito_correios_invalid_card',
+			'Cartao de postagem dos Correios invalido. Use 10 digitos iniciando com 00.',
 			array( 'status' => 500 )
 		);
 	}
@@ -114,6 +121,61 @@ function papelito_correios_credentials() {
  */
 function papelito_correios_base_url( string $environment ): string {
 	return 'staging' === $environment ? 'https://apihom.correios.com.br/' : 'https://api.correios.com.br/';
+}
+
+/**
+ * Extrai uma mensagem segura da resposta dos Correios.
+ *
+ * @param mixed $body Corpo decodificado.
+ * @return string
+ */
+function papelito_correios_response_message( $body ): string {
+	if ( ! is_array( $body ) ) {
+		return '';
+	}
+
+	$message = papelito_shipping_first_value( $body, array( 'msg', 'message', 'mensagem', 'erro' ) );
+
+	if ( empty( $message ) && ! empty( $body['msgs'] ) && is_array( $body['msgs'] ) ) {
+		$message = reset( $body['msgs'] );
+	}
+
+	if ( empty( $message ) && ! empty( $body['messages'] ) && is_array( $body['messages'] ) ) {
+		$message = reset( $body['messages'] );
+	}
+
+	if ( is_array( $message ) ) {
+		$message = papelito_shipping_first_value( $message, array( 'msg', 'message', 'mensagem', 'texto' ) );
+	}
+
+	return sanitize_text_field( (string) $message );
+}
+
+/**
+ * Calcula espera curta para rate limit dos Correios.
+ *
+ * @param array<string, mixed> $response Resposta HTTP.
+ * @return float Segundos.
+ */
+function papelito_correios_retry_after_seconds( array $response ): float {
+	$retry_after = wp_remote_retrieve_header( $response, 'retry-after' );
+
+	if ( is_array( $retry_after ) ) {
+		$retry_after = reset( $retry_after );
+	}
+
+	if ( is_numeric( $retry_after ) ) {
+		return min( 3.0, max( 0.5, (float) $retry_after ) );
+	}
+
+	if ( is_string( $retry_after ) && '' !== $retry_after ) {
+		$timestamp = strtotime( $retry_after );
+		if ( false !== $timestamp ) {
+			return min( 3.0, max( 0.5, (float) ( $timestamp - time() ) ) );
+		}
+	}
+
+	return 0.5;
 }
 
 /**
@@ -135,9 +197,21 @@ function papelito_correios_request_json( string $method, string $url, array $arg
 		$args
 	);
 
-	$response = 'POST' === strtoupper( $method )
-		? wp_safe_remote_post( $url, $request_args )
-		: wp_safe_remote_get( $url, $request_args );
+	$attempts = 0;
+
+	do {
+		$response = 'POST' === strtoupper( $method )
+			? wp_safe_remote_post( $url, $request_args )
+			: wp_safe_remote_get( $url, $request_args );
+
+		if ( ! is_wp_error( $response ) && 429 === (int) wp_remote_retrieve_response_code( $response ) && 0 === $attempts ) {
+			usleep( (int) ( papelito_correios_retry_after_seconds( $response ) * 1000000 ) );
+			++$attempts;
+			continue;
+		}
+
+		break;
+	} while ( $attempts < 2 );
 
 	if ( is_wp_error( $response ) ) {
 		return new WP_Error(
@@ -151,10 +225,17 @@ function papelito_correios_request_json( string $method, string $url, array $arg
 	$body   = json_decode( wp_remote_retrieve_body( $response ), true );
 
 	if ( $status < 200 || $status >= 300 || ! is_array( $body ) ) {
+		$error_data = array( 'status' => 502, 'correios_status' => $status );
+		$message    = papelito_correios_response_message( $body );
+
+		if ( '' !== $message ) {
+			$error_data['correios_message'] = $message;
+		}
+
 		return new WP_Error(
 			'papelito_correios_bad_response',
 			'Correios respondeu com erro durante a cotacao.',
-			array( 'status' => 502, 'correios_status' => $status )
+			$error_data
 		);
 	}
 
