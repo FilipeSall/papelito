@@ -83,6 +83,29 @@ function papelito_apply_vendor_geo( int $user_id, string $cep_raw ): bool {
 	return true;
 }
 
+/**
+ * Calcula a distancia aproximada entre duas coordenadas em quilometros.
+ *
+ * @param mixed $lat1 Latitude de origem.
+ * @param mixed $lng1 Longitude de origem.
+ * @param mixed $lat2 Latitude de destino.
+ * @param mixed $lng2 Longitude de destino.
+ * @return float
+ */
+function papelito_haversine_km( $lat1, $lng1, $lat2, $lng2 ): float {
+	$earth_radius_km = 6371.0;
+	$lat_delta       = deg2rad( (float) $lat2 - (float) $lat1 );
+	$lng_delta       = deg2rad( (float) $lng2 - (float) $lng1 );
+	$lat1_rad        = deg2rad( (float) $lat1 );
+	$lat2_rad        = deg2rad( (float) $lat2 );
+
+	$a = sin( $lat_delta / 2 ) ** 2
+		+ cos( $lat1_rad ) * cos( $lat2_rad ) * ( sin( $lng_delta / 2 ) ** 2 );
+	$c = 2 * atan2( sqrt( $a ), sqrt( 1 - $a ) );
+
+	return $earth_radius_km * $c;
+}
+
 function papelito_geocode_via_brasilapi( string $cep8 ): ?array {
 	$response = wp_safe_remote_get(
 		'https://brasilapi.com.br/api/cep/v2/' . rawurlencode( $cep8 ),
