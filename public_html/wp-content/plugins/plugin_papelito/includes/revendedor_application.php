@@ -53,6 +53,9 @@ function papelito_get_seller_application_data( int $user_id ): array {
 			'instagram'         => '',
 			'state'             => '',
 			'city'              => '',
+			'cep'               => '',
+			'minCep'            => '',
+			'maxCep'            => '',
 			'discoveryChannel'  => '',
 			'hasSoldPapelito'   => '',
 		);
@@ -70,6 +73,9 @@ function papelito_get_seller_application_data( int $user_id ): array {
 		'instagram'        => (string) get_user_meta( $user_id, 'instagram', true ),
 		'state'            => (string) get_user_meta( $user_id, 'state', true ),
 		'city'             => (string) get_user_meta( $user_id, 'city', true ),
+		'cep'              => (string) get_user_meta( $user_id, 'cep', true ),
+		'minCep'           => (string) get_user_meta( $user_id, 'min_cep', true ),
+		'maxCep'           => (string) get_user_meta( $user_id, 'max_cep', true ),
 		'discoveryChannel' => (string) get_user_meta( $user_id, 'seller_application_discovery_channel', true ),
 		'hasSoldPapelito'  => (string) get_user_meta( $user_id, 'seller_application_has_sold_papelito', true ),
 	);
@@ -94,6 +100,9 @@ function papelito_validate_seller_application_input( array $input ) {
 		'instagram'       => 'Informe o Instagram da loja.',
 		'city'            => 'Informe a cidade.',
 		'state'           => 'Selecione o estado.',
+		'cep'             => 'Informe o CEP de operação.',
+		'minCep'          => 'Informe o CEP inicial da região atendida.',
+		'maxCep'          => 'Informe o CEP final da região atendida.',
 		'hasSoldPapelito' => 'Escolha se você já vende produtos Papelito.',
 	);
 
@@ -128,6 +137,26 @@ function papelito_validate_seller_application_input( array $input ) {
 		$errors->add( 'hasSoldPapelito', 'Escolha uma opção válida.' );
 	}
 
+	$cep_fields = array(
+		'cep'    => 'Informe um CEP de operação válido (8 dígitos).',
+		'minCep' => 'Informe um CEP inicial válido (8 dígitos).',
+		'maxCep' => 'Informe um CEP final válido (8 dígitos).',
+	);
+
+	$normalized_ceps = array();
+	foreach ( $cep_fields as $field => $message ) {
+		$raw        = isset( $input[ $field ] ) ? (string) $input[ $field ] : '';
+		$normalized = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( $raw ) : '';
+		if ( '' === $normalized ) {
+			$errors->add( $field, $message );
+		}
+		$normalized_ceps[ $field ] = $normalized;
+	}
+
+	if ( '' !== $normalized_ceps['minCep'] && '' !== $normalized_ceps['maxCep'] && (int) $normalized_ceps['minCep'] > (int) $normalized_ceps['maxCep'] ) {
+		$errors->add( 'maxCep', 'O CEP final precisa ser maior ou igual ao CEP inicial.' );
+	}
+
 	return $errors->has_errors() ? $errors : null;
 }
 
@@ -154,6 +183,8 @@ function papelito_notify_seller_application( array $application ): void {
 		sprintf( 'CNPJ: %s', $application['cnpj'] ),
 		sprintf( 'Instagram: @%s', ltrim( (string) $application['instagram'], '@' ) ),
 		sprintf( 'Cidade/Estado: %s - %s', $application['city'], $application['state'] ),
+		sprintf( 'CEP de operação: %s', $application['cep'] ?? '' ),
+		sprintf( 'Faixa atendida: %s - %s', $application['minCep'] ?? '', $application['maxCep'] ?? '' ),
 		sprintf( 'Origem do contato: %s', $application['discoveryChannel'] ),
 		sprintf( 'Já vende Papelito?: %s', $application['hasSoldPapelito'] ),
 		'',
@@ -227,6 +258,21 @@ function papelito_submit_seller_application( int $user_id, array $input ) {
 	update_user_meta( $user_id, 'instagram', sanitize_text_field( ltrim( (string) $input['instagram'], '@' ) ) );
 	update_user_meta( $user_id, 'state', sanitize_text_field( (string) $input['state'] ) );
 	update_user_meta( $user_id, 'city', sanitize_text_field( (string) $input['city'] ) );
+
+	$cep_base = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['cep'] ?? '' ) ) : '';
+	$min_cep  = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['minCep'] ?? '' ) ) : '';
+	$max_cep  = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['maxCep'] ?? '' ) ) : '';
+
+	update_user_meta( $user_id, 'cep', $cep_base );
+	delete_user_meta( $user_id, 'min_cep' );
+	delete_user_meta( $user_id, 'max_cep' );
+	add_user_meta( $user_id, 'min_cep', $min_cep, false );
+	add_user_meta( $user_id, 'max_cep', $max_cep, false );
+
+	if ( function_exists( 'papelito_apply_vendor_geo' ) ) {
+		papelito_apply_vendor_geo( $user_id, $cep_base );
+	}
+
 	update_user_meta( $user_id, 'seller_application_discovery_channel', sanitize_text_field( (string) ( $input['discoveryChannel'] ?? '' ) ) );
 	update_user_meta( $user_id, 'seller_application_has_sold_papelito', sanitize_text_field( (string) $input['hasSoldPapelito'] ) );
 	update_user_meta( $user_id, 'seller_application_status', 'pending' );
@@ -266,6 +312,9 @@ add_action(
 					'instagram'        => array( 'type' => 'String' ),
 					'state'            => array( 'type' => 'String' ),
 					'city'             => array( 'type' => 'String' ),
+					'cep'              => array( 'type' => 'String' ),
+					'minCep'           => array( 'type' => 'String' ),
+					'maxCep'           => array( 'type' => 'String' ),
 					'discoveryChannel' => array( 'type' => 'String' ),
 					'hasSoldPapelito'  => array( 'type' => 'String' ),
 				),
@@ -298,6 +347,9 @@ add_action(
 					'instagram'       => array( 'type' => array( 'non_null' => 'String' ) ),
 					'city'            => array( 'type' => array( 'non_null' => 'String' ) ),
 					'state'           => array( 'type' => array( 'non_null' => 'String' ) ),
+					'cep'             => array( 'type' => array( 'non_null' => 'String' ) ),
+					'minCep'          => array( 'type' => array( 'non_null' => 'String' ) ),
+					'maxCep'          => array( 'type' => array( 'non_null' => 'String' ) ),
 					'discoveryChannel' => array( 'type' => 'String' ),
 					'hasSoldPapelito' => array( 'type' => array( 'non_null' => 'String' ) ),
 				),

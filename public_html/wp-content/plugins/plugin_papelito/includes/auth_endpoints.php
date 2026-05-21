@@ -522,6 +522,10 @@ function papelito_auth_create_registered_seller( array $data ) {
 		update_user_meta( $user_id, 'max_cep', sanitize_text_field( (string) $data['max_cep'] ) );
 	}
 
+	if ( function_exists( 'papelito_apply_vendor_geo' ) ) {
+		papelito_apply_vendor_geo( $user_id, (string) ( $data['cep'] ?? '' ) );
+	}
+
 	update_user_meta( $user_id, 'papelito_profile_complete', '1' );
 
 	$user = get_userdata( $user_id );
