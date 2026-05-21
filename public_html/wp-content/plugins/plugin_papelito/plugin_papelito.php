@@ -21,6 +21,37 @@ require_once __DIR__ . '/includes/home_assets.php';
 require_once __DIR__ . '/includes/admin_reports.php';
 require_once __DIR__ . '/includes/shipping.php';
 require_once __DIR__ . '/includes/vendor_geo.php';
+require_once __DIR__ . '/includes/vendor_stock.php';
+require_once __DIR__ . '/includes/notifications.php';
+
+if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
+	define( 'PAPELITO_DB_VERSION', '1.2' );
+}
+
+/**
+ * Roda dbDelta das tabelas custom quando a versão grava no DB difere
+ * da constante PAPELITO_DB_VERSION. Funciona em deploy por sync de
+ * arquivos (Hostinger), onde register_activation_hook não dispara.
+ */
+function papelito_maybe_migrate_db() {
+	$current = get_option( 'papelito_db_version', '0' );
+
+	if ( version_compare( $current, PAPELITO_DB_VERSION, '>=' ) ) {
+		return;
+	}
+
+	if ( function_exists( 'papelito_vendor_stock_install_tables' ) ) {
+		papelito_vendor_stock_install_tables();
+	}
+
+	if ( function_exists( 'papelito_notifications_install_tables' ) ) {
+		papelito_notifications_install_tables();
+	}
+
+	update_option( 'papelito_db_version', PAPELITO_DB_VERSION, true );
+}
+add_action( 'plugins_loaded', 'papelito_maybe_migrate_db', 5 );
+register_activation_hook( __FILE__, 'papelito_maybe_migrate_db' );
 
 /**
  * Render the plugin nonce in profile forms.

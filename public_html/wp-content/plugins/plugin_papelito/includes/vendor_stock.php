@@ -1,0 +1,583 @@
+<?php
+/**
+ * Vendor stock — STEP 2 do playbook do marketplace.
+ *
+ * Camada de estoque por vendor (independente do _stock global do WooCommerce).
+ * Expõe helpers consumidos pelas STEPs 4 (coverage), 11 (decremento via pedido)
+ * e 15 (UI admin), além de endpoints REST para o painel do vendor e do admin.
+ *
+ * Emite a action `papelito_stock_zeroed` na transição qty>0 → 0 (consumida pela
+ * STEP 3, sistema de notificações).
+ */
+
+defined( 'ABSPATH' ) || exit;
+
+if ( ! defined( 'PAPELITO_VENDOR_STOCK_TABLE' ) ) {
+	define( 'PAPELITO_VENDOR_STOCK_TABLE', 'papelito_vendor_stock' );
+}
+
+if ( ! defined( 'PAPELITO_VENDOR_STOCK_LOG_TABLE' ) ) {
+	define( 'PAPELITO_VENDOR_STOCK_LOG_TABLE', 'papelito_vendor_stock_log' );
+}
+
+/* ------------------------------------------------------------------
+ *  Schema
+ * ------------------------------------------------------------------ */
+
+/**
+ * Resolve nomes completos (com prefixo) das tabelas de estoque.
+ *
+ * @return array{stock:string,log:string}
+ */
+function papelito_vendor_stock_table_names() {
+	global $wpdb;
+
+	return array(
+		'stock' => $wpdb->prefix . PAPELITO_VENDOR_STOCK_TABLE,
+		'log'   => $wpdb->prefix . PAPELITO_VENDOR_STOCK_LOG_TABLE,
+	);
+}
+
+/**
+ * Cria/atualiza as tabelas de estoque via dbDelta.
+ *
+ * Chamado pelo bootstrap de migration em `plugin_papelito.php` quando
+ * `papelito_db_version` for inferior à versão atual.
+ */
+function papelito_vendor_stock_install_tables() {
+	global $wpdb;
+
+	$tables          = papelito_vendor_stock_table_names();
+	$charset_collate = $wpdb->get_charset_collate();
+
+	$stock_sql = "CREATE TABLE {$tables['stock']} (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  vendor_id BIGINT UNSIGNED NOT NULL,
+  product_id BIGINT UNSIGNED NOT NULL,
+  qty INT NOT NULL DEFAULT 0,
+  notified_zero_at DATETIME NULL DEFAULT NULL,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY  (id),
+  UNIQUE KEY uniq_vendor_product (vendor_id, product_id),
+  KEY idx_product (product_id)
+) {$charset_collate};";
+
+	$log_sql = "CREATE TABLE {$tables['log']} (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  vendor_id BIGINT UNSIGNED NOT NULL,
+  product_id BIGINT UNSIGNED NOT NULL,
+  delta INT NOT NULL,
+  reason VARCHAR(120) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY  (id),
+  KEY idx_vendor (vendor_id, created_at)
+) {$charset_collate};";
+
+	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+	dbDelta( $stock_sql );
+	dbDelta( $log_sql );
+}
+
+/* ------------------------------------------------------------------
+ *  Helpers consumidos por outras STEPs
+ * ------------------------------------------------------------------ */
+
+/**
+ * Retorna a quantidade atual em estoque do vendor para o produto.
+ *
+ * Linha pode não existir (Q1=A: registros sob demanda). Nesse caso retorna 0.
+ */
+function papelito_get_vendor_stock( $vendor_id, $product_id ) {
+	global $wpdb;
+
+	$vendor_id  = (int) $vendor_id;
+	$product_id = (int) $product_id;
+
+	if ( $vendor_id <= 0 || $product_id <= 0 ) {
+		return 0;
+	}
+
+	$tables = papelito_vendor_stock_table_names();
+
+	$qty = $wpdb->get_var(
+		$wpdb->prepare(
+			"SELECT qty FROM {$tables['stock']} WHERE vendor_id = %d AND product_id = %d",
+			$vendor_id,
+			$product_id
+		)
+	);
+
+	return null === $qty ? 0 : (int) $qty;
+}
+
+/**
+ * Define a quantidade em estoque do vendor para o produto.
+ *
+ * Faz transação com SELECT ... FOR UPDATE para impedir race condition
+ * entre admin manual + decremento de pedido. Grava entrada no log apenas
+ * quando há delta. Emite `papelito_stock_zeroed` na transição qty>0 → 0.
+ *
+ * @param int    $vendor_id  ID do vendor (papel `seller`).
+ * @param int    $product_id ID do produto (post WC).
+ * @param int    $qty        Nova quantidade (>= 0).
+ * @param string $reason     Motivo livre (até 120 chars). Obrigatório se a
+ *                           chamada vier do admin; default `vendor_update`.
+ * @return array{ok:bool,qty:int,prev_qty:int,zeroed_event_fired:bool}|WP_Error
+ */
+function papelito_set_vendor_stock( $vendor_id, $product_id, $qty, $reason = 'vendor_update' ) {
+	global $wpdb;
+
+	$vendor_id  = (int) $vendor_id;
+	$product_id = (int) $product_id;
+	$qty        = (int) $qty;
+	$reason     = substr( (string) $reason, 0, 120 );
+
+	if ( $vendor_id <= 0 ) {
+		return new WP_Error( 'papelito_invalid_vendor', 'Vendor inválido.', array( 'status' => 400 ) );
+	}
+
+	if ( $product_id <= 0 ) {
+		return new WP_Error( 'papelito_invalid_product', 'Produto inválido.', array( 'status' => 400 ) );
+	}
+
+	if ( $qty < 0 ) {
+		return new WP_Error( 'papelito_invalid_qty', 'Quantidade não pode ser negativa.', array( 'status' => 400 ) );
+	}
+
+	if ( ! function_exists( 'wc_get_product' ) || ! wc_get_product( $product_id ) ) {
+		return new WP_Error( 'papelito_product_not_found', 'Produto não encontrado.', array( 'status' => 404 ) );
+	}
+
+	$tables = papelito_vendor_stock_table_names();
+
+	$wpdb->query( 'START TRANSACTION' );
+
+	$row = $wpdb->get_row(
+		$wpdb->prepare(
+			"SELECT qty, notified_zero_at FROM {$tables['stock']} WHERE vendor_id = %d AND product_id = %d FOR UPDATE",
+			$vendor_id,
+			$product_id
+		),
+		ARRAY_A
+	);
+
+	$prev_qty           = $row ? (int) $row['qty'] : 0;
+	$raw_notified       = $row['notified_zero_at'] ?? null;
+	$is_zero_date       = ( '0000-00-00 00:00:00' === $raw_notified );
+	$notified_zero_at   = ( null === $raw_notified || $is_zero_date ) ? null : $raw_notified;
+	$zeroed_event_fired = false;
+	$next_notified_zero_at = $notified_zero_at;
+
+	if ( $prev_qty > 0 && 0 === $qty && null === $notified_zero_at ) {
+		$next_notified_zero_at = current_time( 'mysql', true );
+		$zeroed_event_fired    = true;
+	} elseif ( 0 === $prev_qty && $qty > 0 ) {
+		$next_notified_zero_at = null;
+	}
+
+	if ( null === $next_notified_zero_at ) {
+		$upsert = $wpdb->query(
+			$wpdb->prepare(
+				"INSERT INTO {$tables['stock']} (vendor_id, product_id, qty, notified_zero_at)
+				 VALUES (%d, %d, %d, NULL)
+				 ON DUPLICATE KEY UPDATE qty = VALUES(qty), notified_zero_at = NULL",
+				$vendor_id,
+				$product_id,
+				$qty
+			)
+		);
+	} else {
+		$upsert = $wpdb->query(
+			$wpdb->prepare(
+				"INSERT INTO {$tables['stock']} (vendor_id, product_id, qty, notified_zero_at)
+				 VALUES (%d, %d, %d, %s)
+				 ON DUPLICATE KEY UPDATE qty = VALUES(qty), notified_zero_at = VALUES(notified_zero_at)",
+				$vendor_id,
+				$product_id,
+				$qty,
+				$next_notified_zero_at
+			)
+		);
+	}
+
+	if ( false === $upsert ) {
+		$wpdb->query( 'ROLLBACK' );
+		return new WP_Error( 'papelito_stock_write_failed', 'Falha ao gravar estoque.', array( 'status' => 500 ) );
+	}
+
+	$delta = $qty - $prev_qty;
+	if ( 0 !== $delta ) {
+		$log_written = $wpdb->insert(
+			$tables['log'],
+			array(
+				'vendor_id'  => $vendor_id,
+				'product_id' => $product_id,
+				'delta'      => $delta,
+				'reason'     => $reason,
+			),
+			array( '%d', '%d', '%d', '%s' )
+		);
+
+		if ( false === $log_written ) {
+			$wpdb->query( 'ROLLBACK' );
+			return new WP_Error( 'papelito_stock_log_failed', 'Falha ao gravar log de estoque.', array( 'status' => 500 ) );
+		}
+	}
+
+	$wpdb->query( 'COMMIT' );
+
+	if ( $zeroed_event_fired ) {
+		do_action( 'papelito_stock_zeroed', $vendor_id, $product_id );
+	}
+
+	return array(
+		'ok'                 => true,
+		'qty'                => $qty,
+		'prev_qty'           => $prev_qty,
+		'zeroed_event_fired' => $zeroed_event_fired,
+	);
+}
+
+/**
+ * Lista vendors com estoque > 0 do produto, ordenados por qty desc.
+ *
+ * Consumido pela STEP 4 (cobertura) cruzado com faixa de CEP.
+ *
+ * @return array<int,array{vendor_id:int,qty:int}>
+ */
+function papelito_vendors_with_stock( $product_id ) {
+	global $wpdb;
+
+	$product_id = (int) $product_id;
+	if ( $product_id <= 0 ) {
+		return array();
+	}
+
+	$tables = papelito_vendor_stock_table_names();
+
+	$rows = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT vendor_id, qty FROM {$tables['stock']} WHERE product_id = %d AND qty > 0 ORDER BY qty DESC",
+			$product_id
+		),
+		ARRAY_A
+	);
+
+	if ( ! is_array( $rows ) ) {
+		return array();
+	}
+
+	return array_map(
+		static function ( $row ) {
+			return array(
+				'vendor_id' => (int) $row['vendor_id'],
+				'qty'       => (int) $row['qty'],
+			);
+		},
+		$rows
+	);
+}
+
+/* ------------------------------------------------------------------
+ *  Helpers internos de query (REST)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Lista paginada de estoque de um vendor com busca opcional por nome/SKU.
+ *
+ * @param int    $vendor_id Vendor alvo.
+ * @param array  $args      Argumentos: page (>=1), per_page (1-100),
+ *                          search (string), filter (all|with_stock|zeroed_only).
+ * @return array{items:array,total:int,page:int,per_page:int}
+ */
+function papelito_vendor_stock_query( $vendor_id, $args ) {
+	global $wpdb;
+
+	$vendor_id = (int) $vendor_id;
+	$page      = max( 1, (int) ( $args['page'] ?? 1 ) );
+	$per_page  = min( 100, max( 1, (int) ( $args['per_page'] ?? 20 ) ) );
+	$search    = trim( (string) ( $args['search'] ?? '' ) );
+	$filter    = (string) ( $args['filter'] ?? 'all' );
+
+	if ( ! in_array( $filter, array( 'all', 'with_stock', 'zeroed_only' ), true ) ) {
+		$filter = 'all';
+	}
+
+	$tables   = papelito_vendor_stock_table_names();
+	$posts    = $wpdb->posts;
+	$postmeta = $wpdb->postmeta;
+
+	$where  = array( 'p.post_type IN (%s, %s)', 'p.post_status = %s' );
+	$params = array( 'product', 'product_variation', 'publish' );
+
+	if ( 'with_stock' === $filter ) {
+		$where[] = 'COALESCE(vs.qty, 0) > 0';
+	} elseif ( 'zeroed_only' === $filter ) {
+		$where[] = 'COALESCE(vs.qty, 0) = 0';
+	}
+
+	if ( '' !== $search ) {
+		$like     = '%' . $wpdb->esc_like( $search ) . '%';
+		$where[]  = '(p.post_title LIKE %s OR sku.meta_value LIKE %s)';
+		$params[] = $like;
+		$params[] = $like;
+	}
+
+	$where_sql = implode( ' AND ', $where );
+
+	$join_sku = "LEFT JOIN {$postmeta} sku ON sku.post_id = p.ID AND sku.meta_key = '_sku'";
+
+	$count_sql = "SELECT COUNT(*) FROM {$posts} p
+		LEFT JOIN {$tables['stock']} vs ON vs.product_id = p.ID AND vs.vendor_id = %d
+		{$join_sku}
+		WHERE {$where_sql}";
+
+	$count_params = $params;
+	array_unshift( $count_params, $vendor_id );
+
+	$total = (int) $wpdb->get_var( $wpdb->prepare( $count_sql, $count_params ) );
+
+	$offset = ( $page - 1 ) * $per_page;
+
+	$select_sql = "SELECT p.ID AS product_id, COALESCE(vs.qty, 0) AS qty, vs.updated_at, vs.notified_zero_at,
+				p.post_title AS product_name, sku.meta_value AS sku
+			FROM {$posts} p
+			LEFT JOIN {$tables['stock']} vs ON vs.product_id = p.ID AND vs.vendor_id = %d
+			{$join_sku}
+			WHERE {$where_sql}
+			ORDER BY p.post_title ASC
+			LIMIT %d OFFSET %d";
+
+	$select_params   = $params;
+	array_unshift( $select_params, $vendor_id );
+	$select_params[] = $per_page;
+	$select_params[] = $offset;
+
+	$rows = $wpdb->get_results( $wpdb->prepare( $select_sql, $select_params ), ARRAY_A );
+
+	$items = array_map(
+		static function ( $row ) {
+			return array(
+				'product_id'   => (int) $row['product_id'],
+				'product_name' => (string) $row['product_name'],
+				'sku'          => (string) ( $row['sku'] ?? '' ),
+				'qty'          => (int) $row['qty'],
+				'updated_at'   => (string) $row['updated_at'],
+				'is_zeroed'    => 0 === (int) $row['qty'],
+			);
+		},
+		is_array( $rows ) ? $rows : array()
+	);
+
+	return array(
+		'items'    => $items,
+		'total'    => $total,
+		'page'     => $page,
+		'per_page' => $per_page,
+	);
+}
+
+/* ------------------------------------------------------------------
+ *  Permissões
+ * ------------------------------------------------------------------ */
+
+/**
+ * Verifica que o usuário corrente é vendor (papel `seller`).
+ */
+function papelito_vendor_stock_require_seller() {
+	$user = wp_get_current_user();
+
+	if ( ! $user instanceof WP_User || ! $user->exists() ) {
+		return new WP_Error( 'papelito_not_authenticated', 'Não autenticado.', array( 'status' => 401 ) );
+	}
+
+	if ( ! in_array( 'seller', (array) $user->roles, true ) ) {
+		return new WP_Error( 'papelito_forbidden', 'Acesso restrito a vendors.', array( 'status' => 403 ) );
+	}
+
+	return $user;
+}
+
+/**
+ * Sanitiza o motivo enviado pelo vendor (opcional). Sempre prefixado.
+ */
+function papelito_vendor_stock_sanitize_reason_vendor( $raw ) {
+	$raw = trim( (string) $raw );
+	if ( '' === $raw ) {
+		return 'vendor_update';
+	}
+
+	$clean = sanitize_text_field( $raw );
+	return substr( 'vendor_update:' . $clean, 0, 120 );
+}
+
+/**
+ * Sanitiza o motivo enviado pelo admin. Obrigatório (10-100 chars úteis).
+ *
+ * @return string|WP_Error
+ */
+function papelito_vendor_stock_sanitize_reason_admin( $raw ) {
+	$clean = sanitize_text_field( (string) $raw );
+	$len   = strlen( $clean );
+
+	if ( $len < 10 ) {
+		return new WP_Error( 'papelito_reason_required', 'Motivo obrigatório (mínimo 10 caracteres).', array( 'status' => 400 ) );
+	}
+
+	return substr( 'admin_adjustment:' . $clean, 0, 120 );
+}
+
+/* ------------------------------------------------------------------
+ *  Endpoints REST
+ * ------------------------------------------------------------------ */
+
+add_action(
+	'rest_api_init',
+	static function (): void {
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/me/stock',
+			array(
+				'methods'             => 'GET',
+				'permission_callback' => static function () {
+					$check = papelito_vendor_stock_require_seller();
+					return is_wp_error( $check ) ? $check : true;
+				},
+				'args'                => array(
+					'page'     => array( 'type' => 'integer', 'default' => 1 ),
+					'per_page' => array( 'type' => 'integer', 'default' => 20 ),
+					'search'   => array( 'type' => 'string', 'default' => '' ),
+					'filter'   => array( 'type' => 'string', 'default' => 'all' ),
+				),
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$user = wp_get_current_user();
+
+					$result = papelito_vendor_stock_query(
+						(int) $user->ID,
+						array(
+							'page'     => (int) $request->get_param( 'page' ),
+							'per_page' => (int) $request->get_param( 'per_page' ),
+							'search'   => (string) $request->get_param( 'search' ),
+							'filter'   => (string) $request->get_param( 'filter' ),
+						)
+					);
+
+					return new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/me/stock',
+			array(
+				'methods'             => 'PUT',
+				'permission_callback' => static function () {
+					$check = papelito_vendor_stock_require_seller();
+					return is_wp_error( $check ) ? $check : true;
+				},
+				'args'                => array(
+					'product_id' => array( 'type' => 'integer', 'required' => true ),
+					'qty'        => array( 'type' => 'integer', 'required' => true ),
+					'reason'     => array( 'type' => 'string', 'required' => false ),
+				),
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$user   = wp_get_current_user();
+					$reason = papelito_vendor_stock_sanitize_reason_vendor( $request->get_param( 'reason' ) );
+
+					$result = papelito_set_vendor_stock(
+						(int) $user->ID,
+						(int) $request->get_param( 'product_id' ),
+						(int) $request->get_param( 'qty' ),
+						$reason
+					);
+
+					if ( is_wp_error( $result ) ) {
+						return $result;
+					}
+
+					return new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/admin/vendors/(?P<id>\d+)/stock',
+			array(
+				'methods'             => 'GET',
+				'permission_callback' => static function () {
+					return current_user_can( 'manage_options' );
+				},
+				'args'                => array(
+					'page'     => array( 'type' => 'integer', 'default' => 1 ),
+					'per_page' => array( 'type' => 'integer', 'default' => 20 ),
+					'search'   => array( 'type' => 'string', 'default' => '' ),
+					'filter'   => array( 'type' => 'string', 'default' => 'all' ),
+				),
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$vendor_id = (int) $request->get_param( 'id' );
+					$user      = get_user_by( 'id', $vendor_id );
+
+					if ( ! $user || ! in_array( 'seller', (array) $user->roles, true ) ) {
+						return new WP_Error( 'papelito_vendor_not_found', 'Vendor não encontrado.', array( 'status' => 404 ) );
+					}
+
+					$result = papelito_vendor_stock_query(
+						$vendor_id,
+						array(
+							'page'     => (int) $request->get_param( 'page' ),
+							'per_page' => (int) $request->get_param( 'per_page' ),
+							'search'   => (string) $request->get_param( 'search' ),
+							'filter'   => (string) $request->get_param( 'filter' ),
+						)
+					);
+
+					return new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/admin/vendors/(?P<id>\d+)/stock',
+			array(
+				'methods'             => 'PUT',
+				'permission_callback' => static function () {
+					return current_user_can( 'manage_options' );
+				},
+				'args'                => array(
+					'product_id' => array( 'type' => 'integer', 'required' => true ),
+					'qty'        => array( 'type' => 'integer', 'required' => true ),
+					'reason'     => array( 'type' => 'string', 'required' => true ),
+				),
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$vendor_id = (int) $request->get_param( 'id' );
+					$user      = get_user_by( 'id', $vendor_id );
+
+					if ( ! $user || ! in_array( 'seller', (array) $user->roles, true ) ) {
+						return new WP_Error( 'papelito_vendor_not_found', 'Vendor não encontrado.', array( 'status' => 404 ) );
+					}
+
+					$reason = papelito_vendor_stock_sanitize_reason_admin( $request->get_param( 'reason' ) );
+					if ( is_wp_error( $reason ) ) {
+						return $reason;
+					}
+
+					$result = papelito_set_vendor_stock(
+						$vendor_id,
+						(int) $request->get_param( 'product_id' ),
+						(int) $request->get_param( 'qty' ),
+						$reason
+					);
+
+					if ( is_wp_error( $result ) ) {
+						return $result;
+					}
+
+					return new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+	}
+);

@@ -73,6 +73,8 @@ function papelito_apply_vendor_geo( int $user_id, string $cep_raw ): bool {
 
 	$coords = papelito_geocode_cep( $cep_raw );
 	if ( null === $coords ) {
+		delete_user_meta( $user_id, 'cep_lat' );
+		delete_user_meta( $user_id, 'cep_lng' );
 		return false;
 	}
 
@@ -264,6 +266,8 @@ function papelito_admin_recompute_vendor_geo( WP_REST_Request $request ) {
 
 	$coords = papelito_geocode_cep( $cep_raw );
 	if ( null === $coords ) {
+		delete_user_meta( $user_id, 'cep_lat' );
+		delete_user_meta( $user_id, 'cep_lng' );
 		return new WP_REST_Response(
 			array( 'ok' => false, 'message' => 'Nao foi possivel geocodificar o CEP. Tente novamente.' ),
 			422
