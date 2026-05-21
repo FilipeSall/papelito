@@ -171,6 +171,69 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty ) {
 	return $items;
 }
 
+/**
+ * Normaliza uma lista CSV de IDs de produtos.
+ *
+ * @param mixed $value Valor recebido da request.
+ * @return array<int,int>
+ */
+function papelito_parse_product_ids_param( $value ): array {
+	if ( is_array( $value ) ) {
+		$raw_parts = $value;
+	} else {
+		$raw_parts = explode( ',', (string) $value );
+	}
+
+	$product_ids = array();
+
+	foreach ( $raw_parts as $part ) {
+		$product_id = absint( $part );
+
+		if ( $product_id > 0 ) {
+			$product_ids[] = $product_id;
+		}
+	}
+
+	return array_values( array_unique( $product_ids ) );
+}
+
+/**
+ * Monta a resposta de cobertura em lote para um CEP.
+ *
+ * @param string         $cep         CEP em qualquer formato valido.
+ * @param array<int,int> $product_ids Produtos consultados.
+ * @param int            $qty         Quantidade minima em estoque.
+ * @return array<string,array<string,mixed>>|WP_Error
+ */
+function papelito_coverage_products( string $cep, array $product_ids, int $qty ) {
+	$result = array();
+
+	foreach ( $product_ids as $product_id ) {
+		$vendors = papelito_coverage_vendors( $cep, $product_id, $qty );
+
+		if ( is_wp_error( $vendors ) ) {
+			if ( 'papelito_product_not_found' === $vendors->get_error_code() ) {
+				$result[ (string) $product_id ] = array(
+					'has_coverage' => false,
+					'best_vendor'  => null,
+					'alternatives' => array(),
+				);
+				continue;
+			}
+
+			return $vendors;
+		}
+
+		$result[ (string) $product_id ] = array(
+			'has_coverage' => ! empty( $vendors ),
+			'best_vendor'  => $vendors[0] ?? null,
+			'alternatives' => array_slice( $vendors, 1 ),
+		);
+	}
+
+	return $result;
+}
+
 add_action(
 	'rest_api_init',
 	static function (): void {
@@ -272,6 +335,67 @@ add_action(
 					$result = papelito_coverage_vendors(
 						(string) $request->get_param( 'cep' ),
 						(int) $request->get_param( 'product_id' ),
+						max( 1, (int) $request->get_param( 'qty' ) )
+					);
+
+					if ( is_wp_error( $result ) ) {
+						return $result;
+					}
+
+					return new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/coverage/products',
+			array(
+				'methods'             => 'GET',
+				'permission_callback' => '__return_true',
+				'args'                => array(
+					'cep'         => array(
+						'required'          => true,
+						'sanitize_callback' => 'sanitize_text_field',
+						'validate_callback' => static function ( $value ): bool {
+							return is_string( $value ) && 1 === preg_match( '/^\d{5}-?\d{3}$/', $value );
+						},
+					),
+					'product_ids' => array(
+						'required'          => true,
+						'sanitize_callback' => 'sanitize_text_field',
+						'validate_callback' => static function ( $value ): bool {
+							if ( ! is_string( $value ) ) {
+								return false;
+							}
+
+							$product_ids = papelito_parse_product_ids_param( $value );
+
+							return count( $product_ids ) > 0 && count( $product_ids ) <= 120;
+						},
+					),
+					'qty'         => array(
+						'default'           => 1,
+						'sanitize_callback' => 'absint',
+						'validate_callback' => static function ( $value ): bool {
+							return null === $value || ( is_numeric( $value ) && (int) $value > 0 );
+						},
+					),
+				),
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$product_ids = papelito_parse_product_ids_param( $request->get_param( 'product_ids' ) );
+
+					if ( empty( $product_ids ) ) {
+						return new WP_Error(
+							'papelito_invalid_product_ids',
+							'Informe ao menos um produto valido.',
+							array( 'status' => 400 )
+						);
+					}
+
+					$result = papelito_coverage_products(
+						(string) $request->get_param( 'cep' ),
+						$product_ids,
 						max( 1, (int) $request->get_param( 'qty' ) )
 					);
 
