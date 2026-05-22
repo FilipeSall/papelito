@@ -23,6 +23,7 @@ require_once __DIR__ . '/includes/shipping.php';
 require_once __DIR__ . '/includes/vendor_geo.php';
 require_once __DIR__ . '/includes/vendor_stock.php';
 require_once __DIR__ . '/includes/notifications.php';
+require_once __DIR__ . '/includes/active_vendor.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
 	define( 'PAPELITO_DB_VERSION', '1.2' );

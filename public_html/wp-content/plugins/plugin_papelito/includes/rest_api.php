@@ -52,12 +52,13 @@ function papelito_sellers_by_cep( string $cep ): array {
 /**
  * Retorna vendors aprovados que cobrem o CEP e possuem estoque suficiente.
  *
- * @param string $cep        CEP em qualquer formato valido.
- * @param int    $product_id Produto ou variacao consultada exatamente.
- * @param int    $qty        Quantidade minima em estoque.
- * @return array<int, array<string, int|float|string>>|WP_Error
+ * @param string $cep             CEP em qualquer formato valido.
+ * @param int    $product_id      Produto ou variacao consultada exatamente.
+ * @param int    $qty             Quantidade minima em estoque.
+ * @param int    $active_vendor   Vendor ativo do usuario (0 = nenhum). Quando > 0, marca `is_active` no payload.
+ * @return array<int, array<string, int|float|string|bool|null>>|WP_Error
  */
-function papelito_coverage_vendors( string $cep, int $product_id, int $qty ) {
+function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int $active_vendor = 0 ) {
 	if ( ! function_exists( 'wc_get_product' ) ) {
 		return new WP_Error(
 			'papelito_woocommerce_unavailable',
@@ -152,6 +153,8 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty ) {
 			'distance_km'    => round( $distance_km, 2 ),
 			'qty'            => $stock_qty,
 			'lead_time_days' => $lead_time_days > 0 ? $lead_time_days : 2,
+			'is_active'      => $active_vendor > 0 && $active_vendor === $vendor_id,
+			'is_nearest'     => false,
 		);
 	}
 
@@ -167,6 +170,10 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty ) {
 			return $left['vendor_id'] <=> $right['vendor_id'];
 		}
 	);
+
+	if ( ! empty( $items ) ) {
+		$items[0]['is_nearest'] = true;
+	}
 
 	return $items;
 }
@@ -198,18 +205,83 @@ function papelito_parse_product_ids_param( $value ): array {
 }
 
 /**
+ * Converte um mapa de quantidades por produto.
+ *
+ * Aceita:
+ * - array associativo `{ product_id: qty }`
+ * - string `product_id:qty,product_id:qty`
+ *
+ * @param mixed $value Payload bruto.
+ * @return array<int,int>
+ */
+function papelito_parse_product_qty_map( $value ): array {
+	$qty_map = array();
+
+	if ( is_array( $value ) ) {
+		foreach ( $value as $product_id => $qty ) {
+			if ( ! is_numeric( $product_id ) || ! is_numeric( $qty ) ) {
+				continue;
+			}
+
+			$normalized_product_id = (int) $product_id;
+			$normalized_qty        = max( 1, (int) $qty );
+
+			if ( $normalized_product_id > 0 ) {
+				$qty_map[ $normalized_product_id ] = $normalized_qty;
+			}
+		}
+
+		return $qty_map;
+	}
+
+	if ( ! is_string( $value ) || '' === trim( $value ) ) {
+		return array();
+	}
+
+	$pairs = array_map( 'trim', explode( ',', $value ) );
+
+	foreach ( $pairs as $pair ) {
+		if ( '' === $pair || false === strpos( $pair, ':' ) ) {
+			continue;
+		}
+
+		list( $product_id, $qty ) = array_map( 'trim', explode( ':', $pair, 2 ) );
+
+		if ( ! is_numeric( $product_id ) || ! is_numeric( $qty ) ) {
+			continue;
+		}
+
+		$normalized_product_id = (int) $product_id;
+		$normalized_qty        = max( 1, (int) $qty );
+
+		if ( $normalized_product_id > 0 ) {
+			$qty_map[ $normalized_product_id ] = $normalized_qty;
+		}
+	}
+
+	return $qty_map;
+}
+
+/**
  * Monta a resposta de cobertura em lote para um CEP.
  *
- * @param string         $cep         CEP em qualquer formato valido.
- * @param array<int,int> $product_ids Produtos consultados.
- * @param int            $qty         Quantidade minima em estoque.
+ * Quando `$active_vendor` > 0, o filtro restringe a cobertura aos produtos
+ * que aquele vendor especifico atende com estoque suficiente. `best_vendor`
+ * passa a ser o vendor ativo (se presente) e `alternatives` contem os demais.
+ *
+ * @param string         $cep            CEP em qualquer formato valido.
+ * @param array<int,int> $product_ids    Produtos consultados.
+ * @param int            $qty            Quantidade minima default em estoque.
+ * @param int            $active_vendor  Vendor ativo do usuario (0 = nenhum).
+ * @param array<int,int> $qty_by_product Quantidades por produto.
  * @return array<string,array<string,mixed>>|WP_Error
  */
-function papelito_coverage_products( string $cep, array $product_ids, int $qty ) {
+function papelito_coverage_products( string $cep, array $product_ids, int $qty, int $active_vendor = 0, array $qty_by_product = array() ) {
 	$result = array();
 
 	foreach ( $product_ids as $product_id ) {
-		$vendors = papelito_coverage_vendors( $cep, $product_id, $qty );
+		$product_qty = isset( $qty_by_product[ $product_id ] ) ? max( 1, (int) $qty_by_product[ $product_id ] ) : $qty;
+		$vendors     = papelito_coverage_vendors( $cep, $product_id, $product_qty, $active_vendor );
 
 		if ( is_wp_error( $vendors ) ) {
 			if ( 'papelito_product_not_found' === $vendors->get_error_code() ) {
@@ -224,10 +296,34 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty )
 			return $vendors;
 		}
 
+		$best_vendor = $vendors[0] ?? null;
+		$alternates  = array_slice( $vendors, 1 );
+
+		if ( $active_vendor > 0 ) {
+			$active_match = null;
+			$others       = array();
+
+			foreach ( $vendors as $vendor ) {
+				if ( ( $vendor['vendor_id'] ?? 0 ) === $active_vendor ) {
+					$active_match = $vendor;
+				} else {
+					$others[] = $vendor;
+				}
+			}
+
+			if ( null !== $active_match ) {
+				$best_vendor = $active_match;
+				$alternates  = $others;
+			} else {
+				$best_vendor = null;
+				$alternates  = array();
+			}
+		}
+
 		$result[ (string) $product_id ] = array(
-			'has_coverage' => ! empty( $vendors ),
-			'best_vendor'  => $vendors[0] ?? null,
-			'alternatives' => array_slice( $vendors, 1 ),
+			'has_coverage' => null !== $best_vendor,
+			'best_vendor'  => $best_vendor,
+			'alternatives' => $alternates,
 		);
 	}
 
@@ -330,12 +426,20 @@ add_action(
 							return null === $value || ( is_numeric( $value ) && (int) $value > 0 );
 						},
 					),
+					'vendor_id'  => array(
+						'default'           => 0,
+						'sanitize_callback' => 'absint',
+						'validate_callback' => static function ( $value ): bool {
+							return null === $value || ( is_numeric( $value ) && (int) $value >= 0 );
+						},
+					),
 				),
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$result = papelito_coverage_vendors(
 						(string) $request->get_param( 'cep' ),
 						(int) $request->get_param( 'product_id' ),
-						max( 1, (int) $request->get_param( 'qty' ) )
+						max( 1, (int) $request->get_param( 'qty' ) ),
+						max( 0, (int) $request->get_param( 'vendor_id' ) )
 					);
 
 					if ( is_wp_error( $result ) ) {
@@ -381,6 +485,23 @@ add_action(
 							return null === $value || ( is_numeric( $value ) && (int) $value > 0 );
 						},
 					),
+					'vendor_id'   => array(
+						'default'           => 0,
+						'sanitize_callback' => 'absint',
+						'validate_callback' => static function ( $value ): bool {
+							return null === $value || ( is_numeric( $value ) && (int) $value >= 0 );
+						},
+					),
+					'quantities'  => array(
+						'default'           => '',
+						'sanitize_callback' => static function ( $value ) {
+							if ( is_array( $value ) ) {
+								return $value;
+							}
+
+							return sanitize_text_field( (string) $value );
+						},
+					),
 				),
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$product_ids = papelito_parse_product_ids_param( $request->get_param( 'product_ids' ) );
@@ -396,7 +517,9 @@ add_action(
 					$result = papelito_coverage_products(
 						(string) $request->get_param( 'cep' ),
 						$product_ids,
-						max( 1, (int) $request->get_param( 'qty' ) )
+						max( 1, (int) $request->get_param( 'qty' ) ),
+						max( 0, (int) $request->get_param( 'vendor_id' ) ),
+						papelito_parse_product_qty_map( $request->get_param( 'quantities' ) )
 					);
 
 					if ( is_wp_error( $result ) ) {
