@@ -643,11 +643,11 @@ add_action(
 						);
 					}
 
-					$deleted = wp_trash_post( $id );
+					$deleted = wp_delete_post( $id, true );
 					if ( ! $deleted ) {
 						return new WP_Error(
 							'papelito_coupon_delete_failed',
-							'Falha ao remover cupom.',
+							sprintf( 'Falha ao remover cupom %d (status atual: %s).', $id, $post->post_status ),
 							array( 'status' => 500 )
 						);
 					}
