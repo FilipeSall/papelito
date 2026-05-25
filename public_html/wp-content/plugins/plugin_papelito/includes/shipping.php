@@ -152,6 +152,36 @@ function papelito_correios_response_message( $body ): string {
 }
 
 /**
+ * Extrai um contexto seguro de erro dos Correios.
+ *
+ * @param WP_Error $error Erro retornado.
+ * @return array<string, mixed>
+ */
+function papelito_correios_extract_error_data( WP_Error $error ): array {
+	$data = $error->get_error_data();
+
+	if ( ! is_array( $data ) ) {
+		return array();
+	}
+
+	$result = array();
+
+	if ( isset( $data['status'] ) ) {
+		$result['status'] = absint( $data['status'] );
+	}
+
+	if ( isset( $data['correios_status'] ) ) {
+		$result['correios_status'] = absint( $data['correios_status'] );
+	}
+
+	if ( ! empty( $data['correios_message'] ) ) {
+		$result['correios_message'] = sanitize_text_field( (string) $data['correios_message'] );
+	}
+
+	return $result;
+}
+
+/**
  * Calcula espera curta para rate limit dos Correios.
  *
  * @param array<string, mixed> $response Resposta HTTP.
@@ -467,6 +497,26 @@ function papelito_shipping_build_package( array $items ) {
 }
 
 /**
+ * Valida se o usuario informado e um vendor elegivel para a cotacao.
+ *
+ * @param int $vendor_id ID do vendor.
+ * @return WP_User|WP_Error
+ */
+function papelito_shipping_get_vendor( int $vendor_id ) {
+	$vendor = get_userdata( $vendor_id );
+
+	if ( ! $vendor instanceof WP_User ) {
+		return new WP_Error( 'papelito_shipping_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+	}
+
+	if ( ! in_array( 'seller', (array) $vendor->roles, true ) ) {
+		return new WP_Error( 'papelito_shipping_vendor_invalid', 'Usuario informado nao e um vendor elegivel para cotacao.', array( 'status' => 422 ) );
+	}
+
+	return $vendor;
+}
+
+/**
  * Cota um unico servico.
  *
  * @param array<string, string> $credentials Credenciais.
@@ -475,9 +525,9 @@ function papelito_shipping_build_package( array $items ) {
  * @param string                $origin_cep CEP origem.
  * @param string                $destination_cep CEP destino.
  * @param array<string, float>  $package Pacote.
- * @return array<string, mixed>|null
+ * @return array<string, mixed>|WP_Error
  */
-function papelito_correios_quote_service( array $credentials, array $token, array $service, string $origin_cep, string $destination_cep, array $package ): ?array {
+function papelito_correios_quote_service( array $credentials, array $token, array $service, string $origin_cep, string $destination_cep, array $package ) {
 	$base_url = papelito_correios_base_url( $credentials['environment'] );
 	$headers  = array(
 		'Authorization' => 'Bearer ' . $token['token'],
@@ -523,15 +573,23 @@ function papelito_correios_quote_service( array $credentials, array $token, arra
 		array( 'headers' => $headers )
 	);
 
-	if ( is_wp_error( $price ) || is_wp_error( $time ) ) {
-		return null;
+	if ( is_wp_error( $price ) ) {
+		return $price;
+	}
+
+	if ( is_wp_error( $time ) ) {
+		return $time;
 	}
 
 	$raw_price = papelito_shipping_first_value( $price, array( 'pcFinal', 'precoFinal', 'valor', 'Valor' ) );
 	$raw_time  = papelito_shipping_first_value( $time, array( 'prazoEntrega', 'PrazoEntrega', 'delivery_time' ) );
 
 	if ( null === $raw_price ) {
-		return null;
+		return new WP_Error(
+			'papelito_shipping_quote_missing_price',
+			'Correios nao retornou preco valido para o servico cotado.',
+			array( 'status' => 502 )
+		);
 	}
 
 	return array(
@@ -552,10 +610,10 @@ function papelito_correios_quote_service( array $credentials, array $token, arra
  * @return array<string, mixed>|WP_Error
  */
 function papelito_correios_quote( int $vendor_id, string $destination_cep, array $items ) {
-	$vendor = get_userdata( $vendor_id );
+	$vendor = papelito_shipping_get_vendor( $vendor_id );
 
-	if ( ! $vendor instanceof WP_User ) {
-		return new WP_Error( 'papelito_shipping_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+	if ( is_wp_error( $vendor ) ) {
+		return $vendor;
 	}
 
 	$origin_cep = papelito_shipping_normalize_cep( get_user_meta( $vendor_id, 'cep', true ) );
@@ -597,20 +655,34 @@ function papelito_correios_quote( int $vendor_id, string $destination_cep, array
 		return $services;
 	}
 
-	$options = array_values(
-		array_filter(
-			array_map(
-				static fn( array $service ) => papelito_correios_quote_service( $credentials, $token, $service, $origin_cep, $destination_cep, $package ),
-				$services
-			)
-		)
-	);
+	$options     = array();
+	$first_error = null;
+
+	foreach ( $services as $service ) {
+		$quoted_service = papelito_correios_quote_service( $credentials, $token, $service, $origin_cep, $destination_cep, $package );
+
+		if ( is_wp_error( $quoted_service ) ) {
+			if ( null === $first_error ) {
+				$first_error = $quoted_service;
+			}
+
+			continue;
+		}
+
+		$options[] = $quoted_service;
+	}
 
 	if ( empty( $options ) ) {
+		$error_data = array( 'status' => 502 );
+
+		if ( $first_error instanceof WP_Error ) {
+			$error_data = array_merge( $error_data, papelito_correios_extract_error_data( $first_error ) );
+		}
+
 		return new WP_Error(
 			'papelito_shipping_quote_failed',
 			'Nao foi possivel cotar PAC/SEDEX nos Correios.',
-			array( 'status' => 502 )
+			$error_data
 		);
 	}
 

@@ -111,6 +111,143 @@ function papelito_get_vendor_stock( $vendor_id, $product_id ) {
 }
 
 /**
+ * Ajusta o estoque atual do vendor por delta relativo.
+ *
+ * Consumido pelo roteamento de pedidos para decrementar o estoque de forma
+ * atômica, evitando race condition de "ler atual e depois gravar".
+ *
+ * @param int    $vendor_id  ID do vendor (papel `seller`).
+ * @param int    $product_id ID do produto (post WC).
+ * @param int    $delta      Delta relativo (pode ser negativo).
+ * @param string $reason     Motivo livre (até 120 chars).
+ * @return array{ok:bool,qty:int,prev_qty:int,zeroed_event_fired:bool,delta:int}|WP_Error
+ */
+function papelito_adjust_vendor_stock( $vendor_id, $product_id, $delta, $reason = 'vendor_adjustment' ) {
+	global $wpdb;
+
+	$vendor_id  = (int) $vendor_id;
+	$product_id = (int) $product_id;
+	$delta      = (int) $delta;
+	$reason     = substr( (string) $reason, 0, 120 );
+
+	if ( $vendor_id <= 0 ) {
+		return new WP_Error( 'papelito_invalid_vendor', 'Vendor inválido.', array( 'status' => 400 ) );
+	}
+
+	if ( $product_id <= 0 ) {
+		return new WP_Error( 'papelito_invalid_product', 'Produto inválido.', array( 'status' => 400 ) );
+	}
+
+	if ( ! function_exists( 'wc_get_product' ) || ! wc_get_product( $product_id ) ) {
+		return new WP_Error( 'papelito_product_not_found', 'Produto não encontrado.', array( 'status' => 404 ) );
+	}
+
+	$tables = papelito_vendor_stock_table_names();
+
+	$wpdb->query( 'START TRANSACTION' );
+
+	$row = $wpdb->get_row(
+		$wpdb->prepare(
+			"SELECT qty, notified_zero_at FROM {$tables['stock']} WHERE vendor_id = %d AND product_id = %d FOR UPDATE",
+			$vendor_id,
+			$product_id
+		),
+		ARRAY_A
+	);
+
+	$prev_qty             = $row ? (int) $row['qty'] : 0;
+	$qty                  = $prev_qty + $delta;
+	$raw_notified         = $row['notified_zero_at'] ?? null;
+	$is_zero_date         = ( '0000-00-00 00:00:00' === $raw_notified );
+	$notified_zero_at     = ( null === $raw_notified || $is_zero_date ) ? null : $raw_notified;
+	$zeroed_event_fired   = false;
+	$next_notified_zero_at = $notified_zero_at;
+
+	if ( $qty < 0 ) {
+		$wpdb->query( 'ROLLBACK' );
+
+		return new WP_Error(
+			'papelito_insufficient_vendor_stock',
+			'Estoque insuficiente para concluir o ajuste.',
+			array(
+				'status'   => 409,
+				'qty'      => $prev_qty,
+				'required' => abs( $delta ),
+			)
+		);
+	}
+
+	if ( $prev_qty > 0 && 0 === $qty && null === $notified_zero_at ) {
+		$next_notified_zero_at = current_time( 'mysql', true );
+		$zeroed_event_fired    = true;
+	} elseif ( 0 === $prev_qty && $qty > 0 ) {
+		$next_notified_zero_at = null;
+	}
+
+	if ( null === $next_notified_zero_at ) {
+		$upsert = $wpdb->query(
+			$wpdb->prepare(
+				"INSERT INTO {$tables['stock']} (vendor_id, product_id, qty, notified_zero_at)
+				 VALUES (%d, %d, %d, NULL)
+				 ON DUPLICATE KEY UPDATE qty = VALUES(qty), notified_zero_at = NULL",
+				$vendor_id,
+				$product_id,
+				$qty
+			)
+		);
+	} else {
+		$upsert = $wpdb->query(
+			$wpdb->prepare(
+				"INSERT INTO {$tables['stock']} (vendor_id, product_id, qty, notified_zero_at)
+				 VALUES (%d, %d, %d, %s)
+				 ON DUPLICATE KEY UPDATE qty = VALUES(qty), notified_zero_at = VALUES(notified_zero_at)",
+				$vendor_id,
+				$product_id,
+				$qty,
+				$next_notified_zero_at
+			)
+		);
+	}
+
+	if ( false === $upsert ) {
+		$wpdb->query( 'ROLLBACK' );
+		return new WP_Error( 'papelito_stock_write_failed', 'Falha ao gravar estoque.', array( 'status' => 500 ) );
+	}
+
+	if ( 0 !== $delta ) {
+		$log_written = $wpdb->insert(
+			$tables['log'],
+			array(
+				'vendor_id'  => $vendor_id,
+				'product_id' => $product_id,
+				'delta'      => $delta,
+				'reason'     => $reason,
+			),
+			array( '%d', '%d', '%d', '%s' )
+		);
+
+		if ( false === $log_written ) {
+			$wpdb->query( 'ROLLBACK' );
+			return new WP_Error( 'papelito_stock_log_failed', 'Falha ao gravar log de estoque.', array( 'status' => 500 ) );
+		}
+	}
+
+	$wpdb->query( 'COMMIT' );
+
+	if ( $zeroed_event_fired ) {
+		do_action( 'papelito_stock_zeroed', $vendor_id, $product_id );
+	}
+
+	return array(
+		'ok'                 => true,
+		'qty'                => $qty,
+		'prev_qty'           => $prev_qty,
+		'zeroed_event_fired' => $zeroed_event_fired,
+		'delta'              => $delta,
+	);
+}
+
+/**
  * Define a quantidade em estoque do vendor para o produto.
  *
  * Faz transação com SELECT ... FOR UPDATE para impedir race condition

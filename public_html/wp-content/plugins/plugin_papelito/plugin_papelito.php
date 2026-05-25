@@ -25,6 +25,7 @@ require_once __DIR__ . '/includes/vendor_stock.php';
 require_once __DIR__ . '/includes/notifications.php';
 require_once __DIR__ . '/includes/active_vendor.php';
 require_once __DIR__ . '/includes/coupons.php';
+require_once __DIR__ . '/includes/order_routing.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
 	define( 'PAPELITO_DB_VERSION', '1.2' );
