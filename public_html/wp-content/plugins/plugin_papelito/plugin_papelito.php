@@ -24,6 +24,7 @@ require_once __DIR__ . '/includes/vendor_geo.php';
 require_once __DIR__ . '/includes/vendor_stock.php';
 require_once __DIR__ . '/includes/notifications.php';
 require_once __DIR__ . '/includes/active_vendor.php';
+require_once __DIR__ . '/includes/coupons.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
 	define( 'PAPELITO_DB_VERSION', '1.2' );
@@ -71,6 +72,48 @@ function papelito_posted_value( $key, $default = '' ) {
 
     return sanitize_text_field( wp_unslash( $_POST[ $key ] ) );
 }
+
+/**
+ * Return whether the current authenticated user has the seller role.
+ */
+function papelito_current_user_is_seller(): bool {
+	$user = wp_get_current_user();
+
+	return $user instanceof WP_User && in_array( 'seller', (array) $user->roles, true );
+}
+
+/**
+ * Return the shared purchase-blocked message for sellers.
+ */
+function papelito_seller_purchase_block_message(): string {
+	return 'Vendors nao compram pela plataforma.';
+}
+
+add_filter(
+	'woocommerce_add_to_cart_validation',
+	static function ( $passed ) {
+		if ( ! papelito_current_user_is_seller() ) {
+			return $passed;
+		}
+
+		wc_add_notice( papelito_seller_purchase_block_message(), 'error' );
+
+		return false;
+	},
+	10,
+	1
+);
+
+add_action(
+	'woocommerce_checkout_process',
+	static function () {
+		if ( ! papelito_current_user_is_seller() ) {
+			return;
+		}
+
+		wc_add_notice( papelito_seller_purchase_block_message(), 'error' );
+	}
+);
 
 /**
  * Log plugin data outside the plugin directory.
