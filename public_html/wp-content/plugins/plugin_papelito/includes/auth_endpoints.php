@@ -658,37 +658,12 @@ add_action(
 			array(
 				'methods'             => 'POST',
 				'permission_callback' => '__return_true',
-				'callback'            => static function ( WP_REST_Request $request ) {
-					if ( ! papelito_auth_rate_limit( 'register_seller', 10, 60 ) ) {
-						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
-					}
-
-					$data = $request->get_json_params();
-
-					if ( ! is_array( $data ) ) {
-						$data = $request->get_params();
-					}
-
-					$validation = papelito_auth_validate_seller_register_payload( (array) $data );
-
-					if ( $validation instanceof WP_Error ) {
-						$validation->add_data( array( 'status' => 422 ) );
-						return $validation;
-					}
-
-					$user = papelito_auth_create_registered_seller( (array) $data );
-
-					if ( is_wp_error( $user ) ) {
-						return $user;
-					}
-
-					$response = papelito_auth_build_token_response( $user );
-
-					if ( is_wp_error( $response ) ) {
-						return $response;
-					}
-
-					return new WP_REST_Response( $response, 201 );
+				'callback'            => static function () {
+					return new WP_Error(
+						'papelito_register_seller_disabled',
+						'Use o fluxo autenticado em /revendedor para enviar a candidatura de vendor.',
+						array( 'status' => 410 )
+					);
 				},
 			)
 		);

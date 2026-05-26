@@ -9,14 +9,31 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+const PAPELITO_VENDOR_APPLICATION_STATUS_META             = 'application_status';
+const PAPELITO_VENDOR_APPLICATION_REJECTION_REASON_META   = 'application_rejection_reason';
+const PAPELITO_VENDOR_APPLICATION_REVIEWED_BY_META        = 'application_reviewed_by';
+const PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META        = 'application_reviewed_at';
+const PAPELITO_VENDOR_APPLICATION_SUBMITTED_AT_META       = 'application_submitted_at';
+const PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META  = 'seller_application_discovery_channel';
+const PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META  = 'seller_application_has_sold_papelito';
+
+/**
+ * Retorna data/hora em UTC no mesmo formato usado pelo fluxo de mensagens.
+ *
+ * @return string
+ */
+function papelito_current_utc_mysql(): string {
+	return current_time( 'mysql', true );
+}
+
 /**
  * Retorna o status atual da triagem do revendedor.
  *
- * @param int $user_id
+ * @param int $user_id Usuario.
  * @return string
  */
 function papelito_get_seller_application_status( int $user_id ): string {
-	$status = (string) get_user_meta( $user_id, 'seller_application_status', true );
+	$status = (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META, true );
 
 	if ( '' !== $status ) {
 		return $status;
@@ -32,9 +49,9 @@ function papelito_get_seller_application_status( int $user_id ): string {
 }
 
 /**
- * Monta o resumo da triagem de revendedor para o usuário.
+ * Monta o resumo da triagem de revendedor para o usuario.
  *
- * @param int $user_id
+ * @param int $user_id Usuario.
  * @return array<string, string>
  */
 function papelito_get_seller_application_data( int $user_id ): array {
@@ -42,28 +59,28 @@ function papelito_get_seller_application_data( int $user_id ): array {
 
 	if ( ! $user instanceof WP_User ) {
 		return array(
-			'status'            => 'none',
-			'submittedAt'       => '',
-			'storeName'         => '',
-			'firstName'         => '',
-			'lastName'          => '',
-			'email'             => '',
-			'phoneNumber'       => '',
-			'cnpj'              => '',
-			'instagram'         => '',
-			'state'             => '',
-			'city'              => '',
-			'cep'               => '',
-			'minCep'            => '',
-			'maxCep'            => '',
-			'discoveryChannel'  => '',
-			'hasSoldPapelito'   => '',
+			'status'           => 'none',
+			'submittedAt'      => '',
+			'storeName'        => '',
+			'firstName'        => '',
+			'lastName'         => '',
+			'email'            => '',
+			'phoneNumber'      => '',
+			'cnpj'             => '',
+			'instagram'        => '',
+			'state'            => '',
+			'city'             => '',
+			'cep'              => '',
+			'minCep'           => '',
+			'maxCep'           => '',
+			'discoveryChannel' => '',
+			'hasSoldPapelito'  => '',
 		);
 	}
 
 	return array(
 		'status'           => papelito_get_seller_application_status( $user_id ),
-		'submittedAt'      => (string) get_user_meta( $user_id, 'seller_application_submitted_at', true ),
+		'submittedAt'      => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_SUBMITTED_AT_META, true ),
 		'storeName'        => (string) get_user_meta( $user_id, 'store_name', true ),
 		'firstName'        => (string) get_user_meta( $user_id, 'first_name', true ),
 		'lastName'         => (string) get_user_meta( $user_id, 'last_name', true ),
@@ -76,15 +93,15 @@ function papelito_get_seller_application_data( int $user_id ): array {
 		'cep'              => (string) get_user_meta( $user_id, 'cep', true ),
 		'minCep'           => (string) get_user_meta( $user_id, 'min_cep', true ),
 		'maxCep'           => (string) get_user_meta( $user_id, 'max_cep', true ),
-		'discoveryChannel' => (string) get_user_meta( $user_id, 'seller_application_discovery_channel', true ),
-		'hasSoldPapelito'  => (string) get_user_meta( $user_id, 'seller_application_has_sold_papelito', true ),
+		'discoveryChannel' => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META, true ),
+		'hasSoldPapelito'  => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, true ),
 	);
 }
 
 /**
  * Valida o payload da triagem.
  *
- * @param array $input
+ * @param array $input Payload.
  * @return WP_Error|null
  */
 function papelito_validate_seller_application_input( array $input ) {
@@ -163,15 +180,15 @@ function papelito_validate_seller_application_input( array $input ) {
 /**
  * Envia e-mail de triagem para o marketing.
  *
- * @param array $application
+ * @param array $application Dados da candidatura.
  * @return void
  */
 function papelito_notify_seller_application( array $application ): void {
-	$to          = 'marketing@papelitobrasil.com';
-	$subject     = sprintf( 'Nova triagem PDV Perfeito: %s', $application['storeName'] );
-	$reply_to    = isset( $application['email'] ) ? sanitize_email( (string) $application['email'] ) : '';
-	$headers     = array( 'Content-Type: text/plain; charset=UTF-8' );
-	$body_lines  = array(
+	$to         = 'marketing@papelitobrasil.com';
+	$subject    = sprintf( 'Nova triagem PDV Perfeito: %s', $application['storeName'] );
+	$reply_to   = isset( $application['email'] ) ? sanitize_email( (string) $application['email'] ) : '';
+	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
+	$body_lines = array(
 		'Nova triagem enviada pelo fluxo /revendedor.',
 		'',
 		sprintf( 'Status: %s', $application['status'] ),
@@ -187,8 +204,6 @@ function papelito_notify_seller_application( array $application ): void {
 		sprintf( 'Faixa atendida: %s - %s', $application['minCep'] ?? '', $application['maxCep'] ?? '' ),
 		sprintf( 'Origem do contato: %s', $application['discoveryChannel'] ),
 		sprintf( 'Já vende Papelito?: %s', $application['hasSoldPapelito'] ),
-		'',
-		'TODO(admin-triage-panel): espelhar esta triagem em um painel administrativo dedicado para admins.',
 	);
 
 	if ( '' !== $reply_to ) {
@@ -199,10 +214,22 @@ function papelito_notify_seller_application( array $application ): void {
 }
 
 /**
- * Submete a triagem do usuário autenticado.
+ * Limpa dados da ultima revisao da candidatura.
  *
- * @param int   $user_id
- * @param array $input
+ * @param int $user_id Usuario.
+ * @return void
+ */
+function papelito_reset_vendor_application_review( int $user_id ): void {
+	delete_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REJECTION_REASON_META );
+	delete_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_BY_META );
+	delete_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META );
+}
+
+/**
+ * Submete a triagem do usuario autenticado.
+ *
+ * @param int   $user_id Usuario.
+ * @param array $input Payload.
  * @return array<string, mixed>|WP_Error
  */
 function papelito_submit_seller_application( int $user_id, array $input ) {
@@ -273,14 +300,17 @@ function papelito_submit_seller_application( int $user_id, array $input ) {
 		papelito_apply_vendor_geo( $user_id, $cep_base );
 	}
 
-	update_user_meta( $user_id, 'seller_application_discovery_channel', sanitize_text_field( (string) ( $input['discoveryChannel'] ?? '' ) ) );
-	update_user_meta( $user_id, 'seller_application_has_sold_papelito', sanitize_text_field( (string) $input['hasSoldPapelito'] ) );
-	update_user_meta( $user_id, 'seller_application_status', 'pending' );
-	update_user_meta( $user_id, 'seller_application_submitted_at', current_time( 'mysql' ) );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META, sanitize_text_field( (string) ( $input['discoveryChannel'] ?? '' ) ) );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, sanitize_text_field( (string) $input['hasSoldPapelito'] ) );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META, 'pending' );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_SUBMITTED_AT_META, papelito_current_utc_mysql() );
+
+	papelito_reset_vendor_application_review( $user_id );
 
 	$application = papelito_get_seller_application_data( $user_id );
 
 	papelito_notify_seller_application( $application );
+	do_action( 'papelito_vendor_application_submitted', $user_id );
 
 	return array(
 		'success'     => true,
@@ -338,20 +368,20 @@ add_action(
 			'submitSellerApplication',
 			array(
 				'inputFields'         => array(
-					'storeName'       => array( 'type' => array( 'non_null' => 'String' ) ),
-					'firstName'       => array( 'type' => array( 'non_null' => 'String' ) ),
-					'lastName'        => array( 'type' => array( 'non_null' => 'String' ) ),
-					'email'           => array( 'type' => array( 'non_null' => 'String' ) ),
-					'phoneNumber'     => array( 'type' => array( 'non_null' => 'String' ) ),
-					'cnpj'            => array( 'type' => array( 'non_null' => 'String' ) ),
-					'instagram'       => array( 'type' => array( 'non_null' => 'String' ) ),
-					'city'            => array( 'type' => array( 'non_null' => 'String' ) ),
-					'state'           => array( 'type' => array( 'non_null' => 'String' ) ),
-					'cep'             => array( 'type' => array( 'non_null' => 'String' ) ),
-					'minCep'          => array( 'type' => array( 'non_null' => 'String' ) ),
-					'maxCep'          => array( 'type' => array( 'non_null' => 'String' ) ),
+					'storeName'        => array( 'type' => array( 'non_null' => 'String' ) ),
+					'firstName'        => array( 'type' => array( 'non_null' => 'String' ) ),
+					'lastName'         => array( 'type' => array( 'non_null' => 'String' ) ),
+					'email'            => array( 'type' => array( 'non_null' => 'String' ) ),
+					'phoneNumber'      => array( 'type' => array( 'non_null' => 'String' ) ),
+					'cnpj'             => array( 'type' => array( 'non_null' => 'String' ) ),
+					'instagram'        => array( 'type' => array( 'non_null' => 'String' ) ),
+					'city'             => array( 'type' => array( 'non_null' => 'String' ) ),
+					'state'            => array( 'type' => array( 'non_null' => 'String' ) ),
+					'cep'              => array( 'type' => array( 'non_null' => 'String' ) ),
+					'minCep'           => array( 'type' => array( 'non_null' => 'String' ) ),
+					'maxCep'           => array( 'type' => array( 'non_null' => 'String' ) ),
 					'discoveryChannel' => array( 'type' => 'String' ),
-					'hasSoldPapelito' => array( 'type' => array( 'non_null' => 'String' ) ),
+					'hasSoldPapelito'  => array( 'type' => array( 'non_null' => 'String' ) ),
 				),
 				'outputFields'        => array(
 					'success'     => array( 'type' => 'Boolean' ),
@@ -381,7 +411,7 @@ add_action(
 /**
  * Retorna o detalhe completo da triagem para o painel admin.
  *
- * @param int $user_id
+ * @param int $user_id Usuario.
  * @return array<string, mixed>|WP_Error
  */
 function papelito_get_vendor_application_detail( int $user_id ) {
@@ -391,12 +421,16 @@ function papelito_get_vendor_application_detail( int $user_id ) {
 		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
 	}
 
+	if ( 'none' === papelito_get_seller_application_status( $user_id ) ) {
+		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+	}
+
 	$base = papelito_get_seller_application_data( $user_id );
 
 	$min_ranges = (array) get_user_meta( $user_id, 'min_cep', false );
 	$max_ranges = (array) get_user_meta( $user_id, 'max_cep', false );
 
-	$reviewer_id  = (int) get_user_meta( $user_id, 'seller_application_reviewed_by', true );
+	$reviewer_id  = (int) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_BY_META, true );
 	$reviewer     = $reviewer_id > 0 ? get_userdata( $reviewer_id ) : null;
 	$reviewer_out = null;
 
@@ -408,15 +442,15 @@ function papelito_get_vendor_application_detail( int $user_id ) {
 		);
 	}
 
-	$detail              = $base;
-	$detail['id']        = (int) $user->ID;
-	$detail['name']      = trim( (string) $user->display_name );
-	$detail['minCepRanges'] = array_values( array_filter( array_map( 'strval', $min_ranges ), 'strlen' ) );
-	$detail['maxCepRanges'] = array_values( array_filter( array_map( 'strval', $max_ranges ), 'strlen' ) );
-	$detail['rejectionReason'] = (string) get_user_meta( $user_id, 'seller_application_rejection_reason', true );
-	$detail['reviewedAt']      = (string) get_user_meta( $user_id, 'seller_application_reviewed_at', true );
-	$detail['reviewedBy']      = $reviewer_out;
-	$detail['registeredAt']    = (string) $user->user_registered;
+	$detail                     = $base;
+	$detail['id']               = (int) $user->ID;
+	$detail['name']             = trim( (string) $user->display_name );
+	$detail['minCepRanges']     = array_values( array_filter( array_map( 'strval', $min_ranges ), 'strlen' ) );
+	$detail['maxCepRanges']     = array_values( array_filter( array_map( 'strval', $max_ranges ), 'strlen' ) );
+	$detail['rejectionReason']  = (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REJECTION_REASON_META, true );
+	$detail['reviewedAt']       = (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META, true );
+	$detail['reviewedBy']       = $reviewer_out;
+	$detail['registeredAt']     = (string) $user->user_registered;
 
 	return $detail;
 }
@@ -424,9 +458,9 @@ function papelito_get_vendor_application_detail( int $user_id ) {
 /**
  * Envia e-mail ao vendor com a decisao da triagem.
  *
- * @param WP_User $user
- * @param string  $decision 'approved' ou 'rejected'.
- * @param string  $reason
+ * @param WP_User $user Usuario.
+ * @param string  $decision approved|rejected.
+ * @param string  $reason Motivo opcional.
  * @return void
  */
 function papelito_notify_vendor_decision( WP_User $user, string $decision, string $reason = '' ): void {
@@ -480,10 +514,31 @@ function papelito_notify_vendor_decision( WP_User $user, string $decision, strin
 }
 
 /**
+ * Valida o motivo de rejeicao.
+ *
+ * @param string $reason Texto livre.
+ * @return string|WP_Error
+ */
+function papelito_validate_vendor_rejection_reason( string $reason ) {
+	$clean = sanitize_textarea_field( $reason );
+	$len   = function_exists( 'mb_strlen' ) ? mb_strlen( $clean ) : strlen( $clean );
+
+	if ( $len < 10 || $len > 500 ) {
+		return new WP_Error(
+			'papelito_invalid_rejection_reason',
+			'Informe um motivo entre 10 e 500 caracteres.',
+			array( 'status' => 422 )
+		);
+	}
+
+	return $clean;
+}
+
+/**
  * Aprova a triagem do vendor.
  *
- * @param int $user_id
- * @param int $reviewer_id
+ * @param int $user_id Usuario.
+ * @param int $reviewer_id Admin.
  * @return array<string, mixed>|WP_Error
  */
 function papelito_approve_seller_application( int $user_id, int $reviewer_id ) {
@@ -503,12 +558,13 @@ function papelito_approve_seller_application( int $user_id, int $reviewer_id ) {
 
 	$user->set_role( 'seller' );
 
-	update_user_meta( $user_id, 'seller_application_status', 'approved' );
-	update_user_meta( $user_id, 'seller_application_reviewed_at', current_time( 'mysql' ) );
-	update_user_meta( $user_id, 'seller_application_reviewed_by', $reviewer_id );
-	delete_user_meta( $user_id, 'seller_application_rejection_reason' );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META, 'approved' );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META, papelito_current_utc_mysql() );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_BY_META, $reviewer_id );
+	delete_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REJECTION_REASON_META );
 
 	papelito_notify_vendor_decision( $user, 'approved' );
+	do_action( 'papelito_vendor_approved', $user_id );
 
 	return papelito_get_vendor_application_detail( $user_id );
 }
@@ -516,9 +572,9 @@ function papelito_approve_seller_application( int $user_id, int $reviewer_id ) {
 /**
  * Rejeita a triagem do vendor.
  *
- * @param int    $user_id
- * @param int    $reviewer_id
- * @param string $reason
+ * @param int    $user_id Usuario.
+ * @param int    $reviewer_id Admin.
+ * @param string $reason Motivo.
  * @return array<string, mixed>|WP_Error
  */
 function papelito_reject_seller_application( int $user_id, int $reviewer_id, string $reason ) {
@@ -536,79 +592,394 @@ function papelito_reject_seller_application( int $user_id, int $reviewer_id, str
 		);
 	}
 
-	$clean_reason = sanitize_text_field( $reason );
+	$clean_reason = papelito_validate_vendor_rejection_reason( $reason );
+	if ( is_wp_error( $clean_reason ) ) {
+		return $clean_reason;
+	}
 
-	update_user_meta( $user_id, 'seller_application_status', 'rejected' );
-	update_user_meta( $user_id, 'seller_application_reviewed_at', current_time( 'mysql' ) );
-	update_user_meta( $user_id, 'seller_application_reviewed_by', $reviewer_id );
-	update_user_meta( $user_id, 'seller_application_rejection_reason', $clean_reason );
+	if ( in_array( 'seller', (array) $user->roles, true ) ) {
+		$user->set_role( 'customer' );
+	}
+
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META, 'rejected' );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META, papelito_current_utc_mysql() );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_BY_META, $reviewer_id );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REJECTION_REASON_META, $clean_reason );
 
 	papelito_notify_vendor_decision( $user, 'rejected', $clean_reason );
+	do_action( 'papelito_vendor_rejected', $user_id, $clean_reason );
 
 	return papelito_get_vendor_application_detail( $user_id );
+}
+
+/**
+ * Normaliza os filtros do admin de vendors.
+ *
+ * @param WP_REST_Request $request Request.
+ * @return array<string, int|string>
+ */
+function papelito_admin_vendors_parse_filters( WP_REST_Request $request ): array {
+	$page     = max( 1, (int) $request->get_param( 'page' ) );
+	$per_page = max( 1, min( 100, (int) $request->get_param( 'perPage' ) ) );
+
+	if ( $per_page <= 0 ) {
+		$per_page = 20;
+	}
+
+	return array(
+		'search'  => sanitize_text_field( (string) $request->get_param( 'search' ) ),
+		'status'  => papelito_admin_reports_normalize_enum(
+			sanitize_text_field( (string) $request->get_param( 'status' ) ),
+			array( 'all', 'pending', 'approved', 'rejected' ),
+			'pending'
+		),
+		'page'    => $page,
+		'perPage' => $per_page,
+	);
+}
+
+/**
+ * SQL base da listagem de vendors.
+ *
+ * @return string
+ */
+function papelito_admin_vendors_base_sql(): string {
+	global $wpdb;
+
+	$users_table    = $wpdb->users;
+	$usermeta_table = $wpdb->usermeta;
+	$capabilities   = $wpdb->prefix . 'capabilities';
+
+	return "
+		FROM {$users_table} u
+		LEFT JOIN {$usermeta_table} cap ON cap.user_id = u.ID AND cap.meta_key = '{$capabilities}'
+		LEFT JOIN {$usermeta_table} store_name ON store_name.user_id = u.ID AND store_name.meta_key = 'store_name'
+		LEFT JOIN {$usermeta_table} phone_number ON phone_number.user_id = u.ID AND phone_number.meta_key = 'phone_number'
+		LEFT JOIN {$usermeta_table} cnpj ON cnpj.user_id = u.ID AND cnpj.meta_key = 'cnpj'
+		LEFT JOIN {$usermeta_table} state_meta ON state_meta.user_id = u.ID AND state_meta.meta_key = 'state'
+		LEFT JOIN {$usermeta_table} city_meta ON city_meta.user_id = u.ID AND city_meta.meta_key = 'city'
+		LEFT JOIN {$usermeta_table} application_status ON application_status.user_id = u.ID AND application_status.meta_key = '" . PAPELITO_VENDOR_APPLICATION_STATUS_META . "'
+		LEFT JOIN {$usermeta_table} first_name ON first_name.user_id = u.ID AND first_name.meta_key = 'first_name'
+		LEFT JOIN {$usermeta_table} last_name ON last_name.user_id = u.ID AND last_name.meta_key = 'last_name'
+	";
+}
+
+/**
+ * Clausula WHERE compartilhada da listagem de vendors.
+ *
+ * @param array<string, int|string> $filters Filtros.
+ * @param array<int, mixed>         $args Args preparados.
+ * @return string
+ */
+function papelito_admin_vendors_where_sql( array $filters, array &$args, bool $include_status = true ): string {
+	global $wpdb;
+
+	$conditions = array(
+		'(application_status.meta_value IN (%s, %s, %s))',
+	);
+
+	array_push( $args, 'pending', 'approved', 'rejected' );
+
+	if ( ! empty( $filters['search'] ) && is_string( $filters['search'] ) ) {
+		$term         = '%' . $wpdb->esc_like( $filters['search'] ) . '%';
+		$conditions[] = '(u.display_name LIKE %s OR u.user_email LIKE %s OR store_name.meta_value LIKE %s OR first_name.meta_value LIKE %s OR last_name.meta_value LIKE %s OR cnpj.meta_value LIKE %s)';
+		array_push( $args, $term, $term, $term, $term, $term, $term );
+	}
+
+	if ( $include_status && 'all' !== $filters['status'] && is_string( $filters['status'] ) ) {
+		$conditions[] = 'application_status.meta_value = %s';
+		$args[]       = $filters['status'];
+	}
+
+	return ' WHERE ' . implode( ' AND ', $conditions );
+}
+
+/**
+ * Conta quantos vendors existem no recorte atual da listagem.
+ *
+ * @param array<string, int|string> $filters Filtros.
+ * @return int
+ */
+function papelito_admin_vendors_count_filtered_rows( array $filters ): int {
+	global $wpdb;
+
+	$args      = array();
+	$base_sql  = papelito_admin_vendors_base_sql();
+	$where_sql = papelito_admin_vendors_where_sql( $filters, $args, true );
+
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+	$sql = $wpdb->prepare( 'SELECT COUNT(*) ' . $base_sql . $where_sql, $args );
+
+	return (int) $wpdb->get_var( $sql );
+}
+
+/**
+ * Consulta as linhas da listagem admin de vendors.
+ *
+ * @param array<string, int|string> $filters Filtros.
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_admin_vendors_query_rows( array $filters ): array {
+	global $wpdb;
+
+	$args      = array();
+	$base_sql  = papelito_admin_vendors_base_sql();
+	$where_sql = papelito_admin_vendors_where_sql( $filters, $args );
+	$select    = "
+		SELECT
+			u.ID AS id,
+			u.display_name AS display_name,
+			u.user_email AS user_email,
+			u.user_registered AS user_registered,
+			COALESCE(cap.meta_value, '') AS capabilities,
+			COALESCE(store_name.meta_value, '') AS store_name,
+			COALESCE(phone_number.meta_value, '') AS phone_number,
+			COALESCE(cnpj.meta_value, '') AS cnpj,
+			COALESCE(state_meta.meta_value, '') AS state,
+			COALESCE(city_meta.meta_value, '') AS city,
+			COALESCE(application_status.meta_value, '') AS application_status,
+			COALESCE(first_name.meta_value, '') AS first_name,
+			COALESCE(last_name.meta_value, '') AS last_name
+	";
+
+	$offset = ( (int) $filters['page'] - 1 ) * (int) $filters['perPage'];
+
+	$args[] = (int) $filters['perPage'];
+	$args[] = $offset;
+
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+	$sql      = $wpdb->prepare( $select . $base_sql . $where_sql . ' ORDER BY u.user_registered DESC, u.ID DESC LIMIT %d OFFSET %d', $args );
+	$raw_rows = $wpdb->get_results( $sql, ARRAY_A );
+	$rows     = array();
+
+	foreach ( $raw_rows as $raw_row ) {
+		$display_name = isset( $raw_row['display_name'] ) ? trim( (string) $raw_row['display_name'] ) : '';
+		$first_name   = isset( $raw_row['first_name'] ) ? trim( (string) $raw_row['first_name'] ) : '';
+		$last_name    = isset( $raw_row['last_name'] ) ? trim( (string) $raw_row['last_name'] ) : '';
+		$name         = $display_name;
+
+		if ( '' === $name ) {
+			$name = trim( $first_name . ' ' . $last_name );
+		}
+
+		if ( '' === $name ) {
+			$name = isset( $raw_row['user_email'] ) ? (string) $raw_row['user_email'] : 'Usuario sem nome';
+		}
+
+		$role = function_exists( 'papelito_admin_reports_detect_role' )
+			? papelito_admin_reports_detect_role( isset( $raw_row['capabilities'] ) ? (string) $raw_row['capabilities'] : '' )
+			: 'other';
+
+		$rows[] = array(
+			'id'                     => isset( $raw_row['id'] ) ? (int) $raw_row['id'] : 0,
+			'name'                   => $name,
+			'email'                  => isset( $raw_row['user_email'] ) ? (string) $raw_row['user_email'] : '',
+			'role'                   => $role,
+			'roleLabel'              => function_exists( 'papelito_admin_reports_role_label' ) ? papelito_admin_reports_role_label( $role ) : ucfirst( $role ),
+			'applicationStatus'      => isset( $raw_row['application_status'] ) && '' !== $raw_row['application_status'] ? (string) $raw_row['application_status'] : 'none',
+			'applicationStatusLabel' => function_exists( 'papelito_admin_reports_application_status_label' ) ? papelito_admin_reports_application_status_label( isset( $raw_row['application_status'] ) ? (string) $raw_row['application_status'] : '' ) : '',
+			'storeName'              => isset( $raw_row['store_name'] ) ? (string) $raw_row['store_name'] : '',
+			'phoneNumber'            => isset( $raw_row['phone_number'] ) ? (string) $raw_row['phone_number'] : '',
+			'cnpj'                   => isset( $raw_row['cnpj'] ) ? (string) $raw_row['cnpj'] : '',
+			'state'                  => isset( $raw_row['state'] ) ? (string) $raw_row['state'] : '',
+			'city'                   => isset( $raw_row['city'] ) ? (string) $raw_row['city'] : '',
+			'registeredAt'           => isset( $raw_row['user_registered'] ) ? (string) $raw_row['user_registered'] : '',
+			'coverageSummary'        => 'Sem cobertura',
+		);
+	}
+
+	return function_exists( 'papelito_admin_reports_attach_coverage_summary' )
+		? papelito_admin_reports_attach_coverage_summary( $rows )
+		: $rows;
+}
+
+/**
+ * Consulta totais da listagem admin de vendors.
+ *
+ * @param array<string, int|string> $filters Filtros.
+ * @return array<string, int>
+ */
+function papelito_admin_vendors_query_summary( array $filters ): array {
+	global $wpdb;
+
+	$filtered_users = papelito_admin_vendors_count_filtered_rows( $filters );
+
+	$args              = array();
+	$base_sql          = papelito_admin_vendors_base_sql();
+	$search_only_where = papelito_admin_vendors_where_sql( $filters, $args, false );
+
+	$coverage_exists = "EXISTS (
+		SELECT 1 FROM {$wpdb->usermeta} coverage_min
+		WHERE coverage_min.user_id = u.ID
+		AND coverage_min.meta_key = 'min_cep'
+		AND coverage_min.meta_value <> ''
+	) AND EXISTS (
+		SELECT 1 FROM {$wpdb->usermeta} coverage_max
+		WHERE coverage_max.user_id = u.ID
+		AND coverage_max.meta_key = 'max_cep'
+		AND coverage_max.meta_value <> ''
+	)";
+
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+	$sql = $wpdb->prepare(
+		"
+		SELECT
+			SUM(CASE WHEN application_status.meta_value = 'pending' THEN 1 ELSE 0 END) AS pending_applications,
+			SUM(CASE WHEN application_status.meta_value = 'approved' THEN 1 ELSE 0 END) AS approved_sellers,
+			SUM(CASE WHEN {$coverage_exists} THEN 1 ELSE 0 END) AS users_with_coverage
+		" . $base_sql . $search_only_where,
+		$args
+	);
+
+	$summary = $wpdb->get_row( $sql, ARRAY_A );
+
+	return array(
+		'filteredUsers'       => $filtered_users,
+		'pendingApplications' => isset( $summary['pending_applications'] ) ? (int) $summary['pending_applications'] : 0,
+		'approvedSellers'     => isset( $summary['approved_sellers'] ) ? (int) $summary['approved_sellers'] : 0,
+		'usersWithCoverage'   => isset( $summary['users_with_coverage'] ) ? (int) $summary['users_with_coverage'] : 0,
+	);
+}
+
+/**
+ * Monta o snapshot da fila admin de vendors.
+ *
+ * @param array<string, int|string> $filters Filtros.
+ * @return array<string, mixed>
+ */
+function papelito_admin_vendors_get_snapshot( array $filters ): array {
+	$summary     = papelito_admin_vendors_query_summary( $filters );
+	$total_rows  = (int) $summary['filteredUsers'];
+	$total_pages = max( 1, (int) ceil( $total_rows / max( 1, (int) $filters['perPage'] ) ) );
+	$safe_page   = min( max( 1, (int) $filters['page'] ), $total_pages );
+
+	if ( $safe_page !== (int) $filters['page'] ) {
+		$filters['page'] = $safe_page;
+	}
+
+	$rows = papelito_admin_vendors_query_rows( $filters );
+
+	return array(
+		'rows'        => $rows,
+		'summary'     => $summary,
+		'currentPage' => $safe_page,
+		'perPage'     => (int) $filters['perPage'],
+		'totalRows'   => $total_rows,
+		'totalPages'  => $total_pages,
+		'issues'      => array(),
+	);
+}
+
+/**
+ * Permission callback compartilhado dos endpoints admin de vendors.
+ */
+function papelito_admin_vendors_require_admin(): bool {
+	return current_user_can( 'manage_options' );
+}
+
+/**
+ * Valida o parametro de id de vendor nas rotas REST.
+ *
+ * @param mixed $value Valor enviado.
+ */
+function papelito_admin_vendors_validate_id( $value ): bool {
+	return is_numeric( $value ) && (int) $value > 0;
+}
+
+/**
+ * GET /admin/vendors — fila paginada.
+ */
+function papelito_admin_vendors_handle_list( WP_REST_Request $request ) {
+	return new WP_REST_Response(
+		papelito_admin_vendors_get_snapshot( papelito_admin_vendors_parse_filters( $request ) ),
+		200
+	);
+}
+
+/**
+ * GET /admin/vendors/{id} — detalhe da triagem.
+ */
+function papelito_admin_vendors_handle_get( WP_REST_Request $request ) {
+	$detail = papelito_get_vendor_application_detail( (int) $request['id'] );
+
+	return is_wp_error( $detail ) ? $detail : new WP_REST_Response( $detail, 200 );
+}
+
+/**
+ * POST /admin/vendors/{id}/approve — aprova a triagem pendente.
+ */
+function papelito_admin_vendors_handle_approve( WP_REST_Request $request ) {
+	$result = papelito_approve_seller_application( (int) $request['id'], get_current_user_id() );
+
+	return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+}
+
+/**
+ * POST /admin/vendors/{id}/reject — rejeita com motivo obrigatorio.
+ */
+function papelito_admin_vendors_handle_reject( WP_REST_Request $request ) {
+	$body   = $request->get_json_params();
+	$reason = is_array( $body ) && isset( $body['reason'] ) ? (string) $body['reason'] : '';
+	$result = papelito_reject_seller_application( (int) $request['id'], get_current_user_id(), $reason );
+
+	return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
 }
 
 add_action(
 	'rest_api_init',
 	static function (): void {
-		$permission = static function (): bool {
-			return current_user_can( 'manage_options' );
-		};
-
 		register_rest_route(
 			'papelito/v1/admin',
-			'/vendor-applications/(?P<id>\d+)',
+			'/vendors',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
-				'permission_callback' => $permission,
+				'permission_callback' => 'papelito_admin_vendors_require_admin',
+				'callback'            => 'papelito_admin_vendors_handle_list',
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/vendors/(?P<id>\d+)',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => 'papelito_admin_vendors_require_admin',
 				'args'                => array(
 					'id' => array(
-						'validate_callback' => static function ( $value ): bool {
-							return is_numeric( $value ) && (int) $value > 0;
-						},
+						'validate_callback' => 'papelito_admin_vendors_validate_id',
 					),
 				),
-				'callback'            => static function ( WP_REST_Request $request ) {
-					$detail = papelito_get_vendor_application_detail( (int) $request['id'] );
-					if ( is_wp_error( $detail ) ) {
-						return $detail;
-					}
-					return new WP_REST_Response( $detail, 200 );
-				},
+				'callback'            => 'papelito_admin_vendors_handle_get',
 			)
 		);
 
 		register_rest_route(
 			'papelito/v1/admin',
-			'/vendor-applications/(?P<id>\d+)/approve',
+			'/vendors/(?P<id>\d+)/approve',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
-				'permission_callback' => $permission,
-				'callback'            => static function ( WP_REST_Request $request ) {
-					$result = papelito_approve_seller_application( (int) $request['id'], get_current_user_id() );
-					if ( is_wp_error( $result ) ) {
-						return $result;
-					}
-					return new WP_REST_Response( $result, 200 );
-				},
+				'permission_callback' => 'papelito_admin_vendors_require_admin',
+				'args'                => array(
+					'id' => array(
+						'validate_callback' => 'papelito_admin_vendors_validate_id',
+					),
+				),
+				'callback'            => 'papelito_admin_vendors_handle_approve',
 			)
 		);
 
 		register_rest_route(
 			'papelito/v1/admin',
-			'/vendor-applications/(?P<id>\d+)/reject',
+			'/vendors/(?P<id>\d+)/reject',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
-				'permission_callback' => $permission,
-				'callback'            => static function ( WP_REST_Request $request ) {
-					$body   = $request->get_json_params();
-					$reason = is_array( $body ) && isset( $body['reason'] ) ? (string) $body['reason'] : '';
-					$result = papelito_reject_seller_application( (int) $request['id'], get_current_user_id(), $reason );
-					if ( is_wp_error( $result ) ) {
-						return $result;
-					}
-					return new WP_REST_Response( $result, 200 );
-				},
+				'permission_callback' => 'papelito_admin_vendors_require_admin',
+				'args'                => array(
+					'id' => array(
+						'validate_callback' => 'papelito_admin_vendors_validate_id',
+					),
+				),
+				'callback'            => 'papelito_admin_vendors_handle_reject',
 			)
 		);
 	}
