@@ -28,9 +28,10 @@ require_once __DIR__ . '/includes/active_vendor.php';
 require_once __DIR__ . '/includes/coupons.php';
 require_once __DIR__ . '/includes/order_routing.php';
 require_once __DIR__ . '/includes/vendor_dashboard.php';
+require_once __DIR__ . '/includes/vendor_messaging.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.2' );
+	define( 'PAPELITO_DB_VERSION', '1.3' );
 }
 
 /**
@@ -51,6 +52,10 @@ function papelito_maybe_migrate_db() {
 
 	if ( function_exists( 'papelito_notifications_install_tables' ) ) {
 		papelito_notifications_install_tables();
+	}
+
+	if ( function_exists( 'papelito_messaging_install_tables' ) ) {
+		papelito_messaging_install_tables();
 	}
 
 	update_option( 'papelito_db_version', PAPELITO_DB_VERSION, true );

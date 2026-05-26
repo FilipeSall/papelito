@@ -17,6 +17,8 @@ if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_VENDOR_APPROVED', 'vendor_approved' );
 	define( 'PAPELITO_NOTIF_VENDOR_REJECTED', 'vendor_rejected' );
 	define( 'PAPELITO_NOTIF_STOCK_ZEROED', 'stock_zeroed' );
+	define( 'PAPELITO_NOTIF_SUPPORT_MESSAGE', 'support_message' );
+	define( 'PAPELITO_NOTIF_SUPPORT_ESCALATED', 'support_escalated' );
 }
 
 /**
@@ -65,6 +67,8 @@ function papelito_notification_allowed_types() {
 		PAPELITO_NOTIF_VENDOR_APPROVED,
 		PAPELITO_NOTIF_VENDOR_REJECTED,
 		PAPELITO_NOTIF_STOCK_ZEROED,
+		PAPELITO_NOTIF_SUPPORT_MESSAGE,
+		PAPELITO_NOTIF_SUPPORT_ESCALATED,
 	);
 }
 
@@ -389,6 +393,65 @@ function papelito_handle_product_on_promo_notification( $product_id, $context = 
 	}
 }
 add_action( 'papelito_product_on_promo', 'papelito_handle_product_on_promo_notification', 10, 2 );
+
+/**
+ * Notify thread participants when a support message is sent.
+ *
+ * @param int $thread_id Thread identifier.
+ * @param int $message_id Message identifier.
+ * @param int $sender_id Sender identifier.
+ */
+function papelito_handle_support_message_notification( $thread_id, $message_id, $sender_id ) {
+	if ( ! function_exists( 'papelito_messaging_get_thread' ) || ! function_exists( 'papelito_messaging_notification_recipients' ) ) {
+		return;
+	}
+
+	$thread_id = absint( $thread_id );
+	$sender_id = absint( $sender_id );
+	$thread    = papelito_messaging_get_thread( $thread_id );
+
+	if ( null === $thread ) {
+		return;
+	}
+
+	foreach ( papelito_messaging_notification_recipients( $thread ) as $recipient_id ) {
+		if ( $recipient_id !== $sender_id ) {
+			$payload                   = papelito_messaging_notification_payload( $thread_id, $sender_id );
+			$payload['recipient_role'] = papelito_messaging_user_role( $recipient_id );
+			papelito_dispatch_notification( $recipient_id, PAPELITO_NOTIF_SUPPORT_MESSAGE, $payload );
+		}
+	}
+}
+add_action( 'papelito_support_message_sent', 'papelito_handle_support_message_notification', 10, 3 );
+
+/**
+ * Notify vendor and administrators when a customer escalates support.
+ *
+ * @param int $thread_id Thread identifier.
+ * @param int $customer_id Customer identifier.
+ */
+function papelito_handle_support_escalated_notification( $thread_id, $customer_id ) {
+	if ( ! function_exists( 'papelito_messaging_get_thread' ) || ! function_exists( 'papelito_messaging_notification_recipients' ) ) {
+		return;
+	}
+
+	$thread_id   = absint( $thread_id );
+	$customer_id = absint( $customer_id );
+	$thread      = papelito_messaging_get_thread( $thread_id );
+
+	if ( null === $thread ) {
+		return;
+	}
+
+	foreach ( papelito_messaging_notification_recipients( $thread ) as $recipient_id ) {
+		if ( $recipient_id !== $customer_id ) {
+			$payload                   = papelito_messaging_notification_payload( $thread_id, $customer_id );
+			$payload['recipient_role'] = papelito_messaging_user_role( $recipient_id );
+			papelito_dispatch_notification( $recipient_id, PAPELITO_NOTIF_SUPPORT_ESCALATED, $payload );
+		}
+	}
+}
+add_action( 'papelito_support_escalated', 'papelito_handle_support_escalated_notification', 10, 2 );
 
 add_action(
 	'rest_api_init',
