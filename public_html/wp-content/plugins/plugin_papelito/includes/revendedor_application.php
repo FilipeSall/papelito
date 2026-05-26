@@ -128,7 +128,7 @@ function papelito_validate_seller_application_input( array $input ) {
 	}
 
 	$state = isset( $input['state'] ) ? (string) $input['state'] : '';
-	if ( '' !== $state && defined( 'brazilian_states' ) && ! array_key_exists( $state, brazilian_states ) ) {
+	if ( '' !== $state && ! array_key_exists( $state, papelito_brazilian_states() ) ) {
 		$errors->add( 'state', 'Selecione um estado válido.' );
 	}
 
@@ -362,16 +362,252 @@ add_action(
 					$user_id = get_current_user_id();
 
 					if ( $user_id <= 0 ) {
-						throw new \GraphQL\Error\UserError( 'Usuario nao autenticado.' );
+						throw papelito_graphql_user_error( 'Usuario nao autenticado.' );
 					}
 
 					$result = papelito_submit_seller_application( $user_id, is_array( $input ) ? $input : array() );
 
 					if ( is_wp_error( $result ) ) {
-						throw new \GraphQL\Error\UserError( $result->get_error_message() );
+						throw papelito_graphql_user_error( $result->get_error_message() );
 					}
 
 					return $result;
+				},
+			)
+		);
+	}
+);
+
+/**
+ * Retorna o detalhe completo da triagem para o painel admin.
+ *
+ * @param int $user_id
+ * @return array<string, mixed>|WP_Error
+ */
+function papelito_get_vendor_application_detail( int $user_id ) {
+	$user = get_userdata( $user_id );
+
+	if ( ! $user instanceof WP_User ) {
+		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+	}
+
+	$base = papelito_get_seller_application_data( $user_id );
+
+	$min_ranges = (array) get_user_meta( $user_id, 'min_cep', false );
+	$max_ranges = (array) get_user_meta( $user_id, 'max_cep', false );
+
+	$reviewer_id  = (int) get_user_meta( $user_id, 'seller_application_reviewed_by', true );
+	$reviewer     = $reviewer_id > 0 ? get_userdata( $reviewer_id ) : null;
+	$reviewer_out = null;
+
+	if ( $reviewer instanceof WP_User ) {
+		$reviewer_out = array(
+			'id'    => (int) $reviewer->ID,
+			'name'  => (string) $reviewer->display_name,
+			'email' => (string) $reviewer->user_email,
+		);
+	}
+
+	$detail              = $base;
+	$detail['id']        = (int) $user->ID;
+	$detail['name']      = trim( (string) $user->display_name );
+	$detail['minCepRanges'] = array_values( array_filter( array_map( 'strval', $min_ranges ), 'strlen' ) );
+	$detail['maxCepRanges'] = array_values( array_filter( array_map( 'strval', $max_ranges ), 'strlen' ) );
+	$detail['rejectionReason'] = (string) get_user_meta( $user_id, 'seller_application_rejection_reason', true );
+	$detail['reviewedAt']      = (string) get_user_meta( $user_id, 'seller_application_reviewed_at', true );
+	$detail['reviewedBy']      = $reviewer_out;
+	$detail['registeredAt']    = (string) $user->user_registered;
+
+	return $detail;
+}
+
+/**
+ * Envia e-mail ao vendor com a decisao da triagem.
+ *
+ * @param WP_User $user
+ * @param string  $decision 'approved' ou 'rejected'.
+ * @param string  $reason
+ * @return void
+ */
+function papelito_notify_vendor_decision( WP_User $user, string $decision, string $reason = '' ): void {
+	$email = sanitize_email( (string) $user->user_email );
+	if ( '' === $email ) {
+		return;
+	}
+
+	$store    = (string) get_user_meta( $user->ID, 'store_name', true );
+	$greeting = trim( (string) $user->first_name );
+	if ( '' === $greeting ) {
+		$greeting = '' !== $store ? $store : (string) $user->display_name;
+	}
+
+	if ( 'approved' === $decision ) {
+		$subject    = 'Sua solicitacao foi aprovada - Papelito';
+		$body_lines = array(
+			sprintf( 'Ola %s,', $greeting ),
+			'',
+			'Boas noticias! Sua solicitacao para ser revendedor Papelito foi aprovada.',
+			'Voce ja pode acessar a area do vendedor com suas credenciais atuais.',
+			'',
+			'Acesse: https://papelitobrasil.com/entrar',
+			'',
+			'Bem-vindo ao programa PDV Perfeito.',
+			'Time Papelito',
+		);
+	} else {
+		$subject    = 'Atualizacao da sua solicitacao - Papelito';
+		$body_lines = array(
+			sprintf( 'Ola %s,', $greeting ),
+			'',
+			'Recebemos e analisamos sua solicitacao para o programa de revendedores Papelito.',
+			'No momento, ela nao foi aprovada.',
+		);
+
+		if ( '' !== $reason ) {
+			$body_lines[] = '';
+			$body_lines[] = 'Motivo informado pelo nosso time:';
+			$body_lines[] = $reason;
+		}
+
+		$body_lines[] = '';
+		$body_lines[] = 'Voce pode entrar em contato com marketing@papelitobrasil.com para mais informacoes.';
+		$body_lines[] = '';
+		$body_lines[] = 'Time Papelito';
+	}
+
+	$headers = array( 'Content-Type: text/plain; charset=UTF-8' );
+	wp_mail( $email, $subject, implode( PHP_EOL, $body_lines ), $headers );
+}
+
+/**
+ * Aprova a triagem do vendor.
+ *
+ * @param int $user_id
+ * @param int $reviewer_id
+ * @return array<string, mixed>|WP_Error
+ */
+function papelito_approve_seller_application( int $user_id, int $reviewer_id ) {
+	$user = get_userdata( $user_id );
+	if ( ! $user instanceof WP_User ) {
+		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+	}
+
+	$status = papelito_get_seller_application_status( $user_id );
+	if ( 'pending' !== $status ) {
+		return new WP_Error(
+			'papelito_invalid_state',
+			sprintf( 'Triagem nao esta pendente (status atual: %s).', $status ),
+			array( 'status' => 409 )
+		);
+	}
+
+	$user->set_role( 'seller' );
+
+	update_user_meta( $user_id, 'seller_application_status', 'approved' );
+	update_user_meta( $user_id, 'seller_application_reviewed_at', current_time( 'mysql' ) );
+	update_user_meta( $user_id, 'seller_application_reviewed_by', $reviewer_id );
+	delete_user_meta( $user_id, 'seller_application_rejection_reason' );
+
+	papelito_notify_vendor_decision( $user, 'approved' );
+
+	return papelito_get_vendor_application_detail( $user_id );
+}
+
+/**
+ * Rejeita a triagem do vendor.
+ *
+ * @param int    $user_id
+ * @param int    $reviewer_id
+ * @param string $reason
+ * @return array<string, mixed>|WP_Error
+ */
+function papelito_reject_seller_application( int $user_id, int $reviewer_id, string $reason ) {
+	$user = get_userdata( $user_id );
+	if ( ! $user instanceof WP_User ) {
+		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+	}
+
+	$status = papelito_get_seller_application_status( $user_id );
+	if ( 'pending' !== $status ) {
+		return new WP_Error(
+			'papelito_invalid_state',
+			sprintf( 'Triagem nao esta pendente (status atual: %s).', $status ),
+			array( 'status' => 409 )
+		);
+	}
+
+	$clean_reason = sanitize_text_field( $reason );
+
+	update_user_meta( $user_id, 'seller_application_status', 'rejected' );
+	update_user_meta( $user_id, 'seller_application_reviewed_at', current_time( 'mysql' ) );
+	update_user_meta( $user_id, 'seller_application_reviewed_by', $reviewer_id );
+	update_user_meta( $user_id, 'seller_application_rejection_reason', $clean_reason );
+
+	papelito_notify_vendor_decision( $user, 'rejected', $clean_reason );
+
+	return papelito_get_vendor_application_detail( $user_id );
+}
+
+add_action(
+	'rest_api_init',
+	static function (): void {
+		$permission = static function (): bool {
+			return current_user_can( 'manage_options' );
+		};
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/vendor-applications/(?P<id>\d+)',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => $permission,
+				'args'                => array(
+					'id' => array(
+						'validate_callback' => static function ( $value ): bool {
+							return is_numeric( $value ) && (int) $value > 0;
+						},
+					),
+				),
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$detail = papelito_get_vendor_application_detail( (int) $request['id'] );
+					if ( is_wp_error( $detail ) ) {
+						return $detail;
+					}
+					return new WP_REST_Response( $detail, 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/vendor-applications/(?P<id>\d+)/approve',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'permission_callback' => $permission,
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$result = papelito_approve_seller_application( (int) $request['id'], get_current_user_id() );
+					if ( is_wp_error( $result ) ) {
+						return $result;
+					}
+					return new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/vendor-applications/(?P<id>\d+)/reject',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'permission_callback' => $permission,
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$body   = $request->get_json_params();
+					$reason = is_array( $body ) && isset( $body['reason'] ) ? (string) $body['reason'] : '';
+					$result = papelito_reject_seller_application( (int) $request['id'], get_current_user_id(), $reason );
+					if ( is_wp_error( $result ) ) {
+						return $result;
+					}
+					return new WP_REST_Response( $result, 200 );
 				},
 			)
 		);

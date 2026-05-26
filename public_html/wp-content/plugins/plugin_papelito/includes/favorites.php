@@ -621,13 +621,13 @@ add_action(
 					$user_id = get_current_user_id();
 
 					if ( $user_id <= 0 ) {
-						throw new \GraphQL\Error\UserError( 'Usuario nao autenticado.' );
+						throw papelito_graphql_user_error( 'Usuario nao autenticado.' );
 					}
 
 					$result = papelito_add_favorite_product( $user_id, isset( $input['productId'] ) ? $input['productId'] : 0 );
 
 					if ( is_wp_error( $result ) ) {
-						throw new \GraphQL\Error\UserError( $result->get_error_message() );
+						throw papelito_graphql_user_error( $result->get_error_message() );
 					}
 
 					return $result;
@@ -654,13 +654,13 @@ add_action(
 					$user_id = get_current_user_id();
 
 					if ( $user_id <= 0 ) {
-						throw new \GraphQL\Error\UserError( 'Usuario nao autenticado.' );
+						throw papelito_graphql_user_error( 'Usuario nao autenticado.' );
 					}
 
 					$result = papelito_remove_favorite_product( $user_id, isset( $input['productId'] ) ? $input['productId'] : 0 );
 
 					if ( is_wp_error( $result ) ) {
-						throw new \GraphQL\Error\UserError( $result->get_error_message() );
+						throw papelito_graphql_user_error( $result->get_error_message() );
 					}
 
 					return $result;

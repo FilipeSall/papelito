@@ -349,7 +349,7 @@ function papelito_auth_validate_register_payload( array $data ) {
 		$errors->add( 'cnpj', 'CNPJ inválido. Formato esperado: 12.345.678/0001-90.' );
 	}
 
-	if ( ! empty( $data['state'] ) && defined( 'brazilian_states' ) && ! array_key_exists( (string) $data['state'], brazilian_states ) ) {
+	if ( ! empty( $data['state'] ) && ! array_key_exists( (string) $data['state'], papelito_brazilian_states() ) ) {
 		$errors->add( 'state', 'Estado inválido.' );
 	}
 

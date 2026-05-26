@@ -1,38 +1,6 @@
 <?php
 
-define(
-    'brazilian_states',
-    array(
-        '' => 'Selecione o estado da sua empresa',
-        'AC' => 'Acre',
-        'AL' => 'Alagoas',
-        'AP' => 'Amapá',
-        'AM' => 'Amazonas',
-        'BA' => 'Bahia',
-        'CE' => 'Ceará',
-        'DF' => 'Distrito Federal',
-        'ES' => 'Espírito Santo',
-        'GO' => 'Goiás',
-        'MA' => 'Maranhão',
-        'MT' => 'Mato Grosso',
-        'MS' => 'Mato Grosso do Sul',
-        'MG' => 'Minas Gerais',
-        'PA' => 'Pará',
-        'PB' => 'Paraíba',
-        'PR' => 'Paraná',
-        'PE' => 'Pernambuco',
-        'PI' => 'Piauí',
-        'RJ' => 'Rio de Janeiro',
-        'RN' => 'Rio Grande do Norte',
-        'RS' => 'Rio Grande do Sul',
-        'RO' => 'Rondônia',
-        'RR' => 'Roraima',
-        'SC' => 'Santa Catarina',
-        'SP' => 'São Paulo',
-        'SE' => 'Sergipe',
-        'TO' => 'Tocantins',
-    )
-);
+defined( 'ABSPATH' ) || exit;
 
 function my_custom_woocommerce_register_fields_start()
 {
@@ -138,7 +106,7 @@ function my_custom_woocommerce_register_fields()
             'required' => true,
             'placeholder' => 'Selecione o estado da sua empresa',
             'class' => array('form-row-wide'),
-            'options' => brazilian_states
+            'options' => papelito_brazilian_states()
         ),
         get_meta_or_post_data('state')
     );
@@ -216,7 +184,7 @@ function my_custom_validate_register_custom_fields($errors)
         $errors->add('cnpj_error', 'Informe um CNPJ válido, por favor.');
     }
 
-    if (!isset($_POST['state']) || !array_key_exists($_POST['state'], brazilian_states) || empty($_POST['state'])) {
+    if (!isset($_POST['state']) || !array_key_exists($_POST['state'], papelito_brazilian_states()) || empty($_POST['state'])) {
         $errors->add('state_error', 'Informe o estado, por favor.');
     }
 

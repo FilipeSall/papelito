@@ -12,6 +12,17 @@ if ( ! defined( 'PAPELITO_ORDER_VENDOR_STATUS_AWAITING_SHIPMENT' ) ) {
 }
 
 /**
+ * Verifica se um valor e uma instancia da classe WooCommerce esperada.
+ *
+ * @param mixed  $value Valor inspecionado.
+ * @param string $class Nome da classe WooCommerce.
+ * @return bool
+ */
+function papelito_order_routing_is_wc_instance( $value, string $class ): bool {
+	return class_exists( $class ) && is_object( $value ) && is_a( $value, $class );
+}
+
+/**
  * Normaliza o metodo de pagamento recebido do front.
  *
  * @param mixed $value Valor cru.
@@ -458,12 +469,17 @@ function papelito_order_routing_build_wc_address( int $user_id, array $address )
 /**
  * Adiciona o item de cupom ao pedido, preservando o codigo usado.
  *
- * @param WC_Order $order Pedido alvo.
+ * @param object $order Pedido alvo.
  * @param array<string,mixed> $coupon Cupom resolvido.
  * @return void
  */
-function papelito_order_routing_add_coupon_item( WC_Order $order, array $coupon ): void {
-	$item = new WC_Order_Item_Coupon();
+function papelito_order_routing_add_coupon_item( $order, array $coupon ): void {
+	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) || ! class_exists( 'WC_Order_Item_Coupon' ) ) {
+		return;
+	}
+
+	$coupon_item_class = 'WC_Order_Item_Coupon';
+	$item              = new $coupon_item_class();
 	$item->set_code( (string) $coupon['code'] );
 	$item->set_discount( (float) $coupon['discount_value'] );
 	$item->set_discount_tax( 0 );
@@ -482,7 +498,7 @@ function papelito_order_routing_add_coupon_item( WC_Order $order, array $coupon 
  * @return array<string,mixed>|WP_Error
  */
 function papelito_order_routing_create_order( int $user_id, array $address, array $lines, array $shipping, ?array $coupon, string $payment_method ) {
-	if ( ! function_exists( 'wc_create_order' ) || ! class_exists( 'WC_Order_Item_Shipping' ) ) {
+	if ( ! function_exists( 'wc_create_order' ) || ! class_exists( 'WC_Order' ) || ! class_exists( 'WC_Order_Item_Shipping' ) || ! class_exists( 'WC_Order_Item_Product' ) ) {
 		return new WP_Error(
 			'papelito_checkout_woocommerce_unavailable',
 			'WooCommerce indisponivel para concluir o pedido.',
@@ -499,6 +515,22 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 
 	if ( is_wp_error( $order ) ) {
 		return $order;
+	}
+
+	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
+		return new WP_Error(
+			'papelito_checkout_invalid_order_instance',
+			'WooCommerce retornou um pedido invalido.',
+			array( 'status' => 500 )
+		);
+	}
+
+	if ( empty( $lines ) ) {
+		return new WP_Error(
+			'papelito_checkout_empty_resolved_lines',
+			'Nao foi possivel concluir o pedido sem itens validos.',
+			array( 'status' => 422 )
+		);
 	}
 
 	$vendor_id   = (int) $lines[0]['vendor_id'];
@@ -524,17 +556,18 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 
 			$item = $order->get_item( $item_id );
 
-			if ( $item instanceof WC_Order_Item_Product ) {
-				$item->add_meta_data( '_vendor_id', $vendor_id, true );
-				$item->add_meta_data( '_vendor_name', $vendor_name, true );
-				$item->save();
+				if ( papelito_order_routing_is_wc_instance( $item, 'WC_Order_Item_Product' ) ) {
+					$item->add_meta_data( '_vendor_id', $vendor_id, true );
+					$item->add_meta_data( '_vendor_name', $vendor_name, true );
+					$item->save();
+				}
 			}
-		}
 
-		$shipping_item = new WC_Order_Item_Shipping();
-		$shipping_item->set_method_id( 'papelito_correios_' . strtolower( sanitize_key( (string) ( $shipping['service'] ?? 'shipping' ) ) ) );
-		$shipping_item->set_method_title( sanitize_text_field( (string) ( $shipping['name'] ?? $shipping['service'] ?? 'Correios' ) ) );
-		$shipping_item->set_total( (float) ( $shipping['price'] ?? 0 ) );
+			$shipping_item_class = 'WC_Order_Item_Shipping';
+			$shipping_item       = new $shipping_item_class();
+			$shipping_item->set_method_id( 'papelito_correios_' . strtolower( sanitize_key( (string) ( $shipping['service'] ?? 'shipping' ) ) ) );
+			$shipping_item->set_method_title( sanitize_text_field( (string) ( $shipping['name'] ?? $shipping['service'] ?? 'Correios' ) ) );
+			$shipping_item->set_total( (float) ( $shipping['price'] ?? 0 ) );
 		$shipping_item->add_meta_data( '_papelito_shipping_service_code', sanitize_text_field( (string) ( $shipping['code'] ?? '' ) ), true );
 		$order->add_item( $shipping_item );
 
@@ -574,11 +607,15 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 /**
  * Verifica se o usuario atual pode visualizar o mapeamento de vendor do pedido.
  *
- * @param WC_Order $order Pedido alvo.
+ * @param object $order Pedido alvo.
  * @param int      $user_id Usuario atual.
  * @return bool
  */
-function papelito_order_routing_user_can_view_vendor_items( WC_Order $order, int $user_id ): bool {
+function papelito_order_routing_user_can_view_vendor_items( $order, int $user_id ): bool {
+	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
+		return false;
+	}
+
 	if ( $user_id <= 0 ) {
 		return false;
 	}
@@ -598,6 +635,10 @@ function papelito_order_routing_user_can_view_vendor_items( WC_Order $order, int
 	}
 
 	foreach ( $order->get_items( 'line_item' ) as $item ) {
+		if ( ! is_object( $item ) || ! method_exists( $item, 'get_meta' ) ) {
+			continue;
+		}
+
 		$vendor_id = absint( $item->get_meta( '_vendor_id', true ) );
 
 		if ( $vendor_id === $user_id ) {
@@ -611,16 +652,24 @@ function papelito_order_routing_user_can_view_vendor_items( WC_Order $order, int
 /**
  * Lista os itens do pedido com o vendor associado.
  *
- * @param WC_Order $order Pedido alvo.
+ * @param object $order Pedido alvo.
  * @return array<int,array<string,mixed>>
  */
-function papelito_order_routing_map_order_items_vendor( WC_Order $order ): array {
+function papelito_order_routing_map_order_items_vendor( $order ): array {
+	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
+		return array();
+	}
+
 	$default_vendor_id   = absint( $order->get_meta( '_papelito_vendor_id', true ) );
 	$default_vendor_name = sanitize_text_field( (string) $order->get_meta( '_papelito_vendor_name', true ) );
 	$vendor_status       = sanitize_text_field( (string) $order->get_meta( '_papelito_vendor_status', true ) );
 	$response            = array();
 
 	foreach ( $order->get_items( 'line_item' ) as $item ) {
+		if ( ! is_object( $item ) || ! method_exists( $item, 'get_id' ) || ! method_exists( $item, 'get_product_id' ) || ! method_exists( $item, 'get_meta' ) || ! method_exists( $item, 'get_quantity' ) ) {
+			continue;
+		}
+
 		$response[] = array(
 			'item_id'      => $item->get_id(),
 			'product_id'   => $item->get_product_id(),
@@ -647,7 +696,7 @@ function papelito_order_routing_decrement_stock_for_order( int $order_id ): void
 
 	$order = wc_get_order( $order_id );
 
-	if ( ! $order instanceof WC_Order ) {
+	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
 		return;
 	}
 
@@ -659,6 +708,10 @@ function papelito_order_routing_decrement_stock_for_order( int $order_id ): void
 	$adjustments       = array();
 
 	foreach ( $order->get_items( 'line_item' ) as $item ) {
+		if ( ! is_object( $item ) || ! method_exists( $item, 'get_meta' ) || ! method_exists( $item, 'get_product_id' ) || ! method_exists( $item, 'get_quantity' ) ) {
+			continue;
+		}
+
 		$vendor_id = absint( $item->get_meta( '_vendor_id', true ) ) ?: $default_vendor_id;
 		$product_id = (int) $item->get_product_id();
 		$qty        = (int) $item->get_quantity();
@@ -712,7 +765,7 @@ function papelito_order_routing_decrement_stock_for_order( int $order_id ): void
 add_action(
 	'woocommerce_checkout_create_order_line_item',
 	static function ( $item, $cart_item_key, $values, $order ): void {
-		if ( ! $item instanceof WC_Order_Item_Product || ! is_array( $values ) ) {
+		if ( ! papelito_order_routing_is_wc_instance( $item, 'WC_Order_Item_Product' ) || ! is_array( $values ) ) {
 			return;
 		}
 
@@ -781,7 +834,7 @@ add_action(
 				'permission_callback' => static function ( WP_REST_Request $request ) {
 					$order = function_exists( 'wc_get_order' ) ? wc_get_order( absint( $request->get_param( 'id' ) ) ) : null;
 
-					if ( ! $order instanceof WC_Order ) {
+					if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
 						return new WP_Error(
 							'papelito_order_not_found',
 							'Pedido nao encontrado.',
@@ -810,7 +863,7 @@ add_action(
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$order = wc_get_order( absint( $request->get_param( 'id' ) ) );
 
-					if ( ! $order instanceof WC_Order ) {
+					if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
 						return new WP_Error(
 							'papelito_order_not_found',
 							'Pedido nao encontrado.',

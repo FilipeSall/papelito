@@ -9,6 +9,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
+require_once __DIR__ . '/includes/support.php';
 require_once(plugin_dir_path(__FILE__) . 'includes/user_registration.php');
 require_once(plugin_dir_path(__FILE__) . 'includes/products_filter.php');
 require_once __DIR__ . '/includes/rest_api.php';
@@ -26,6 +27,7 @@ require_once __DIR__ . '/includes/notifications.php';
 require_once __DIR__ . '/includes/active_vendor.php';
 require_once __DIR__ . '/includes/coupons.php';
 require_once __DIR__ . '/includes/order_routing.php';
+require_once __DIR__ . '/includes/vendor_dashboard.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
 	define( 'PAPELITO_DB_VERSION', '1.2' );
@@ -322,7 +324,7 @@ function add_user_meta_fields($user)
                 </label></th>
             <td>
                 <select name="state" id="state">
-                    <?php foreach (brazilian_states as $value => $text): ?>
+                    <?php foreach ( papelito_brazilian_states() as $value => $text ) : ?>
                         <?php if (empty($value))
                             continue; ?>
                         <option value="<?php echo esc_attr($value); ?>" <?php selected($value, $state); ?>><?php echo esc_html($text); ?></option>
@@ -403,7 +405,7 @@ function display_seller_CEP_form($user)
                 </label></th>
             <td>
                 <select name="state" id="state">
-                    <?php foreach (brazilian_states as $value => $text): ?>
+                    <?php foreach ( papelito_brazilian_states() as $value => $text ) : ?>
                         <?php if (empty($value))
                             continue; ?>
                         <option value="<?php echo esc_attr($value); ?>" <?php selected($value, $state); ?>><?php echo esc_html($text); ?></option>
