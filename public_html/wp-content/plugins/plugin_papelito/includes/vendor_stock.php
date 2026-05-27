@@ -420,11 +420,114 @@ function papelito_vendors_with_stock( $product_id ) {
  * ------------------------------------------------------------------ */
 
 /**
+ * Resolve se o usuario pode operar como vendor no marketplace.
+ */
+function papelito_vendor_stock_is_operational_vendor( $user ): bool {
+	if ( ! $user instanceof WP_User || ! $user->exists() ) {
+		return false;
+	}
+
+	if ( ! in_array( 'seller', (array) $user->roles, true ) ) {
+		return false;
+	}
+
+	if ( function_exists( 'papelito_get_seller_application_status' ) ) {
+		return 'approved' === papelito_get_seller_application_status( (int) $user->ID );
+	}
+
+	return true;
+}
+
+/**
+ * Retorna thumbnail pequena do produto para o painel admin.
+ */
+function papelito_vendor_stock_product_image_url( int $product_id ): string {
+	$thumbnail_id = (int) get_post_thumbnail_id( $product_id );
+	if ( $thumbnail_id <= 0 ) {
+		return '';
+	}
+
+	$url = wp_get_attachment_image_url( $thumbnail_id, 'thumbnail' );
+	return is_string( $url ) ? $url : '';
+}
+
+/**
+ * Busca o historico recente de ajustes por produto.
+ *
+ * @param int   $vendor_id Vendor alvo.
+ * @param int[] $product_ids Produtos exibidos na resposta.
+ * @param int   $limit_per_product Quantidade maxima por produto.
+ * @return array<int, array<int, array<string, mixed>>>
+ */
+function papelito_vendor_stock_recent_logs( int $vendor_id, array $product_ids, int $limit_per_product = 5 ): array {
+	global $wpdb;
+
+	$vendor_id = (int) $vendor_id;
+	if ( $vendor_id <= 0 || empty( $product_ids ) ) {
+		return array();
+	}
+
+	$product_ids = array_values(
+		array_filter(
+			array_map( 'intval', $product_ids ),
+			static fn( int $product_id ): bool => $product_id > 0
+		)
+	);
+
+	if ( empty( $product_ids ) ) {
+		return array();
+	}
+
+	$limit_per_product = max( 1, $limit_per_product );
+	$tables            = papelito_vendor_stock_table_names();
+	$placeholders      = implode( ', ', array_fill( 0, count( $product_ids ), '%d' ) );
+	$params            = array_merge( array( $vendor_id ), $product_ids );
+
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+	$sql = $wpdb->prepare(
+		"SELECT id, product_id, delta, reason, created_at
+		FROM {$tables['log']}
+		WHERE vendor_id = %d
+			AND product_id IN ({$placeholders})
+		ORDER BY created_at DESC, id DESC",
+		$params
+	);
+
+	$rows    = $wpdb->get_results( $sql, ARRAY_A );
+	$grouped = array();
+
+	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		$product_id = (int) ( $row['product_id'] ?? 0 );
+		if ( $product_id <= 0 ) {
+			continue;
+		}
+
+		if ( ! isset( $grouped[ $product_id ] ) ) {
+			$grouped[ $product_id ] = array();
+		}
+
+		if ( count( $grouped[ $product_id ] ) >= $limit_per_product ) {
+			continue;
+		}
+
+		$grouped[ $product_id ][] = array(
+			'id'         => (int) ( $row['id'] ?? 0 ),
+			'delta'      => (int) ( $row['delta'] ?? 0 ),
+			'reason'     => sanitize_text_field( (string) ( $row['reason'] ?? '' ) ),
+			'created_at' => sanitize_text_field( (string) ( $row['created_at'] ?? '' ) ),
+		);
+	}
+
+	return $grouped;
+}
+
+/**
  * Lista paginada de estoque de um vendor com busca opcional por nome/SKU.
  *
  * @param int    $vendor_id Vendor alvo.
  * @param array  $args      Argumentos: page (>=1), per_page (1-100),
- *                          search (string), filter (all|with_stock|zeroed_only).
+ *                          search (string), filter (all|with_stock|zeroed_only),
+ *                          paginate (bool), include_history (bool).
  * @return array{items:array,total:int,page:int,per_page:int}
  */
 function papelito_vendor_stock_query( $vendor_id, $args ) {
@@ -435,6 +538,8 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	$per_page  = min( 100, max( 1, (int) ( $args['per_page'] ?? 20 ) ) );
 	$search    = trim( (string) ( $args['search'] ?? '' ) );
 	$filter    = (string) ( $args['filter'] ?? 'all' );
+	$paginate  = ! isset( $args['paginate'] ) || (bool) $args['paginate'];
+	$history   = ! empty( $args['include_history'] );
 
 	if ( ! in_array( $filter, array( 'all', 'with_stock', 'zeroed_only' ), true ) ) {
 		$filter = 'all';
@@ -474,43 +579,58 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 
 	$total = (int) $wpdb->get_var( $wpdb->prepare( $count_sql, $count_params ) );
 
-	$offset = ( $page - 1 ) * $per_page;
-
 	$select_sql = "SELECT p.ID AS product_id, COALESCE(vs.qty, 0) AS qty, vs.updated_at, vs.notified_zero_at,
 				p.post_title AS product_name, sku.meta_value AS sku
 			FROM {$posts} p
 			LEFT JOIN {$tables['stock']} vs ON vs.product_id = p.ID AND vs.vendor_id = %d
 			{$join_sku}
 			WHERE {$where_sql}
-			ORDER BY p.post_title ASC
-			LIMIT %d OFFSET %d";
+			ORDER BY p.post_title ASC";
 
 	$select_params   = $params;
 	array_unshift( $select_params, $vendor_id );
-	$select_params[] = $per_page;
-	$select_params[] = $offset;
+
+	if ( $paginate ) {
+		$offset          = ( $page - 1 ) * $per_page;
+		$select_sql     .= ' LIMIT %d OFFSET %d';
+		$select_params[] = $per_page;
+		$select_params[] = $offset;
+	}
 
 	$rows = $wpdb->get_results( $wpdb->prepare( $select_sql, $select_params ), ARRAY_A );
+	$product_ids = array();
+	$items       = array();
 
-	$items = array_map(
-		static function ( $row ) {
-			return array(
-				'product_id'   => (int) $row['product_id'],
-				'product_name' => (string) $row['product_name'],
-				'sku'          => (string) ( $row['sku'] ?? '' ),
-				'qty'          => (int) $row['qty'],
-				'updated_at'   => (string) $row['updated_at'],
-				'is_zeroed'    => 0 === (int) $row['qty'],
-			);
-		},
-		is_array( $rows ) ? $rows : array()
-	);
+	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		$product_id    = (int) ( $row['product_id'] ?? 0 );
+		$product_ids[] = $product_id;
+		$items[]       = array(
+			'product_id'   => $product_id,
+			'product_name' => (string) ( $row['product_name'] ?? '' ),
+			'sku'          => (string) ( $row['sku'] ?? '' ),
+			'qty'          => (int) ( $row['qty'] ?? 0 ),
+			'updated_at'   => (string) ( $row['updated_at'] ?? '' ),
+			'is_zeroed'    => 0 === (int) ( $row['qty'] ?? 0 ),
+			'image_url'    => papelito_vendor_stock_product_image_url( $product_id ),
+			'history'      => array(),
+		);
+	}
+
+	if ( $history && ! empty( $product_ids ) ) {
+		$history_lookup = papelito_vendor_stock_recent_logs( $vendor_id, $product_ids, 5 );
+
+		foreach ( $items as &$item ) {
+			$product_id      = (int) $item['product_id'];
+			$item['history'] = $history_lookup[ $product_id ] ?? array();
+		}
+		unset( $item );
+	}
 
 	return array(
 		'items'    => $items,
 		'total'    => $total,
 		'page'     => $page,
-		'per_page' => $per_page,
+		'per_page' => $paginate ? $per_page : max( 1, $total ),
 	);
 }
 
@@ -519,7 +639,7 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
  * ------------------------------------------------------------------ */
 
 /**
- * Verifica que o usuário corrente é vendor (papel `seller`).
+ * Verifica que o usuário corrente é vendor aprovado.
  */
 function papelito_vendor_stock_require_seller() {
 	$user = wp_get_current_user();
@@ -528,7 +648,7 @@ function papelito_vendor_stock_require_seller() {
 		return new WP_Error( 'papelito_not_authenticated', 'Não autenticado.', array( 'status' => 401 ) );
 	}
 
-	if ( ! in_array( 'seller', (array) $user->roles, true ) ) {
+	if ( ! papelito_vendor_stock_is_operational_vendor( $user ) ) {
 		return new WP_Error( 'papelito_forbidden', 'Acesso restrito a vendors.', array( 'status' => 403 ) );
 	}
 
@@ -585,6 +705,7 @@ add_action(
 					'per_page' => array( 'type' => 'integer', 'default' => 20 ),
 					'search'   => array( 'type' => 'string', 'default' => '' ),
 					'filter'   => array( 'type' => 'string', 'default' => 'all' ),
+					'paginate' => array( 'type' => 'boolean', 'default' => true ),
 				),
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$user = wp_get_current_user();
@@ -596,6 +717,7 @@ add_action(
 							'per_page' => (int) $request->get_param( 'per_page' ),
 							'search'   => (string) $request->get_param( 'search' ),
 							'filter'   => (string) $request->get_param( 'filter' ),
+							'paginate' => rest_sanitize_boolean( $request->get_param( 'paginate' ) ),
 						)
 					);
 
@@ -648,15 +770,16 @@ add_action(
 				},
 				'args'                => array(
 					'page'     => array( 'type' => 'integer', 'default' => 1 ),
-					'per_page' => array( 'type' => 'integer', 'default' => 20 ),
+					'per_page' => array( 'type' => 'integer', 'default' => 50 ),
 					'search'   => array( 'type' => 'string', 'default' => '' ),
 					'filter'   => array( 'type' => 'string', 'default' => 'all' ),
+					'paginate' => array( 'type' => 'boolean', 'default' => true ),
 				),
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$vendor_id = (int) $request->get_param( 'id' );
 					$user      = get_user_by( 'id', $vendor_id );
 
-					if ( ! $user || ! in_array( 'seller', (array) $user->roles, true ) ) {
+					if ( ! papelito_vendor_stock_is_operational_vendor( $user ) ) {
 						return new WP_Error( 'papelito_vendor_not_found', 'Vendor não encontrado.', array( 'status' => 404 ) );
 					}
 
@@ -667,6 +790,8 @@ add_action(
 							'per_page' => (int) $request->get_param( 'per_page' ),
 							'search'   => (string) $request->get_param( 'search' ),
 							'filter'   => (string) $request->get_param( 'filter' ),
+							'paginate' => rest_sanitize_boolean( $request->get_param( 'paginate' ) ),
+							'include_history' => true,
 						)
 					);
 
@@ -692,7 +817,7 @@ add_action(
 					$vendor_id = (int) $request->get_param( 'id' );
 					$user      = get_user_by( 'id', $vendor_id );
 
-					if ( ! $user || ! in_array( 'seller', (array) $user->roles, true ) ) {
+					if ( ! papelito_vendor_stock_is_operational_vendor( $user ) ) {
 						return new WP_Error( 'papelito_vendor_not_found', 'Vendor não encontrado.', array( 'status' => 404 ) );
 					}
 

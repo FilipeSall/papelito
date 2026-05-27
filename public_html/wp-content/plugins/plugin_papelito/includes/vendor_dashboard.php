@@ -506,6 +506,29 @@ function papelito_vendor_dashboard_list_orders( int $vendor_id, WP_REST_Request 
 }
 
 /**
+ * Valida acesso admin aos pedidos operacionais de um vendor aprovado.
+ *
+ * @return WP_User|WP_Error
+ */
+function papelito_vendor_dashboard_admin_vendor_user( int $vendor_id ) {
+	$user = get_user_by( 'id', $vendor_id );
+
+	if ( function_exists( 'papelito_vendor_stock_is_operational_vendor' ) ) {
+		if ( ! papelito_vendor_stock_is_operational_vendor( $user ) ) {
+			return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+		}
+
+		return $user;
+	}
+
+	if ( ! $user instanceof WP_User || ! in_array( 'seller', (array) $user->roles, true ) ) {
+		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+	}
+
+	return $user;
+}
+
+/**
  * Read seller operational settings.
  *
  * @return array{shipping_lead_time_days:int}
@@ -566,6 +589,30 @@ add_action(
 				'callback'            => static function ( WP_REST_Request $request ) {
 					return new WP_REST_Response(
 						papelito_vendor_dashboard_list_orders( get_current_user_id(), $request ),
+						200
+					);
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/admin/vendors/(?P<id>\d+)/orders',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => static function () {
+					return current_user_can( 'manage_options' );
+				},
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$vendor_id = absint( $request->get_param( 'id' ) );
+					$user      = papelito_vendor_dashboard_admin_vendor_user( $vendor_id );
+
+					if ( is_wp_error( $user ) ) {
+						return $user;
+					}
+
+					return new WP_REST_Response(
+						papelito_vendor_dashboard_list_orders( $vendor_id, $request ),
 						200
 					);
 				},
