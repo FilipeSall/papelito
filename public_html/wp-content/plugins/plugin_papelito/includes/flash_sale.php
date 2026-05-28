@@ -298,6 +298,52 @@ function papelito_flash_sale_collect_campaign_issues( array $campaign ): array {
 }
 
 /**
+ * Verifica se o usuário autenticado atual é seller.
+ *
+ * @return bool
+ */
+function papelito_flash_sale_current_user_is_seller(): bool {
+	$current_user = wp_get_current_user();
+
+	if ( ! ( $current_user instanceof WP_User ) ) {
+		return false;
+	}
+
+	return in_array( 'seller', (array) $current_user->roles, true );
+}
+
+/**
+ * Dispara os eventos de promoção da campanha ativa.
+ *
+ * @param array<string, mixed> $campaign Campanha validada.
+ * @return void
+ */
+function papelito_flash_sale_dispatch_promo_events( array $campaign ): void {
+	$campaign = papelito_flash_sale_normalize_campaign( $campaign );
+
+	if ( null === $campaign || 'active' !== $campaign['status'] ) {
+		return;
+	}
+
+	$promo_label = trim( (string) ( $campaign['title'] ?? '' ) );
+
+	if ( '' === $promo_label ) {
+		$promo_label = trim( (string) ( $campaign['label'] ?? 'Oferta Relâmpago' ) );
+	}
+
+	foreach ( papelito_flash_sale_normalize_product_ids( $campaign['productIds'] ?? array() ) as $product_id ) {
+		do_action(
+			'papelito_product_on_promo',
+			(int) $product_id,
+			array(
+				'promo_type'  => 'flash_sale',
+				'promo_label' => '' !== $promo_label ? $promo_label : 'Oferta Relâmpago',
+			)
+		);
+	}
+}
+
+/**
  * Monta snapshot admin da campanha.
  *
  * @return array<string, mixed>
@@ -415,6 +461,10 @@ add_action(
 				'methods'             => WP_REST_Server::READABLE,
 				'permission_callback' => '__return_true',
 				'callback'            => static function (): WP_REST_Response {
+					if ( papelito_flash_sale_current_user_is_seller() ) {
+						return new WP_REST_Response( (object) array(), 200 );
+					}
+
 					$campaign = papelito_flash_sale_normalize_campaign( papelito_flash_sale_get_raw_campaign() );
 
 					if ( null === $campaign || 'active' !== $campaign['status'] ) {
@@ -500,6 +550,7 @@ add_action(
 					}
 
 					update_option( papelito_flash_sale_option_name(), $validated, false );
+					papelito_flash_sale_dispatch_promo_events( $validated );
 
 					return new WP_REST_Response( papelito_flash_sale_get_admin_snapshot(), 200 );
 				},
