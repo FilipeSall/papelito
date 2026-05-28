@@ -262,6 +262,127 @@ function papelito_parse_product_qty_map( $value ): array {
 	return $qty_map;
 }
 
+function papelito_coverage_cache_version(): int {
+	$version = (int) get_option( 'papelito_coverage_cache_version', 1 );
+	return $version > 0 ? $version : 1;
+}
+
+function papelito_coverage_bump_cache_version( ...$args ): void {
+	update_option( 'papelito_coverage_cache_version', papelito_coverage_cache_version() + 1, false );
+}
+
+function papelito_coverage_products_cache_key( string $cep, array $product_ids, int $qty, int $active_vendor, array $qty_by_product ): string {
+	sort( $product_ids );
+	ksort( $qty_by_product );
+
+	return 'papelito_cov_products_' . md5(
+		wp_json_encode(
+			array(
+				'v'             => papelito_coverage_cache_version(),
+				'cep'           => $cep,
+				'product_ids'   => $product_ids,
+				'qty'           => $qty,
+				'active_vendor' => $active_vendor,
+				'qty_by_product' => $qty_by_product,
+			)
+		)
+	);
+}
+
+/**
+ * Busca estoque em lote para todos os produtos do request.
+ *
+ * @param array<int,int> $product_ids IDs de produto.
+ * @return array<int,array<int,array{vendor_id:int,qty:int}>>
+ */
+function papelito_stock_rows_by_products( array $product_ids ): array {
+	global $wpdb;
+
+	if ( empty( $product_ids ) || ! function_exists( 'papelito_vendor_stock_table_names' ) ) {
+		return array();
+	}
+
+	$product_ids = array_values(
+		array_unique(
+			array_filter(
+				array_map( 'absint', $product_ids ),
+				static fn( int $product_id ): bool => $product_id > 0
+			)
+		)
+	);
+
+	if ( empty( $product_ids ) ) {
+		return array();
+	}
+
+	$tables       = papelito_vendor_stock_table_names();
+	$placeholders = implode( ', ', array_fill( 0, count( $product_ids ), '%d' ) );
+	$query        = $wpdb->prepare(
+		"SELECT product_id, vendor_id, qty FROM {$tables['stock']} WHERE product_id IN ({$placeholders}) AND qty > 0 ORDER BY product_id ASC, qty DESC",
+		$product_ids
+	);
+	$rows         = $wpdb->get_results( $query, ARRAY_A );
+
+	if ( ! is_array( $rows ) ) {
+		return array();
+	}
+
+	$grouped = array();
+
+	foreach ( $rows as $row ) {
+		$product_id = isset( $row['product_id'] ) ? (int) $row['product_id'] : 0;
+		$vendor_id  = isset( $row['vendor_id'] ) ? (int) $row['vendor_id'] : 0;
+		$stock_qty  = isset( $row['qty'] ) ? (int) $row['qty'] : 0;
+
+		if ( $product_id <= 0 || $vendor_id <= 0 || $stock_qty <= 0 ) {
+			continue;
+		}
+
+		if ( ! isset( $grouped[ $product_id ] ) ) {
+			$grouped[ $product_id ] = array();
+		}
+
+		$grouped[ $product_id ][] = array(
+			'vendor_id' => $vendor_id,
+			'qty'       => $stock_qty,
+		);
+	}
+
+	return $grouped;
+}
+
+function papelito_coverage_empty_product(): array {
+	return array(
+		'has_coverage' => false,
+		'best_vendor'  => null,
+		'alternatives' => array(),
+	);
+}
+
+function papelito_coverage_maybe_bump_user_meta_cache( $meta_id, $user_id, $meta_key ): void {
+	$coverage_meta_keys = array(
+		'min_cep',
+		'max_cep',
+		'cep',
+		'cep_lat',
+		'cep_lng',
+		'shipping_lead_time_days',
+		'store_name',
+		'city',
+		'state',
+		'application_status',
+	);
+
+	if ( in_array( (string) $meta_key, $coverage_meta_keys, true ) ) {
+		papelito_coverage_bump_cache_version();
+	}
+}
+
+add_action( 'papelito_vendor_stock_changed', 'papelito_coverage_bump_cache_version' );
+add_action( 'added_user_meta', 'papelito_coverage_maybe_bump_user_meta_cache', 10, 3 );
+add_action( 'updated_user_meta', 'papelito_coverage_maybe_bump_user_meta_cache', 10, 3 );
+add_action( 'deleted_user_meta', 'papelito_coverage_maybe_bump_user_meta_cache', 10, 3 );
+
 /**
  * Monta a resposta de cobertura em lote para um CEP.
  *
@@ -277,23 +398,200 @@ function papelito_parse_product_qty_map( $value ): array {
  * @return array<string,array<string,mixed>>|WP_Error
  */
 function papelito_coverage_products( string $cep, array $product_ids, int $qty, int $active_vendor = 0, array $qty_by_product = array() ) {
-	$result = array();
+	if (
+		! function_exists( 'wc_get_product' )
+		|| ! function_exists( 'papelito_normalize_cep' )
+		|| ! function_exists( 'papelito_geocode_cep' )
+		|| ! function_exists( 'papelito_haversine_km' )
+		|| ! function_exists( 'papelito_matching_vendor_ids' )
+		|| ! function_exists( 'papelito_get_seller_application_status' )
+	) {
+		return new WP_Error(
+			'papelito_coverage_dependencies_missing',
+			'Dependencias de cobertura indisponiveis.',
+			array( 'status' => 500 )
+		);
+	}
+
+	$product_ids = array_values(
+		array_unique(
+			array_filter(
+				array_map( 'absint', $product_ids ),
+				static fn( int $product_id ): bool => $product_id > 0
+			)
+		)
+	);
+
+	if ( empty( $product_ids ) ) {
+		return array();
+	}
+
+	$cep_n = papelito_normalize_cep( $cep );
+
+	if ( '' === $cep_n ) {
+		return new WP_Error(
+			'papelito_coverage_cep_invalid',
+			'CEP informado invalido.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$cache_key = papelito_coverage_products_cache_key( $cep_n, $product_ids, $qty, $active_vendor, $qty_by_product );
+	$cached    = get_transient( $cache_key );
+
+	if ( is_array( $cached ) ) {
+		return $cached;
+	}
+
+	$matching_vendor_ids = papelito_matching_vendor_ids( (int) $cep_n );
+	$matching_lookup     = array_fill_keys( array_map( 'intval', $matching_vendor_ids ), true );
+	$stock_by_product    = papelito_stock_rows_by_products( $product_ids );
+
+	if ( $active_vendor > 0 ) {
+		$result = array();
+		$user   = get_userdata( $active_vendor );
+
+		$active_vendor_payload = null;
+
+		if (
+			isset( $matching_lookup[ $active_vendor ] )
+			&& $user instanceof WP_User
+			&& in_array( 'seller', (array) $user->roles, true )
+			&& 'approved' === papelito_get_seller_application_status( $active_vendor )
+		) {
+			$lead_time_days = (int) get_user_meta( $active_vendor, 'shipping_lead_time_days', true );
+
+			$active_vendor_payload = array(
+				'vendor_id'      => $active_vendor,
+				'store_name'     => (string) get_user_meta( $active_vendor, 'store_name', true ),
+				'city'           => (string) get_user_meta( $active_vendor, 'city', true ),
+				'state'          => (string) get_user_meta( $active_vendor, 'state', true ),
+				'distance_km'    => 0,
+				'lead_time_days' => $lead_time_days > 0 ? $lead_time_days : 2,
+				'is_active'      => true,
+				'is_nearest'     => true,
+			);
+		}
+
+		foreach ( $product_ids as $product_id ) {
+			$product_qty = isset( $qty_by_product[ $product_id ] ) ? max( 1, (int) $qty_by_product[ $product_id ] ) : $qty;
+			$match       = null;
+
+			if ( null !== $active_vendor_payload ) {
+				foreach ( $stock_by_product[ $product_id ] ?? array() as $row ) {
+					if ( (int) $row['vendor_id'] === $active_vendor && (int) $row['qty'] >= $product_qty ) {
+						$match = array_merge( $active_vendor_payload, array( 'qty' => (int) $row['qty'] ) );
+						break;
+					}
+				}
+			}
+
+			$result[ (string) $product_id ] = null !== $match
+				? array(
+					'has_coverage' => true,
+					'best_vendor'  => $match,
+					'alternatives' => array(),
+				)
+				: papelito_coverage_empty_product();
+		}
+
+		set_transient( $cache_key, $result, 5 * MINUTE_IN_SECONDS );
+
+		return $result;
+	}
+
+	$coords = papelito_geocode_cep( $cep_n );
+
+	if ( null === $coords ) {
+		return new WP_Error(
+			'papelito_coverage_cep_geocode_failed',
+			'Nao foi possivel geocodificar o CEP informado.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$vendor_cache        = array();
+	$result              = array();
 
 	foreach ( $product_ids as $product_id ) {
 		$product_qty = isset( $qty_by_product[ $product_id ] ) ? max( 1, (int) $qty_by_product[ $product_id ] ) : $qty;
-		$vendors     = papelito_coverage_vendors( $cep, $product_id, $product_qty, $active_vendor );
+		$vendors     = array();
 
-		if ( is_wp_error( $vendors ) ) {
-			if ( 'papelito_product_not_found' === $vendors->get_error_code() ) {
-				$result[ (string) $product_id ] = array(
-					'has_coverage' => false,
-					'best_vendor'  => null,
-					'alternatives' => array(),
-				);
+		foreach ( $stock_by_product[ $product_id ] ?? array() as $row ) {
+			$vendor_id = isset( $row['vendor_id'] ) ? (int) $row['vendor_id'] : 0;
+			$stock_qty = isset( $row['qty'] ) ? (int) $row['qty'] : 0;
+
+			if ( $vendor_id <= 0 || $stock_qty < $product_qty || ! isset( $matching_lookup[ $vendor_id ] ) ) {
 				continue;
 			}
 
-			return $vendors;
+			if ( ! array_key_exists( $vendor_id, $vendor_cache ) ) {
+				$user = get_userdata( $vendor_id );
+
+				if (
+					! $user instanceof WP_User
+					|| ! in_array( 'seller', (array) $user->roles, true )
+					|| 'approved' !== papelito_get_seller_application_status( $vendor_id )
+				) {
+					$vendor_cache[ $vendor_id ] = null;
+					continue;
+				}
+
+				$vendor_lat = get_user_meta( $vendor_id, 'cep_lat', true );
+				$vendor_lng = get_user_meta( $vendor_id, 'cep_lng', true );
+
+				if ( ! is_numeric( $vendor_lat ) || ! is_numeric( $vendor_lng ) ) {
+					$vendor_cache[ $vendor_id ] = null;
+					continue;
+				}
+
+				$lead_time_days = (int) get_user_meta( $vendor_id, 'shipping_lead_time_days', true );
+
+				$vendor_cache[ $vendor_id ] = array(
+					'vendor_id'      => $vendor_id,
+					'store_name'     => (string) get_user_meta( $vendor_id, 'store_name', true ),
+					'city'           => (string) get_user_meta( $vendor_id, 'city', true ),
+					'state'          => (string) get_user_meta( $vendor_id, 'state', true ),
+					'distance_km'    => round(
+						papelito_haversine_km(
+							(float) $coords['lat'],
+							(float) $coords['lng'],
+							(float) $vendor_lat,
+							(float) $vendor_lng
+						),
+						2
+					),
+					'lead_time_days' => $lead_time_days > 0 ? $lead_time_days : 2,
+					'is_active'      => $active_vendor > 0 && $active_vendor === $vendor_id,
+					'is_nearest'     => false,
+				);
+			}
+
+			if ( null === $vendor_cache[ $vendor_id ] ) {
+				continue;
+			}
+
+			$vendors[] = array_merge(
+				$vendor_cache[ $vendor_id ],
+				array( 'qty' => $stock_qty )
+			);
+		}
+
+		usort(
+			$vendors,
+			static function ( array $left, array $right ): int {
+				$distance_compare = $left['distance_km'] <=> $right['distance_km'];
+
+				if ( 0 !== $distance_compare ) {
+					return $distance_compare;
+				}
+
+				return $left['vendor_id'] <=> $right['vendor_id'];
+			}
+		);
+
+		if ( ! empty( $vendors ) ) {
+			$vendors[0]['is_nearest'] = true;
 		}
 
 		$best_vendor = $vendors[0] ?? null;
@@ -311,21 +609,20 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty, 
 				}
 			}
 
-			if ( null !== $active_match ) {
-				$best_vendor = $active_match;
-				$alternates  = $others;
-			} else {
-				$best_vendor = null;
-				$alternates  = array();
-			}
+			$best_vendor = $active_match;
+			$alternates  = null !== $active_match ? $others : array();
 		}
 
-		$result[ (string) $product_id ] = array(
-			'has_coverage' => null !== $best_vendor,
-			'best_vendor'  => $best_vendor,
-			'alternatives' => $alternates,
-		);
+		$result[ (string) $product_id ] = null !== $best_vendor
+			? array(
+				'has_coverage' => true,
+				'best_vendor'  => $best_vendor,
+				'alternatives' => $alternates,
+			)
+			: papelito_coverage_empty_product();
 	}
+
+	set_transient( $cache_key, $result, 5 * MINUTE_IN_SECONDS );
 
 	return $result;
 }

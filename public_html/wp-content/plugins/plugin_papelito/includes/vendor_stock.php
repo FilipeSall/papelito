@@ -238,6 +238,8 @@ function papelito_adjust_vendor_stock( $vendor_id, $product_id, $delta, $reason 
 		do_action( 'papelito_stock_zeroed', $vendor_id, $product_id );
 	}
 
+	do_action( 'papelito_vendor_stock_changed', $vendor_id, $product_id );
+
 	return array(
 		'ok'                 => true,
 		'qty'                => $qty,
@@ -366,6 +368,8 @@ function papelito_set_vendor_stock( $vendor_id, $product_id, $qty, $reason = 've
 	if ( $zeroed_event_fired ) {
 		do_action( 'papelito_stock_zeroed', $vendor_id, $product_id );
 	}
+
+	do_action( 'papelito_vendor_stock_changed', $vendor_id, $product_id );
 
 	return array(
 		'ok'                 => true,
