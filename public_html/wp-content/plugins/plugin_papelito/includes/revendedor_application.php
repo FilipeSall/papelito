@@ -16,6 +16,12 @@ const PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META        = 'application_reviewe
 const PAPELITO_VENDOR_APPLICATION_SUBMITTED_AT_META       = 'application_submitted_at';
 const PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META  = 'seller_application_discovery_channel';
 const PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META  = 'seller_application_has_sold_papelito';
+const PAPELITO_VENDOR_APPLICATION_STREET_META             = 'seller_application_street';
+const PAPELITO_VENDOR_APPLICATION_NUMBER_META             = 'seller_application_number';
+const PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META         = 'seller_application_complement';
+const PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META       = 'seller_application_neighborhood';
+const PAPELITO_VENDOR_PAGARME_RECIPIENT_DRAFT_META        = 'papelito_pagarme_recipient_draft';
+const PAPELITO_VENDOR_PAGARME_RECIPIENT_DRAFT_UPDATED_AT  = 'papelito_pagarme_recipient_draft_updated_at';
 
 /**
  * Retorna data/hora em UTC no mesmo formato usado pelo fluxo de mensagens.
@@ -96,6 +102,395 @@ function papelito_get_seller_application_data( int $user_id ): array {
 		'discoveryChannel' => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META, true ),
 		'hasSoldPapelito'  => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, true ),
 	);
+}
+
+/**
+ * Retorna o endereco comercial salvo para a candidatura.
+ *
+ * @param int $user_id Usuario.
+ * @return array<string, string>
+ */
+function papelito_get_seller_application_address_data( int $user_id ): array {
+	return array(
+		'cep'          => (string) get_user_meta( $user_id, 'cep', true ),
+		'street'       => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STREET_META, true ),
+		'number'       => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NUMBER_META, true ),
+		'complement'   => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META, true ),
+		'neighborhood' => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, true ),
+		'city'         => (string) get_user_meta( $user_id, 'city', true ),
+		'state'        => (string) get_user_meta( $user_id, 'state', true ),
+		'minCep'       => (string) get_user_meta( $user_id, 'min_cep', true ),
+		'maxCep'       => (string) get_user_meta( $user_id, 'max_cep', true ),
+	);
+}
+
+/**
+ * Decodifica o draft de recebedor Pagar.me salvo em usermeta.
+ *
+ * @param int $user_id Usuario.
+ * @return array<string, mixed>|null
+ */
+function papelito_get_vendor_pagarme_recipient_draft( int $user_id ): ?array {
+	$raw = (string) get_user_meta( $user_id, PAPELITO_VENDOR_PAGARME_RECIPIENT_DRAFT_META, true );
+
+	if ( '' === $raw ) {
+		return null;
+	}
+
+	$decoded = json_decode( $raw, true );
+
+	return is_array( $decoded ) ? $decoded : null;
+}
+
+/**
+ * Constrói o payload REST do wizard de revendedor.
+ *
+ * @param int $user_id Usuario.
+ * @return array<string, mixed>
+ */
+function papelito_get_vendor_application_rest_response( int $user_id ): array {
+	$summary = papelito_get_seller_application_data( $user_id );
+	$address = papelito_get_seller_application_address_data( $user_id );
+
+	return array(
+		'status'       => $summary['status'],
+		'submittedAt'  => $summary['submittedAt'],
+		'application'  => array(
+			'step1' => array(
+				'storeName'        => $summary['storeName'],
+				'firstName'        => $summary['firstName'],
+				'lastName'         => $summary['lastName'],
+				'cnpj'             => $summary['cnpj'],
+				'phone'            => $summary['phoneNumber'],
+				'email'            => $summary['email'],
+				'instagram'        => $summary['instagram'],
+				'hasSoldPapelito'  => $summary['hasSoldPapelito'],
+				'discoveryChannel' => $summary['discoveryChannel'],
+			),
+			'step2' => array(
+				'cep'          => $address['cep'],
+				'street'       => $address['street'],
+				'number'       => $address['number'],
+				'complement'   => $address['complement'],
+				'neighborhood' => $address['neighborhood'],
+				'city'         => $address['city'],
+				'state'        => $address['state'],
+				'minCep'       => $address['minCep'],
+				'maxCep'       => $address['maxCep'],
+			),
+		),
+		'pagarmeDraft' => papelito_get_vendor_pagarme_recipient_draft( $user_id ),
+	);
+}
+
+/**
+ * Salva o endereco comercial complementar do wizard.
+ *
+ * @param int   $user_id Usuario.
+ * @param array $step2 Dados do step 2.
+ * @return void
+ */
+function papelito_save_seller_application_address_data( int $user_id, array $step2 ): void {
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STREET_META, sanitize_text_field( (string) ( $step2['street'] ?? '' ) ) );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NUMBER_META, sanitize_text_field( (string) ( $step2['number'] ?? '' ) ) );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META, sanitize_text_field( (string) ( $step2['complement'] ?? '' ) ) );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, sanitize_text_field( (string) ( $step2['neighborhood'] ?? '' ) ) );
+}
+
+/**
+ * Salva o draft do recebedor Pagar.me.
+ *
+ * @param int   $user_id Usuario.
+ * @param array $step3 Dados do step 3.
+ * @return void
+ */
+function papelito_save_vendor_pagarme_recipient_draft( int $user_id, array $step3 ): void {
+	$sanitized = papelito_sanitize_vendor_pagarme_draft( $step3 );
+	$encoded   = wp_json_encode( $sanitized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+
+	if ( false === $encoded ) {
+		return;
+	}
+
+	update_user_meta( $user_id, PAPELITO_VENDOR_PAGARME_RECIPIENT_DRAFT_META, $encoded );
+	update_user_meta( $user_id, PAPELITO_VENDOR_PAGARME_RECIPIENT_DRAFT_UPDATED_AT, papelito_current_utc_mysql() );
+}
+
+/**
+ * Sanitiza o draft de recebedor de forma recursiva.
+ *
+ * @param mixed $value Valor bruto.
+ * @return mixed
+ */
+function papelito_sanitize_vendor_pagarme_draft( $value ) {
+	if ( is_bool( $value ) ) {
+		return $value;
+	}
+
+	if ( is_numeric( $value ) ) {
+		return (string) $value;
+	}
+
+	if ( is_string( $value ) ) {
+		return sanitize_text_field( $value );
+	}
+
+	if ( ! is_array( $value ) ) {
+		return '';
+	}
+
+	$sanitized = array();
+	foreach ( $value as $key => $item ) {
+		$sanitized[ $key ] = papelito_sanitize_vendor_pagarme_draft( $item );
+	}
+
+	return $sanitized;
+}
+
+/**
+ * Valida CPF com dígitos verificadores.
+ *
+ * @param string $value CPF.
+ * @return bool
+ */
+function papelito_validate_cpf( string $value ): bool {
+	$digits = preg_replace( '/\D+/', '', $value );
+
+	if ( ! is_string( $digits ) || 11 !== strlen( $digits ) || preg_match( '/^(\d)\1{10}$/', $digits ) ) {
+		return false;
+	}
+
+	$base         = substr( $digits, 0, 9 );
+	$first_digit  = papelito_calculate_cpf_digit( $base, 10 );
+	$second_digit = papelito_calculate_cpf_digit( $base . $first_digit, 11 );
+
+	return substr( $digits, -2 ) === (string) $first_digit . (string) $second_digit;
+}
+
+/**
+ * Calcula dígito verificador do CPF.
+ *
+ * @param string $value Base numérica.
+ * @param int    $weight Peso inicial.
+ * @return int
+ */
+function papelito_calculate_cpf_digit( string $value, int $weight ): int {
+	$total = 0;
+
+	for ( $index = 0; $index < strlen( $value ); $index++ ) {
+		$total += (int) $value[ $index ] * ( $weight - $index );
+	}
+
+	$remainder = ( $total * 10 ) % 11;
+
+	return 10 === $remainder ? 0 : $remainder;
+}
+
+/**
+ * Valida o payload do step 3 do wizard.
+ *
+ * @param array $step3 Dados do step 3.
+ * @return WP_Error|null
+ */
+function papelito_validate_vendor_pagarme_step3( array $step3 ) {
+	$errors = new WP_Error();
+
+	$company_name     = sanitize_text_field( (string) ( $step3['companyName'] ?? '' ) );
+	$trading_name     = sanitize_text_field( (string) ( $step3['tradingName'] ?? '' ) );
+	$corporation_type = sanitize_text_field( (string) ( $step3['corporationType'] ?? '' ) );
+	$founding_date    = sanitize_text_field( (string) ( $step3['foundingDate'] ?? '' ) );
+	$annual_revenue   = str_replace( ',', '.', sanitize_text_field( (string) ( $step3['annualRevenue'] ?? '' ) ) );
+
+	if ( '' === $company_name ) {
+		$errors->add( 'companyName', 'Informe a razao social.' );
+	}
+	if ( '' === $trading_name ) {
+		$errors->add( 'tradingName', 'Informe o nome fantasia.' );
+	}
+	if ( '' === $corporation_type ) {
+		$errors->add( 'corporationType', 'Informe a natureza juridica.' );
+	}
+	if ( 1 !== preg_match( '/^\d{4}\-\d{2}\-\d{2}$/', $founding_date ) ) {
+		$errors->add( 'foundingDate', 'Informe uma data de fundacao valida.' );
+	}
+	if ( ! is_numeric( $annual_revenue ) || (float) $annual_revenue <= 0 ) {
+		$errors->add( 'annualRevenue', 'Informe o faturamento anual.' );
+	}
+
+	$partners = isset( $step3['managingPartners'] ) && is_array( $step3['managingPartners'] ) ? $step3['managingPartners'] : array();
+	if ( empty( $partners ) ) {
+		$errors->add( 'managingPartners', 'Informe ao menos um socio administrador.' );
+	} else {
+		$partner = is_array( $partners[0] ) ? $partners[0] : array();
+
+		if ( '' === sanitize_text_field( (string) ( $partner['name'] ?? '' ) ) ) {
+			$errors->add( 'partnerName', 'Informe o nome do socio administrador.' );
+		}
+		if ( ! is_email( sanitize_email( (string) ( $partner['email'] ?? '' ) ) ) ) {
+			$errors->add( 'partnerEmail', 'Informe um e-mail valido para o socio.' );
+		}
+		if ( ! papelito_validate_cpf( (string) ( $partner['document'] ?? '' ) ) ) {
+			$errors->add( 'partnerDocument', 'Informe um CPF valido para o socio.' );
+		}
+		if ( '' === sanitize_text_field( (string) ( $partner['motherName'] ?? '' ) ) ) {
+			$errors->add( 'partnerMotherName', 'Informe o nome da mae do socio.' );
+		}
+		if ( 1 !== preg_match( '/^\d{4}\-\d{2}\-\d{2}$/', sanitize_text_field( (string) ( $partner['birthdate'] ?? '' ) ) ) ) {
+			$errors->add( 'partnerBirthdate', 'Informe a data de nascimento do socio.' );
+		}
+
+		$monthly_income = str_replace( ',', '.', sanitize_text_field( (string) ( $partner['monthlyIncome'] ?? '' ) ) );
+		if ( ! is_numeric( $monthly_income ) || (float) $monthly_income <= 0 ) {
+			$errors->add( 'partnerMonthlyIncome', 'Informe a renda mensal do socio.' );
+		}
+		if ( '' === sanitize_text_field( (string) ( $partner['professionalOccupation'] ?? '' ) ) ) {
+			$errors->add( 'partnerOccupation', 'Informe a ocupacao profissional do socio.' );
+		}
+
+		$address = isset( $partner['address'] ) && is_array( $partner['address'] ) ? $partner['address'] : array();
+		$zip     = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $address['zipCode'] ?? '' ) ) : '';
+
+		if ( '' === $zip ) {
+			$errors->add( 'partnerZipCode', 'Informe um CEP valido para o socio.' );
+		}
+		if ( '' === sanitize_text_field( (string) ( $address['street'] ?? '' ) ) ) {
+			$errors->add( 'partnerStreet', 'Informe o logradouro do socio.' );
+		}
+		if ( '' === sanitize_text_field( (string) ( $address['streetNumber'] ?? '' ) ) ) {
+			$errors->add( 'partnerStreetNumber', 'Informe o numero do endereco do socio.' );
+		}
+		if ( '' === sanitize_text_field( (string) ( $address['neighborhood'] ?? '' ) ) ) {
+			$errors->add( 'partnerNeighborhood', 'Informe o bairro do socio.' );
+		}
+		if ( '' === sanitize_text_field( (string) ( $address['city'] ?? '' ) ) ) {
+			$errors->add( 'partnerCity', 'Informe a cidade do socio.' );
+		}
+
+		$partner_state = sanitize_text_field( (string) ( $address['state'] ?? '' ) );
+		if ( '' === $partner_state || ! array_key_exists( $partner_state, papelito_brazilian_states() ) ) {
+			$errors->add( 'partnerState', 'Selecione um estado valido para o socio.' );
+		}
+	}
+
+	$bank_account = isset( $step3['bankAccount'] ) && is_array( $step3['bankAccount'] ) ? $step3['bankAccount'] : array();
+	$holder_type  = sanitize_text_field( (string) ( $bank_account['holderType'] ?? '' ) );
+
+	if ( '' === sanitize_text_field( (string) ( $bank_account['holderName'] ?? '' ) ) ) {
+		$errors->add( 'bankHolderName', 'Informe o titular da conta.' );
+	}
+
+	$holder_document = (string) ( $bank_account['holderDocument'] ?? '' );
+	if ( 'individual' === $holder_type ) {
+		if ( ! papelito_validate_cpf( $holder_document ) ) {
+			$errors->add( 'bankHolderDocument', 'Informe um CPF valido para o titular.' );
+		}
+	} elseif ( 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $holder_document ) ) {
+		$errors->add( 'bankHolderDocument', 'Informe um CNPJ valido para o titular.' );
+	}
+
+	if ( 1 !== preg_match( '/^\d{3}$/', sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ) ) ) {
+		$errors->add( 'bankCode', 'Informe um codigo bancario com 3 digitos.' );
+	}
+	if ( 1 !== preg_match( '/^\d+$/', sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ) ) ) {
+		$errors->add( 'branchNumber', 'Informe uma agencia valida.' );
+	}
+	if ( 1 !== preg_match( '/^\d+$/', sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ) ) ) {
+		$errors->add( 'accountNumber', 'Informe uma conta valida.' );
+	}
+	if ( 1 !== preg_match( '/^[0-9A-Za-z]+$/', sanitize_text_field( (string) ( $bank_account['accountCheckDigit'] ?? '' ) ) ) ) {
+		$errors->add( 'accountCheckDigit', 'Informe o digito da conta.' );
+	}
+
+	return $errors->has_errors() ? $errors : null;
+}
+
+/**
+ * Valida os campos adicionais de endereco do step 2.
+ *
+ * @param array $step2 Dados do step 2.
+ * @return WP_Error|null
+ */
+function papelito_validate_vendor_address_step2( array $step2 ) {
+	$errors = new WP_Error();
+
+	if ( '' === sanitize_text_field( (string) ( $step2['street'] ?? '' ) ) ) {
+		$errors->add( 'street', 'Informe o logradouro.' );
+	}
+	if ( '' === sanitize_text_field( (string) ( $step2['number'] ?? '' ) ) ) {
+		$errors->add( 'number', 'Informe o numero.' );
+	}
+	if ( '' === sanitize_text_field( (string) ( $step2['neighborhood'] ?? '' ) ) ) {
+		$errors->add( 'neighborhood', 'Informe o bairro.' );
+	}
+
+	return $errors->has_errors() ? $errors : null;
+}
+
+/**
+ * Converte o payload aninhado do wizard para o contrato legado de triagem.
+ *
+ * @param array $payload Payload do REST.
+ * @return array<string, string>
+ */
+function papelito_flatten_vendor_application_payload( array $payload ): array {
+	$step1 = isset( $payload['step1'] ) && is_array( $payload['step1'] ) ? $payload['step1'] : array();
+	$step2 = isset( $payload['step2'] ) && is_array( $payload['step2'] ) ? $payload['step2'] : array();
+
+	return array(
+		'storeName'       => (string) ( $step1['storeName'] ?? '' ),
+		'firstName'       => (string) ( $step1['firstName'] ?? '' ),
+		'lastName'        => (string) ( $step1['lastName'] ?? '' ),
+		'email'           => (string) ( $step1['email'] ?? '' ),
+		'phoneNumber'     => (string) ( $step1['phone'] ?? '' ),
+		'cnpj'            => (string) ( $step1['cnpj'] ?? '' ),
+		'instagram'       => (string) ( $step1['instagram'] ?? '' ),
+		'city'            => (string) ( $step2['city'] ?? '' ),
+		'state'           => (string) ( $step2['state'] ?? '' ),
+		'cep'             => (string) ( $step2['cep'] ?? '' ),
+		'minCep'          => (string) ( $step2['minCep'] ?? '' ),
+		'maxCep'          => (string) ( $step2['maxCep'] ?? '' ),
+		'discoveryChannel' => (string) ( $step1['discoveryChannel'] ?? '' ),
+		'hasSoldPapelito' => (string) ( $step1['hasSoldPapelito'] ?? '' ),
+	);
+}
+
+/**
+ * Submete o wizard completo do revendedor via REST.
+ *
+ * @param int   $user_id Usuario.
+ * @param array $payload Payload aninhado.
+ * @return array<string, mixed>|WP_Error
+ */
+function papelito_submit_vendor_application_rest( int $user_id, array $payload ) {
+	$step3 = isset( $payload['step3'] ) && is_array( $payload['step3'] ) ? $payload['step3'] : array();
+	$step2 = isset( $payload['step2'] ) && is_array( $payload['step2'] ) ? $payload['step2'] : array();
+
+	$step2_validation = papelito_validate_vendor_address_step2( $step2 );
+	if ( $step2_validation instanceof WP_Error ) {
+		$step2_validation->add_data( array( 'status' => 422 ) );
+		return $step2_validation;
+	}
+
+	$step3_validation = papelito_validate_vendor_pagarme_step3( $step3 );
+	if ( $step3_validation instanceof WP_Error ) {
+		$step3_validation->add_data( array( 'status' => 422 ) );
+		return $step3_validation;
+	}
+
+	$legacy_input = papelito_flatten_vendor_application_payload( $payload );
+	$result       = papelito_submit_seller_application( $user_id, $legacy_input );
+
+	if ( is_wp_error( $result ) ) {
+		return $result;
+	}
+
+	papelito_save_seller_application_address_data( $user_id, $step2 );
+	papelito_save_vendor_pagarme_recipient_draft( $user_id, $step3 );
+
+	$response            = papelito_get_vendor_application_rest_response( $user_id );
+	$response['message'] = 'Triagem enviada com sucesso. Nosso time vai analisar seus dados.';
+
+	return $response;
 }
 
 /**
@@ -318,6 +713,59 @@ function papelito_submit_seller_application( int $user_id, array $input ) {
 		'application' => $application,
 	);
 }
+
+add_action(
+	'rest_api_init',
+	static function (): void {
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/application',
+			array(
+				array(
+					'methods'             => 'GET',
+					'permission_callback' => static function (): bool {
+						return is_user_logged_in();
+					},
+					'callback'            => static function () {
+						$user_id = get_current_user_id();
+
+						if ( $user_id <= 0 ) {
+							return new WP_Error( 'papelito_not_authenticated', 'Usuario nao autenticado.', array( 'status' => 401 ) );
+						}
+
+						return new WP_REST_Response( papelito_get_vendor_application_rest_response( $user_id ), 200 );
+					},
+				),
+				array(
+					'methods'             => 'POST',
+					'permission_callback' => static function (): bool {
+						return is_user_logged_in();
+					},
+					'callback'            => static function ( WP_REST_Request $request ) {
+						$user_id = get_current_user_id();
+
+						if ( $user_id <= 0 ) {
+							return new WP_Error( 'papelito_not_authenticated', 'Usuario nao autenticado.', array( 'status' => 401 ) );
+						}
+
+						$payload = $request->get_json_params();
+						if ( ! is_array( $payload ) ) {
+							return new WP_Error( 'papelito_invalid_payload', 'Payload invalido.', array( 'status' => 400 ) );
+						}
+
+						$result = papelito_submit_vendor_application_rest( $user_id, $payload );
+
+						if ( is_wp_error( $result ) ) {
+							return $result;
+						}
+
+						return new WP_REST_Response( $result, 200 );
+					},
+				),
+			)
+		);
+	}
+);
 
 add_action(
 	'graphql_register_types',
