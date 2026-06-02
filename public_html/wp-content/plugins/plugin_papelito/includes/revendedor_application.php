@@ -143,6 +143,34 @@ function papelito_get_vendor_pagarme_recipient_draft( int $user_id ): ?array {
 }
 
 /**
+ * Retorna os dados bancarios do draft do recebedor para uso no admin.
+ *
+ * @param int $user_id Usuario.
+ * @return array<string, string>|null
+ */
+function papelito_get_vendor_bank_account_detail( int $user_id ): ?array {
+	$draft = papelito_get_vendor_pagarme_recipient_draft( $user_id );
+
+	if ( ! is_array( $draft ) || ! isset( $draft['bankAccount'] ) || ! is_array( $draft['bankAccount'] ) ) {
+		return null;
+	}
+
+	$bank_account = $draft['bankAccount'];
+
+	return array(
+		'holderName'        => sanitize_text_field( (string) ( $bank_account['holderName'] ?? '' ) ),
+		'holderType'        => sanitize_text_field( (string) ( $bank_account['holderType'] ?? '' ) ),
+		'holderDocument'    => sanitize_text_field( (string) ( $bank_account['holderDocument'] ?? '' ) ),
+		'bankCode'          => sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ),
+		'branchNumber'      => sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ),
+		'branchCheckDigit'  => sanitize_text_field( (string) ( $bank_account['branchCheckDigit'] ?? '' ) ),
+		'accountNumber'     => sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ),
+		'accountCheckDigit' => sanitize_text_field( (string) ( $bank_account['accountCheckDigit'] ?? '' ) ),
+		'type'              => sanitize_text_field( (string) ( $bank_account['type'] ?? '' ) ),
+	);
+}
+
+/**
  * Constrói o payload REST do wizard de revendedor.
  *
  * @param int $user_id Usuario.
@@ -609,6 +637,46 @@ function papelito_notify_seller_application( array $application ): void {
 }
 
 /**
+ * Envia e-mail de confirmacao da triagem para o candidato.
+ *
+ * @param array $application Dados da candidatura.
+ * @return void
+ */
+function papelito_notify_seller_application_received( array $application ): void {
+	$to = isset( $application['email'] ) ? sanitize_email( (string) $application['email'] ) : '';
+
+	if ( '' === $to ) {
+		return;
+	}
+
+	$subject    = 'Recebemos sua triagem - Papelito';
+	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
+	$body_lines = array(
+		sprintf( 'Ola %s,', trim( (string) $application['firstName'] ) !== '' ? $application['firstName'] : $application['storeName'] ),
+		'',
+		'Recebemos sua triagem para o programa de revendedores Papelito.',
+		'Nosso time vai analisar os dados enviados e entrara em contato pelos canais cadastrados.',
+		'',
+		'Resumo enviado:',
+		sprintf( 'Loja: %s', $application['storeName'] ),
+		sprintf( 'Responsavel: %s %s', $application['firstName'], $application['lastName'] ),
+		sprintf( 'E-mail: %s', $application['email'] ),
+		sprintf( 'Telefone: %s', $application['phoneNumber'] ),
+		sprintf( 'CNPJ: %s', $application['cnpj'] ),
+		sprintf( 'Cidade/Estado: %s - %s', $application['city'], $application['state'] ),
+		sprintf( 'CEP de operacao: %s', $application['cep'] ?? '' ),
+		sprintf( 'Faixa atendida: %s - %s', $application['minCep'] ?? '', $application['maxCep'] ?? '' ),
+		sprintf( 'Enviado em: %s', $application['submittedAt'] ),
+		'',
+		'Se precisar atualizar alguma informacao, responda este e-mail ou fale com marketing@papelitobrasil.com.',
+		'',
+		'Time Papelito',
+	);
+
+	wp_mail( $to, $subject, implode( PHP_EOL, $body_lines ), $headers );
+}
+
+/**
  * Limpa dados da ultima revisao da candidatura.
  *
  * @param int $user_id Usuario.
@@ -705,6 +773,7 @@ function papelito_submit_seller_application( int $user_id, array $input ) {
 	$application = papelito_get_seller_application_data( $user_id );
 
 	papelito_notify_seller_application( $application );
+	papelito_notify_seller_application_received( $application );
 	do_action( 'papelito_vendor_application_submitted', $user_id );
 
 	return array(
@@ -874,6 +943,7 @@ function papelito_get_vendor_application_detail( int $user_id ) {
 	}
 
 	$base = papelito_get_seller_application_data( $user_id );
+	$bank_account = papelito_get_vendor_bank_account_detail( $user_id );
 
 	$min_ranges = (array) get_user_meta( $user_id, 'min_cep', false );
 	$max_ranges = (array) get_user_meta( $user_id, 'max_cep', false );
@@ -899,6 +969,7 @@ function papelito_get_vendor_application_detail( int $user_id ) {
 	$detail['reviewedAt']       = (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META, true );
 	$detail['reviewedBy']       = $reviewer_out;
 	$detail['registeredAt']     = (string) $user->user_registered;
+	$detail['bankAccount']      = $bank_account;
 
 	return $detail;
 }
