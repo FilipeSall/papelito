@@ -542,6 +542,216 @@ function papelito_vendor_dashboard_settings( int $vendor_id ): array {
 }
 
 /**
+ * Format normalized CEP digits for display.
+ */
+function papelito_vendor_dashboard_format_cep( string $cep ): string {
+	$digits = preg_replace( '/\D+/', '', $cep );
+
+	if ( ! is_string( $digits ) || 8 !== strlen( $digits ) ) {
+		return $cep;
+	}
+
+	return substr( $digits, 0, 5 ) . '-' . substr( $digits, 5 );
+}
+
+/**
+ * Read seller coverage ranges from paired min_cep/max_cep metadata.
+ *
+ * @return array<int,array{id:int,min_cep:string,max_cep:string,min_cep_formatted:string,max_cep_formatted:string}>
+ */
+function papelito_vendor_dashboard_coverage_ranges( int $vendor_id ): array {
+	$min_ceps = (array) get_user_meta( $vendor_id, 'min_cep', false );
+	$max_ceps = (array) get_user_meta( $vendor_id, 'max_cep', false );
+	$count    = min( count( $min_ceps ), count( $max_ceps ) );
+	$items    = array();
+
+	for ( $i = 0; $i < $count; $i++ ) {
+		$min_cep = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) $min_ceps[ $i ] ) : '';
+		$max_cep = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) $max_ceps[ $i ] ) : '';
+
+		if ( '' === $min_cep || '' === $max_cep ) {
+			continue;
+		}
+
+		$items[] = array(
+			'id'                => count( $items ) + 1,
+			'min_cep'           => $min_cep,
+			'max_cep'           => $max_cep,
+			'min_cep_formatted' => papelito_vendor_dashboard_format_cep( $min_cep ),
+			'max_cep_formatted' => papelito_vendor_dashboard_format_cep( $max_cep ),
+		);
+	}
+
+	return $items;
+}
+
+/**
+ * Validate a coverage range payload.
+ *
+ * @return array{min_cep:string,max_cep:string}|WP_Error
+ */
+function papelito_vendor_dashboard_normalize_coverage_range( array $payload ) {
+	$min_cep = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $payload['minCep'] ?? $payload['min_cep'] ?? '' ) ) : '';
+	$max_cep = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $payload['maxCep'] ?? $payload['max_cep'] ?? '' ) ) : '';
+
+	if ( '' === $min_cep || '' === $max_cep ) {
+		return new WP_Error( 'papelito_vendor_invalid_coverage_range', 'Informe CEP inicial e final validos.', array( 'status' => 422 ) );
+	}
+
+	if ( (int) $min_cep > (int) $max_cep ) {
+		return new WP_Error( 'papelito_vendor_invalid_coverage_order', 'O CEP final precisa ser maior ou igual ao inicial.', array( 'status' => 422 ) );
+	}
+
+	return array(
+		'min_cep' => $min_cep,
+		'max_cep' => $max_cep,
+	);
+}
+
+/**
+ * Persist normalized coverage ranges for a vendor.
+ *
+ * @param array<int,array{min_cep:string,max_cep:string}> $ranges Ranges.
+ */
+function papelito_vendor_dashboard_save_coverage_ranges( int $vendor_id, array $ranges ): void {
+	delete_user_meta( $vendor_id, 'min_cep' );
+	delete_user_meta( $vendor_id, 'max_cep' );
+
+	foreach ( $ranges as $range ) {
+		add_user_meta( $vendor_id, 'min_cep', $range['min_cep'], false );
+		add_user_meta( $vendor_id, 'max_cep', $range['max_cep'], false );
+	}
+
+	if ( function_exists( 'papelito_coverage_bump_cache_version' ) ) {
+		papelito_coverage_bump_cache_version();
+	}
+}
+
+/**
+ * Ensure the new or edited range does not duplicate/overlap existing ranges.
+ *
+ * @param array<int,array{id:int,min_cep:string,max_cep:string}> $ranges Existing ranges.
+ * @param array{min_cep:string,max_cep:string}                  $candidate Candidate.
+ */
+function papelito_vendor_dashboard_validate_coverage_overlap( array $ranges, array $candidate, int $ignore_id = 0 ) {
+	$candidate_min = (int) $candidate['min_cep'];
+	$candidate_max = (int) $candidate['max_cep'];
+
+	foreach ( $ranges as $range ) {
+		$range_id = isset( $range['id'] ) ? (int) $range['id'] : 0;
+
+		if ( $ignore_id > 0 && $range_id === $ignore_id ) {
+			continue;
+		}
+
+		$range_min = (int) $range['min_cep'];
+		$range_max = (int) $range['max_cep'];
+
+		if ( $candidate_min <= $range_max && $candidate_max >= $range_min ) {
+			return new WP_Error(
+				'papelito_vendor_coverage_overlap',
+				'Esta faixa se sobrepoe a uma faixa ja cadastrada.',
+				array( 'status' => 409 )
+			);
+		}
+	}
+
+	return true;
+}
+
+/**
+ * Add a vendor coverage range.
+ */
+function papelito_vendor_dashboard_add_coverage_range( int $vendor_id, array $payload ) {
+	$ranges    = papelito_vendor_dashboard_coverage_ranges( $vendor_id );
+	$candidate = papelito_vendor_dashboard_normalize_coverage_range( $payload );
+
+	if ( is_wp_error( $candidate ) ) {
+		return $candidate;
+	}
+
+	$overlap = papelito_vendor_dashboard_validate_coverage_overlap( $ranges, $candidate );
+
+	if ( is_wp_error( $overlap ) ) {
+		return $overlap;
+	}
+
+	$next_ranges   = array_map(
+		static fn( array $range ): array => array(
+			'min_cep' => $range['min_cep'],
+			'max_cep' => $range['max_cep'],
+		),
+		$ranges
+	);
+	$next_ranges[] = $candidate;
+
+	papelito_vendor_dashboard_save_coverage_ranges( $vendor_id, $next_ranges );
+
+	return papelito_vendor_dashboard_coverage_ranges( $vendor_id );
+}
+
+/**
+ * Update one vendor coverage range.
+ */
+function papelito_vendor_dashboard_update_coverage_range( int $vendor_id, int $range_id, array $payload ) {
+	$ranges = papelito_vendor_dashboard_coverage_ranges( $vendor_id );
+
+	if ( $range_id <= 0 || $range_id > count( $ranges ) ) {
+		return new WP_Error( 'papelito_vendor_coverage_range_not_found', 'Faixa de CEP nao encontrada.', array( 'status' => 404 ) );
+	}
+
+	$candidate = papelito_vendor_dashboard_normalize_coverage_range( $payload );
+
+	if ( is_wp_error( $candidate ) ) {
+		return $candidate;
+	}
+
+	$overlap = papelito_vendor_dashboard_validate_coverage_overlap( $ranges, $candidate, $range_id );
+
+	if ( is_wp_error( $overlap ) ) {
+		return $overlap;
+	}
+
+	$ranges[ $range_id - 1 ] = array_merge( $ranges[ $range_id - 1 ], $candidate );
+	$next_ranges            = array_map(
+		static fn( array $range ): array => array(
+			'min_cep' => $range['min_cep'],
+			'max_cep' => $range['max_cep'],
+		),
+		$ranges
+	);
+
+	papelito_vendor_dashboard_save_coverage_ranges( $vendor_id, $next_ranges );
+
+	return papelito_vendor_dashboard_coverage_ranges( $vendor_id );
+}
+
+/**
+ * Remove one vendor coverage range.
+ */
+function papelito_vendor_dashboard_delete_coverage_range( int $vendor_id, int $range_id ) {
+	$ranges = papelito_vendor_dashboard_coverage_ranges( $vendor_id );
+
+	if ( $range_id <= 0 || $range_id > count( $ranges ) ) {
+		return new WP_Error( 'papelito_vendor_coverage_range_not_found', 'Faixa de CEP nao encontrada.', array( 'status' => 404 ) );
+	}
+
+	array_splice( $ranges, $range_id - 1, 1 );
+
+	$next_ranges = array_map(
+		static fn( array $range ): array => array(
+			'min_cep' => $range['min_cep'],
+			'max_cep' => $range['max_cep'],
+		),
+		$ranges
+	);
+
+	papelito_vendor_dashboard_save_coverage_ranges( $vendor_id, $next_ranges );
+
+	return papelito_vendor_dashboard_coverage_ranges( $vendor_id );
+}
+
+/**
  * Map a customer-owned order detail.
  *
  * @return object|WP_Error
@@ -716,6 +926,95 @@ add_action(
 
 						return new WP_REST_Response( papelito_vendor_dashboard_settings( get_current_user_id() ), 200 );
 					},
+				),
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/me/coverage-ranges',
+			array(
+				array(
+					'methods'             => WP_REST_Server::READABLE,
+					'permission_callback' => static function () {
+						$check = papelito_vendor_dashboard_require_seller();
+						return is_wp_error( $check ) ? $check : true;
+					},
+					'callback'            => static function () {
+						return new WP_REST_Response(
+							array( 'items' => papelito_vendor_dashboard_coverage_ranges( get_current_user_id() ) ),
+							200
+						);
+					},
+				),
+				array(
+					'methods'             => WP_REST_Server::CREATABLE,
+					'permission_callback' => static function () {
+						$check = papelito_vendor_dashboard_require_seller();
+						return is_wp_error( $check ) ? $check : true;
+					},
+					'callback'            => static function ( WP_REST_Request $request ) {
+						$payload = $request->get_json_params();
+						$result  = papelito_vendor_dashboard_add_coverage_range(
+							get_current_user_id(),
+							is_array( $payload ) ? $payload : array()
+						);
+
+						return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'items' => $result ), 201 );
+					},
+				),
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/me/coverage-ranges/(?P<id>\d+)',
+			array(
+				array(
+					'methods'             => WP_REST_Server::EDITABLE,
+					'permission_callback' => static function () {
+						$check = papelito_vendor_dashboard_require_seller();
+						return is_wp_error( $check ) ? $check : true;
+					},
+					'callback'            => static function ( WP_REST_Request $request ) {
+						$payload = $request->get_json_params();
+						$result  = papelito_vendor_dashboard_update_coverage_range(
+							get_current_user_id(),
+							absint( $request->get_param( 'id' ) ),
+							is_array( $payload ) ? $payload : array()
+						);
+
+						return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'items' => $result ), 200 );
+					},
+					'args'                => array(
+						'id' => array(
+							'validate_callback' => static function ( $value ): bool {
+								return is_numeric( $value ) && (int) $value > 0;
+							},
+						),
+					),
+				),
+				array(
+					'methods'             => WP_REST_Server::DELETABLE,
+					'permission_callback' => static function () {
+						$check = papelito_vendor_dashboard_require_seller();
+						return is_wp_error( $check ) ? $check : true;
+					},
+					'callback'            => static function ( WP_REST_Request $request ) {
+						$result = papelito_vendor_dashboard_delete_coverage_range(
+							get_current_user_id(),
+							absint( $request->get_param( 'id' ) )
+						);
+
+						return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'items' => $result ), 200 );
+					},
+					'args'                => array(
+						'id' => array(
+							'validate_callback' => static function ( $value ): bool {
+								return is_numeric( $value ) && (int) $value > 0;
+							},
+						),
+					),
 				),
 			)
 		);

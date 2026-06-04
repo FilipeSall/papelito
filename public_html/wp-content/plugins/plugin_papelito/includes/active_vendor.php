@@ -179,6 +179,7 @@ function papelito_resolve_default_vendor_id( int $user_id ): ?int {
 
 	$best_id       = null;
 	$best_distance = null;
+	$best_stock    = -1;
 
 	foreach ( $vendor_ids as $vendor_id ) {
 		$user = get_userdata( $vendor_id );
@@ -210,9 +211,25 @@ function papelito_resolve_default_vendor_id( int $user_id ): ?int {
 			}
 		}
 
+		$products_in_stock = function_exists( 'papelito_vendor_products_in_stock_count' )
+			? papelito_vendor_products_in_stock_count( $vendor_id )
+			: 0;
+
 		if ( null === $best_id ) {
 			$best_id       = $vendor_id;
 			$best_distance = $distance;
+			$best_stock    = $products_in_stock;
+			continue;
+		}
+
+		if ( $products_in_stock > 0 && $best_stock <= 0 ) {
+			$best_id       = $vendor_id;
+			$best_distance = $distance;
+			$best_stock    = $products_in_stock;
+			continue;
+		}
+
+		if ( $products_in_stock <= 0 && $best_stock > 0 ) {
 			continue;
 		}
 
@@ -223,6 +240,7 @@ function papelito_resolve_default_vendor_id( int $user_id ): ?int {
 		if ( null === $best_distance || $distance < $best_distance ) {
 			$best_id       = $vendor_id;
 			$best_distance = $distance;
+			$best_stock    = $products_in_stock;
 		}
 	}
 

@@ -90,16 +90,17 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 		);
 	}
 
-	$cep_n  = papelito_normalize_cep( $cep );
-	$coords = papelito_geocode_cep( $cep_n );
+	$cep_n = papelito_normalize_cep( $cep );
 
-	if ( null === $coords ) {
+	if ( '' === $cep_n ) {
 		return new WP_Error(
-			'papelito_coverage_cep_geocode_failed',
-			'Nao foi possivel geocodificar o CEP informado.',
+			'papelito_coverage_cep_invalid',
+			'CEP informado invalido.',
 			array( 'status' => 422 )
 		);
 	}
+
+	$coords = papelito_geocode_cep( $cep_n );
 
 	$stock_rows = papelito_vendors_with_stock( $product_id );
 	if ( empty( $stock_rows ) ) {
@@ -131,18 +132,22 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 			continue;
 		}
 
-		$vendor_lat = get_user_meta( $vendor_id, 'cep_lat', true );
-		$vendor_lng = get_user_meta( $vendor_id, 'cep_lng', true );
-		if ( ! is_numeric( $vendor_lat ) || ! is_numeric( $vendor_lng ) ) {
-			continue;
+		$vendor_lat  = get_user_meta( $vendor_id, 'cep_lat', true );
+		$vendor_lng  = get_user_meta( $vendor_id, 'cep_lng', true );
+		$distance_km = null;
+
+		if ( null !== $coords && is_numeric( $vendor_lat ) && is_numeric( $vendor_lng ) ) {
+			$distance_km = round(
+				papelito_haversine_km(
+					(float) $coords['lat'],
+					(float) $coords['lng'],
+					(float) $vendor_lat,
+					(float) $vendor_lng
+				),
+				2
+			);
 		}
 
-		$distance_km = papelito_haversine_km(
-			(float) $coords['lat'],
-			(float) $coords['lng'],
-			(float) $vendor_lat,
-			(float) $vendor_lng
-		);
 		$lead_time_days = (int) get_user_meta( $vendor_id, 'shipping_lead_time_days', true );
 
 		$items[] = array(
@@ -150,7 +155,7 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 			'store_name'     => (string) get_user_meta( $vendor_id, 'store_name', true ),
 			'city'           => (string) get_user_meta( $vendor_id, 'city', true ),
 			'state'          => (string) get_user_meta( $vendor_id, 'state', true ),
-			'distance_km'    => round( $distance_km, 2 ),
+			'distance_km'    => $distance_km,
 			'qty'            => $stock_qty,
 			'lead_time_days' => $lead_time_days > 0 ? $lead_time_days : 2,
 			'is_active'      => $active_vendor > 0 && $active_vendor === $vendor_id,
@@ -161,7 +166,9 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 	usort(
 		$items,
 		static function ( array $left, array $right ): int {
-			$distance_compare = $left['distance_km'] <=> $right['distance_km'];
+			$left_distance    = is_numeric( $left['distance_km'] ?? null ) ? (float) $left['distance_km'] : PHP_FLOAT_MAX;
+			$right_distance   = is_numeric( $right['distance_km'] ?? null ) ? (float) $right['distance_km'] : PHP_FLOAT_MAX;
+			$distance_compare = $left_distance <=> $right_distance;
 
 			if ( 0 !== $distance_compare ) {
 				return $distance_compare;
@@ -502,14 +509,6 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty, 
 
 	$coords = papelito_geocode_cep( $cep_n );
 
-	if ( null === $coords ) {
-		return new WP_Error(
-			'papelito_coverage_cep_geocode_failed',
-			'Nao foi possivel geocodificar o CEP informado.',
-			array( 'status' => 422 )
-		);
-	}
-
 	$vendor_cache        = array();
 	$result              = array();
 
@@ -537,22 +536,13 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty, 
 					continue;
 				}
 
-				$vendor_lat = get_user_meta( $vendor_id, 'cep_lat', true );
-				$vendor_lng = get_user_meta( $vendor_id, 'cep_lng', true );
-
-				if ( ! is_numeric( $vendor_lat ) || ! is_numeric( $vendor_lng ) ) {
-					$vendor_cache[ $vendor_id ] = null;
-					continue;
-				}
-
+				$vendor_lat      = get_user_meta( $vendor_id, 'cep_lat', true );
+				$vendor_lng      = get_user_meta( $vendor_id, 'cep_lng', true );
+				$distance_km     = null;
 				$lead_time_days = (int) get_user_meta( $vendor_id, 'shipping_lead_time_days', true );
 
-				$vendor_cache[ $vendor_id ] = array(
-					'vendor_id'      => $vendor_id,
-					'store_name'     => (string) get_user_meta( $vendor_id, 'store_name', true ),
-					'city'           => (string) get_user_meta( $vendor_id, 'city', true ),
-					'state'          => (string) get_user_meta( $vendor_id, 'state', true ),
-					'distance_km'    => round(
+				if ( null !== $coords && is_numeric( $vendor_lat ) && is_numeric( $vendor_lng ) ) {
+					$distance_km = round(
 						papelito_haversine_km(
 							(float) $coords['lat'],
 							(float) $coords['lng'],
@@ -560,7 +550,15 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty, 
 							(float) $vendor_lng
 						),
 						2
-					),
+					);
+				}
+
+				$vendor_cache[ $vendor_id ] = array(
+					'vendor_id'      => $vendor_id,
+					'store_name'     => (string) get_user_meta( $vendor_id, 'store_name', true ),
+					'city'           => (string) get_user_meta( $vendor_id, 'city', true ),
+					'state'          => (string) get_user_meta( $vendor_id, 'state', true ),
+					'distance_km'    => $distance_km,
 					'lead_time_days' => $lead_time_days > 0 ? $lead_time_days : 2,
 					'is_active'      => $active_vendor > 0 && $active_vendor === $vendor_id,
 					'is_nearest'     => false,
@@ -580,7 +578,9 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty, 
 		usort(
 			$vendors,
 			static function ( array $left, array $right ): int {
-				$distance_compare = $left['distance_km'] <=> $right['distance_km'];
+				$left_distance    = is_numeric( $left['distance_km'] ?? null ) ? (float) $left['distance_km'] : PHP_FLOAT_MAX;
+				$right_distance   = is_numeric( $right['distance_km'] ?? null ) ? (float) $right['distance_km'] : PHP_FLOAT_MAX;
+				$distance_compare = $left_distance <=> $right_distance;
 
 				if ( 0 !== $distance_compare ) {
 					return $distance_compare;
