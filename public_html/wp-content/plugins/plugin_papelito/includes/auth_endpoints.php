@@ -493,9 +493,6 @@ function papelito_auth_find_or_create_google_user( array $payload ) {
 	update_user_meta( $user_id, 'papelito_profile_complete', '0' );
 	papelito_auth_mark_email_verified( $user_id );
 
-	// Garante compat com hooks WC. Lista vazia porque o usuário Google não passou pelo form.
-	do_action( 'woocommerce_created_customer', $user_id, array(), false );
-
 	$user = get_userdata( $user_id );
 
 	return $user instanceof WP_User
@@ -647,8 +644,6 @@ function papelito_auth_create_registered_user( array $data ) {
 
 	update_user_meta( $user_id, 'papelito_profile_complete', '1' );
 	papelito_auth_mark_email_pending( $user_id );
-
-	do_action( 'woocommerce_created_customer', $user_id, array(), false );
 
 	$user = get_userdata( $user_id );
 
