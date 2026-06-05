@@ -2,11 +2,10 @@
 /**
  * Endpoints REST de autenticação headless.
  *
- * Expoe GET /wp-json/papelito/v1/auth/me e POST /auth/google, /auth/register
- * e /auth/register-seller. Os fluxos de autenticacao retornam o mesmo par
- * {authToken, refreshToken} usado pela mutation `login`
- * do plugin wp-graphql-jwt-authentication, mantendo compatibilidade total com o
- * Apollo Client do front Next.js.
+ * Expoe GET /wp-json/papelito/v1/auth/me e POST /auth/google, /auth/register,
+ * /auth/verify-email e /auth/resend-verification. O login por credenciais e o
+ * fluxo Google continuam compatíveis com o par {authToken, refreshToken}
+ * usado pela mutation `login` do plugin wp-graphql-jwt-authentication.
  *
  * @package Papelito
  */
@@ -170,6 +169,200 @@ function papelito_auth_build_identity_response( WP_User $user ): array {
 }
 
 /**
+ * Retorna timestamp UTC no formato MySQL usado pelo projeto.
+ *
+ * @return string
+ */
+function papelito_auth_current_utc_mysql(): string {
+	if ( function_exists( 'papelito_current_utc_mysql' ) ) {
+		return papelito_current_utc_mysql();
+	}
+
+	return gmdate( 'Y-m-d H:i:s' );
+}
+
+/**
+ * Informa se o usuario ainda precisa confirmar o e-mail.
+ *
+ * Ausencia da meta significa usuario legado ja verificado.
+ *
+ * @param int $user_id
+ * @return bool
+ */
+function papelito_auth_requires_email_verification( int $user_id ): bool {
+	$status = (string) get_user_meta( $user_id, 'papelito_email_verification_status', true );
+
+	if ( '' === $status ) {
+		return false;
+	}
+
+	return 'verified' !== $status;
+}
+
+/**
+ * Marca o usuario como verificado e limpa o token temporario.
+ *
+ * @param int $user_id
+ * @return void
+ */
+function papelito_auth_mark_email_verified( int $user_id ): void {
+	update_user_meta( $user_id, 'papelito_email_verification_status', 'verified' );
+	update_user_meta( $user_id, 'papelito_email_verified_at', papelito_auth_current_utc_mysql() );
+	delete_user_meta( $user_id, 'papelito_email_verification_token_hash' );
+	delete_user_meta( $user_id, 'papelito_email_verification_token_expires_at' );
+}
+
+/**
+ * Marca o usuario como pendente de verificacao.
+ *
+ * @param int $user_id
+ * @return void
+ */
+function papelito_auth_mark_email_pending( int $user_id ): void {
+	update_user_meta( $user_id, 'papelito_email_verification_status', 'pending' );
+	delete_user_meta( $user_id, 'papelito_email_verified_at' );
+}
+
+/**
+ * Gera token de verificacao e persiste apenas hash + expiracao.
+ *
+ * @param int $user_id
+ * @return string|WP_Error
+ */
+function papelito_auth_prepare_email_verification_token( int $user_id ) {
+	try {
+		$token = bin2hex( random_bytes( 32 ) );
+	} catch ( Exception $exception ) {
+		$token = wp_generate_password( 64, false, false );
+	}
+
+	if ( '' === $token ) {
+		return new WP_Error(
+			'papelito_email_verification_token_failed',
+			'Nao foi possivel preparar a confirmacao de e-mail.',
+			array( 'status' => 500 )
+		);
+	}
+
+	papelito_auth_mark_email_pending( $user_id );
+	update_user_meta( $user_id, 'papelito_email_verification_token_hash', hash( 'sha256', $token ) );
+	update_user_meta( $user_id, 'papelito_email_verification_token_expires_at', gmdate( 'c', time() + DAY_IN_SECONDS ) );
+
+	return $token;
+}
+
+/**
+ * Monta o link publico de verificacao usado no e-mail.
+ *
+ * @param string $email
+ * @param string $token
+ * @return string
+ */
+function papelito_auth_build_email_verification_link( string $email, string $token ): string {
+	$frontend_url = defined( 'PAPELITO_FRONTEND_URL' ) ? (string) PAPELITO_FRONTEND_URL : '';
+
+	if ( '' === $frontend_url && defined( 'PAPELITO_ALLOWED_ORIGINS' ) ) {
+		$origins      = array_filter( array_map( 'trim', explode( ',', (string) PAPELITO_ALLOWED_ORIGINS ) ) );
+		$frontend_url = isset( $origins[0] ) ? (string) $origins[0] : '';
+	}
+
+	if ( '' === $frontend_url ) {
+		$frontend_url = 'http://localhost:3000';
+	}
+
+	$frontend_url = rtrim( $frontend_url, '/' );
+
+	return sprintf(
+		'%s/confirmar-email?email=%s&token=%s',
+		$frontend_url,
+		rawurlencode( $email ),
+		rawurlencode( $token )
+	);
+}
+
+/**
+ * Envia o e-mail com o link de verificacao.
+ *
+ * @param WP_User $user
+ * @param string  $token
+ * @return bool
+ */
+function papelito_auth_send_verification_email( WP_User $user, string $token ): bool {
+	$first_name = (string) get_user_meta( $user->ID, 'first_name', true );
+	$recipient  = sanitize_email( $user->user_email );
+
+	if ( '' === $recipient ) {
+		return false;
+	}
+
+	$link       = papelito_auth_build_email_verification_link( $recipient, $token );
+	$subject    = 'Confirme seu e-mail - Papelito';
+	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
+	$body_lines = array(
+		sprintf( 'Ola %s,', '' !== $first_name ? $first_name : $recipient ),
+		'',
+		'Recebemos o seu cadastro na Papelito.',
+		'Confirme seu e-mail para liberar o login com senha e concluir a ativacao da conta.',
+		'',
+		'Abra o link abaixo para confirmar:',
+		$link,
+		'',
+		'Este link expira em 24 horas.',
+		'Se voce nao fez esse cadastro, ignore esta mensagem.',
+		'',
+		'Time Papelito',
+	);
+
+	return wp_mail( $recipient, $subject, implode( PHP_EOL, $body_lines ), $headers );
+}
+
+/**
+ * Rotaciona e envia um novo token de verificacao por e-mail.
+ *
+ * @param WP_User $user
+ * @return true|WP_Error
+ */
+function papelito_auth_dispatch_verification_email( WP_User $user ) {
+	$token = papelito_auth_prepare_email_verification_token( $user->ID );
+
+	if ( is_wp_error( $token ) ) {
+		return $token;
+	}
+
+	if ( ! papelito_auth_send_verification_email( $user, $token ) ) {
+		return new WP_Error(
+			'papelito_email_verification_send_failed',
+			'Nao foi possivel enviar o e-mail de confirmacao. Tente novamente em alguns instantes.',
+			array( 'status' => 500 )
+		);
+	}
+
+	update_user_meta( $user->ID, 'papelito_email_verification_sent_at', papelito_auth_current_utc_mysql() );
+
+	return true;
+}
+
+add_filter(
+	'wp_authenticate_user',
+	static function ( $user ) {
+		if ( is_wp_error( $user ) || ! $user instanceof WP_User ) {
+			return $user;
+		}
+
+		if ( ! papelito_auth_requires_email_verification( $user->ID ) ) {
+			return $user;
+		}
+
+		return new WP_Error(
+			'papelito_email_not_verified',
+			'Confirme seu e-mail antes de entrar.'
+		);
+	},
+	10,
+	1
+);
+
+/**
  * Rate limit simples por IP. Bloqueia se exceder $max em $window segundos.
  *
  * @param string $bucket Identificador do endpoint (ex: 'google', 'register').
@@ -272,6 +465,8 @@ function papelito_auth_find_or_create_google_user( array $payload ) {
 			update_user_meta( $user->ID, 'google_sub', sanitize_text_field( (string) $payload['sub'] ) );
 		}
 
+		papelito_auth_mark_email_verified( $user->ID );
+
 		return $user;
 	}
 
@@ -296,6 +491,7 @@ function papelito_auth_find_or_create_google_user( array $payload ) {
 	}
 
 	update_user_meta( $user_id, 'papelito_profile_complete', '0' );
+	papelito_auth_mark_email_verified( $user_id );
 
 	// Garante compat com hooks WC. Lista vazia porque o usuário Google não passou pelo form.
 	do_action( 'woocommerce_created_customer', $user_id, array(), false );
@@ -450,6 +646,7 @@ function papelito_auth_create_registered_user( array $data ) {
 	}
 
 	update_user_meta( $user_id, 'papelito_profile_complete', '1' );
+	papelito_auth_mark_email_pending( $user_id );
 
 	do_action( 'woocommerce_created_customer', $user_id, array(), false );
 
@@ -641,13 +838,143 @@ add_action(
 						return $user;
 					}
 
-					$response = papelito_auth_build_token_response( $user );
+					$dispatch = papelito_auth_dispatch_verification_email( $user );
 
-					if ( is_wp_error( $response ) ) {
-						return $response;
+					if ( is_wp_error( $dispatch ) ) {
+						return $dispatch;
 					}
 
-					return new WP_REST_Response( $response, 201 );
+					return new WP_REST_Response(
+						array(
+							'ok'                        => true,
+							'requiresEmailVerification' => true,
+							'email'                     => $user->user_email,
+						),
+						201
+					);
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/auth/verify-email',
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => '__return_true',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$data = $request->get_json_params();
+
+					if ( ! is_array( $data ) ) {
+						$data = $request->get_params();
+					}
+
+					$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
+					$token = isset( $data['token'] ) ? trim( (string) $data['token'] ) : '';
+
+					if ( '' === $email || '' === $token ) {
+						return new WP_Error(
+							'papelito_invalid_verification_request',
+							'Link de confirmacao invalido ou expirado.',
+							array( 'status' => 400 )
+						);
+					}
+
+					$user_id = email_exists( $email );
+					$user    = $user_id ? get_userdata( $user_id ) : false;
+
+					if ( ! $user instanceof WP_User || ! papelito_auth_requires_email_verification( $user->ID ) ) {
+						return new WP_Error(
+							'papelito_invalid_verification_token',
+							'Link de confirmacao invalido ou expirado.',
+							array( 'status' => 400 )
+						);
+					}
+
+					$stored_hash   = (string) get_user_meta( $user->ID, 'papelito_email_verification_token_hash', true );
+					$stored_expiry = (string) get_user_meta( $user->ID, 'papelito_email_verification_token_expires_at', true );
+
+					if ( '' === $stored_hash || '' === $stored_expiry ) {
+						return new WP_Error(
+							'papelito_invalid_verification_token',
+							'Link de confirmacao invalido ou expirado.',
+							array( 'status' => 400 )
+						);
+					}
+
+					$expiry_ts = strtotime( $stored_expiry );
+
+					if ( false === $expiry_ts || $expiry_ts < time() ) {
+						return new WP_Error(
+							'papelito_verification_token_expired',
+							'Link de confirmacao expirado. Solicite um novo e-mail para continuar.',
+							array( 'status' => 410 )
+						);
+					}
+
+					if ( ! hash_equals( $stored_hash, hash( 'sha256', $token ) ) ) {
+						return new WP_Error(
+							'papelito_invalid_verification_token',
+							'Link de confirmacao invalido ou expirado.',
+							array( 'status' => 400 )
+						);
+					}
+
+					papelito_auth_mark_email_verified( $user->ID );
+
+					return new WP_REST_Response( array( 'ok' => true ), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/auth/resend-verification',
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => '__return_true',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					if ( ! papelito_auth_rate_limit( 'resend_verification', 10, 60 ) ) {
+						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
+					}
+
+					$data = $request->get_json_params();
+
+					if ( ! is_array( $data ) ) {
+						$data = $request->get_params();
+					}
+
+					$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
+
+					if ( '' === $email ) {
+						return new WP_REST_Response( array( 'ok' => true ), 200 );
+					}
+
+					$user_id = email_exists( $email );
+					$user    = $user_id ? get_userdata( $user_id ) : false;
+
+					if ( ! $user instanceof WP_User || ! papelito_auth_requires_email_verification( $user->ID ) ) {
+						return new WP_REST_Response( array( 'ok' => true ), 200 );
+					}
+
+					$last_sent_at = (string) get_user_meta( $user->ID, 'papelito_email_verification_sent_at', true );
+					$last_sent_ts = '' !== $last_sent_at ? strtotime( $last_sent_at ) : false;
+
+					if ( false !== $last_sent_ts && ( time() - $last_sent_ts ) < MINUTE_IN_SECONDS ) {
+						return new WP_Error(
+							'papelito_verification_cooldown',
+							'Aguarde 60 segundos antes de solicitar um novo e-mail.',
+							array( 'status' => 429 )
+						);
+					}
+
+					$dispatch = papelito_auth_dispatch_verification_email( $user );
+
+					if ( is_wp_error( $dispatch ) ) {
+						return $dispatch;
+					}
+
+					return new WP_REST_Response( array( 'ok' => true ), 200 );
 				},
 			)
 		);
