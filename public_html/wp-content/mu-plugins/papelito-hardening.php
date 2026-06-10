@@ -10,6 +10,37 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+function papelito_is_legacy_public_host(): bool {
+	$host = isset( $_SERVER['HTTP_HOST'] ) ? strtolower( trim( sanitize_text_field( wp_unslash( $_SERVER['HTTP_HOST'] ) ) ) ) : '';
+
+	if ( '' === $host ) {
+		return false;
+	}
+
+	$host = preg_replace( '/:\d+$/', '', $host );
+
+	return in_array( $host, array( 'papelitobrasil.com.br', 'www.papelitobrasil.com.br' ), true );
+}
+
+add_filter(
+	'allowed_redirect_hosts',
+	static function ( array $hosts ): array {
+		$hosts[] = 'papelito.com';
+		return array_values( array_unique( $hosts ) );
+	}
+);
+
+add_action(
+	'init',
+	static function (): void {
+		if ( papelito_is_legacy_public_host() ) {
+			wp_safe_redirect( 'https://papelito.com/', 302 );
+			exit;
+		}
+	},
+	0
+);
+
 add_filter(
 	'rest_endpoints',
 	static function ( array $endpoints ): array {

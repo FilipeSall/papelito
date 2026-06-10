@@ -201,6 +201,12 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
 	$result['shipping_service'] = sanitize_text_field( (string) $order->get_meta( '_papelito_shipping_service_name', true ) );
 	$result['delivery_time_days'] = absint( $order->get_meta( '_papelito_shipping_delivery_time', true ) );
 	$result['tracking_code'] = null;
+	$result['payment'] = function_exists( 'papelito_pagarme_order_payment_snapshot' )
+		? papelito_pagarme_order_payment_snapshot( $order )
+		: array(
+			'method' => '',
+			'state'  => '',
+		);
 
 	return $result;
 }

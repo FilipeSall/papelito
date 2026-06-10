@@ -54,6 +54,61 @@ function papelito_order_routing_payment_method_label( string $method ): string {
 }
 
 /**
+ * Normaliza o payload de pagamento.
+ *
+ * @param mixed $payment Payload cru.
+ * @param array<string,string> $fallback_address Endereco padrao.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_order_routing_normalize_payment( $payment, array $fallback_address ) {
+	if ( ! is_array( $payment ) ) {
+		return new WP_Error(
+			'papelito_checkout_invalid_payment',
+			'Selecione uma forma de pagamento valida.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$method = papelito_order_routing_normalize_payment_method( $payment['method'] ?? '' );
+
+	if ( '' === $method ) {
+		return new WP_Error(
+			'papelito_checkout_invalid_payment',
+			'Selecione uma forma de pagamento valida.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$normalized = array(
+		'method'          => $method,
+		'installments'    => max( 1, (int) ( $payment['installments'] ?? 1 ) ),
+		'card_token_id'   => sanitize_text_field( (string) ( $payment['card_token_id'] ?? '' ) ),
+		'holder_name'     => sanitize_text_field( (string) ( $payment['holder_name'] ?? '' ) ),
+		'billing_address' => $fallback_address,
+	);
+
+	if ( isset( $payment['billing_address'] ) && is_array( $payment['billing_address'] ) ) {
+		$billing = papelito_order_routing_normalize_address( $payment['billing_address'] );
+
+		if ( is_wp_error( $billing ) ) {
+			return $billing;
+		}
+
+		$normalized['billing_address'] = $billing;
+	}
+
+	if ( 'credit_card' === $method && ( '' === $normalized['card_token_id'] || '' === $normalized['holder_name'] ) ) {
+		return new WP_Error(
+			'papelito_checkout_invalid_payment',
+			'Os dados do cartao nao estao completos.',
+			array( 'status' => 422 )
+		);
+	}
+
+	return $normalized;
+}
+
+/**
  * Requer usuario autenticado com role customer para fechar checkout.
  *
  * @return true|WP_Error
@@ -306,6 +361,29 @@ function papelito_order_routing_resolve_items( array $items ) {
 		'vendor_id'   => $vendor_id,
 		'vendor_name' => $vendor_name,
 		'lines'       => $lines,
+	);
+}
+
+/**
+ * Valida a cobertura do vendor para o CEP de destino.
+ *
+ * @return true|WP_Error
+ */
+function papelito_order_routing_validate_vendor_coverage( int $vendor_id, string $destination_cep ) {
+	if ( '' === $destination_cep || ! function_exists( 'papelito_matching_vendor_ids' ) ) {
+		return true;
+	}
+
+	$covering_ids = array_map( 'intval', papelito_matching_vendor_ids( (int) $destination_cep ) );
+
+	if ( in_array( $vendor_id, $covering_ids, true ) ) {
+		return true;
+	}
+
+	return new WP_Error(
+		'papelito_checkout_vendor_not_approved',
+		'O vendor selecionado nao atende o CEP do pedido.',
+		array( 'status' => 422 )
 	);
 }
 
@@ -605,6 +683,42 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 }
 
 /**
+ * Reconstroi as linhas de um pedido Woo para uso em rollback/reconciliacao.
+ *
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_order_routing_order_lines( $order ): array {
+	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
+		return array();
+	}
+
+	$default_vendor_id   = absint( $order->get_meta( '_papelito_vendor_id', true ) );
+	$default_vendor_name = sanitize_text_field( (string) $order->get_meta( '_papelito_vendor_name', true ) );
+	$lines               = array();
+
+	foreach ( $order->get_items( 'line_item' ) as $item ) {
+		if ( ! is_object( $item ) || ! method_exists( $item, 'get_product_id' ) || ! method_exists( $item, 'get_meta' ) || ! method_exists( $item, 'get_quantity' ) || ! method_exists( $item, 'get_total' ) ) {
+			continue;
+		}
+
+		$product_id = (int) $item->get_product_id();
+
+		$lines[] = array(
+			'product'     => function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null,
+			'product_id'  => $product_id,
+			'qty'         => (int) $item->get_quantity(),
+			'vendor_id'   => absint( $item->get_meta( '_vendor_id', true ) ) ?: $default_vendor_id,
+			'vendor_name' => sanitize_text_field( (string) $item->get_meta( '_vendor_name', true ) ) ?: $default_vendor_name,
+			'subtotal'    => (float) ( method_exists( $item, 'get_subtotal' ) ? $item->get_subtotal() : $item->get_total() ),
+			'total'       => (float) $item->get_total(),
+			'discount'    => 0.0,
+		);
+	}
+
+	return $lines;
+}
+
+/**
  * Verifica se o usuario atual pode visualizar o mapeamento de vendor do pedido.
  *
  * @param object $order Pedido alvo.
@@ -799,6 +913,133 @@ add_action(
 	1
 );
 
+/**
+ * Processa o checkout headless completo.
+ */
+function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
+	if ( function_exists( 'papelito_auth_rate_limit' ) && ! papelito_auth_rate_limit( 'checkout_place_order', 30, 60 ) ) {
+		return new WP_Error(
+			'papelito_rate_limited',
+			'Muitas tentativas. Tente novamente em alguns instantes.',
+			array( 'status' => 429 )
+		);
+	}
+
+	if ( ! function_exists( 'papelito_pagarme_is_configured' ) || ! papelito_pagarme_is_configured() ) {
+		return new WP_Error(
+			'papelito_checkout_payment_unavailable',
+			'Checkout indisponivel ate a configuracao do Pagar.me.',
+			array( 'status' => 501 )
+		);
+	}
+
+	$payload = $request->get_json_params();
+	if ( ! is_array( $payload ) ) {
+		return new WP_Error( 'papelito_checkout_invalid_payload', 'Payload invalido.', array( 'status' => 400 ) );
+	}
+
+	$user_id = get_current_user_id();
+	$address = papelito_order_routing_normalize_address( $payload['address'] ?? null );
+	if ( is_wp_error( $address ) ) {
+		return $address;
+	}
+
+	$items = papelito_order_routing_normalize_items( $payload['items'] ?? null );
+	if ( is_wp_error( $items ) ) {
+		return $items;
+	}
+
+	$resolved_items = papelito_order_routing_resolve_items( $items );
+	if ( is_wp_error( $resolved_items ) ) {
+		return $resolved_items;
+	}
+
+	$shipping_payload = isset( $payload['shipping'] ) && is_array( $payload['shipping'] ) ? $payload['shipping'] : array();
+	$destination_cep  = papelito_shipping_normalize_cep( $shipping_payload['destination_cep'] ?? $address['zip_code'] );
+	$selected_code    = sanitize_text_field( (string) ( $shipping_payload['selected_code'] ?? '' ) );
+
+	if ( '' === $destination_cep || '' === $selected_code ) {
+		return new WP_Error(
+			'papelito_checkout_invalid_shipping',
+			'Selecione uma opcao de frete valida.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$coverage = papelito_order_routing_validate_vendor_coverage( (int) $resolved_items['vendor_id'], $destination_cep );
+	if ( is_wp_error( $coverage ) ) {
+		return $coverage;
+	}
+
+	$shipping = papelito_order_routing_resolve_shipping(
+		(int) $resolved_items['vendor_id'],
+		$destination_cep,
+		$selected_code,
+		$resolved_items['lines']
+	);
+	if ( is_wp_error( $shipping ) ) {
+		return $shipping;
+	}
+
+	$coupon = papelito_order_routing_resolve_coupon(
+		sanitize_text_field( (string) ( $payload['coupon_code'] ?? '' ) ),
+		$resolved_items['lines'],
+		$user_id
+	);
+	if ( is_wp_error( $coupon ) ) {
+		return $coupon;
+	}
+
+	$lines   = papelito_order_routing_apply_coupon_to_lines( $resolved_items['lines'], $coupon );
+	$payment = papelito_order_routing_normalize_payment( $payload['payment'] ?? null, $address );
+	if ( is_wp_error( $payment ) ) {
+		return $payment;
+	}
+
+	$created = papelito_order_routing_create_order( $user_id, $address, $lines, $shipping, $coupon, (string) $payment['method'] );
+	if ( is_wp_error( $created ) ) {
+		return $created;
+	}
+
+	$order = function_exists( 'wc_get_order' ) ? wc_get_order( (int) $created['order_id'] ) : null;
+	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
+		return new WP_Error(
+			'papelito_checkout_invalid_order_instance',
+			'Nao foi possivel recuperar o pedido recem-criado.',
+			array( 'status' => 500 )
+		);
+	}
+
+	$reserved = papelito_pagarme_reserve_order_stock( $order, $lines );
+	if ( is_wp_error( $reserved ) ) {
+		$order->add_order_note( 'Falha ao reservar estoque para o pagamento: ' . $reserved->get_error_message() );
+		$order->save();
+		return $reserved;
+	}
+
+	$result = papelito_pagarme_create_order_payment( $order, $user_id, $payment, $address, $lines, $shipping );
+
+	if ( is_wp_error( $result ) ) {
+		papelito_pagarme_release_order_stock( $order, $lines, 'payment_error' );
+		$order->add_order_note( 'Falha ao criar pedido no Pagar.me: ' . $result->get_error_message() );
+		$order->update_status( 'failed' );
+		$order->save();
+		return new WP_Error(
+			'papelito_checkout_payment_unavailable',
+			$result->get_error_message(),
+			array( 'status' => is_array( $result->get_error_data() ) ? (int) ( $result->get_error_data()['status'] ?? 502 ) : 502 )
+		);
+	}
+
+	$payment_state = sanitize_key( (string) ( $result['payment']['state'] ?? '' ) );
+
+	if ( function_exists( 'papelito_pagarme_payment_state_releases_stock' ) && papelito_pagarme_payment_state_releases_stock( $payment_state ) ) {
+		papelito_pagarme_release_order_stock( $order, $lines, 'payment_failed' );
+	}
+
+	return new WP_REST_Response( $result, 200 );
+}
+
 add_action(
 	'rest_api_init',
 	static function (): void {
@@ -808,21 +1049,7 @@ add_action(
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
 				'permission_callback' => 'papelito_order_routing_require_customer',
-				'callback'            => static function ( WP_REST_Request $request ) {
-					if ( function_exists( 'papelito_auth_rate_limit' ) && ! papelito_auth_rate_limit( 'checkout_place_order', 30, 60 ) ) {
-						return new WP_Error(
-							'papelito_rate_limited',
-							'Muitas tentativas. Tente novamente em alguns instantes.',
-							array( 'status' => 429 )
-						);
-					}
-
-					return new WP_Error(
-						'papelito_checkout_payment_unavailable',
-						'Checkout bloqueado ate a integracao headless com o Pagar.me.',
-						array( 'status' => 501 )
-					);
-				},
+				'callback'            => 'papelito_order_routing_handle_place_order',
 			)
 		);
 
