@@ -2,6 +2,8 @@
 ## LITESPEED WP CACHE PLUGIN - Do not edit the contents of this block! ##
 <IfModule mod_rewrite.c>
 RewriteEngine on
+RewriteCond %{HTTP_HOST} ^(www\.)?papelitobrasil\.com\.br$ [NC]
+RewriteRule ^ https://papelito.com/ [R=302,L,QSD]
 RewriteRule litespeed/debug/.*\.log$ - [F,L]
 RewriteRule \.litespeed_conf\.dat - [F,L]
 </IfModule>
