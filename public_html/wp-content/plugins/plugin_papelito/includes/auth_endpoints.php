@@ -21,6 +21,13 @@ add_filter(
 	}
 );
 
+add_filter(
+	'password_reset_expiration',
+	static function () {
+		return DAY_IN_SECONDS;
+	}
+);
+
 /**
  * Valida formatos comuns de CEP usados no projeto.
  *
@@ -252,13 +259,11 @@ function papelito_auth_prepare_email_verification_token( int $user_id ) {
 }
 
 /**
- * Monta o link publico de verificacao usado no e-mail.
+ * Resolve a base publica do frontend usada em links de e-mail.
  *
- * @param string $email
- * @param string $token
  * @return string
  */
-function papelito_auth_build_email_verification_link( string $email, string $token ): string {
+function papelito_auth_get_frontend_url(): string {
 	$frontend_url = defined( 'PAPELITO_FRONTEND_URL' ) ? (string) PAPELITO_FRONTEND_URL : '';
 
 	if ( '' === $frontend_url && defined( 'PAPELITO_ALLOWED_ORIGINS' ) ) {
@@ -270,11 +275,20 @@ function papelito_auth_build_email_verification_link( string $email, string $tok
 		$frontend_url = 'http://localhost:3000';
 	}
 
-	$frontend_url = rtrim( $frontend_url, '/' );
+	return rtrim( $frontend_url, '/' );
+}
 
+/**
+ * Monta o link publico de verificacao usado no e-mail.
+ *
+ * @param string $email
+ * @param string $token
+ * @return string
+ */
+function papelito_auth_build_email_verification_link( string $email, string $token ): string {
 	return sprintf(
 		'%s/confirmar-email?email=%s&token=%s',
-		$frontend_url,
+		papelito_auth_get_frontend_url(),
 		rawurlencode( $email ),
 		rawurlencode( $token )
 	);
@@ -340,6 +354,126 @@ function papelito_auth_dispatch_verification_email( WP_User $user ) {
 	update_user_meta( $user->ID, 'papelito_email_verification_sent_at', papelito_auth_current_utc_mysql() );
 
 	return true;
+}
+
+/**
+ * Monta o link publico de redefinicao de senha.
+ *
+ * @param string $login
+ * @param string $key
+ * @return string
+ */
+function papelito_auth_build_password_reset_link( string $login, string $key ): string {
+	return sprintf(
+		'%s/redefinir-senha?login=%s&key=%s',
+		papelito_auth_get_frontend_url(),
+		rawurlencode( $login ),
+		rawurlencode( $key )
+	);
+}
+
+/**
+ * Envia o e-mail de redefinicao de senha.
+ *
+ * @param WP_User $user
+ * @param string  $key
+ * @return bool
+ */
+function papelito_auth_send_password_reset_email( WP_User $user, string $key ): bool {
+	$recipient  = sanitize_email( $user->user_email );
+	$first_name = (string) get_user_meta( $user->ID, 'first_name', true );
+
+	if ( '' === $recipient ) {
+		return false;
+	}
+
+	$link       = papelito_auth_build_password_reset_link( $user->user_login, $key );
+	$subject    = 'Redefina sua senha - Papelito';
+	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
+	$body_lines = array(
+		sprintf( 'Ola %s,', '' !== $first_name ? $first_name : $recipient ),
+		'',
+		'Recebemos uma solicitacao para redefinir a senha da sua conta na Papelito.',
+		'',
+		'Abra o link abaixo para cadastrar uma nova senha:',
+		$link,
+		'',
+		'Este link expira em 24 horas e pode ser usado uma unica vez.',
+		'Se voce nao fez esta solicitacao, ignore esta mensagem.',
+		'',
+		'Time Papelito',
+	);
+
+	return wp_mail( $recipient, $subject, implode( PHP_EOL, $body_lines ), $headers );
+}
+
+/**
+ * Gera a chave nativa do WordPress e tenta enviar o e-mail de reset.
+ *
+ * @param WP_User $user
+ * @return true|WP_Error
+ */
+function papelito_auth_dispatch_password_reset_email( WP_User $user ) {
+	$key = get_password_reset_key( $user );
+
+	if ( is_wp_error( $key ) || '' === (string) $key ) {
+		return true;
+	}
+
+	if ( ! papelito_auth_send_password_reset_email( $user, $key ) ) {
+		return new WP_Error(
+			'papelito_password_reset_send_failed',
+			'Nao foi possivel enviar o e-mail de redefinicao. Tente novamente em alguns instantes.',
+			array( 'status' => 500 )
+		);
+	}
+
+	return true;
+}
+
+/**
+ * Reenvia a verificacao para contas pendentes sem quebrar a resposta generica.
+ *
+ * @param WP_User $user
+ * @return true|WP_Error
+ */
+function papelito_auth_maybe_resend_pending_verification( WP_User $user ) {
+	if ( ! papelito_auth_requires_email_verification( $user->ID ) ) {
+		return true;
+	}
+
+	$last_sent_at = (string) get_user_meta( $user->ID, 'papelito_email_verification_sent_at', true );
+	$last_sent_ts = '' !== $last_sent_at ? strtotime( $last_sent_at ) : false;
+
+	if ( false !== $last_sent_ts && ( time() - $last_sent_ts ) < MINUTE_IN_SECONDS ) {
+		return true;
+	}
+
+	return papelito_auth_dispatch_verification_email( $user );
+}
+
+/**
+ * Converte erros nativos de chave de reset para mensagens amigaveis do frontend.
+ *
+ * @param WP_Error $error
+ * @return WP_Error
+ */
+function papelito_auth_map_password_reset_key_error( WP_Error $error ) {
+	$codes = array_values( $error->get_error_codes() );
+
+	if ( in_array( 'expired_key', $codes, true ) ) {
+		return new WP_Error(
+			'papelito_password_reset_expired',
+			'Link de redefinicao expirado. Solicite um novo e-mail para continuar.',
+			array( 'status' => 410 )
+		);
+	}
+
+	return new WP_Error(
+		'papelito_password_reset_invalid',
+		'Link de redefinicao invalido ou expirado.',
+		array( 'status' => 400 )
+	);
 }
 
 add_filter(
@@ -968,6 +1102,123 @@ add_action(
 					if ( is_wp_error( $dispatch ) ) {
 						return $dispatch;
 					}
+
+					return new WP_REST_Response( array( 'ok' => true ), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/auth/forgot-password',
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => '__return_true',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					if ( ! papelito_auth_rate_limit( 'forgot_password', 10, 60 ) ) {
+						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
+					}
+
+					$data = $request->get_json_params();
+
+					if ( ! is_array( $data ) ) {
+						$data = $request->get_params();
+					}
+
+					$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
+
+					if ( '' === $email || ! is_email( $email ) ) {
+						return new WP_Error(
+							'papelito_invalid_email',
+							'Informe um e-mail valido.',
+							array( 'status' => 422 )
+						);
+					}
+
+					$user_id = email_exists( $email );
+					$user    = $user_id ? get_userdata( $user_id ) : false;
+
+					if ( ! $user instanceof WP_User ) {
+						return new WP_REST_Response( array( 'ok' => true ), 200 );
+					}
+
+					if ( papelito_auth_requires_email_verification( $user->ID ) ) {
+						$dispatch = papelito_auth_maybe_resend_pending_verification( $user );
+
+						if ( is_wp_error( $dispatch ) ) {
+							return $dispatch;
+						}
+
+						return new WP_REST_Response( array( 'ok' => true ), 200 );
+					}
+
+					$dispatch = papelito_auth_dispatch_password_reset_email( $user );
+
+					if ( is_wp_error( $dispatch ) ) {
+						return $dispatch;
+					}
+
+					return new WP_REST_Response( array( 'ok' => true ), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/auth/reset-password',
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => '__return_true',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					if ( ! papelito_auth_rate_limit( 'reset_password', 20, 60 ) ) {
+						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
+					}
+
+					$data = $request->get_json_params();
+
+					if ( ! is_array( $data ) ) {
+						$data = $request->get_params();
+					}
+
+					$login            = isset( $data['login'] ) ? sanitize_text_field( trim( (string) $data['login'] ) ) : '';
+					$key              = isset( $data['key'] ) ? trim( (string) $data['key'] ) : '';
+					$password         = isset( $data['password'] ) ? (string) $data['password'] : '';
+					$confirm_password = isset( $data['confirmPassword'] ) ? (string) $data['confirmPassword'] : '';
+
+					if ( '' === $login || '' === $key ) {
+						return new WP_Error(
+							'papelito_password_reset_invalid_request',
+							'Link de redefinicao invalido ou expirado.',
+							array( 'status' => 400 )
+						);
+					}
+
+					if ( strlen( $password ) < 8 ) {
+						return new WP_Error(
+							'papelito_password_too_short',
+							'A nova senha precisa ter pelo menos 8 caracteres.',
+							array( 'status' => 422 )
+						);
+					}
+
+					if ( $password !== $confirm_password ) {
+						return new WP_Error(
+							'papelito_password_mismatch',
+							'As senhas precisam coincidir.',
+							array( 'status' => 422 )
+						);
+					}
+
+					$user = check_password_reset_key( $key, $login );
+
+					if ( is_wp_error( $user ) || ! $user instanceof WP_User ) {
+						return papelito_auth_map_password_reset_key_error(
+							$user instanceof WP_Error ? $user : new WP_Error( 'invalid_key' )
+						);
+					}
+
+					reset_password( $user, $password );
+					papelito_auth_mark_email_verified( $user->ID );
 
 					return new WP_REST_Response( array( 'ok' => true ), 200 );
 				},
