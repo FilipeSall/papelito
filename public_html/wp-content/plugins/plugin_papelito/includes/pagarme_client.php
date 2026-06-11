@@ -83,27 +83,84 @@ function papelito_pagarme_order_idempotency_key( $order ): string {
  * @param mixed $body Corpo decodificado.
  */
 function papelito_pagarme_error_message( $body, int $status ): string {
+	if ( is_string( $body ) && '' !== trim( $body ) ) {
+		return sanitize_text_field( $body );
+	}
+
 	if ( is_array( $body ) ) {
 		$message = sanitize_text_field( (string) ( $body['message'] ?? '' ) );
+		$details = papelito_pagarme_collect_error_details( $body );
+
+		if ( '' !== $message && ! empty( $details ) ) {
+			return $message . ' (' . implode( '; ', $details ) . ')';
+		}
 
 		if ( '' !== $message ) {
 			return $message;
 		}
 
-		if ( isset( $body['errors'] ) && is_array( $body['errors'] ) ) {
-			foreach ( $body['errors'] as $error ) {
-				if ( is_array( $error ) ) {
-					$description = sanitize_text_field( (string) ( $error['message'] ?? $error['description'] ?? '' ) );
-
-					if ( '' !== $description ) {
-						return $description;
-					}
-				}
-			}
+		if ( ! empty( $details ) ) {
+			return implode( '; ', $details );
 		}
 	}
 
 	return sprintf( 'Pagar.me retornou erro HTTP %d.', $status );
+}
+
+/**
+ * Coleta as mensagens de erro de validacao da resposta do Pagar.me v5.
+ *
+ * A v5 costuma retornar `errors` como mapa `{ "request.campo": ["msg1"] }`,
+ * mas tambem aceita lista de objetos `{ message|description }`. Cobre os dois.
+ *
+ * @param array<string,mixed> $body Corpo decodificado.
+ * @return array<int,string>
+ */
+function papelito_pagarme_collect_error_details( array $body ): array {
+	$sources = array();
+
+	if ( isset( $body['errors'] ) && is_array( $body['errors'] ) ) {
+		$sources[] = $body['errors'];
+	}
+
+	if ( isset( $body['gateway_response']['errors'] ) && is_array( $body['gateway_response']['errors'] ) ) {
+		$sources[] = $body['gateway_response']['errors'];
+	}
+
+	$details = array();
+
+	foreach ( $sources as $errors ) {
+		foreach ( $errors as $field => $error ) {
+			$label = is_string( $field ) ? sanitize_text_field( $field ) : '';
+
+			if ( is_array( $error ) ) {
+				$message = sanitize_text_field( (string) ( $error['message'] ?? $error['description'] ?? '' ) );
+
+				if ( '' === $message ) {
+					foreach ( $error as $item ) {
+						if ( is_string( $item ) && '' !== trim( $item ) ) {
+							$message = sanitize_text_field( $item );
+							break;
+						}
+					}
+				}
+			} else {
+				$message = sanitize_text_field( (string) $error );
+			}
+
+			if ( '' === $message ) {
+				continue;
+			}
+
+			$details[] = '' !== $label && ! is_numeric( $field ) ? $label . ': ' . $message : $message;
+
+			if ( count( $details ) >= 3 ) {
+				return $details;
+			}
+		}
+	}
+
+	return $details;
 }
 
 /**
@@ -163,6 +220,16 @@ function papelito_pagarme_request( string $method, string $path, ?array $body = 
 	$decoded  = '' !== $raw_body ? json_decode( $raw_body, true ) : array();
 
 	if ( $status < 200 || $status >= 300 ) {
+		error_log(
+			sprintf(
+				'[papelito_pagarme] %s %s -> HTTP %d: %s',
+				strtoupper( $method ),
+				$path,
+				$status,
+				$raw_body
+			)
+		);
+
 		return new WP_Error(
 			'papelito_pagarme_request_failed',
 			papelito_pagarme_error_message( $decoded, $status ),

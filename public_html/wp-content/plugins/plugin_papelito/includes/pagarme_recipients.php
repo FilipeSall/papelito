@@ -12,6 +12,7 @@ if ( ! defined( 'PAPELITO_PAGARME_RECIPIENT_ID_META' ) ) {
 	define( 'PAPELITO_PAGARME_RECIPIENT_STATUS_META', 'papelito_pagarme_recipient_status' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META', 'papelito_pagarme_recipient_last_sync_at' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META', 'papelito_pagarme_recipient_last_error' );
+	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META', 'papelito_pagarme_recipient_last_error_detail' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_KYC_URL_META', 'papelito_pagarme_recipient_kyc_url' );
 }
 
@@ -53,6 +54,7 @@ function papelito_pagarme_save_vendor_recipient_state( int $user_id, array $reci
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_STATUS_META, $status );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, papelito_current_utc_mysql() );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, '' );
+	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, '' );
 
 	if ( '' !== $kyc_url ) {
 		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_URL_META, $kyc_url );
@@ -63,10 +65,57 @@ function papelito_pagarme_save_vendor_recipient_state( int $user_id, array $reci
 
 /**
  * Persiste ultimo erro de sincronizacao do recebedor.
+ *
+ * Quando recebe o WP_Error completo, guarda tambem os detalhes crus de
+ * validacao do Pagar.me (`pagarme_body`) num meta separado para diagnostico.
+ *
+ * @param int             $user_id Usuario.
+ * @param WP_Error|string $error   Erro ou mensagem.
  */
-function papelito_pagarme_save_vendor_recipient_error( int $user_id, string $message ): void {
+function papelito_pagarme_save_vendor_recipient_error( int $user_id, $error ): void {
+	$message = $error instanceof WP_Error ? $error->get_error_message() : (string) $error;
+
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, papelito_current_utc_mysql() );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, sanitize_text_field( $message ) );
+
+	$detail = '';
+
+	if ( $error instanceof WP_Error ) {
+		$data = $error->get_error_data();
+
+		if ( is_array( $data ) && isset( $data['pagarme_body'] ) && is_array( $data['pagarme_body'] ) ) {
+			$encoded = wp_json_encode( $data['pagarme_body'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+			$detail  = is_string( $encoded ) ? $encoded : '';
+		}
+	}
+
+	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, $detail );
+}
+
+/**
+ * Monta a resposta REST de erro do recebedor com detalhe controlado.
+ *
+ * Repassa a mensagem amigavel e um resumo dos erros de validacao do Pagar.me,
+ * sem expor o corpo cru (`response_body`) nem detalhes internos do gateway.
+ *
+ * @param WP_Error $error Erro original.
+ * @return WP_Error
+ */
+function papelito_pagarme_recipient_error_response( WP_Error $error ): WP_Error {
+	$data   = $error->get_error_data();
+	$status = is_array( $data ) && isset( $data['status'] ) ? (int) $data['status'] : 500;
+
+	$response_data = array( 'status' => $status );
+
+	if ( is_array( $data ) && isset( $data['pagarme_body'] ) && is_array( $data['pagarme_body'] ) ) {
+		$details = papelito_pagarme_collect_error_details( $data['pagarme_body'] );
+
+		if ( ! empty( $details ) ) {
+			$response_data['pagarme_errors'] = $details;
+		}
+	}
+
+	return new WP_Error( $error->get_error_code(), $error->get_error_message(), $response_data );
 }
 
 /**
@@ -76,11 +125,12 @@ function papelito_pagarme_save_vendor_recipient_error( int $user_id, string $mes
  */
 function papelito_pagarme_get_vendor_recipient_state( int $user_id ): array {
 	return array(
-		'recipient_id' => papelito_pagarme_get_vendor_recipient_id( $user_id ),
-		'status'       => papelito_pagarme_get_vendor_recipient_status( $user_id ),
-		'last_sync_at' => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, true ) ),
-		'kyc_url'      => sanitize_url( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_URL_META, true ) ),
-		'last_error'   => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, true ) ),
+		'recipient_id'      => papelito_pagarme_get_vendor_recipient_id( $user_id ),
+		'status'            => papelito_pagarme_get_vendor_recipient_status( $user_id ),
+		'last_sync_at'      => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, true ) ),
+		'kyc_url'           => sanitize_url( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_URL_META, true ) ),
+		'last_error'        => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, true ) ),
+		'last_error_detail' => (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, true ),
 	);
 }
 
@@ -137,13 +187,77 @@ function papelito_pagarme_address_payload( array $input ): array {
 }
 
 /**
+ * Normaliza um endereco para o contrato de recebedor do Pagar.me.
+ *
+ * Diferente de papelito_pagarme_address_payload() (usada no objeto `customer`
+ * de pedidos, que aceita line_1/line_2), o `register_information` do recebedor
+ * exige os campos separados.
+ *
+ * @param array<string,mixed> $input Dados crus.
+ * @return array<string,string>
+ */
+function papelito_pagarme_recipient_address_payload( array $input ): array {
+	$zip_raw       = (string) ( $input['zipCode'] ?? $input['zip_code'] ?? '' );
+	$complementary = sanitize_text_field( (string) ( $input['complement'] ?? $input['complementary'] ?? '' ) );
+	$reference     = sanitize_text_field( (string) ( $input['referencePoint'] ?? $input['reference_point'] ?? '' ) );
+
+	return array(
+		'street'          => sanitize_text_field( (string) ( $input['street'] ?? $input['line_1'] ?? '' ) ),
+		'street_number'   => sanitize_text_field( (string) ( $input['number'] ?? $input['streetNumber'] ?? $input['street_number'] ?? '' ) ),
+		'complementary'   => '' !== $complementary ? $complementary : 'N/A',
+		'neighborhood'    => sanitize_text_field( (string) ( $input['neighborhood'] ?? '' ) ),
+		'reference_point' => '' !== $reference ? $reference : 'N/A',
+		'zip_code'        => function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( $zip_raw ) : preg_replace( '/\D+/', '', $zip_raw ),
+		'city'            => sanitize_text_field( (string) ( $input['city'] ?? '' ) ),
+		'state'           => strtoupper( sanitize_text_field( (string) ( $input['state'] ?? '' ) ) ),
+	);
+}
+
+/**
+ * Normaliza telefone brasileiro para o contrato de recebedor do Pagar.me.
+ *
+ * O recebedor espera { ddd, number, type }, diferente do objeto `customer`
+ * de pedidos (country_code/area_code/number) montado por
+ * papelito_pagarme_phone_payload().
+ *
+ * @return array<string,string>
+ */
+function papelito_pagarme_recipient_phone_payload( string $value ): array {
+	$normalized = function_exists( 'papelito_auth_normalize_phone' )
+		? papelito_auth_normalize_phone( $value )
+		: preg_replace( '/\D+/', '', $value );
+
+	$digits = is_string( $normalized ) ? $normalized : '';
+
+	if ( strlen( $digits ) < 10 ) {
+		return array(
+			'ddd'    => '11',
+			'number' => '000000000',
+			'type'   => 'mobile',
+		);
+	}
+
+	return array(
+		'ddd'    => substr( $digits, 0, 2 ),
+		'number' => substr( $digits, 2 ),
+		'type'   => 'mobile',
+	);
+}
+
+/**
  * Monta o payload de um parceiro administrador.
  *
- * @param array<string,mixed> $partner Dados do draft.
+ * @param array<string,mixed> $partner       Dados do draft.
+ * @param string              $fallback_phone Telefone do vendor (o wizard nao coleta o do socio).
  * @return array<string,mixed>
  */
-function papelito_pagarme_partner_payload( array $partner ): array {
+function papelito_pagarme_partner_payload( array $partner, string $fallback_phone = '' ): array {
 	$document = preg_replace( '/\D+/', '', (string) ( $partner['document'] ?? '' ) );
+	$phone    = (string) ( $partner['phone'] ?? $partner['phoneNumber'] ?? '' );
+
+	if ( '' === trim( $phone ) ) {
+		$phone = $fallback_phone;
+	}
 
 	return array(
 		'name'                             => sanitize_text_field( (string) ( $partner['name'] ?? '' ) ),
@@ -152,10 +266,13 @@ function papelito_pagarme_partner_payload( array $partner ): array {
 		'type'                             => 'individual',
 		'mother_name'                      => sanitize_text_field( (string) ( $partner['motherName'] ?? '' ) ),
 		'birthdate'                        => sanitize_text_field( (string) ( $partner['birthdate'] ?? '' ) ),
-		'monthly_income'                   => (int) round( 100 * (float) str_replace( ',', '.', preg_replace( '/[^\d,.-]/', '', (string) ( $partner['monthlyIncome'] ?? '0' ) ) ) ),
+		'monthly_income'                   => (int) round( (float) str_replace( ',', '.', preg_replace( '/[^\d,.-]/', '', (string) ( $partner['monthlyIncome'] ?? '0' ) ) ) ),
 		'professional_occupation'          => sanitize_text_field( (string) ( $partner['professionalOccupation'] ?? '' ) ),
 		'self_declared_legal_representative' => ! empty( $partner['selfDeclaredLegalRepresentative'] ),
-		'address'                          => papelito_pagarme_address_payload( isset( $partner['address'] ) && is_array( $partner['address'] ) ? $partner['address'] : array() ),
+		'phone_numbers'                    => array(
+			papelito_pagarme_recipient_phone_payload( $phone ),
+		),
+		'address'                          => papelito_pagarme_recipient_address_payload( isset( $partner['address'] ) && is_array( $partner['address'] ) ? $partner['address'] : array() ),
 	);
 }
 
@@ -215,10 +332,10 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 		);
 	}
 
-	$main_address = papelito_pagarme_address_payload( $address );
-	$partner      = papelito_pagarme_partner_payload( $partners[0] );
+	$main_address = papelito_pagarme_recipient_address_payload( $address );
+	$partner      = papelito_pagarme_partner_payload( $partners[0], $phone );
 
-	if ( '' === $main_address['line_1'] || '' === $main_address['zip_code'] || '' === $main_address['city'] || '' === $main_address['state'] ) {
+	if ( '' === $main_address['street'] || '' === $main_address['street_number'] || '' === $main_address['zip_code'] || '' === $main_address['city'] || '' === $main_address['state'] ) {
 		return new WP_Error(
 			'papelito_pagarme_missing_address',
 			'O vendor precisa ter endereco comercial completo para criar o recebedor.',
@@ -253,22 +370,16 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 			'document'           => $cnpj,
 			'corporation_type'   => sanitize_text_field( (string) ( $draft['corporationType'] ?? '' ) ),
 			'founding_date'      => sanitize_text_field( (string) ( $draft['foundingDate'] ?? '' ) ),
-			'annual_revenue'     => (int) round( 100 * (float) str_replace( ',', '.', preg_replace( '/[^\d,.-]/', '', (string) ( $draft['annualRevenue'] ?? '0' ) ) ) ),
+			'annual_revenue'     => (int) round( (float) str_replace( ',', '.', preg_replace( '/[^\d,.-]/', '', (string) ( $draft['annualRevenue'] ?? '0' ) ) ) ),
 			'phone_numbers'      => array(
-				array_merge(
-					papelito_pagarme_phone_payload( $phone ),
-					array( 'type' => 'mobile' )
-				),
+				papelito_pagarme_recipient_phone_payload( $phone ),
 			),
 			'main_address'       => $main_address,
 			'managing_partners'  => array( $partner ),
 		),
-		'metadata'             => wp_json_encode(
-			array(
-				'user_id'    => $user_id,
-				'store_name' => $store_name,
-			),
-			JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+		'metadata'             => array(
+			'user_id'    => (string) $user_id,
+			'store_name' => $store_name,
 		),
 	);
 }
@@ -292,7 +403,7 @@ function papelito_pagarme_sync_vendor_recipient( int $user_id ) {
 	$result = papelito_pagarme_request( 'GET', 'recipients/' . rawurlencode( $recipient_id ) );
 
 	if ( is_wp_error( $result ) ) {
-		papelito_pagarme_save_vendor_recipient_error( $user_id, $result->get_error_message() );
+		papelito_pagarme_save_vendor_recipient_error( $user_id, $result );
 		return $result;
 	}
 
@@ -318,7 +429,7 @@ function papelito_pagarme_refresh_vendor_kyc_link( int $user_id ) {
 	$result = papelito_pagarme_request( 'POST', 'recipients/' . rawurlencode( $recipient_id ) . '/kyc_link', array() );
 
 	if ( is_wp_error( $result ) ) {
-		papelito_pagarme_save_vendor_recipient_error( $user_id, $result->get_error_message() );
+		papelito_pagarme_save_vendor_recipient_error( $user_id, $result );
 		return $result;
 	}
 
@@ -341,7 +452,7 @@ function papelito_pagarme_upsert_vendor_recipient( int $user_id, bool $refresh_k
 	$payload = papelito_pagarme_build_recipient_payload( $user_id );
 
 	if ( is_wp_error( $payload ) ) {
-		papelito_pagarme_save_vendor_recipient_error( $user_id, $payload->get_error_message() );
+		papelito_pagarme_save_vendor_recipient_error( $user_id, $payload );
 		return $payload;
 	}
 
@@ -360,7 +471,7 @@ function papelito_pagarme_upsert_vendor_recipient( int $user_id, bool $refresh_k
 	$result = papelito_pagarme_request( $method, $path, $body );
 
 	if ( is_wp_error( $result ) ) {
-		papelito_pagarme_save_vendor_recipient_error( $user_id, $result->get_error_message() );
+		papelito_pagarme_save_vendor_recipient_error( $user_id, $result );
 		return $result;
 	}
 
@@ -431,7 +542,7 @@ add_action(
 						$result      = papelito_pagarme_upsert_vendor_recipient( get_current_user_id(), $refresh_kyc );
 
 						if ( is_wp_error( $result ) ) {
-							return $result;
+							return papelito_pagarme_recipient_error_response( $result );
 						}
 
 						return new WP_REST_Response( $result, 200 );
