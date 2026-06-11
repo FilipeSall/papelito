@@ -184,11 +184,41 @@ jobs:
 
       - name: SSH setup
         if: steps.should_run.outputs.run == 'true'
+        shell: bash
+        env:
+          REMOTE_HOST: ${{ env.REMOTE_HOST }}
+          REMOTE_PORT: ${{ env.REMOTE_PORT }}
+          REMOTE_USER: ${{ env.REMOTE_USER }}
+          SSH_PRIVATE_KEY: ${{ env.SSH_PRIVATE_KEY }}
         run: |
+          set -euo pipefail
+
+          echo "host_len=${#REMOTE_HOST} port='${REMOTE_PORT}' user_len=${#REMOTE_USER} key_len=${#SSH_PRIVATE_KEY}"
+
+          if [[ -z "$REMOTE_HOST" ]]; then
+            echo "::error::REMOTE_HOST vazio — secret REMOTE_HOST_* não chegou ao step" >&2
+            exit 1
+          fi
+          if [[ -z "$SSH_PRIVATE_KEY" ]]; then
+            echo "::error::SSH_PRIVATE_KEY vazio — secret SSH_PRIVATE_KEY_* não chegou ou o heredoc quebrou" >&2
+            exit 1
+          fi
+
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p "$REMOTE_PORT" "$REMOTE_HOST" >> ~/.ssh/known_hosts
+
+          attempt=1
+          max_attempts=3
+          until ssh-keyscan -T 10 -p "$REMOTE_PORT" "$REMOTE_HOST" >> ~/.ssh/known_hosts; do
+            if [[ "$attempt" -ge "$max_attempts" ]]; then
+              echo "::error::ssh-keyscan falhou após $attempt tentativas para $REMOTE_HOST:$REMOTE_PORT" >&2
+              exit 1
+            fi
+            echo "ssh-keyscan tentativa $attempt falhou; aguardando antes de retentar..." >&2
+            attempt=$((attempt + 1))
+            sleep 5
+          done
 
       - name: Permissões dos scripts
         if: steps.should_run.outputs.run == 'true'
