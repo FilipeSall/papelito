@@ -2,7 +2,13 @@
 <IfModule mod_rewrite.c>
 RewriteEngine On
 RewriteCond %{HTTP_HOST} ^(www\.)?papelitobrasil\.com\.br$ [NC]
+RewriteCond %{REQUEST_METHOD} !OPTIONS [NC]
+RewriteCond %{REQUEST_URI} !^/(wp-json|graphql)(/|$) [NC]
+RewriteCond %{REQUEST_URI} !^/wp-admin(/|$) [NC]
 RewriteCond %{REQUEST_URI} !^/wp-admin/admin-ajax\.php$ [NC]
+RewriteCond %{REQUEST_URI} !^/wp-login\.php$ [NC]
+RewriteCond %{REQUEST_URI} !^/wp-cron\.php$ [NC]
+RewriteCond %{REQUEST_URI} !^/(wp-content|wp-includes)(/|$) [NC]
 RewriteRule ^ https://papelito.com/ [R=302,L,QSD]
 </IfModule>
 # END Papelito Domain Redirect

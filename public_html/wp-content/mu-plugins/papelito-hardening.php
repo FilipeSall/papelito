@@ -22,6 +22,29 @@ function papelito_is_legacy_public_host(): bool {
 	return in_array( $host, array( 'papelitobrasil.com.br', 'www.papelitobrasil.com.br' ), true );
 }
 
+function papelito_should_redirect_legacy_public_request(): bool {
+	if ( ! papelito_is_legacy_public_host() ) {
+		return false;
+	}
+
+	$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) ) : 'GET';
+
+	if ( 'OPTIONS' === $method ) {
+		return false;
+	}
+
+	$uri  = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '/';
+	$path = (string) wp_parse_url( $uri, PHP_URL_PATH );
+
+	foreach ( array( '/wp-json', '/graphql', '/wp-admin', '/wp-content', '/wp-includes' ) as $prefix ) {
+		if ( $path === $prefix || 0 === strpos( $path, $prefix . '/' ) ) {
+			return false;
+		}
+	}
+
+	return ! in_array( $path, array( '/wp-login.php', '/wp-cron.php' ), true );
+}
+
 add_filter(
 	'allowed_redirect_hosts',
 	static function ( array $hosts ): array {
@@ -33,7 +56,7 @@ add_filter(
 add_action(
 	'init',
 	static function (): void {
-		if ( papelito_is_legacy_public_host() ) {
+		if ( papelito_should_redirect_legacy_public_request() ) {
 			wp_safe_redirect( 'https://papelito.com/', 302 );
 			exit;
 		}
