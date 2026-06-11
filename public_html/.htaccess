@@ -2,7 +2,8 @@
 <IfModule mod_rewrite.c>
 RewriteEngine On
 RewriteCond %{HTTP_HOST} ^(www\.)?papelitobrasil\.com\.br$ [NC]
-RewriteRule ^ https://papelito.com%{REQUEST_URI} [R=301,L,QSD]
+RewriteCond %{REQUEST_URI} !^/wp-admin/admin-ajax\.php$ [NC]
+RewriteRule ^ https://papelito.com/ [R=302,L,QSD]
 </IfModule>
 # END Papelito Domain Redirect
 
