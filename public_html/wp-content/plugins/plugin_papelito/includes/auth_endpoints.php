@@ -676,6 +676,11 @@ function papelito_auth_validate_register_payload( array $data ) {
 		$errors->add( 'cnpj', 'CNPJ inválido. Formato esperado: 12.345.678/0001-90.' );
 	}
 
+	// CPF do comprador é opcional — só valida o formato se fornecido.
+	if ( ! empty( $data['cpf'] ) && 11 !== strlen( preg_replace( '/\D+/', '', (string) $data['cpf'] ) ) ) {
+		$errors->add( 'cpf', 'CPF inválido. Formato esperado: 123.456.789-00.' );
+	}
+
 	if ( ! empty( $data['state'] ) && ! array_key_exists( (string) $data['state'], papelito_brazilian_states() ) ) {
 		$errors->add( 'state', 'Estado inválido.' );
 	}
@@ -765,7 +770,7 @@ function papelito_auth_create_registered_user( array $data ) {
 		return $user_id;
 	}
 
-	$meta_keys = array( 'store_name', 'phone_number', 'cnpj', 'instagram', 'state', 'city', 'cep' );
+	$meta_keys = array( 'store_name', 'phone_number', 'cnpj', 'cpf', 'instagram', 'state', 'city', 'cep' );
 
 	foreach ( $meta_keys as $key ) {
 		if ( isset( $data[ $key ] ) && '' !== $data[ $key ] ) {
@@ -823,6 +828,7 @@ function papelito_auth_create_registered_seller( array $data ) {
 		'store_name',
 		'phone_number',
 		'cnpj',
+		'cpf',
 		'instagram',
 		'state',
 		'city',

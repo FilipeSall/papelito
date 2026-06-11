@@ -210,6 +210,10 @@ function papelito_flash_sale_load_product( int $product_id ): ?WC_Product {
 		return null;
 	}
 
+	if ( function_exists( 'papelito_product_has_valid_weight' ) && ! papelito_product_has_valid_weight( $product ) ) {
+		return null;
+	}
+
 	return $product;
 }
 

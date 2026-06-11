@@ -137,6 +137,23 @@ function papelito_pagarme_order_items_payload( array $lines, array $shipping ): 
 }
 
 /**
+ * Resolve o documento do comprador (CPF ou CNPJ) a partir do perfil.
+ *
+ * Retorna apenas os digitos do primeiro meta preenchido entre `cnpj` e `cpf`.
+ */
+function papelito_pagarme_resolve_customer_document( int $user_id ): string {
+	foreach ( array( 'cnpj', 'cpf' ) as $meta_key ) {
+		$digits = preg_replace( '/\D+/', '', (string) get_user_meta( $user_id, $meta_key, true ) );
+
+		if ( '' !== $digits ) {
+			return $digits;
+		}
+	}
+
+	return '';
+}
+
+/**
  * Monta o payload do cliente.
  *
  * @param array<string,string> $address Endereco.
@@ -152,16 +169,16 @@ function papelito_pagarme_customer_payload( int $user_id, array $address ) {
 	$last_name  = sanitize_text_field( (string) get_user_meta( $user_id, 'last_name', true ) );
 	$name       = trim( $first_name . ' ' . $last_name );
 	$phone      = sanitize_text_field( (string) get_user_meta( $user_id, 'phone_number', true ) );
-	$document   = preg_replace( '/\D+/', '', (string) get_user_meta( $user_id, 'cnpj', true ) );
+	$document   = papelito_pagarme_resolve_customer_document( $user_id );
 
 	if ( '' === $name ) {
 		$name = sanitize_text_field( (string) $user->display_name );
 	}
 
-	if ( '' === $document ) {
+	if ( ! in_array( strlen( $document ), array( 11, 14 ), true ) ) {
 		return new WP_Error(
 			'papelito_checkout_invalid_payment',
-			'O cliente precisa ter um CNPJ valido no perfil para concluir o pagamento.',
+			'Informe um CPF ou CNPJ valido no seu perfil para concluir o pagamento.',
 			array( 'status' => 422 )
 		);
 	}

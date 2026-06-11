@@ -19,6 +19,7 @@ if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_STOCK_ZEROED', 'stock_zeroed' );
 	define( 'PAPELITO_NOTIF_SUPPORT_MESSAGE', 'support_message' );
 	define( 'PAPELITO_NOTIF_SUPPORT_ESCALATED', 'support_escalated' );
+	define( 'PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT', 'product_missing_weight' );
 }
 
 /**
@@ -69,7 +70,34 @@ function papelito_notification_allowed_types() {
 		PAPELITO_NOTIF_STOCK_ZEROED,
 		PAPELITO_NOTIF_SUPPORT_MESSAGE,
 		PAPELITO_NOTIF_SUPPORT_ESCALATED,
+		PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT,
 	);
+}
+
+/**
+ * Verifica se o produto tem peso válido para venda/cotação.
+ *
+ * @param WC_Product $product Produto avaliado.
+ * @return bool
+ */
+function papelito_product_has_valid_weight( WC_Product $product ) {
+	$weight = (float) wc_format_decimal( $product->get_weight( 'edit' ) );
+
+	if ( $weight > 0 ) {
+		return true;
+	}
+
+	if ( $product->is_type( 'variable' ) ) {
+		foreach ( $product->get_children() as $variation_id ) {
+			$variation = wc_get_product( $variation_id );
+
+			if ( $variation instanceof WC_Product && (float) wc_format_decimal( $variation->get_weight( 'edit' ) ) > 0 ) {
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 /**
@@ -453,6 +481,92 @@ function papelito_handle_support_escalated_notification( $thread_id, $customer_i
 }
 add_action( 'papelito_support_escalated', 'papelito_handle_support_escalated_notification', 10, 2 );
 
+/**
+ * Notifica admins sobre produto publicado sem peso.
+ *
+ * @param int     $post_id ID do post.
+ * @param WP_Post $post    Post salvo.
+ * @return void
+ */
+function papelito_handle_product_missing_weight_notification( $post_id, $post ) {
+	if ( ! $post instanceof WP_Post || 'product' !== $post->post_type ) {
+		return;
+	}
+
+	if ( wp_is_post_revision( $post_id ) || ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) ) {
+		return;
+	}
+
+	$product = function_exists( 'wc_get_product' ) ? wc_get_product( $post_id ) : null;
+
+	if ( ! $product instanceof WC_Product || 'publish' !== $product->get_status() || papelito_product_has_valid_weight( $product ) ) {
+		return;
+	}
+
+	$payload = papelito_notification_product_payload( $post_id );
+	$admins  = get_users(
+		array(
+			'role'   => 'administrator',
+			'fields' => 'ID',
+		)
+	);
+
+	foreach ( is_array( $admins ) ? $admins : array() as $admin_id ) {
+		$admin_id = absint( $admin_id );
+
+		if ( $admin_id <= 0 || papelito_user_has_unread_product_notification( $admin_id, PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT, $post_id ) ) {
+			continue;
+		}
+
+		papelito_dispatch_notification( $admin_id, PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT, $payload );
+	}
+}
+add_action( 'save_post_product', 'papelito_handle_product_missing_weight_notification', 20, 2 );
+
+/**
+ * Faz um scan leve dos produtos publicados sem peso quando um admin consulta notificações.
+ *
+ * @param int $user_id Usuário autenticado.
+ * @return void
+ */
+function papelito_maybe_scan_missing_weight_products_for_admin( $user_id ) {
+	$user_id = absint( $user_id );
+
+	if ( $user_id <= 0 || ! user_can( $user_id, 'manage_options' ) ) {
+		return;
+	}
+
+	$transient_key = 'papelito_missing_weight_scan_' . $user_id;
+
+	if ( get_transient( $transient_key ) ) {
+		return;
+	}
+
+	set_transient( $transient_key, '1', 15 * MINUTE_IN_SECONDS );
+
+	$product_ids = get_posts(
+		array(
+			'post_type'              => 'product',
+			'post_status'            => 'publish',
+			'fields'                 => 'ids',
+			'posts_per_page'         => -1,
+			'orderby'                => 'ID',
+			'order'                  => 'DESC',
+			'no_found_rows'          => true,
+			'update_post_meta_cache' => false,
+			'update_post_term_cache' => false,
+		)
+	);
+
+	foreach ( is_array( $product_ids ) ? $product_ids : array() as $product_id ) {
+		$post = get_post( $product_id );
+
+		if ( $post instanceof WP_Post ) {
+			papelito_handle_product_missing_weight_notification( (int) $product_id, $post );
+		}
+	}
+}
+
 add_action(
 	'rest_api_init',
 	static function (): void {
@@ -475,6 +589,7 @@ add_action(
 					global $wpdb;
 
 					$user_id     = get_current_user_id();
+					papelito_maybe_scan_missing_weight_products_for_admin( $user_id );
 					$page        = max( 1, (int) $request->get_param( 'page' ) );
 					$per_page    = min( 50, max( 1, (int) $request->get_param( 'per_page' ) ) );
 					$unread_only = (bool) $request->get_param( 'unread_only' );
@@ -536,8 +651,11 @@ add_action(
 				'methods'             => WP_REST_Server::READABLE,
 				'permission_callback' => 'papelito_require_notifications_auth',
 				'callback'            => static function () {
+					$user_id = get_current_user_id();
+					papelito_maybe_scan_missing_weight_products_for_admin( $user_id );
+
 					return new WP_REST_Response(
-						array( 'count' => papelito_get_unread_notifications_count( get_current_user_id() ) ),
+						array( 'count' => papelito_get_unread_notifications_count( $user_id ) ),
 						200
 					);
 				},

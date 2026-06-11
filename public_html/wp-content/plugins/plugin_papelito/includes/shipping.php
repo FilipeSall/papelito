@@ -335,6 +335,55 @@ function papelito_correios_get_token( array $credentials ) {
  * @param array<string, mixed>  $token Token.
  * @return array<int, array{service:string, code:string, name:string}>|WP_Error
  */
+function papelito_correios_select_preferred_services( array $services ): array {
+	$preferred_codes = apply_filters(
+		'papelito_correios_preferred_service_codes',
+		array(
+			'PAC'   => array( '04669', '03298', '04000' ),
+			'SEDEX' => array( '03220', '04090' ),
+		)
+	);
+	$grouped         = array(
+		'PAC'   => array(),
+		'SEDEX' => array(),
+	);
+	$selected        = array();
+
+	foreach ( $services as $service ) {
+		$type = isset( $service['service'] ) ? (string) $service['service'] : '';
+
+		if ( ! isset( $grouped[ $type ] ) ) {
+			continue;
+		}
+
+		$grouped[ $type ][] = $service;
+	}
+
+	foreach ( array( 'PAC', 'SEDEX' ) as $type ) {
+		if ( empty( $grouped[ $type ] ) ) {
+			continue;
+		}
+
+		$preferred_for_type = isset( $preferred_codes[ $type ] ) && is_array( $preferred_codes[ $type ] )
+			? array_map( 'strval', $preferred_codes[ $type ] )
+			: array();
+		$match              = null;
+
+		foreach ( $preferred_for_type as $code ) {
+			foreach ( $grouped[ $type ] as $service ) {
+				if ( $code === (string) $service['code'] ) {
+					$match = $service;
+					break 2;
+				}
+			}
+		}
+
+		$selected[] = is_array( $match ) ? $match : $grouped[ $type ][0];
+	}
+
+	return $selected;
+}
+
 function papelito_correios_get_services( array $credentials, array $token ) {
 	$contract = ! empty( $token['cartaoPostagem']['contrato'] )
 		? (string) $token['cartaoPostagem']['contrato']
@@ -351,7 +400,7 @@ function papelito_correios_get_services( array $credentials, array $token ) {
 		);
 	}
 
-	$transient = 'papelito_correios_services_' . md5( implode( '|', array( $credentials['environment'], $token['cnpj'], $contract, $card ) ) );
+	$transient = 'papelito_correios_services_v2_' . md5( implode( '|', array( $credentials['environment'], $token['cnpj'], $contract, $card ) ) );
 	$cached    = get_transient( $transient );
 
 	if ( is_string( $cached ) && '' !== $cached ) {
@@ -427,6 +476,8 @@ function papelito_correios_get_services( array $credentials, array $token ) {
 			array( 'status' => 502 )
 		);
 	}
+
+	$services = papelito_correios_select_preferred_services( $services );
 
 	set_transient( $transient, wp_json_encode( $services ), 12 * HOUR_IN_SECONDS );
 
