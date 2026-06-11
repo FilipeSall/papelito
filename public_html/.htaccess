@@ -3,6 +3,7 @@
 RewriteEngine On
 RewriteCond %{HTTP_HOST} ^(www\.)?papelitobrasil\.com\.br$ [NC]
 RewriteCond %{REQUEST_METHOD} !OPTIONS [NC]
+RewriteCond %{QUERY_STRING} !(^|&)wc-ajax= [NC]
 RewriteCond %{REQUEST_URI} !^/(wp-json|graphql)(/|$) [NC]
 RewriteCond %{REQUEST_URI} !^/wp-admin(/|$) [NC]
 RewriteCond %{REQUEST_URI} !^/wp-admin/admin-ajax\.php$ [NC]

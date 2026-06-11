@@ -33,6 +33,10 @@ function papelito_should_redirect_legacy_public_request(): bool {
 		return false;
 	}
 
+	if ( isset( $_GET['wc-ajax'] ) ) {
+		return false;
+	}
+
 	$uri  = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '/';
 	$path = (string) wp_parse_url( $uri, PHP_URL_PATH );
 
