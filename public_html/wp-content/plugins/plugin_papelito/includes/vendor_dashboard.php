@@ -8,6 +8,7 @@
 defined( 'ABSPATH' ) || exit;
 
 if ( ! defined( 'PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT' ) ) {
+	define( 'PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT', 'aguardando_pagamento' );
 	define( 'PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT', 'aguardando_envio' );
 	define( 'PAPELITO_VENDOR_STATUS_PICKING', 'em_separacao' );
 	define( 'PAPELITO_VENDOR_STATUS_SHIPPED', 'enviado' );
@@ -33,6 +34,7 @@ function papelito_vendor_dashboard_is_wc_instance( $value, string $class ): bool
  */
 function papelito_vendor_dashboard_statuses(): array {
 	return array(
+		PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT,
 		PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT,
 		PAPELITO_VENDOR_STATUS_PICKING,
 		PAPELITO_VENDOR_STATUS_SHIPPED,
@@ -42,20 +44,81 @@ function papelito_vendor_dashboard_statuses(): array {
 }
 
 /**
+ * Fulfillment statuses that represent a confirmed sale (payment approved).
+ * Orders awaiting payment or cancelled never count toward revenue/KPIs.
+ *
+ * @return array<int,string>
+ */
+function papelito_vendor_dashboard_sale_statuses(): array {
+	return array(
+		PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT,
+		PAPELITO_VENDOR_STATUS_PICKING,
+		PAPELITO_VENDOR_STATUS_SHIPPED,
+		PAPELITO_VENDOR_STATUS_DELIVERED,
+	);
+}
+
+/**
+ * Defense-in-depth payment gate for KPIs. An order only counts as a sale when
+ * the payment is actually confirmed. Trusts the WooCommerce order status
+ * (paid-bearing statuses) and/or the persisted Pagar.me charge state, so that
+ * legacy orders wrongly stamped with a fulfillment status before payment do
+ * not inflate revenue.
+ *
+ * @param object $order Pedido WooCommerce.
+ */
+function papelito_vendor_dashboard_order_is_paid( $order ): bool {
+	if ( ! papelito_vendor_dashboard_is_wc_instance( $order, 'WC_Order' ) ) {
+		return false;
+	}
+
+	if ( method_exists( $order, 'get_status' ) ) {
+		$wc_status = sanitize_key( (string) $order->get_status() );
+
+		if ( in_array( $wc_status, array( 'processing', 'completed', 'refunded' ), true ) ) {
+			return true;
+		}
+
+		if ( in_array( $wc_status, array( 'pending', 'failed', 'cancelled', 'on-hold', 'checkout-draft' ), true ) ) {
+			return false;
+		}
+	}
+
+	if ( function_exists( 'papelito_pagarme_payment_state_is_paid' ) ) {
+		$pagarme_state = sanitize_key( (string) $order->get_meta( '_papelito_pagarme_payment_state', true ) );
+
+		if ( '' !== $pagarme_state ) {
+			return papelito_pagarme_payment_state_is_paid( $pagarme_state );
+		}
+	}
+
+	return false;
+}
+
+/**
  * Normalize an operational fulfillment status.
  *
  * @param object $order Pedido WooCommerce.
  */
 function papelito_vendor_dashboard_order_status( $order ): string {
 	if ( ! papelito_vendor_dashboard_is_wc_instance( $order, 'WC_Order' ) ) {
-		return PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT;
+		return PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT;
 	}
 
 	$status = sanitize_key( (string) $order->get_meta( '_papelito_vendor_status', true ) );
-
-	return in_array( $status, papelito_vendor_dashboard_statuses(), true )
+	$status = in_array( $status, papelito_vendor_dashboard_statuses(), true )
 		? $status
-		: PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT;
+		: PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT;
+
+	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $status ) {
+		return $status;
+	}
+
+	if ( ! papelito_vendor_dashboard_order_is_paid( $order ) ) {
+		return PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT;
+	}
+
+	return $status;
 }
 
 /**
@@ -328,12 +391,14 @@ function papelito_vendor_dashboard_bucket( $order, string $interval ): string {
  * @return array<string,mixed>
  */
 function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array {
-	$orders         = papelito_vendor_dashboard_orders_for_vendor( $vendor_id );
-	$gross_revenue  = 0.0;
-	$orders_count   = 0;
-	$pending_orders = 0;
-	$series         = array();
-	$products       = array();
+	$orders                 = papelito_vendor_dashboard_orders_for_vendor( $vendor_id );
+	$gross_revenue          = 0.0;
+	$orders_count           = 0;
+	$pending_orders         = 0;
+	$awaiting_payment_count = 0;
+	$series                 = array();
+	$products               = array();
+	$sale_statuses          = papelito_vendor_dashboard_sale_statuses();
 
 	foreach ( $orders as $order ) {
 		if ( ! papelito_vendor_dashboard_in_period( $order, $period['from'], $period['to'] ) ) {
@@ -341,7 +406,17 @@ function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array 
 		}
 
 		$status = papelito_vendor_dashboard_order_status( $order );
+
 		if ( PAPELITO_VENDOR_STATUS_CANCELLED === $status ) {
+			continue;
+		}
+
+		if ( ! papelito_vendor_dashboard_order_is_paid( $order ) ) {
+			++$awaiting_payment_count;
+			continue;
+		}
+
+		if ( ! in_array( $status, $sale_statuses, true ) ) {
 			continue;
 		}
 
@@ -381,12 +456,13 @@ function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array 
 	);
 
 	return array(
-		'period'         => $period,
-		'gross_revenue'  => round( $gross_revenue, 2 ),
-		'average_ticket' => $orders_count > 0 ? round( $gross_revenue / $orders_count, 2 ) : 0.0,
-		'pending_orders' => $pending_orders,
-		'orders_count'   => $orders_count,
-		'revenue_series' => array_map(
+		'period'                  => $period,
+		'gross_revenue'           => round( $gross_revenue, 2 ),
+		'average_ticket'          => $orders_count > 0 ? round( $gross_revenue / $orders_count, 2 ) : 0.0,
+		'pending_orders'          => $pending_orders,
+		'awaiting_payment_orders' => $awaiting_payment_count,
+		'orders_count'            => $orders_count,
+		'revenue_series'          => array_map(
 			static fn( string $label, float $value ): array => array(
 				'label' => $label,
 				'value' => round( $value, 2 ),
@@ -394,7 +470,7 @@ function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array 
 			array_keys( $series ),
 			array_values( $series )
 		),
-		'top_products'   => array_slice( array_values( $products ), 0, 5 ),
+		'top_products'            => array_slice( array_values( $products ), 0, 5 ),
 	);
 }
 
@@ -1091,6 +1167,10 @@ add_action(
 					$order = papelito_vendor_dashboard_customer_order( absint( $request->get_param( 'id' ) ), get_current_user_id() );
 					if ( is_wp_error( $order ) ) {
 						return $order;
+					}
+
+					if ( function_exists( 'papelito_pagarme_maybe_reconcile_checkout_order' ) ) {
+						papelito_pagarme_maybe_reconcile_checkout_order( $order );
 					}
 
 					return new WP_REST_Response( papelito_vendor_dashboard_map_order( $order, null, true ), 200 );

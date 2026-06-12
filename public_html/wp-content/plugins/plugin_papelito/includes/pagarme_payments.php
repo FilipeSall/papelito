@@ -14,10 +14,12 @@ if ( ! defined( 'PAPELITO_PAGARME_ORDER_ID_META' ) ) {
 	define( 'PAPELITO_PAGARME_PAYMENT_STATE_META', '_papelito_pagarme_payment_state' );
 	define( 'PAPELITO_PAGARME_PIX_COPY_PASTE_META', '_papelito_pagarme_pix_copy_paste' );
 	define( 'PAPELITO_PAGARME_PIX_QR_CODE_META', '_papelito_pagarme_pix_qr_code' );
+	define( 'PAPELITO_PAGARME_PIX_QR_CODE_URL_META', '_papelito_pagarme_pix_qr_code_url' );
 	define( 'PAPELITO_PAGARME_PIX_EXPIRES_AT_META', '_papelito_pagarme_pix_expires_at' );
 	define( 'PAPELITO_PAGARME_BOLETO_URL_META', '_papelito_pagarme_boleto_url' );
 	define( 'PAPELITO_PAGARME_BOLETO_LINE_META', '_papelito_pagarme_boleto_line' );
 	define( 'PAPELITO_PAGARME_BOLETO_EXPIRES_AT_META', '_papelito_pagarme_boleto_expires_at' );
+	define( 'PAPELITO_PAGARME_LAST_RECONCILE_META', '_papelito_pagarme_last_reconcile_at' );
 	define( 'PAPELITO_STOCK_RESERVED_META', '_papelito_stock_reserved' );
 	define( 'PAPELITO_PAGARME_RECONCILE_HOOK', 'papelito_pagarme_reconcile_pending_stock' );
 	define( 'PAPELITO_PAGARME_PIX_RESERVATION_GRACE', HOUR_IN_SECONDS );
@@ -39,11 +41,34 @@ function papelito_pagarme_order_payment_snapshot( $order ): array {
 
 	$method = sanitize_key( (string) $order->get_meta( PAPELITO_PAGARME_PAYMENT_METHOD_META, true ) );
 	$state  = sanitize_key( (string) $order->get_meta( PAPELITO_PAGARME_PAYMENT_STATE_META, true ) );
+	$pix_qr_code     = sanitize_text_field( (string) $order->get_meta( PAPELITO_PAGARME_PIX_QR_CODE_META, true ) );
+	$pix_copy_paste  = sanitize_text_field( (string) $order->get_meta( PAPELITO_PAGARME_PIX_COPY_PASTE_META, true ) );
+	$pix_qr_code_url = esc_url_raw( (string) $order->get_meta( PAPELITO_PAGARME_PIX_QR_CODE_URL_META, true ) );
+
+	if ( '' === $pix_qr_code_url && papelito_pagarme_is_url( $pix_qr_code ) ) {
+		$pix_qr_code_url = esc_url_raw( $pix_qr_code );
+		$pix_qr_code     = '';
+	}
+
+	if ( '' === $pix_qr_code_url && papelito_pagarme_is_url( $pix_copy_paste ) ) {
+		$pix_qr_code_url = esc_url_raw( $pix_copy_paste );
+		$pix_copy_paste  = '';
+	}
+
+	if ( '' === $pix_copy_paste && '' !== $pix_qr_code ) {
+		$pix_copy_paste = $pix_qr_code;
+	}
+
+	if ( '' === $pix_qr_code && '' !== $pix_copy_paste ) {
+		$pix_qr_code = $pix_copy_paste;
+	}
+
 	$pix    = array_filter(
 		array(
-			'qr_code'    => (string) $order->get_meta( PAPELITO_PAGARME_PIX_QR_CODE_META, true ),
-			'copy_paste' => (string) $order->get_meta( PAPELITO_PAGARME_PIX_COPY_PASTE_META, true ),
-			'expires_at' => (string) $order->get_meta( PAPELITO_PAGARME_PIX_EXPIRES_AT_META, true ),
+			'qr_code'     => $pix_qr_code,
+			'qr_code_url' => $pix_qr_code_url,
+			'copy_paste'  => $pix_copy_paste,
+			'expires_at'  => (string) $order->get_meta( PAPELITO_PAGARME_PIX_EXPIRES_AT_META, true ),
 		),
 		static fn( $value ): bool => is_string( $value ) && '' !== $value
 	);
@@ -70,6 +95,47 @@ function papelito_pagarme_order_payment_snapshot( $order ): array {
 	}
 
 	return $snapshot;
+}
+
+/**
+ * Indica se um valor recebido do PSP e uma URL, nao um payload EMV Pix.
+ */
+function papelito_pagarme_is_url( string $value ): bool {
+	return 1 === preg_match( '#^https?://#i', trim( $value ) );
+}
+
+/**
+ * Escolhe o payload Pix copia-e-cola entre os formatos retornados pelo PSP.
+ *
+ * @param array<string,mixed> $last_transaction Ultima transacao da cobranca.
+ */
+function papelito_pagarme_pix_copy_paste_from_transaction( array $last_transaction ): string {
+	foreach ( array( 'qr_code', 'qr_code_text', 'copy_paste', 'copy_and_paste', 'emv', 'emv_code' ) as $key ) {
+		$value = sanitize_text_field( (string) ( $last_transaction[ $key ] ?? '' ) );
+
+		if ( '' !== $value && ! papelito_pagarme_is_url( $value ) ) {
+			return $value;
+		}
+	}
+
+	return '';
+}
+
+/**
+ * Escolhe a URL de QR Pix sem confundir com o payload copia-e-cola.
+ *
+ * @param array<string,mixed> $last_transaction Ultima transacao da cobranca.
+ */
+function papelito_pagarme_pix_qr_code_url_from_transaction( array $last_transaction ): string {
+	foreach ( array( 'qr_code_url', 'qr_code_image_url', 'url', 'qr_code' ) as $key ) {
+		$value = esc_url_raw( (string) ( $last_transaction[ $key ] ?? '' ) );
+
+		if ( '' !== $value && papelito_pagarme_is_url( $value ) ) {
+			return $value;
+		}
+	}
+
+	return '';
 }
 
 /**
@@ -431,8 +497,12 @@ function papelito_pagarme_store_order_response( $order, array $response, string 
 	$order->update_meta_data( PAPELITO_PAGARME_PAYMENT_STATE_META, $state );
 
 	if ( 'pix' === $method ) {
-		$order->update_meta_data( PAPELITO_PAGARME_PIX_QR_CODE_META, sanitize_text_field( (string) ( $last_transaction['qr_code'] ?? $last_transaction['qr_code_url'] ?? $last_transaction['qr_code_text'] ?? '' ) ) );
-		$order->update_meta_data( PAPELITO_PAGARME_PIX_COPY_PASTE_META, sanitize_text_field( (string) ( $last_transaction['qr_code'] ?? $last_transaction['qr_code_text'] ?? $last_transaction['copy_and_paste'] ?? '' ) ) );
+		$copy_paste  = papelito_pagarme_pix_copy_paste_from_transaction( $last_transaction );
+		$qr_code_url = papelito_pagarme_pix_qr_code_url_from_transaction( $last_transaction );
+
+		$order->update_meta_data( PAPELITO_PAGARME_PIX_QR_CODE_META, $copy_paste );
+		$order->update_meta_data( PAPELITO_PAGARME_PIX_COPY_PASTE_META, $copy_paste );
+		$order->update_meta_data( PAPELITO_PAGARME_PIX_QR_CODE_URL_META, $qr_code_url );
 		$order->update_meta_data( PAPELITO_PAGARME_PIX_EXPIRES_AT_META, sanitize_text_field( (string) ( $last_transaction['expires_at'] ?? '' ) ) );
 	}
 
@@ -460,11 +530,49 @@ function papelito_pagarme_apply_order_state( $order, string $state, bool $paid )
 	if ( $paid ) {
 		$order->payment_complete();
 		$order->update_status( 'processing' );
+		papelito_pagarme_promote_vendor_status_on_payment( $order );
 	} elseif ( papelito_pagarme_payment_state_releases_stock( $state ) ) {
 		$order->update_status( 'failed' );
+		papelito_pagarme_mark_vendor_status_unpaid( $order );
 	}
 
 	$order->save();
+}
+
+/**
+ * Avanca o status operacional do vendor de "aguardando pagamento" para
+ * "aguardando envio" quando o pagamento e confirmado. Idempotente: nao
+ * regride pedidos que ja avancaram na esteira de fulfillment.
+ */
+function papelito_pagarme_promote_vendor_status_on_payment( $order ): void {
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) || ! defined( 'PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT' ) ) {
+		return;
+	}
+
+	$current = sanitize_key( (string) $order->get_meta( '_papelito_vendor_status', true ) );
+
+	if ( '' === $current || PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT === $current ) {
+		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT );
+		$order->add_order_note( 'Pagamento confirmado: pedido liberado para envio.' );
+	}
+}
+
+/**
+ * Marca o status operacional do vendor como cancelado quando o pagamento
+ * entra em estado terminal sem confirmacao, evitando que o pedido conte
+ * como venda. Nao mexe em pedidos ja enviados/entregues.
+ */
+function papelito_pagarme_mark_vendor_status_unpaid( $order ): void {
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) || ! defined( 'PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT' ) ) {
+		return;
+	}
+
+	$current = sanitize_key( (string) $order->get_meta( '_papelito_vendor_status', true ) );
+
+	if ( '' === $current || PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT === $current ) {
+		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_VENDOR_STATUS_CANCELLED );
+		$order->add_order_note( 'Pagamento nao concluido: pedido cancelado.' );
+	}
 }
 
 /**
@@ -611,6 +719,37 @@ function papelito_pagarme_reconcile_wc_order( $order ) {
 }
 
 /**
+ * Atualiza dados pendentes do pagamento exibido no checkout, com throttle.
+ */
+function papelito_pagarme_maybe_reconcile_checkout_order( $order ) {
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) || ! method_exists( $order, 'update_meta_data' ) ) {
+		return null;
+	}
+
+	$pagarme_order_id = sanitize_text_field( (string) $order->get_meta( PAPELITO_PAGARME_ORDER_ID_META, true ) );
+	$method           = sanitize_key( (string) $order->get_meta( PAPELITO_PAGARME_PAYMENT_METHOD_META, true ) );
+	$state            = sanitize_key( (string) $order->get_meta( PAPELITO_PAGARME_PAYMENT_STATE_META, true ) );
+
+	if ( '' === $pagarme_order_id || ! in_array( $method, array( 'pix', 'boleto' ), true ) ) {
+		return null;
+	}
+
+	if ( papelito_pagarme_payment_state_is_paid( $state ) || papelito_pagarme_payment_state_releases_stock( $state ) ) {
+		return null;
+	}
+
+	$last_reconcile = (int) $order->get_meta( PAPELITO_PAGARME_LAST_RECONCILE_META, true );
+	if ( $last_reconcile > 0 && ( time() - $last_reconcile ) < 10 ) {
+		return null;
+	}
+
+	$order->update_meta_data( PAPELITO_PAGARME_LAST_RECONCILE_META, (string) time() );
+	$order->save();
+
+	return papelito_pagarme_reconcile_wc_order( $order );
+}
+
+/**
  * Reconcilia pedidos com estoque reservado para evitar reservas indefinidas.
  */
 function papelito_pagarme_reconcile_pending_stock_reservations(): void {
@@ -676,6 +815,7 @@ function papelito_pagarme_reconcile_pending_stock_reservations(): void {
 
 			$order->update_meta_data( PAPELITO_PAGARME_PAYMENT_STATE_META, 'expired' );
 			$order->update_status( 'failed' );
+			papelito_pagarme_mark_vendor_status_unpaid( $order );
 			$order->add_order_note( 'Reserva de estoque liberada apos expiracao do pagamento Pagar.me.' );
 			$order->save();
 		}

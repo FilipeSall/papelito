@@ -329,59 +329,96 @@ function papelito_correios_get_token( array $credentials ) {
 }
 
 /**
- * Busca servicos PAC/SEDEX disponiveis no contrato.
+ * Indica se o servico dos Correios pode aparecer no checkout.
  *
- * @param array<string, string> $credentials Credenciais.
- * @param array<string, mixed>  $token Token.
- * @return array<int, array{service:string, code:string, name:string}>|WP_Error
+ * @param string $name Nome do servico.
+ * @return bool
  */
-function papelito_correios_select_preferred_services( array $services ): array {
-	$preferred_codes = apply_filters(
-		'papelito_correios_preferred_service_codes',
+function papelito_correios_is_checkout_service( string $name ): bool {
+	$normalized = remove_accents( strtolower( $name ) );
+	$blocked    = apply_filters(
+		'papelito_correios_checkout_blocked_service_terms',
 		array(
-			'PAC'   => array( '04669', '03298', '04000' ),
-			'SEDEX' => array( '03220', '04090' ),
+			'empacotamento',
+			'grand formato',
+			'log+',
+			'locker',
+			'log +',
+			'logistica',
+			'packet',
+			'pagto',
+			'pagto entrega',
+			'pgto entrega',
+			'reverso',
+			'reversa',
 		)
 	);
-	$grouped         = array(
-		'PAC'   => array(),
-		'SEDEX' => array(),
-	);
-	$selected        = array();
 
-	foreach ( $services as $service ) {
-		$type = isset( $service['service'] ) ? (string) $service['service'] : '';
+	foreach ( $blocked as $term ) {
+		if ( false !== strpos( $normalized, remove_accents( strtolower( (string) $term ) ) ) ) {
+			return false;
+		}
+	}
 
-		if ( ! isset( $grouped[ $type ] ) ) {
+	return true;
+}
+
+/**
+ * Classifica o servico Correios como PAC/SEDEX quando for uma modalidade clara.
+ *
+ * @param string $name Nome do servico.
+ * @return string
+ */
+function papelito_correios_service_type_from_name( string $name ): string {
+	$normalized = remove_accents( strtolower( $name ) );
+
+	if ( 1 === preg_match( '/(^|[^a-z0-9])sedex([^a-z0-9]|$)/', $normalized ) ) {
+		return 'SEDEX';
+	}
+
+	if ( 1 === preg_match( '/(^|[^a-z0-9])pac([^a-z0-9]|$)/', $normalized ) ) {
+		return 'PAC';
+	}
+
+	return '';
+}
+
+/**
+ * Escolhe a melhor cotacao por modalidade: menor preco, depois menor prazo.
+ *
+ * @param array<int, array<string, mixed>> $options Opcoes cotadas.
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_correios_select_best_quoted_options( array $options ): array {
+	$best_by_service = array();
+
+	foreach ( $options as $option ) {
+		$service = isset( $option['service'] ) ? (string) $option['service'] : '';
+
+		if ( '' === $service ) {
 			continue;
 		}
 
-		$grouped[ $type ][] = $service;
-	}
-
-	foreach ( array( 'PAC', 'SEDEX' ) as $type ) {
-		if ( empty( $grouped[ $type ] ) ) {
+		if ( ! isset( $best_by_service[ $service ] ) ) {
+			$best_by_service[ $service ] = $option;
 			continue;
 		}
 
-		$preferred_for_type = isset( $preferred_codes[ $type ] ) && is_array( $preferred_codes[ $type ] )
-			? array_map( 'strval', $preferred_codes[ $type ] )
-			: array();
-		$match              = null;
+		$current_price = (float) ( $best_by_service[ $service ]['price'] ?? 0 );
+		$option_price  = (float) ( $option['price'] ?? 0 );
+		$current_time  = isset( $best_by_service[ $service ]['delivery_time'] ) && null !== $best_by_service[ $service ]['delivery_time']
+			? absint( $best_by_service[ $service ]['delivery_time'] )
+			: PHP_INT_MAX;
+		$option_time   = isset( $option['delivery_time'] ) && null !== $option['delivery_time']
+			? absint( $option['delivery_time'] )
+			: PHP_INT_MAX;
 
-		foreach ( $preferred_for_type as $code ) {
-			foreach ( $grouped[ $type ] as $service ) {
-				if ( $code === (string) $service['code'] ) {
-					$match = $service;
-					break 2;
-				}
-			}
+		if ( $option_price < $current_price || ( $option_price === $current_price && $option_time < $current_time ) ) {
+			$best_by_service[ $service ] = $option;
 		}
-
-		$selected[] = is_array( $match ) ? $match : $grouped[ $type ][0];
 	}
 
-	return $selected;
+	return array_values( $best_by_service );
 }
 
 function papelito_correios_get_services( array $credentials, array $token ) {
@@ -400,7 +437,7 @@ function papelito_correios_get_services( array $credentials, array $token ) {
 		);
 	}
 
-	$transient = 'papelito_correios_services_v2_' . md5( implode( '|', array( $credentials['environment'], $token['cnpj'], $contract, $card ) ) );
+	$transient = 'papelito_correios_services_v4_' . md5( implode( '|', array( $credentials['environment'], $token['cnpj'], $contract, $card ) ) );
 	$cached    = get_transient( $transient );
 
 	if ( is_string( $cached ) && '' !== $cached ) {
@@ -448,17 +485,10 @@ function papelito_correios_get_services( array $credentials, array $token ) {
 			continue;
 		}
 
-		$name       = isset( $item['descricao'] ) ? sanitize_text_field( (string) $item['descricao'] ) : (string) $item['codigo'];
-		$normalized = remove_accents( strtolower( $name ) );
-		$service    = '';
+		$name    = isset( $item['descricao'] ) ? sanitize_text_field( (string) $item['descricao'] ) : (string) $item['codigo'];
+		$service = papelito_correios_service_type_from_name( $name );
 
-		if ( false !== strpos( $normalized, 'sedex' ) ) {
-			$service = 'SEDEX';
-		} elseif ( false !== strpos( $normalized, 'pac' ) ) {
-			$service = 'PAC';
-		}
-
-		if ( '' === $service ) {
+		if ( '' === $service || ! papelito_correios_is_checkout_service( $name ) ) {
 			continue;
 		}
 
@@ -476,8 +506,6 @@ function papelito_correios_get_services( array $credentials, array $token ) {
 			array( 'status' => 502 )
 		);
 	}
-
-	$services = papelito_correios_select_preferred_services( $services );
 
 	set_transient( $transient, wp_json_encode( $services ), 12 * HOUR_IN_SECONDS );
 
@@ -687,7 +715,7 @@ function papelito_correios_quote( int $vendor_id, string $destination_cep, array
 		return $package;
 	}
 
-	$cache_key = 'papelito_shipping_quote_' . md5( wp_json_encode( array( $vendor_id, $destination_cep, $items, $package ) ) );
+	$cache_key = 'papelito_shipping_quote_v3_' . md5( wp_json_encode( array( $vendor_id, $destination_cep, $items, $package ) ) );
 	$cached    = get_transient( $cache_key );
 	if ( is_string( $cached ) && '' !== $cached ) {
 		$data = json_decode( $cached, true );
@@ -736,6 +764,8 @@ function papelito_correios_quote( int $vendor_id, string $destination_cep, array
 			$error_data
 		);
 	}
+
+	$options = papelito_correios_select_best_quoted_options( $options );
 
 	usort(
 		$options,
