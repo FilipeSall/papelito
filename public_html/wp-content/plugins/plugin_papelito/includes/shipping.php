@@ -745,7 +745,12 @@ function papelito_correios_quote_service( array $credentials, array $token, arra
 		add_query_arg( $price_args, $base_url . 'preco/v1/nacional/' . rawurlencode( (string) $service['code'] ) ),
 		array( 'headers' => $headers )
 	);
-	$time  = papelito_correios_request_json(
+
+	if ( is_wp_error( $price ) ) {
+		return $price;
+	}
+
+	$time = papelito_correios_request_json(
 		'GET',
 		add_query_arg(
 			array(
@@ -756,10 +761,6 @@ function papelito_correios_quote_service( array $credentials, array $token, arra
 		),
 		array( 'headers' => $headers )
 	);
-
-	if ( is_wp_error( $price ) ) {
-		return $price;
-	}
 
 	if ( is_wp_error( $time ) ) {
 		return $time;
