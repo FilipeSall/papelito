@@ -57,12 +57,93 @@ papelito_assert( 'Packet is blocked', false, papelito_correios_is_checkout_servi
 papelito_assert( 'payment on delivery is blocked', false, papelito_correios_is_checkout_service( 'PAC CONTRATO AGENCIA PAGTO ENT' ) );
 
 echo "Scenario 2: service type parsing does not mistake Packet/Empacotamento for PAC\n";
+papelito_assert( 'PAC official code type', 'PAC', papelito_correios_service_type( '03298', 'Servico leve' ) );
+papelito_assert( 'SEDEX official code type', 'SEDEX', papelito_correios_service_type( '03220', 'Servico expresso' ) );
 papelito_assert( 'PAC type', 'PAC', papelito_correios_service_type_from_name( 'PAC PC CONTRATO AG' ) );
 papelito_assert( 'SEDEX type', 'SEDEX', papelito_correios_service_type_from_name( 'SEDEX PC CONTRATO AG' ) );
 papelito_assert( 'Packet ignored', '', papelito_correios_service_type_from_name( 'PACKET STANDARD DISTRIBUICAO' ) );
 papelito_assert( 'Empacotamento ignored', '', papelito_correios_service_type_from_name( 'EMPACOTAMENTO DE ITENS' ) );
 
-echo "Scenario 3: best option per modality uses lowest price first\n";
+echo "Scenario 3: checkout service selection keeps only official PAC/SEDEX before quote\n";
+$services = papelito_correios_select_checkout_services(
+	array(
+		array(
+			'service' => 'PAC',
+			'code'    => '04000',
+			'name'    => 'PAC PC CONTRATO AG',
+		),
+		array(
+			'service' => 'PAC',
+			'code'    => '03298',
+			'name'    => 'PAC CONTRATO AG',
+		),
+		array(
+			'service' => 'SEDEX',
+			'code'    => '04090',
+			'name'    => 'SEDEX PC CONTRATO AG',
+		),
+		array(
+			'service' => 'SEDEX',
+			'code'    => '03220',
+			'name'    => 'SEDEX CONTRATO AG',
+		),
+		array(
+			'service' => 'MINI',
+			'code'    => '04227',
+			'name'    => 'MINI ENVIOS',
+		),
+	)
+);
+
+papelito_assert( 'only PAC and SEDEX are selected', 2, count( $services ) );
+papelito_assert( 'official PAC code is selected', '03298', $services[0]['code'] ?? '' );
+papelito_assert( 'official SEDEX code is selected', '03220', $services[1]['code'] ?? '' );
+
+echo "Scenario 4: checkout service selection falls back by modality name\n";
+$services = papelito_correios_select_checkout_services(
+	array(
+		array(
+			'service' => 'PAC',
+			'code'    => '04000',
+			'name'    => 'PAC PC CONTRATO AG',
+		),
+		array(
+			'service' => 'SEDEX',
+			'code'    => '04090',
+			'name'    => 'SEDEX PC CONTRATO AG',
+		),
+	)
+);
+
+papelito_assert( 'fallback PAC code is selected', '04000', $services[0]['code'] ?? '' );
+papelito_assert( 'fallback SEDEX code is selected', '04090', $services[1]['code'] ?? '' );
+
+echo "Scenario 5: checkout service selection handles missing PAC or SEDEX\n";
+$services = papelito_correios_select_checkout_services(
+	array(
+		array(
+			'service' => 'SEDEX',
+			'code'    => '03220',
+			'name'    => 'SEDEX CONTRATO AG',
+		),
+	)
+);
+papelito_assert( 'only SEDEX remains when PAC is missing', 1, count( $services ) );
+papelito_assert( 'SEDEX survives missing PAC', '03220', $services[0]['code'] ?? '' );
+
+$services = papelito_correios_select_checkout_services(
+	array(
+		array(
+			'service' => 'PAC',
+			'code'    => '03298',
+			'name'    => 'PAC CONTRATO AG',
+		),
+	)
+);
+papelito_assert( 'only PAC remains when SEDEX is missing', 1, count( $services ) );
+papelito_assert( 'PAC survives missing SEDEX', '03298', $services[0]['code'] ?? '' );
+
+echo "Scenario 6: best option per modality uses lowest price first\n";
 $best = papelito_correios_select_best_quoted_options(
 	array(
 		array(
@@ -111,7 +192,7 @@ foreach ( $best as $option ) {
 papelito_assert( 'best PAC is cheapest', '04000', $best_by_service['PAC']['code'] ?? '' );
 papelito_assert( 'best SEDEX is cheapest', '04090', $best_by_service['SEDEX']['code'] ?? '' );
 
-echo "Scenario 4: tie on price uses shortest delivery time\n";
+echo "Scenario 7: tie on price uses shortest delivery time\n";
 $best = papelito_correios_select_best_quoted_options(
 	array(
 		array(

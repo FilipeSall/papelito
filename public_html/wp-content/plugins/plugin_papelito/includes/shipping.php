@@ -329,6 +329,48 @@ function papelito_correios_get_token( array $credentials ) {
 }
 
 /**
+ * Retorna os codigos principais usados no checkout.
+ *
+ * @return array<string, string>
+ */
+function papelito_correios_primary_service_codes(): array {
+	$codes = apply_filters(
+		'papelito_correios_primary_service_codes',
+		array(
+			'PAC'   => '03298',
+			'SEDEX' => '03220',
+		)
+	);
+
+	if ( ! is_array( $codes ) ) {
+		$codes = array();
+	}
+
+	return array(
+		'PAC'   => isset( $codes['PAC'] ) ? sanitize_text_field( (string) $codes['PAC'] ) : '03298',
+		'SEDEX' => isset( $codes['SEDEX'] ) ? sanitize_text_field( (string) $codes['SEDEX'] ) : '03220',
+	);
+}
+
+/**
+ * Classifica o servico Correios por codigo oficial quando possivel.
+ *
+ * @param string $code Codigo do servico.
+ * @return string
+ */
+function papelito_correios_service_type_from_code( string $code ): string {
+	$codes = papelito_correios_primary_service_codes();
+
+	foreach ( $codes as $service => $service_code ) {
+		if ( $service_code === $code ) {
+			return $service;
+		}
+	}
+
+	return '';
+}
+
+/**
  * Indica se o servico dos Correios pode aparecer no checkout.
  *
  * @param string $name Nome do servico.
@@ -384,7 +426,24 @@ function papelito_correios_service_type_from_name( string $name ): string {
 }
 
 /**
- * Escolhe a melhor cotacao por modalidade: menor preco, depois menor prazo.
+ * Classifica o servico Correios por codigo oficial ou nome.
+ *
+ * @param string $code Codigo do servico.
+ * @param string $name Nome do servico.
+ * @return string
+ */
+function papelito_correios_service_type( string $code, string $name ): string {
+	$service = papelito_correios_service_type_from_code( $code );
+
+	if ( '' !== $service ) {
+		return $service;
+	}
+
+	return papelito_correios_service_type_from_name( $name );
+}
+
+/**
+ * Escolhe uma unica opcao por modalidade: menor preco, depois menor prazo.
  *
  * @param array<int, array<string, mixed>> $options Opcoes cotadas.
  * @return array<int, array<string, mixed>>
@@ -421,6 +480,49 @@ function papelito_correios_select_best_quoted_options( array $options ): array {
 	return array_values( $best_by_service );
 }
 
+/**
+ * Limita a lista de servicos a PAC e SEDEX antes de cotar preco/prazo.
+ *
+ * @param array<int, array<string, mixed>> $services Servicos normalizados.
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_correios_select_checkout_services( array $services ): array {
+	$primary_codes = papelito_correios_primary_service_codes();
+	$grouped       = array(
+		'PAC'   => array(),
+		'SEDEX' => array(),
+	);
+	$selected      = array();
+
+	foreach ( $services as $service ) {
+		$type = isset( $service['service'] ) ? (string) $service['service'] : '';
+
+		if ( isset( $grouped[ $type ] ) ) {
+			$grouped[ $type ][] = $service;
+		}
+	}
+
+	foreach ( array( 'PAC', 'SEDEX' ) as $type ) {
+		if ( empty( $grouped[ $type ] ) ) {
+			continue;
+		}
+
+		$primary_code = $primary_codes[ $type ] ?? '';
+		$match        = null;
+
+		foreach ( $grouped[ $type ] as $service ) {
+			if ( $primary_code === (string) ( $service['code'] ?? '' ) ) {
+				$match = $service;
+				break;
+			}
+		}
+
+		$selected[] = is_array( $match ) ? $match : $grouped[ $type ][0];
+	}
+
+	return $selected;
+}
+
 function papelito_correios_get_services( array $credentials, array $token ) {
 	$contract = ! empty( $token['cartaoPostagem']['contrato'] )
 		? (string) $token['cartaoPostagem']['contrato']
@@ -437,7 +539,7 @@ function papelito_correios_get_services( array $credentials, array $token ) {
 		);
 	}
 
-	$transient = 'papelito_correios_services_v4_' . md5( implode( '|', array( $credentials['environment'], $token['cnpj'], $contract, $card ) ) );
+	$transient = 'papelito_correios_services_v5_' . md5( implode( '|', array( $credentials['environment'], $token['cnpj'], $contract, $card ) ) );
 	$cached    = get_transient( $transient );
 
 	if ( is_string( $cached ) && '' !== $cached ) {
@@ -485,8 +587,9 @@ function papelito_correios_get_services( array $credentials, array $token ) {
 			continue;
 		}
 
-		$name    = isset( $item['descricao'] ) ? sanitize_text_field( (string) $item['descricao'] ) : (string) $item['codigo'];
-		$service = papelito_correios_service_type_from_name( $name );
+		$code    = sanitize_text_field( (string) $item['codigo'] );
+		$name    = isset( $item['descricao'] ) ? sanitize_text_field( (string) $item['descricao'] ) : $code;
+		$service = papelito_correios_service_type( $code, $name );
 
 		if ( '' === $service || ! papelito_correios_is_checkout_service( $name ) ) {
 			continue;
@@ -494,7 +597,7 @@ function papelito_correios_get_services( array $credentials, array $token ) {
 
 		$services[] = array(
 			'service' => $service,
-			'code'    => sanitize_text_field( (string) $item['codigo'] ),
+			'code'    => $code,
 			'name'    => $name,
 		);
 	}
@@ -506,6 +609,8 @@ function papelito_correios_get_services( array $credentials, array $token ) {
 			array( 'status' => 502 )
 		);
 	}
+
+	$services = papelito_correios_select_checkout_services( $services );
 
 	set_transient( $transient, wp_json_encode( $services ), 12 * HOUR_IN_SECONDS );
 
