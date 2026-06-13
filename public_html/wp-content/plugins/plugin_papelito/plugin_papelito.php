@@ -33,9 +33,10 @@ require_once __DIR__ . '/includes/pagarme_webhook.php';
 require_once __DIR__ . '/includes/order_routing.php';
 require_once __DIR__ . '/includes/vendor_dashboard.php';
 require_once __DIR__ . '/includes/vendor_messaging.php';
+require_once __DIR__ . '/includes/vendor_processing_alerts.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.3' );
+	define( 'PAPELITO_DB_VERSION', '1.4' );
 }
 
 /**

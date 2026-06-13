@@ -9,6 +9,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+if ( ! defined( 'PAPELITO_FLASH_SALE_PROMO_HOOK' ) ) {
+	define( 'PAPELITO_FLASH_SALE_PROMO_HOOK', 'papelito_flash_sale_promo_start' );
+}
+
 /**
  * Nome da option usada no singleton de campanha.
  *
@@ -336,16 +340,81 @@ function papelito_flash_sale_dispatch_promo_events( array $campaign ): void {
 	}
 
 	foreach ( papelito_flash_sale_normalize_product_ids( $campaign['productIds'] ?? array() ) as $product_id ) {
+		$product = papelito_flash_sale_load_product( $product_id );
+
+		if ( ! $product instanceof WC_Product ) {
+			continue;
+		}
+
+		$product_payload = papelito_flash_sale_build_product_payload( $product, (int) $campaign['discountPercent'] );
+
 		do_action(
 			'papelito_product_on_promo',
 			(int) $product_id,
 			array(
-				'promo_type'  => 'flash_sale',
-				'promo_label' => '' !== $promo_label ? $promo_label : 'Oferta Relâmpago',
+				'promo_type'      => 'flash_sale',
+				'promo_label'     => '' !== $promo_label ? $promo_label : 'Oferta Relâmpago',
+				'promo_event_key' => sprintf(
+					'flash_sale:%d:%s',
+					(int) $product_id,
+					sanitize_text_field( (string) ( $campaign['starts_at'] ?? '' ) )
+				),
+				'discount_percent' => (int) ( $product_payload['discount'] ?? 0 ),
+				'regular_price'    => $product_payload['originalPrice'] ?? null,
+				'sale_price'       => $product_payload['price'] ?? null,
 			)
 		);
 	}
 }
+
+/**
+ * Remove qualquer disparo agendado da campanha atual.
+ *
+ * @return void
+ */
+function papelito_flash_sale_clear_scheduled_promo_event(): void {
+	if ( function_exists( 'wp_clear_scheduled_hook' ) ) {
+		wp_clear_scheduled_hook( PAPELITO_FLASH_SALE_PROMO_HOOK );
+	}
+}
+
+/**
+ * Agenda o disparo da campanha para o início configurado, quando aplicável.
+ *
+ * @param array<string,mixed> $campaign Campanha validada.
+ * @return void
+ */
+function papelito_flash_sale_sync_promo_schedule( array $campaign ): void {
+	papelito_flash_sale_clear_scheduled_promo_event();
+
+	if ( ! function_exists( 'wp_schedule_single_event' ) ) {
+		return;
+	}
+
+	$campaign = papelito_flash_sale_normalize_campaign( $campaign );
+
+	if ( null === $campaign || 'scheduled' !== $campaign['status'] ) {
+		return;
+	}
+
+	$starts_at = papelito_flash_sale_parse_datetime( (string) ( $campaign['starts_at'] ?? '' ) );
+
+	if ( ! $starts_at instanceof DateTimeImmutable ) {
+		return;
+	}
+
+	wp_schedule_single_event( $starts_at->getTimestamp(), PAPELITO_FLASH_SALE_PROMO_HOOK );
+}
+
+/**
+ * Processa a campanha ativa quando chega o horário agendado.
+ *
+ * @return void
+ */
+function papelito_flash_sale_dispatch_scheduled_promo_events(): void {
+	papelito_flash_sale_dispatch_promo_events( papelito_flash_sale_get_raw_campaign() );
+}
+add_action( PAPELITO_FLASH_SALE_PROMO_HOOK, 'papelito_flash_sale_dispatch_scheduled_promo_events' );
 
 /**
  * Monta snapshot admin da campanha.
@@ -554,6 +623,7 @@ add_action(
 					}
 
 					update_option( papelito_flash_sale_option_name(), $validated, false );
+					papelito_flash_sale_sync_promo_schedule( $validated );
 					papelito_flash_sale_dispatch_promo_events( $validated );
 
 					return new WP_REST_Response( papelito_flash_sale_get_admin_snapshot(), 200 );
@@ -570,6 +640,7 @@ add_action(
 					return current_user_can( 'manage_options' );
 				},
 				'callback'            => static function (): WP_REST_Response {
+					papelito_flash_sale_clear_scheduled_promo_event();
 					delete_option( papelito_flash_sale_option_name() );
 
 					return new WP_REST_Response(

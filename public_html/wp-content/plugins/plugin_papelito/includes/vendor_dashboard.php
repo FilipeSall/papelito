@@ -263,6 +263,8 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
 	);
 	$result['shipping_service'] = sanitize_text_field( (string) $order->get_meta( '_papelito_shipping_service_name', true ) );
 	$result['delivery_time_days'] = absint( $order->get_meta( '_papelito_shipping_delivery_time', true ) );
+	$paid_at             = $order->get_date_paid();
+	$result['paid_at']   = $paid_at ? $paid_at->date_i18n( 'Y-m-d H:i:s' ) : '';
 	$result['tracking_code'] = null;
 	$result['payment'] = function_exists( 'papelito_pagarme_order_payment_snapshot' )
 		? papelito_pagarme_order_payment_snapshot( $order )
@@ -512,7 +514,7 @@ function papelito_vendor_dashboard_vendor_order( int $order_id, int $vendor_id )
  *
  * @return array<string,mixed>|WP_Error
  */
-function papelito_vendor_dashboard_update_order_status( int $order_id, int $vendor_id, $next_status ) {
+function papelito_vendor_dashboard_update_order_status( int $order_id, int $vendor_id, $next_status, $reason = '' ) {
 	$order = papelito_vendor_dashboard_vendor_order( $order_id, $vendor_id );
 
 	if ( is_wp_error( $order ) ) {
@@ -526,8 +528,21 @@ function papelito_vendor_dashboard_update_order_status( int $order_id, int $vend
 		return new WP_Error( 'papelito_vendor_invalid_status_transition', 'Transicao de status invalida.', array( 'status' => 422 ) );
 	}
 
+	$reason = sanitize_textarea_field( (string) $reason );
+
+	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $next && '' === $reason ) {
+		return new WP_Error( 'papelito_vendor_cancel_reason_required', 'Informe o motivo do cancelamento.', array( 'status' => 422 ) );
+	}
+
 	$order->update_meta_data( '_papelito_vendor_status', $next );
-	$order->add_order_note( sprintf( 'Status operacional do vendor atualizado: %s.', $next ) );
+
+	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $next ) {
+		$order->update_meta_data( '_papelito_vendor_cancel_reason', $reason );
+		$order->add_order_note( sprintf( 'Envio cancelado pelo vendor. Justificativa: %s', $reason ) );
+	} else {
+		$order->add_order_note( sprintf( 'Status operacional do vendor atualizado: %s.', $next ) );
+	}
+
 	$order->save();
 
 	return papelito_vendor_dashboard_map_order( $order, $vendor_id, true );
@@ -965,13 +980,15 @@ add_action(
 					$result = papelito_vendor_dashboard_update_order_status(
 						absint( $request->get_param( 'id' ) ),
 						get_current_user_id(),
-						$request->get_param( 'status' )
+						$request->get_param( 'status' ),
+						(string) $request->get_param( 'reason' )
 					);
 
 					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
 				},
 				'args'                => array(
 					'status' => array( 'type' => 'string', 'required' => true ),
+					'reason' => array( 'type' => 'string', 'required' => false ),
 				),
 			)
 		);

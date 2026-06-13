@@ -554,6 +554,10 @@ function papelito_pagarme_promote_vendor_status_on_payment( $order ): void {
 	if ( '' === $current || PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT === $current ) {
 		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT );
 		$order->add_order_note( 'Pagamento confirmado: pedido liberado para envio.' );
+
+		if ( function_exists( 'papelito_orders_notify_vendor_new_purchase' ) ) {
+			papelito_orders_notify_vendor_new_purchase( $order );
+		}
 	}
 }
 

@@ -260,14 +260,23 @@ function papelito_coupon_persist( array $data, ?int $coupon_id = null ) {
 	update_post_meta( $saved_id, PAPELITO_COUPON_META_PRODUCT_IDS, $data['product_ids'] );
 
 	if ( 'publish' === $data['status'] && ! $was_publish_before && ! empty( $data['product_ids'] ) ) {
+		$publish_cycle = (string) get_post_modified_time( 'U', true, $saved_id );
+
 		foreach ( $data['product_ids'] as $product_id ) {
+			$context = array(
+				'promo_type'      => 'coupon',
+				'promo_label'     => $data['code'],
+				'promo_event_key' => sprintf( 'coupon:%d:%d:%s', (int) $saved_id, (int) $product_id, $publish_cycle ),
+			);
+
+			if ( 'percent' === $data['discount_type'] ) {
+				$context['discount_percent'] = (float) $data['amount'];
+			}
+
 			do_action(
 				'papelito_product_on_promo',
 				(int) $product_id,
-				array(
-					'promo_type'  => 'coupon',
-					'promo_label' => $data['code'],
-				)
+				$context
 			);
 		}
 	}

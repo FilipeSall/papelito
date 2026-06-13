@@ -11,6 +11,18 @@ if ( ! defined( 'PAPELITO_NOTIFICATIONS_TABLE' ) ) {
 	define( 'PAPELITO_NOTIFICATIONS_TABLE', 'papelito_notifications' );
 }
 
+if ( ! defined( 'PAPELITO_NOTIFICATION_EMAIL_LOG_TABLE' ) ) {
+	define( 'PAPELITO_NOTIFICATION_EMAIL_LOG_TABLE', 'papelito_notification_email_log' );
+}
+
+if ( ! defined( 'PAPELITO_FAVORITE_PROMO_EMAIL_META' ) ) {
+	define( 'PAPELITO_FAVORITE_PROMO_EMAIL_META', 'papelito_favorite_promo_email_enabled' );
+}
+
+if ( ! defined( 'PAPELITO_PRODUCT_PROMO_SCHEDULE_HOOK' ) ) {
+	define( 'PAPELITO_PRODUCT_PROMO_SCHEDULE_HOOK', 'papelito_product_promo_start' );
+}
+
 if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION', 'new_vendor_application' );
 	define( 'PAPELITO_NOTIF_FAVORITE_ON_PROMO', 'favorite_on_promo' );
@@ -20,6 +32,8 @@ if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_SUPPORT_MESSAGE', 'support_message' );
 	define( 'PAPELITO_NOTIF_SUPPORT_ESCALATED', 'support_escalated' );
 	define( 'PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT', 'product_missing_weight' );
+	define( 'PAPELITO_NOTIF_NEW_PURCHASE', 'new_purchase' );
+	define( 'PAPELITO_NOTIF_PROCESSING_OVERDUE', 'vendor_processing_overdue' );
 }
 
 /**
@@ -29,6 +43,15 @@ function papelito_notifications_table_name() {
 	global $wpdb;
 
 	return $wpdb->prefix . PAPELITO_NOTIFICATIONS_TABLE;
+}
+
+/**
+ * Resolve o nome completo da tabela de log de e-mails de notificacao.
+ */
+function papelito_notification_email_log_table_name() {
+	global $wpdb;
+
+	return $wpdb->prefix . PAPELITO_NOTIFICATION_EMAIL_LOG_TABLE;
 }
 
 /**
@@ -44,16 +67,32 @@ function papelito_notifications_install_tables() {
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   user_id BIGINT UNSIGNED NOT NULL,
   type VARCHAR(40) NOT NULL,
+  dedupe_key VARCHAR(191) NULL DEFAULT NULL,
   payload LONGTEXT NULL,
   read_at DATETIME NULL DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY  (id),
+  UNIQUE KEY uq_user_type_dedupe (user_id, type, dedupe_key),
   KEY idx_user_unread (user_id, read_at),
+  KEY idx_user_created (user_id, created_at)
+) {$charset_collate};";
+
+	$email_log_table = papelito_notification_email_log_table_name();
+
+	$email_log_sql = "CREATE TABLE {$email_log_table} (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id BIGINT UNSIGNED NOT NULL,
+  type VARCHAR(40) NOT NULL,
+  dedupe_key VARCHAR(191) NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY  (id),
+  UNIQUE KEY uq_user_type_dedupe (user_id, type, dedupe_key),
   KEY idx_user_created (user_id, created_at)
 ) {$charset_collate};";
 
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 	dbDelta( $sql );
+	dbDelta( $email_log_sql );
 }
 
 /**
@@ -71,6 +110,8 @@ function papelito_notification_allowed_types() {
 		PAPELITO_NOTIF_SUPPORT_MESSAGE,
 		PAPELITO_NOTIF_SUPPORT_ESCALATED,
 		PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT,
+		PAPELITO_NOTIF_NEW_PURCHASE,
+		PAPELITO_NOTIF_PROCESSING_OVERDUE,
 	);
 }
 
@@ -108,7 +149,7 @@ function papelito_product_has_valid_weight( WC_Product $product ) {
  * @param array<string,mixed> $payload Payload serializável em JSON.
  * @return int|false
  */
-function papelito_dispatch_notification( $user_id, $type, $payload = array() ) {
+function papelito_dispatch_notification( $user_id, $type, $payload = array(), $dedupe_key = null ) {
 	global $wpdb;
 
 	$user_id = absint( $user_id );
@@ -124,6 +165,7 @@ function papelito_dispatch_notification( $user_id, $type, $payload = array() ) {
 	}
 
 	$payload = is_array( $payload ) ? $payload : array();
+	$dedupe_key = papelito_notification_normalize_dedupe_key( $dedupe_key );
 	$payload_json = wp_json_encode( $payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 
 	if ( false === $payload_json ) {
@@ -147,13 +189,71 @@ function papelito_dispatch_notification( $user_id, $type, $payload = array() ) {
 		array(
 			'user_id'    => $user_id,
 			'type'       => $type,
+			'dedupe_key' => $dedupe_key,
 			'payload'    => $payload_json,
+			'created_at' => current_time( 'mysql', true ),
+		),
+		array( '%d', '%s', '%s', '%s', '%s' )
+	);
+
+	if ( false === $inserted && null !== $dedupe_key && false !== strpos( strtolower( (string) $wpdb->last_error ), 'duplicate' ) ) {
+		return false;
+	}
+
+	return false === $inserted ? false : (int) $wpdb->insert_id;
+}
+
+/**
+ * Normaliza chave de deduplicacao para uso em indices.
+ *
+ * @param mixed $dedupe_key Valor bruto.
+ * @return string|null
+ */
+function papelito_notification_normalize_dedupe_key( $dedupe_key ) {
+	$dedupe_key = trim( sanitize_text_field( (string) $dedupe_key ) );
+
+	if ( '' === $dedupe_key ) {
+		return null;
+	}
+
+	return substr( $dedupe_key, 0, 191 );
+}
+
+/**
+ * Marca um disparo de e-mail como enviado.
+ *
+ * @param int    $user_id Usuário destino.
+ * @param string $type    Tipo da notificação.
+ * @param mixed  $dedupe_key Chave idempotente.
+ * @return bool
+ */
+function papelito_claim_notification_email_dispatch( $user_id, $type, $dedupe_key ) {
+	global $wpdb;
+
+	$user_id    = absint( $user_id );
+	$type       = sanitize_key( (string) $type );
+	$dedupe_key = papelito_notification_normalize_dedupe_key( $dedupe_key );
+
+	if ( $user_id <= 0 || '' === $type || null === $dedupe_key ) {
+		return false;
+	}
+
+	$inserted = $wpdb->insert(
+		papelito_notification_email_log_table_name(),
+		array(
+			'user_id'    => $user_id,
+			'type'       => $type,
+			'dedupe_key' => $dedupe_key,
 			'created_at' => current_time( 'mysql', true ),
 		),
 		array( '%d', '%s', '%s', '%s' )
 	);
 
-	return false === $inserted ? false : (int) $wpdb->insert_id;
+	if ( false === $inserted && false !== strpos( strtolower( (string) $wpdb->last_error ), 'duplicate' ) ) {
+		return false;
+	}
+
+	return false !== $inserted;
 }
 
 /**
@@ -261,6 +361,257 @@ function papelito_user_has_unread_product_notification( $user_id, $type, $produc
 	}
 
 	return false;
+}
+
+/**
+ * Lê preferência do cliente para receber e-mail de favorito em promoção.
+ *
+ * @param int $user_id Usuário consultado.
+ * @return bool
+ */
+function papelito_user_prefers_favorite_promo_email( $user_id ) {
+	$user_id = absint( $user_id );
+
+	if ( $user_id <= 0 ) {
+		return false;
+	}
+
+	return '1' === (string) get_user_meta( $user_id, PAPELITO_FAVORITE_PROMO_EMAIL_META, true );
+}
+
+/**
+ * Normaliza um valor numérico de contexto promocional.
+ *
+ * @param mixed $value Valor arbitrário.
+ * @return float|null
+ */
+function papelito_notification_promo_number( $value ) {
+	if ( null === $value || '' === $value ) {
+		return null;
+	}
+
+	$normalized = function_exists( 'wc_format_decimal' ) ? wc_format_decimal( (string) $value ) : (string) $value;
+
+	if ( ! is_numeric( $normalized ) ) {
+		return null;
+	}
+
+	return round( (float) $normalized, 2 );
+}
+
+/**
+ * Calcula percentual de desconto quando há preço regular e promocional válidos.
+ *
+ * @param float|null $regular_price Preço base.
+ * @param float|null $sale_price    Preço promocional.
+ * @return int|null
+ */
+function papelito_notification_discount_percent( $regular_price, $sale_price ) {
+	if ( null === $regular_price || null === $sale_price || $regular_price <= 0 || $sale_price <= 0 || $sale_price >= $regular_price ) {
+		return null;
+	}
+
+	return (int) round( ( ( $regular_price - $sale_price ) / $regular_price ) * 100 );
+}
+
+/**
+ * Gera link público do produto para e-mails.
+ *
+ * @param array<string,mixed> $payload Payload da notificação.
+ * @return string
+ */
+function papelito_notification_product_url( array $payload ) {
+	$product_id   = absint( $payload['product_id'] ?? 0 );
+	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : 'http://localhost:3000';
+
+	if ( $product_id <= 0 ) {
+		return rtrim( $frontend_url, '/' ) . '/produtos';
+	}
+
+	return sprintf( '%s/produtos/%d', rtrim( $frontend_url, '/' ), $product_id );
+}
+
+/**
+ * Formata preço para texto simples em e-mails.
+ *
+ * @param float|null $value Valor monetário.
+ * @return string
+ */
+function papelito_notification_format_price( $value ) {
+	if ( null === $value || $value <= 0 ) {
+		return '';
+	}
+
+	if ( function_exists( 'wc_price' ) ) {
+		return wp_strip_all_tags( wc_price( $value ) );
+	}
+
+	return 'R$ ' . number_format( $value, 2, ',', '.' );
+}
+
+/**
+ * Monta payload canônico do evento de favorito em promoção.
+ *
+ * @param int                 $product_id Produto em promoção.
+ * @param array<string,mixed> $context    Contexto opcional do evento.
+ * @return array{dedupe_key:string,payload:array<string,mixed>}|null
+ */
+function papelito_normalize_favorite_promo_event( $product_id, array $context ) {
+	$product_id = absint( $product_id );
+
+	if ( $product_id <= 0 ) {
+		return null;
+	}
+
+	$promo_type = sanitize_key( (string) ( $context['promo_type'] ?? $context['promoType'] ?? 'promo' ) );
+	$promo_label = sanitize_text_field( (string) ( $context['promo_label'] ?? $context['promoLabel'] ?? 'Promoção' ) );
+	$regular_price = papelito_notification_promo_number( $context['regular_price'] ?? $context['regularPrice'] ?? null );
+	$sale_price = papelito_notification_promo_number( $context['sale_price'] ?? $context['salePrice'] ?? null );
+	$discount_percent = isset( $context['discount_percent'] ) || isset( $context['discountPercent'] )
+		? papelito_notification_promo_number( $context['discount_percent'] ?? $context['discountPercent'] ?? null )
+		: papelito_notification_discount_percent( $regular_price, $sale_price );
+	$dedupe_key = papelito_notification_normalize_dedupe_key( $context['promo_event_key'] ?? $context['promoEventKey'] ?? '' );
+
+	if ( null === $dedupe_key ) {
+		$dedupe_key = papelito_notification_normalize_dedupe_key(
+			sprintf(
+				'%s:%d:%s:%s:%s',
+				$promo_type ? $promo_type : 'promo',
+				$product_id,
+				null !== $sale_price ? (string) $sale_price : '',
+				null !== $regular_price ? (string) $regular_price : '',
+				$promo_label
+			)
+		);
+	}
+
+	$payload = array_merge(
+		papelito_notification_product_payload( $product_id ),
+		array(
+			'promo_type'  => '' !== $promo_type ? $promo_type : 'promo',
+			'promo_label' => '' !== $promo_label ? $promo_label : 'Promoção',
+		)
+	);
+
+	if ( null !== $regular_price && $regular_price > 0 ) {
+		$payload['regular_price'] = $regular_price;
+	}
+
+	if ( null !== $sale_price && $sale_price > 0 ) {
+		$payload['sale_price'] = $sale_price;
+	}
+
+	if ( null !== $discount_percent && $discount_percent > 0 ) {
+		$payload['discount_percent'] = (int) round( $discount_percent );
+	}
+
+	return null === $dedupe_key
+		? null
+		: array(
+			'dedupe_key' => $dedupe_key,
+			'payload'    => $payload,
+		);
+}
+
+/**
+ * Notifica o vendor responsavel sobre uma nova compra confirmada (in-app + e-mail).
+ *
+ * Idempotente: usa a meta `_papelito_vendor_purchase_notified` para garantir
+ * que o vendor nao recebe notificacao/e-mail duplicado em caso de webhook,
+ * retry ou reprocessamento do mesmo pedido.
+ *
+ * @param object $order Pedido WooCommerce.
+ */
+function papelito_orders_notify_vendor_new_purchase( $order ): void {
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
+		return;
+	}
+
+	if ( '' !== (string) $order->get_meta( '_papelito_vendor_purchase_notified', true ) ) {
+		return;
+	}
+
+	$vendor_id = function_exists( 'papelito_messaging_order_vendor_id' )
+		? papelito_messaging_order_vendor_id( $order )
+		: absint( $order->get_meta( '_papelito_vendor_id', true ) );
+
+	if ( $vendor_id <= 0 ) {
+		return;
+	}
+
+	$items_count = 0;
+	foreach ( $order->get_items( 'line_item' ) as $item ) {
+		$items_count += is_object( $item ) && method_exists( $item, 'get_quantity' ) ? (int) $item->get_quantity() : 0;
+	}
+
+	$payload = array(
+		'order_id'      => (int) $order->get_id(),
+		'order_number'  => (string) $order->get_order_number(),
+		'total'         => (float) $order->get_total(),
+		'created_at'    => $order->get_date_created() ? $order->get_date_created()->date( 'c' ) : '',
+		'customer_name' => (string) $order->get_formatted_billing_full_name(),
+		'items_count'   => $items_count,
+	);
+
+	papelito_dispatch_notification( $vendor_id, PAPELITO_NOTIF_NEW_PURCHASE, $payload );
+
+	$vendor = get_user_by( 'id', $vendor_id );
+	if ( $vendor instanceof WP_User ) {
+		papelito_orders_send_new_purchase_email( $vendor, $order );
+	}
+
+	$order->update_meta_data( '_papelito_vendor_purchase_notified', '1' );
+}
+
+/**
+ * Envia e-mail de nova compra ao vendor, seguindo o padrao texto plano do projeto.
+ *
+ * @param WP_User $vendor Vendor destinatario.
+ * @param object  $order  Pedido WooCommerce.
+ * @return bool
+ */
+function papelito_orders_send_new_purchase_email( WP_User $vendor, $order ): bool {
+	$recipient = sanitize_email( $vendor->user_email );
+
+	if ( '' === $recipient || ! is_object( $order ) || ! method_exists( $order, 'get_order_number' ) ) {
+		return false;
+	}
+
+	$store_name   = (string) get_user_meta( $vendor->ID, 'store_name', true );
+	$greeting     = '' !== $store_name ? $store_name : $vendor->display_name;
+	$order_number = (string) $order->get_order_number();
+	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : 'http://localhost:3000';
+	$order_link   = sprintf( '%s/vendor/pedidos/%d', $frontend_url, (int) $order->get_id() );
+	$total        = function_exists( 'wc_price' ) ? wp_strip_all_tags( wc_price( $order->get_total() ) ) : (string) $order->get_total();
+	$created_at   = $order->get_date_created() ? wp_date( 'd/m/Y H:i', $order->get_date_created()->getTimestamp() ) : '';
+
+	$subject    = sprintf( 'Nova compra na sua loja - Papelito #%s', $order_number );
+	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
+	$body_lines = array(
+		sprintf( 'Ola %s,', '' !== $greeting ? $greeting : $recipient ),
+		'',
+		'Voce recebeu uma nova compra na Papelito.',
+		'',
+		sprintf( 'Pedido: #%s', $order_number ),
+	);
+
+	if ( '' !== $created_at ) {
+		$body_lines[] = sprintf( 'Data: %s', $created_at );
+	}
+
+	$body_lines = array_merge(
+		$body_lines,
+		array(
+			sprintf( 'Total: %s', $total ),
+			'',
+			'Separe o pedido e prepare o envio. Acesse o detalhe abaixo:',
+			$order_link,
+			'',
+			'Time Papelito',
+		)
+	);
+
+	return wp_mail( $recipient, $subject, implode( PHP_EOL, $body_lines ), $headers );
 }
 
 /**
@@ -392,6 +743,67 @@ function papelito_handle_stock_zeroed_notification( $vendor_id, $product_id ) {
 add_action( 'papelito_stock_zeroed', 'papelito_handle_stock_zeroed_notification', 10, 2 );
 
 /**
+ * Envia e-mail de favorito em promoção, seguindo o padrão texto simples do projeto.
+ *
+ * @param WP_User             $user    Destinatário.
+ * @param array<string,mixed> $payload Payload do evento.
+ * @return bool
+ */
+function papelito_send_favorite_promo_email( WP_User $user, array $payload ) {
+	$recipient = sanitize_email( $user->user_email );
+
+	if ( '' === $recipient || ! is_email( $recipient ) ) {
+		return false;
+	}
+
+	$name = (string) get_user_meta( $user->ID, 'first_name', true );
+	if ( '' === $name ) {
+		$name = $user->display_name ? (string) $user->display_name : $recipient;
+	}
+
+	$product_name = sanitize_text_field( (string) ( $payload['product_name'] ?? 'Produto favorito' ) );
+	$promo_label  = sanitize_text_field( (string) ( $payload['promo_label'] ?? 'Promoção' ) );
+	$link         = papelito_notification_product_url( $payload );
+	$regular      = papelito_notification_format_price( papelito_notification_promo_number( $payload['regular_price'] ?? null ) );
+	$sale         = papelito_notification_format_price( papelito_notification_promo_number( $payload['sale_price'] ?? null ) );
+	$discount     = absint( $payload['discount_percent'] ?? 0 );
+
+	$subject    = sprintf( '%s entrou em promoção - Papelito', $product_name );
+	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
+	$body_lines = array(
+		sprintf( 'Ola %s,', $name ),
+		'',
+		sprintf( 'Um produto dos seus favoritos entrou em promoção: %s.', $product_name ),
+		sprintf( 'Oferta: %s.', $promo_label ),
+	);
+
+	if ( $discount > 0 ) {
+		$body_lines[] = sprintf( 'Desconto: %d%%.', $discount );
+	}
+
+	if ( '' !== $regular ) {
+		$body_lines[] = sprintf( 'Preço regular: %s.', $regular );
+	}
+
+	if ( '' !== $sale ) {
+		$body_lines[] = sprintf( 'Preço promocional: %s.', $sale );
+	}
+
+	$body_lines = array_merge(
+		$body_lines,
+		array(
+			'',
+			'Veja o produto no link abaixo:',
+			$link,
+			'',
+			'Time Papelito',
+		)
+	);
+
+	return wp_mail( $recipient, $subject, implode( PHP_EOL, $body_lines ), $headers );
+}
+
+/**
  * Notifica clientes quando produto favorito entra em promoção.
  *
  * @param int                 $product_id Produto em promoção.
@@ -404,23 +816,268 @@ function papelito_handle_product_on_promo_notification( $product_id, $context = 
 	}
 
 	$context = is_array( $context ) ? $context : array();
-	$payload = array_merge(
-		papelito_notification_product_payload( $product_id ),
-		array(
-			'promo_type'  => sanitize_key( (string) ( $context['promo_type'] ?? $context['promoType'] ?? 'promo' ) ),
-			'promo_label' => sanitize_text_field( (string) ( $context['promo_label'] ?? $context['promoLabel'] ?? 'Promoção' ) ),
-		)
-	);
+	$event   = papelito_normalize_favorite_promo_event( $product_id, $context );
+
+	if ( null === $event ) {
+		return;
+	}
 
 	foreach ( papelito_notification_users_who_favorited_product( $product_id ) as $user_id ) {
-		if ( papelito_user_has_unread_product_notification( $user_id, PAPELITO_NOTIF_FAVORITE_ON_PROMO, $product_id ) ) {
+		$notification_id = papelito_dispatch_notification(
+			$user_id,
+			PAPELITO_NOTIF_FAVORITE_ON_PROMO,
+			$event['payload'],
+			$event['dedupe_key']
+		);
+
+		if ( false === $notification_id ) {
 			continue;
 		}
 
-		papelito_dispatch_notification( $user_id, PAPELITO_NOTIF_FAVORITE_ON_PROMO, $payload );
+		if ( ! papelito_user_prefers_favorite_promo_email( $user_id ) ) {
+			continue;
+		}
+
+		$user = get_user_by( 'id', $user_id );
+
+		if ( ! $user instanceof WP_User ) {
+			continue;
+		}
+
+		if ( ! papelito_claim_notification_email_dispatch( $user_id, PAPELITO_NOTIF_FAVORITE_ON_PROMO, $event['dedupe_key'] ) ) {
+			continue;
+		}
+
+		papelito_send_favorite_promo_email( $user, $event['payload'] );
 	}
 }
 add_action( 'papelito_product_on_promo', 'papelito_handle_product_on_promo_notification', 10, 2 );
+
+/**
+ * Gera assinatura do evento de promoção por preço promocional manual.
+ *
+ * @param int    $product_id     Produto alvo.
+ * @param string $sale_price     Preço promocional.
+ * @param string $regular_price  Preço regular.
+ * @param int    $starts_at_ts   Início em timestamp UTC.
+ * @param int    $ends_at_ts     Fim em timestamp UTC.
+ * @return string
+ */
+function papelito_build_product_sale_promo_event_key( $product_id, $sale_price, $regular_price, $starts_at_ts, $ends_at_ts ) {
+	return sprintf(
+		'sale_price:%d:%s:%s:%d:%d',
+		absint( $product_id ),
+		trim( (string) $sale_price ),
+		trim( (string) $regular_price ),
+		(int) $starts_at_ts,
+		(int) $ends_at_ts
+	);
+}
+
+/**
+ * Captura estado promocional corrente de um produto.
+ *
+ * @param WC_Product $product Produto avaliado.
+ * @return array<string,mixed>
+ */
+function papelito_product_promo_state_snapshot( WC_Product $product ) {
+	$starts_at = method_exists( $product, 'get_date_on_sale_from' ) ? $product->get_date_on_sale_from( 'edit' ) : null;
+	$ends_at   = method_exists( $product, 'get_date_on_sale_to' ) ? $product->get_date_on_sale_to( 'edit' ) : null;
+	$starts_at_ts = $starts_at instanceof WC_DateTime ? $starts_at->getTimestamp() : 0;
+	$ends_at_ts   = $ends_at instanceof WC_DateTime ? $ends_at->getTimestamp() : 0;
+	$sale_price   = trim( (string) $product->get_sale_price( 'edit' ) );
+	$regular_price = trim( (string) $product->get_regular_price( 'edit' ) );
+	$now_timestamp = (int) current_time( 'timestamp', true );
+	$discount_percent = papelito_notification_discount_percent(
+		papelito_notification_promo_number( $regular_price ),
+		papelito_notification_promo_number( $sale_price )
+	);
+
+	return array(
+		'product_id'        => (int) $product->get_id(),
+		'is_published'      => 'publish' === $product->get_status(),
+		'is_on_sale'        => 'publish' === $product->get_status() && $product->is_on_sale(),
+		'has_future_start'  => '' !== $sale_price && $starts_at_ts > $now_timestamp,
+		'sale_price'        => $sale_price,
+		'regular_price'     => $regular_price,
+		'starts_at_ts'      => $starts_at_ts,
+		'ends_at_ts'        => $ends_at_ts,
+		'discount_percent'  => $discount_percent,
+		'promo_event_key'   => papelito_build_product_sale_promo_event_key(
+			(int) $product->get_id(),
+			$sale_price,
+			$regular_price,
+			$starts_at_ts,
+			$ends_at_ts
+		),
+	);
+}
+
+/**
+ * Agenda entrada futura de produto em promoção.
+ *
+ * @param array<string,mixed> $state Snapshot promocional.
+ * @return void
+ */
+function papelito_sync_scheduled_product_promo_event( array $state ) {
+	if ( ! function_exists( 'wp_clear_scheduled_hook' ) ) {
+		return;
+	}
+
+	$product_id = absint( $state['product_id'] ?? 0 );
+
+	if ( $product_id <= 0 ) {
+		return;
+	}
+
+	wp_clear_scheduled_hook( PAPELITO_PRODUCT_PROMO_SCHEDULE_HOOK, array( $product_id ) );
+
+	if (
+		! function_exists( 'wp_schedule_single_event' ) ||
+		empty( $state['is_published'] ) ||
+		! empty( $state['is_on_sale'] ) ||
+		empty( $state['has_future_start'] ) ||
+		empty( $state['starts_at_ts'] )
+	) {
+		return;
+	}
+
+	wp_schedule_single_event( (int) $state['starts_at_ts'], PAPELITO_PRODUCT_PROMO_SCHEDULE_HOOK, array( $product_id ) );
+}
+
+/**
+ * Monta contexto de promoção manual para disparo do evento unificado.
+ *
+ * @param array<string,mixed> $state Snapshot promocional.
+ * @return array<string,mixed>
+ */
+function papelito_build_product_sale_promo_context( array $state ) {
+	$context = array(
+		'promo_type'     => 'sale_price',
+		'promo_label'    => 'preço promocional',
+		'promo_event_key' => (string) ( $state['promo_event_key'] ?? '' ),
+	);
+
+	$regular_price = papelito_notification_promo_number( $state['regular_price'] ?? null );
+	$sale_price    = papelito_notification_promo_number( $state['sale_price'] ?? null );
+	$discount      = isset( $state['discount_percent'] ) ? absint( $state['discount_percent'] ) : 0;
+
+	if ( null !== $regular_price && $regular_price > 0 ) {
+		$context['regular_price'] = $regular_price;
+	}
+
+	if ( null !== $sale_price && $sale_price > 0 ) {
+		$context['sale_price'] = $sale_price;
+	}
+
+	if ( $discount > 0 ) {
+		$context['discount_percent'] = $discount;
+	}
+
+	return $context;
+}
+
+/**
+ * Captura o estado persistido antes de salvar um produto.
+ *
+ * @param WC_Product $product Produto em edição.
+ * @return void
+ */
+function papelito_capture_product_promo_state_before_save( $product ) {
+	if ( ! $product instanceof WC_Product ) {
+		return;
+	}
+
+	$product_id = (int) $product->get_id();
+
+	if ( $product_id <= 0 ) {
+		return;
+	}
+
+	$stored = wc_get_product( $product_id );
+
+	if ( $stored instanceof WC_Product ) {
+		$GLOBALS['papelito_product_promo_previous_states'][ $product_id ] = papelito_product_promo_state_snapshot( $stored );
+	}
+}
+add_action( 'woocommerce_before_product_object_save', 'papelito_capture_product_promo_state_before_save', 10, 1 );
+
+/**
+ * Dispara promoções manuais quando o produto passa a estar efetivamente em oferta.
+ *
+ * @param int        $product_id ID do produto salvo.
+ * @param WC_Product $product    Instância atual.
+ * @return void
+ */
+function papelito_handle_product_promo_state_after_save( $product_id, $product = null ) {
+	$product_id = absint( $product_id );
+
+	if ( $product_id <= 0 ) {
+		return;
+	}
+
+	if ( ! $product instanceof WC_Product ) {
+		$product = wc_get_product( $product_id );
+	}
+
+	if ( ! $product instanceof WC_Product ) {
+		return;
+	}
+
+	$previous = isset( $GLOBALS['papelito_product_promo_previous_states'][ $product_id ] ) && is_array( $GLOBALS['papelito_product_promo_previous_states'][ $product_id ] )
+		? $GLOBALS['papelito_product_promo_previous_states'][ $product_id ]
+		: null;
+
+	unset( $GLOBALS['papelito_product_promo_previous_states'][ $product_id ] );
+
+	$current = papelito_product_promo_state_snapshot( $product );
+
+	papelito_sync_scheduled_product_promo_event( $current );
+
+	if ( empty( $current['is_on_sale'] ) || ( is_array( $previous ) && ! empty( $previous['is_on_sale'] ) ) ) {
+		return;
+	}
+
+	do_action(
+		'papelito_product_on_promo',
+		$product_id,
+		papelito_build_product_sale_promo_context( $current )
+	);
+}
+add_action( 'woocommerce_update_product', 'papelito_handle_product_promo_state_after_save', 10, 2 );
+
+/**
+ * Processa uma promoção manual agendada quando chega a data de início.
+ *
+ * @param int $product_id Produto agendado.
+ * @return void
+ */
+function papelito_process_scheduled_product_promo( $product_id ) {
+	$product_id = absint( $product_id );
+
+	if ( $product_id <= 0 ) {
+		return;
+	}
+
+	$product = wc_get_product( $product_id );
+
+	if ( ! $product instanceof WC_Product ) {
+		return;
+	}
+
+	$current = papelito_product_promo_state_snapshot( $product );
+
+	if ( empty( $current['is_on_sale'] ) ) {
+		return;
+	}
+
+	do_action(
+		'papelito_product_on_promo',
+		$product_id,
+		papelito_build_product_sale_promo_context( $current )
+	);
+}
+add_action( PAPELITO_PRODUCT_PROMO_SCHEDULE_HOOK, 'papelito_process_scheduled_product_promo', 10, 1 );
 
 /**
  * Notify thread participants when a support message is sent.

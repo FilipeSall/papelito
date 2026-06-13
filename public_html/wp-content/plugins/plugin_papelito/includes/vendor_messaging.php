@@ -698,7 +698,7 @@ function papelito_messaging_handle_list_threads( WP_REST_Request $request ) {
 }
 
 /**
- * POST /messages/threads — cliente abre uma nova conversa.
+ * POST /messages/threads — cliente ou vendor do pedido abre uma nova conversa.
  */
 function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
 	global $wpdb;
@@ -712,7 +712,14 @@ function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
 	$order_id = absint( $request->get_param( 'order_id' ) );
 	$order    = papelito_messaging_order( $order_id );
 
-	if ( is_wp_error( $order ) || (int) $order->get_customer_id() !== $user_id ) {
+	if ( is_wp_error( $order ) ) {
+		return new WP_Error( 'papelito_message_order_forbidden', 'Pedido nao encontrado.', array( 'status' => 404 ) );
+	}
+
+	$customer_id = (int) $order->get_customer_id();
+	$vendor_id   = papelito_messaging_order_vendor_id( $order );
+
+	if ( $user_id !== $customer_id && $user_id !== $vendor_id ) {
 		return new WP_Error( 'papelito_message_order_forbidden', 'Pedido nao encontrado.', array( 'status' => 404 ) );
 	}
 
@@ -721,7 +728,6 @@ function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
 		return new WP_Error( 'papelito_message_thread_exists', 'A conversa deste pedido ja foi iniciada.', array( 'status' => 409 ) );
 	}
 
-	$vendor_id = papelito_messaging_order_vendor_id( $order );
 	if ( $vendor_id <= 0 ) {
 		return new WP_Error( 'papelito_message_vendor_missing', 'Este pedido nao possui vendor para atendimento.', array( 'status' => 422 ) );
 	}
@@ -736,7 +742,7 @@ function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
 		papelito_messaging_tables()['threads'],
 		array(
 			'order_id'    => $order_id,
-			'customer_id' => $user_id,
+			'customer_id' => $customer_id,
 			'vendor_id'   => $vendor_id,
 			'created_at'  => $created_at,
 			'updated_at'  => $created_at,
