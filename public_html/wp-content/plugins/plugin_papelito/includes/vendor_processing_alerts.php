@@ -37,6 +37,27 @@ function papelito_vendor_processing_lead_time_days( int $vendor_id ): int {
 }
 
 /**
+ * Resolve o timestamp real de confirmacao do pagamento para iniciar o prazo.
+ *
+ * Sem date_paid nao existe "tempo para entregar": pedidos pendentes ou legados
+ * sem esse marco ficam fora da contagem para evitar cobrar o vendor antes da hora.
+ *
+ * @param object $order Pedido WooCommerce.
+ * @return int
+ */
+function papelito_vendor_processing_paid_timestamp( $order ): int {
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_date_paid' ) ) {
+		return 0;
+	}
+
+	$paid_date = $order->get_date_paid();
+
+	return is_object( $paid_date ) && method_exists( $paid_date, 'getTimestamp' )
+		? (int) $paid_date->getTimestamp()
+		: 0;
+}
+
+/**
  * Varre pedidos em "aguardando_envio" e alerta vendors que passaram do prazo.
  */
 function papelito_check_vendor_processing_overdue(): void {
@@ -80,8 +101,7 @@ function papelito_check_vendor_processing_overdue(): void {
 		}
 
 		$lead_time = papelito_vendor_processing_lead_time_days( $vendor_id );
-		$paid_date = $order->get_date_paid() ? $order->get_date_paid() : $order->get_date_created();
-		$paid_ts   = $paid_date ? $paid_date->getTimestamp() : 0;
+		$paid_ts   = papelito_vendor_processing_paid_timestamp( $order );
 
 		if ( $paid_ts <= 0 ) {
 			continue;
