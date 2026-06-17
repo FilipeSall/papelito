@@ -50,6 +50,10 @@ class WC_Order_Stub {
 		$this->status = $status;
 	}
 
+	public function get_status() {
+		return $this->status;
+	}
+
 	public function get_meta( $key, $single = true ) {
 		return $this->meta[ $key ] ?? '';
 	}
@@ -107,6 +111,13 @@ echo "Scenario 5: terminal failure does NOT cancel a shipped order\n";
 $order = new WC_Order_Stub( 'enviado', 'processing' );
 papelito_pagarme_apply_order_state( $order, 'refused', false );
 papelito_assert( 'vendor status stays enviado', 'enviado', $order->meta['_papelito_vendor_status'] );
+
+echo "Scenario 6: legacy failed order awaiting shipment is cancelled\n";
+$order = new WC_Order_Stub( PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT, 'failed' );
+papelito_pagarme_mark_vendor_status_unpaid( $order );
+papelito_assert( 'legacy failed order becomes cancelado', PAPELITO_VENDOR_STATUS_CANCELLED, $order->meta['_papelito_vendor_status'] );
+papelito_pagarme_mark_vendor_status_unpaid( $order );
+papelito_assert( 'legacy cancellation is idempotent', 1, count( $order->notes ) );
 
 echo "\n";
 if ( $failures > 0 ) {

@@ -1024,6 +1024,9 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		papelito_pagarme_release_order_stock( $order, $lines, 'payment_error' );
 		$order->add_order_note( 'Falha ao criar pedido no Pagar.me: ' . $result->get_error_message() );
 		$order->update_status( 'failed' );
+		if ( function_exists( 'papelito_pagarme_mark_vendor_status_unpaid' ) ) {
+			papelito_pagarme_mark_vendor_status_unpaid( $order );
+		}
 		$order->save();
 		return new WP_Error(
 			'papelito_checkout_payment_unavailable',

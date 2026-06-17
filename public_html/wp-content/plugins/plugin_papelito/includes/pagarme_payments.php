@@ -414,6 +414,10 @@ function papelito_pagarme_payment_state_releases_stock( string $state ): bool {
 			'not_authorized',
 			'with_error',
 			'voided',
+			'expired',
+			'payment_expired',
+			'checkout_expired',
+			'abandoned',
 		),
 		true
 	);
@@ -518,6 +522,33 @@ function papelito_pagarme_store_order_response( $order, array $response, string 
 }
 
 /**
+ * Indica se o pedido ja esta pago em WooCommerce ou no estado Pagar.me local.
+ */
+function papelito_pagarme_order_has_paid_status( $order ): bool {
+	if ( ! is_object( $order ) ) {
+		return false;
+	}
+
+	if ( method_exists( $order, 'get_status' ) ) {
+		$wc_status = sanitize_key( (string) $order->get_status() );
+
+		if ( in_array( $wc_status, array( 'processing', 'completed' ), true ) ) {
+			return true;
+		}
+	}
+
+	if ( method_exists( $order, 'get_meta' ) ) {
+		$payment_state = sanitize_key( (string) $order->get_meta( PAPELITO_PAGARME_PAYMENT_STATE_META, true ) );
+
+		if ( papelito_pagarme_payment_state_is_paid( $payment_state ) ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
  * Move o pedido conforme o estado conciliado da cobranca.
  */
 function papelito_pagarme_apply_order_state( $order, string $state, bool $paid ): void {
@@ -567,15 +598,37 @@ function papelito_pagarme_promote_vendor_status_on_payment( $order ): void {
  * como venda. Nao mexe em pedidos ja enviados/entregues.
  */
 function papelito_pagarme_mark_vendor_status_unpaid( $order ): void {
-	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) || ! defined( 'PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT' ) ) {
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
 		return;
 	}
 
-	$current = sanitize_key( (string) $order->get_meta( '_papelito_vendor_status', true ) );
+	if ( papelito_pagarme_order_has_paid_status( $order ) ) {
+		return;
+	}
 
-	if ( '' === $current || PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT === $current ) {
-		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_VENDOR_STATUS_CANCELLED );
-		$order->add_order_note( 'Pagamento nao concluido: pedido cancelado.' );
+	$current          = sanitize_key( (string) $order->get_meta( '_papelito_vendor_status', true ) );
+	$cancelled_status = defined( 'PAPELITO_VENDOR_STATUS_CANCELLED' ) ? PAPELITO_VENDOR_STATUS_CANCELLED : 'cancelado';
+
+	$final_vendor_statuses = array( 'enviado', 'entregue' );
+
+	if ( defined( 'PAPELITO_VENDOR_STATUS_SHIPPED' ) ) {
+		$final_vendor_statuses[] = PAPELITO_VENDOR_STATUS_SHIPPED;
+	}
+
+	if ( defined( 'PAPELITO_VENDOR_STATUS_DELIVERED' ) ) {
+		$final_vendor_statuses[] = PAPELITO_VENDOR_STATUS_DELIVERED;
+	}
+
+	if ( in_array( $current, $final_vendor_statuses, true ) ) {
+		return;
+	}
+
+	if ( $cancelled_status !== $current ) {
+		$order->update_meta_data( '_papelito_vendor_status', $cancelled_status );
+
+		if ( method_exists( $order, 'add_order_note' ) ) {
+			$order->add_order_note( 'Pagamento nao concluido: pedido cancelado.' );
+		}
 	}
 }
 
@@ -756,6 +809,46 @@ function papelito_pagarme_maybe_reconcile_checkout_order( $order ) {
 /**
  * Reconcilia pedidos com estoque reservado para evitar reservas indefinidas.
  */
+function papelito_pagarme_reconcile_terminal_unpaid_orders(): void {
+	if ( ! function_exists( 'wc_get_orders' ) ) {
+		return;
+	}
+
+	foreach ( array( 'failed', 'cancelled' ) as $status ) {
+		$orders = wc_get_orders(
+			array(
+				'limit'   => 25,
+				'orderby' => 'date',
+				'order'   => 'ASC',
+				'status'  => $status,
+				'return'  => 'objects',
+			)
+		);
+
+		foreach ( $orders as $order ) {
+			if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
+				continue;
+			}
+
+			if ( papelito_pagarme_order_has_paid_status( $order ) ) {
+				continue;
+			}
+
+			$released = papelito_pagarme_release_order_stock_for_terminal_state( $order, 'payment_terminal' );
+
+			if ( is_wp_error( $released ) && method_exists( $order, 'add_order_note' ) ) {
+				$order->add_order_note( 'Falha ao liberar estoque em reconciliacao terminal Pagar.me: ' . $released->get_error_message() );
+			}
+
+			papelito_pagarme_mark_vendor_status_unpaid( $order );
+
+			if ( method_exists( $order, 'save' ) ) {
+				$order->save();
+			}
+		}
+	}
+}
+
 function papelito_pagarme_reconcile_pending_stock_reservations(): void {
 	if ( ! function_exists( 'wc_get_orders' ) ) {
 		return;
@@ -824,8 +917,30 @@ function papelito_pagarme_reconcile_pending_stock_reservations(): void {
 			$order->save();
 		}
 	}
+
+	papelito_pagarme_reconcile_terminal_unpaid_orders();
 }
 add_action( PAPELITO_PAGARME_RECONCILE_HOOK, 'papelito_pagarme_reconcile_pending_stock_reservations' );
+
+function papelito_pagarme_maybe_reconcile_unpaid_orders_for_request(): void {
+	static $did_reconcile = false;
+
+	if ( $did_reconcile ) {
+		return;
+	}
+
+	$did_reconcile = true;
+
+	if ( function_exists( 'get_transient' ) && get_transient( 'papelito_pagarme_lazy_reconcile_lock' ) ) {
+		return;
+	}
+
+	if ( function_exists( 'set_transient' ) ) {
+		set_transient( 'papelito_pagarme_lazy_reconcile_lock', '1', MINUTE_IN_SECONDS );
+	}
+
+	papelito_pagarme_reconcile_pending_stock_reservations();
+}
 
 /**
  * Agenda a reconciliacao periodica de pagamentos pendentes.

@@ -554,6 +554,10 @@ function papelito_vendor_dashboard_update_order_status( int $order_id, int $vend
  * @return array<string,mixed>
  */
 function papelito_vendor_dashboard_list_orders( int $vendor_id, WP_REST_Request $request ): array {
+	if ( function_exists( 'papelito_pagarme_maybe_reconcile_unpaid_orders_for_request' ) ) {
+		papelito_pagarme_maybe_reconcile_unpaid_orders_for_request();
+	}
+
 	$page     = max( 1, (int) $request->get_param( 'page' ) );
 	$per_page = min( 100, max( 1, (int) $request->get_param( 'per_page' ) ?: 20 ) );
 	$status   = sanitize_key( (string) $request->get_param( 'status' ) );
