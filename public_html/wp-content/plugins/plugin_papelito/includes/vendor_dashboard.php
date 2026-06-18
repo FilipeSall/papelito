@@ -133,7 +133,7 @@ function papelito_vendor_dashboard_require_seller() {
 		return new WP_Error( 'papelito_vendor_auth_required', 'Nao autenticado.', array( 'status' => 401 ) );
 	}
 
-	if ( ! in_array( 'seller', (array) $user->roles, true ) ) {
+	if ( ! papelito_user_is_effective_seller( $user ) ) {
 		return new WP_Error( 'papelito_vendor_forbidden', 'Acesso restrito a vendors.', array( 'status' => 403 ) );
 	}
 

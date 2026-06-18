@@ -92,7 +92,7 @@ function papelito_posted_value( $key, $default = '' ) {
 function papelito_current_user_is_seller(): bool {
 	$user = wp_get_current_user();
 
-	return $user instanceof WP_User && in_array( 'seller', (array) $user->roles, true );
+	return $user instanceof WP_User && papelito_user_is_effective_seller( $user );
 }
 
 /**

@@ -124,7 +124,7 @@ function papelito_order_routing_require_customer() {
 	}
 
 	$user = wp_get_current_user();
-	if ( ! $user instanceof WP_User || ! in_array( 'customer', (array) $user->roles, true ) ) {
+	if ( ! $user instanceof WP_User ) {
 		return new WP_Error(
 			'papelito_checkout_customer_only',
 			'Somente consumidores finais podem concluir o checkout.',
@@ -132,10 +132,18 @@ function papelito_order_routing_require_customer() {
 		);
 	}
 
-	if ( in_array( 'seller', (array) $user->roles, true ) ) {
+	if ( papelito_user_is_effective_seller( $user ) ) {
 		return new WP_Error(
 			'papelito_checkout_seller_blocked',
 			papelito_seller_purchase_block_message(),
+			array( 'status' => 403 )
+		);
+	}
+
+	if ( ! papelito_user_has_role( $user, 'customer' ) && ! papelito_user_has_role( $user, 'seller' ) ) {
+		return new WP_Error(
+			'papelito_checkout_customer_only',
+			'Somente consumidores finais podem concluir o checkout.',
 			array( 'status' => 403 )
 		);
 	}
@@ -745,7 +753,7 @@ function papelito_order_routing_user_can_view_vendor_items( $order, int $user_id
 
 	$user = get_userdata( $user_id );
 
-	if ( ! $user instanceof WP_User || ! in_array( 'seller', (array) $user->roles, true ) ) {
+	if ( ! $user instanceof WP_User || ! papelito_user_is_effective_seller( $user ) ) {
 		return false;
 	}
 

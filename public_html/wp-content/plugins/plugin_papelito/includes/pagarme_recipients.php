@@ -385,6 +385,68 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 }
 
 /**
+ * Monta o payload da conta bancaria do recebedor.
+ *
+ * @return array<string,string>|WP_Error
+ */
+function papelito_pagarme_build_recipient_bank_account_payload( int $user_id ) {
+	$user = get_userdata( $user_id );
+	if ( ! $user instanceof WP_User ) {
+		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+	}
+
+	$draft = function_exists( 'papelito_get_vendor_pagarme_recipient_draft' )
+		? papelito_get_vendor_pagarme_recipient_draft( $user_id )
+		: null;
+
+	if ( ! is_array( $draft ) ) {
+		return new WP_Error(
+			'papelito_pagarme_missing_draft',
+			'Os dados financeiros do vendor ainda nao foram preenchidos.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$store_name   = sanitize_text_field( (string) get_user_meta( $user_id, 'store_name', true ) );
+	$cnpj         = preg_replace( '/\D+/', '', (string) get_user_meta( $user_id, 'cnpj', true ) );
+	$bank_account = isset( $draft['bankAccount'] ) && is_array( $draft['bankAccount'] ) ? $draft['bankAccount'] : array();
+
+	return array(
+		'holder_name'         => sanitize_text_field( (string) ( $bank_account['holderName'] ?? $store_name ) ),
+		'holder_type'         => sanitize_text_field( (string) ( $bank_account['holderType'] ?? 'company' ) ),
+		'holder_document'     => preg_replace( '/\D+/', '', (string) ( $bank_account['holderDocument'] ?? $cnpj ) ),
+		'bank'                => sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ),
+		'branch_number'       => sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ),
+		'branch_check_digit'  => sanitize_text_field( (string) ( $bank_account['branchCheckDigit'] ?? '' ) ),
+		'account_number'      => sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ),
+		'account_check_digit' => sanitize_text_field( (string) ( $bank_account['accountCheckDigit'] ?? '' ) ),
+		'type'                => sanitize_text_field( (string) ( $bank_account['type'] ?? 'checking' ) ),
+	);
+}
+
+/**
+ * Atualiza a conta bancaria padrao do recebedor.
+ *
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_pagarme_update_vendor_recipient_bank_account( int $user_id, string $recipient_id ) {
+	$bank_account = papelito_pagarme_build_recipient_bank_account_payload( $user_id );
+
+	if ( is_wp_error( $bank_account ) ) {
+		return $bank_account;
+	}
+
+	return papelito_pagarme_request(
+		'PATCH',
+		'recipients/' . rawurlencode( $recipient_id ) . '/default-bank-account',
+		array(
+			'bank_account' => $bank_account,
+			'payment_mode' => 'bank_transfer',
+		)
+	);
+}
+
+/**
  * Sincroniza o recebedor ja criado.
  *
  * @return array<string,string>|WP_Error
@@ -475,6 +537,15 @@ function papelito_pagarme_upsert_vendor_recipient( int $user_id, bool $refresh_k
 		return $result;
 	}
 
+	if ( 'PUT' === $method ) {
+		$bank_update = papelito_pagarme_update_vendor_recipient_bank_account( $user_id, $recipient_id );
+
+		if ( is_wp_error( $bank_update ) ) {
+			papelito_pagarme_save_vendor_recipient_error( $user_id, $bank_update );
+			return $bank_update;
+		}
+	}
+
 	$state = papelito_pagarme_save_vendor_recipient_state( $user_id, $result );
 
 	if ( $refresh_kyc && '' !== papelito_pagarme_get_vendor_recipient_id( $user_id ) ) {
@@ -493,6 +564,11 @@ function papelito_pagarme_upsert_vendor_recipient( int $user_id, bool $refresh_k
  */
 function papelito_pagarme_handle_vendor_approved( int $user_id ): void {
 	if ( $user_id <= 0 || ! papelito_pagarme_is_configured() ) {
+		return;
+	}
+
+	$payload = papelito_pagarme_build_recipient_payload( $user_id );
+	if ( is_wp_error( $payload ) ) {
 		return;
 	}
 
@@ -552,4 +628,3 @@ add_action(
 		);
 	}
 );
-

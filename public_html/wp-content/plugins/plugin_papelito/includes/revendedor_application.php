@@ -45,9 +45,7 @@ function papelito_get_seller_application_status( int $user_id ): string {
 		return $status;
 	}
 
-	$user = get_userdata( $user_id );
-
-	if ( $user instanceof WP_User && in_array( 'seller', (array) $user->roles, true ) ) {
+	if ( papelito_user_is_effective_seller( $user_id ) ) {
 		return 'approved';
 	}
 
@@ -242,6 +240,35 @@ function papelito_save_vendor_pagarme_recipient_draft( int $user_id, array $step
 
 	update_user_meta( $user_id, PAPELITO_VENDOR_PAGARME_RECIPIENT_DRAFT_META, $encoded );
 	update_user_meta( $user_id, PAPELITO_VENDOR_PAGARME_RECIPIENT_DRAFT_UPDATED_AT, papelito_current_utc_mysql() );
+}
+
+/**
+ * Salva apenas o draft financeiro do recebedor.
+ *
+ * @param int   $user_id Usuario.
+ * @param array $step3 Dados do step 3.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_update_vendor_pagarme_recipient_draft_rest( int $user_id, array $step3 ) {
+	$step3_validation = papelito_validate_vendor_pagarme_step3( $step3 );
+	if ( $step3_validation instanceof WP_Error ) {
+		$step3_validation->add_data( array( 'status' => 422 ) );
+		return $step3_validation;
+	}
+
+	papelito_save_vendor_pagarme_recipient_draft( $user_id, $step3 );
+
+	if ( defined( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META' ) ) {
+		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, '' );
+	}
+
+	if ( defined( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META' ) ) {
+		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, '' );
+	}
+
+	return array(
+		'draft' => papelito_get_vendor_pagarme_recipient_draft( $user_id ),
+	);
 }
 
 /**
@@ -823,6 +850,59 @@ add_action(
 						}
 
 						$result = papelito_submit_vendor_application_rest( $user_id, $payload );
+
+						if ( is_wp_error( $result ) ) {
+							return $result;
+						}
+
+						return new WP_REST_Response( $result, 200 );
+					},
+				),
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/recipient-draft',
+			array(
+				array(
+					'methods'             => 'GET',
+					'permission_callback' => static function (): bool {
+						return is_user_logged_in();
+					},
+					'callback'            => static function () {
+						$user_id = get_current_user_id();
+
+						if ( $user_id <= 0 ) {
+							return new WP_Error( 'papelito_not_authenticated', 'Usuario nao autenticado.', array( 'status' => 401 ) );
+						}
+
+						return new WP_REST_Response(
+							array(
+								'draft' => papelito_get_vendor_pagarme_recipient_draft( $user_id ),
+							),
+							200
+						);
+					},
+				),
+				array(
+					'methods'             => 'POST',
+					'permission_callback' => static function (): bool {
+						return is_user_logged_in();
+					},
+					'callback'            => static function ( WP_REST_Request $request ) {
+						$user_id = get_current_user_id();
+
+						if ( $user_id <= 0 ) {
+							return new WP_Error( 'papelito_not_authenticated', 'Usuario nao autenticado.', array( 'status' => 401 ) );
+						}
+
+						$payload = $request->get_json_params();
+						if ( ! is_array( $payload ) ) {
+							return new WP_Error( 'papelito_invalid_payload', 'Payload invalido.', array( 'status' => 400 ) );
+						}
+
+						$result = papelito_update_vendor_pagarme_recipient_draft_rest( $user_id, $payload );
 
 						if ( is_wp_error( $result ) ) {
 							return $result;
@@ -1562,26 +1642,36 @@ function papelito_admin_vendors_normalize_bank_account( $bank_account ) {
 }
 
 /**
- * Monta o draft Pagar.me minimo a partir dos dados bancarios.
+ * Monta e valida o draft Pagar.me enviado pelo admin.
  *
  * @param array<string, string> $bank_account Conta bancaria.
  * @param array<string, mixed>  $input Payload original.
- * @return array<string, mixed>
+ * @return array<string, mixed>|WP_Error
  */
-function papelito_admin_vendors_build_pagarme_draft( array $bank_account, array $input ): array {
-	return array(
-		'companyName'     => sanitize_text_field( (string) ( $input['companyName'] ?? '' ) ),
-		'tradingName'     => sanitize_text_field( (string) ( $input['tradingName'] ?? '' ) ),
-		'corporationType' => sanitize_text_field( (string) ( $input['corporationType'] ?? '' ) ),
-		'foundingDate'    => sanitize_text_field( (string) ( $input['foundingDate'] ?? '' ) ),
-		'annualRevenue'   => sanitize_text_field( (string) ( $input['annualRevenue'] ?? '' ) ),
-		'managingPartners' => array(),
-		'bankAccount'     => $bank_account,
-		'transfer'        => array(
-			'interval' => 'Daily',
-			'day'      => '0',
+function papelito_admin_vendors_build_pagarme_draft( array $bank_account, array $input ) {
+	$draft = isset( $input['pagarmeDraft'] ) && is_array( $input['pagarmeDraft'] ) ? $input['pagarmeDraft'] : array();
+
+	$normalized = array(
+		'companyName'       => sanitize_text_field( (string) ( $draft['companyName'] ?? $input['storeName'] ?? '' ) ),
+		'tradingName'       => sanitize_text_field( (string) ( $draft['tradingName'] ?? $input['storeName'] ?? '' ) ),
+		'corporationType'   => sanitize_text_field( (string) ( $draft['corporationType'] ?? '' ) ),
+		'foundingDate'      => sanitize_text_field( (string) ( $draft['foundingDate'] ?? '' ) ),
+		'annualRevenue'     => sanitize_text_field( (string) ( $draft['annualRevenue'] ?? '' ) ),
+		'managingPartners'  => isset( $draft['managingPartners'] ) && is_array( $draft['managingPartners'] ) ? $draft['managingPartners'] : array(),
+		'bankAccount'       => $bank_account,
+		'transfer'          => array(
+			'interval' => sanitize_text_field( (string) ( $draft['transfer']['interval'] ?? 'Daily' ) ),
+			'day'      => sanitize_text_field( (string) ( $draft['transfer']['day'] ?? '0' ) ),
 		),
 	);
+
+	$validation = papelito_validate_vendor_pagarme_step3( $normalized );
+	if ( $validation instanceof WP_Error ) {
+		$validation->add_data( array( 'status' => 422 ) );
+		return $validation;
+	}
+
+	return $normalized;
 }
 
 /**
@@ -1621,6 +1711,17 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 		return $bank_account;
 	}
 
+	$pagarme_draft = papelito_admin_vendors_build_pagarme_draft( $bank_account, $input );
+	if ( is_wp_error( $pagarme_draft ) ) {
+		return $pagarme_draft;
+	}
+
+	$street       = sanitize_text_field( (string) ( $input['street'] ?? '' ) );
+	$number       = sanitize_text_field( (string) ( $input['number'] ?? '' ) );
+	$neighborhood = sanitize_text_field( (string) ( $input['neighborhood'] ?? '' ) );
+	$state        = sanitize_text_field( (string) ( $input['state'] ?? '' ) );
+	$city         = sanitize_text_field( (string) ( $input['city'] ?? '' ) );
+
 	$first_name   = sanitize_text_field( (string) ( $input['firstName'] ?? '' ) );
 	$last_name    = sanitize_text_field( (string) ( $input['lastName'] ?? '' ) );
 	$store_name   = sanitize_text_field( (string) ( $input['storeName'] ?? '' ) );
@@ -1628,6 +1729,14 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 
 	if ( '' === $display_name ) {
 		$display_name = '' !== $store_name ? $store_name : $email;
+	}
+
+	if ( '' === $street || '' === $number || '' === $neighborhood || '' === $city || '' === $state ) {
+		return new WP_Error(
+			'papelito_admin_vendor_incomplete_address',
+			'Informe o endereco comercial completo do vendor.',
+			array( 'status' => 422 )
+		);
 	}
 
 	$user_id = wp_insert_user(
@@ -1650,8 +1759,12 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 	update_user_meta( $user_id, 'phone_number', papelito_auth_format_phone( (string) ( $input['phoneNumber'] ?? '' ) ) );
 	update_user_meta( $user_id, 'cnpj', $cnpj );
 	update_user_meta( $user_id, 'instagram', sanitize_text_field( ltrim( (string) ( $input['instagram'] ?? '' ), '@' ) ) );
-	update_user_meta( $user_id, 'state', sanitize_text_field( (string) ( $input['state'] ?? '' ) ) );
-	update_user_meta( $user_id, 'city', sanitize_text_field( (string) ( $input['city'] ?? '' ) ) );
+	update_user_meta( $user_id, 'state', $state );
+	update_user_meta( $user_id, 'city', $city );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STREET_META, $street );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NUMBER_META, $number );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META, sanitize_text_field( (string) ( $input['complement'] ?? '' ) ) );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, $neighborhood );
 
 	$cep_base = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['cep'] ?? '' ) ) : '';
 	update_user_meta( $user_id, 'cep', $cep_base );
@@ -1674,7 +1787,7 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 
 	papelito_save_vendor_pagarme_recipient_draft(
 		$user_id,
-		papelito_admin_vendors_build_pagarme_draft( $bank_account, $input )
+		$pagarme_draft
 	);
 
 	if ( function_exists( 'papelito_apply_vendor_geo' ) && '' !== $cep_base ) {

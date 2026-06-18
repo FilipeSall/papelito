@@ -141,11 +141,15 @@ function papelito_auth_normalize_primary_role( WP_User $user ): string {
 		return 'administrator';
 	}
 
-	if ( in_array( 'seller', $roles, true ) ) {
+	if ( papelito_user_is_effective_seller( $user ) ) {
 		return 'seller';
 	}
 
 	if ( in_array( 'customer', $roles, true ) ) {
+		return 'customer';
+	}
+
+	if ( in_array( 'seller', $roles, true ) ) {
 		return 'customer';
 	}
 
