@@ -16,6 +16,7 @@ const PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META        = 'application_reviewe
 const PAPELITO_VENDOR_APPLICATION_SUBMITTED_AT_META       = 'application_submitted_at';
 const PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META  = 'seller_application_discovery_channel';
 const PAPELITO_ADMIN_VENDOR_DISCOVERY_CHANNEL_DEFAULT     = 'Criado pelo painel admin';
+const PAPELITO_ADMIN_VENDOR_HAS_SOLD_PAPELITO_DEFAULT     = 'nao_informado';
 const PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META  = 'seller_application_has_sold_papelito';
 const PAPELITO_VENDOR_APPLICATION_STREET_META             = 'seller_application_street';
 const PAPELITO_VENDOR_APPLICATION_NUMBER_META             = 'seller_application_number';
@@ -1789,7 +1790,11 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 	}
 
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META, $discovery_channel );
-	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, sanitize_text_field( (string) ( $input['hasSoldPapelito'] ?? '' ) ) );
+	$has_sold = sanitize_text_field( (string) ( $input['hasSoldPapelito'] ?? '' ) );
+	if ( '' === $has_sold ) {
+		$has_sold = PAPELITO_ADMIN_VENDOR_HAS_SOLD_PAPELITO_DEFAULT;
+	}
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, $has_sold );
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META, 'approved' );
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_SUBMITTED_AT_META, papelito_current_utc_mysql() );
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META, papelito_current_utc_mysql() );

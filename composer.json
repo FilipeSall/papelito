@@ -4,6 +4,7 @@
   "type": "project",
   "require-dev": {
     "dealerdirect/phpcodesniffer-composer-installer": "^1.1",
+    "php-stubs/wordpress-stubs": "^6.6",
     "phpcompatibility/phpcompatibility-wp": "^2.1",
     "wp-coding-standards/wpcs": "^3.1"
   },
