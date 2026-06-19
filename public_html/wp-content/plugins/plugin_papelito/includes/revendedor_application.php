@@ -15,6 +15,7 @@ const PAPELITO_VENDOR_APPLICATION_REVIEWED_BY_META        = 'application_reviewe
 const PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META        = 'application_reviewed_at';
 const PAPELITO_VENDOR_APPLICATION_SUBMITTED_AT_META       = 'application_submitted_at';
 const PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META  = 'seller_application_discovery_channel';
+const PAPELITO_ADMIN_VENDOR_DISCOVERY_CHANNEL_DEFAULT     = 'Criado pelo painel admin';
 const PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META  = 'seller_application_has_sold_papelito';
 const PAPELITO_VENDOR_APPLICATION_STREET_META             = 'seller_application_street';
 const PAPELITO_VENDOR_APPLICATION_NUMBER_META             = 'seller_application_number';
@@ -1243,6 +1244,7 @@ function papelito_admin_vendors_parse_filters( WP_REST_Request $request ): array
  * @return string
  */
 function papelito_admin_vendors_base_sql(): string {
+	/** @var wpdb $wpdb */
 	global $wpdb;
 
 	$users_table    = $wpdb->users;
@@ -1271,6 +1273,7 @@ function papelito_admin_vendors_base_sql(): string {
  * @return string
  */
 function papelito_admin_vendors_where_sql( array $filters, array &$args, bool $include_status = true ): string {
+	/** @var wpdb $wpdb */
 	global $wpdb;
 
 	$conditions = array(
@@ -1300,6 +1303,7 @@ function papelito_admin_vendors_where_sql( array $filters, array &$args, bool $i
  * @return int
  */
 function papelito_admin_vendors_count_filtered_rows( array $filters ): int {
+	/** @var wpdb $wpdb */
 	global $wpdb;
 
 	$args      = array();
@@ -1319,6 +1323,7 @@ function papelito_admin_vendors_count_filtered_rows( array $filters ): int {
  * @return array<int, array<string, mixed>>
  */
 function papelito_admin_vendors_query_rows( array $filters ): array {
+	/** @var wpdb $wpdb */
 	global $wpdb;
 
 	$args      = array();
@@ -1399,6 +1404,7 @@ function papelito_admin_vendors_query_rows( array $filters ): array {
  * @return array<string, int>
  */
 function papelito_admin_vendors_query_summary( array $filters ): array {
+	/** @var wpdb $wpdb */
 	global $wpdb;
 
 	$filtered_users = papelito_admin_vendors_count_filtered_rows( $filters );
@@ -1488,6 +1494,7 @@ function papelito_admin_vendors_normalize_document_digits( string $value ): stri
  * @return bool
  */
 function papelito_admin_vendors_cnpj_exists( string $cnpj ): bool {
+	/** @var wpdb $wpdb */
 	global $wpdb;
 
 	$target = papelito_admin_vendors_normalize_document_digits( $cnpj );
@@ -1776,7 +1783,12 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 		add_user_meta( $user_id, 'max_cep', $range['maxCep'], false );
 	}
 
-	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META, sanitize_text_field( (string) ( $input['discoveryChannel'] ?? '' ) ) );
+	$discovery_channel = sanitize_text_field( (string) ( $input['discoveryChannel'] ?? '' ) );
+	if ( '' === $discovery_channel ) {
+		$discovery_channel = PAPELITO_ADMIN_VENDOR_DISCOVERY_CHANNEL_DEFAULT;
+	}
+
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META, $discovery_channel );
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, sanitize_text_field( (string) ( $input['hasSoldPapelito'] ?? '' ) ) );
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META, 'approved' );
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_SUBMITTED_AT_META, papelito_current_utc_mysql() );
