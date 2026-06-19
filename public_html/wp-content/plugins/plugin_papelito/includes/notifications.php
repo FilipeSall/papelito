@@ -34,6 +34,7 @@ if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT', 'product_missing_weight' );
 	define( 'PAPELITO_NOTIF_NEW_PURCHASE', 'new_purchase' );
 	define( 'PAPELITO_NOTIF_PROCESSING_OVERDUE', 'vendor_processing_overdue' );
+	define( 'PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING', 'vendor_registration_pending' );
 }
 
 /**
@@ -112,6 +113,7 @@ function papelito_notification_allowed_types() {
 		PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT,
 		PAPELITO_NOTIF_NEW_PURCHASE,
 		PAPELITO_NOTIF_PROCESSING_OVERDUE,
+		PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING,
 	);
 }
 
@@ -732,6 +734,140 @@ function papelito_handle_vendor_rejected_notification( $vendor_user_id, $reason 
 	);
 }
 add_action( 'papelito_vendor_rejected', 'papelito_handle_vendor_rejected_notification', 10, 2 );
+
+/**
+ * Labels legiveis dos campos pendentes do onboarding financeiro.
+ *
+ * @return array<string, string>
+ */
+function papelito_vendor_pending_registration_field_labels(): array {
+	return array(
+		'companyName'                   => 'Razao social',
+		'tradingName'                   => 'Nome fantasia',
+		'corporationType'               => 'Natureza juridica',
+		'foundingDate'                  => 'Data de fundacao',
+		'annualRevenue'                 => 'Faturamento anual',
+		'partner.name'                  => 'Nome do socio administrador',
+		'partner.email'                 => 'E-mail do socio administrador',
+		'partner.document'              => 'CPF do socio administrador',
+		'partner.motherName'            => 'Nome da mae do socio administrador',
+		'partner.birthdate'             => 'Data de nascimento do socio administrador',
+		'partner.monthlyIncome'         => 'Renda mensal do socio administrador',
+		'partner.professionalOccupation' => 'Ocupacao profissional do socio administrador',
+		'partner.address.zipCode'       => 'CEP do socio administrador',
+		'partner.address.street'        => 'Logradouro do socio administrador',
+		'partner.address.streetNumber'  => 'Numero do endereco do socio administrador',
+		'partner.address.neighborhood'  => 'Bairro do socio administrador',
+		'partner.address.city'          => 'Cidade do socio administrador',
+		'partner.address.state'         => 'Estado do socio administrador',
+		'bankAccount.holderName'        => 'Titular da conta',
+		'bankAccount.holderDocument'    => 'Documento do titular',
+		'bankAccount.bankCode'          => 'Codigo do banco',
+		'bankAccount.branchNumber'      => 'Agencia',
+		'bankAccount.accountNumber'     => 'Conta',
+		'bankAccount.accountCheckDigit' => 'Digito da conta',
+	);
+}
+
+/**
+ * Envia e-mail quando o vendor ainda precisa concluir dados obrigatorios.
+ *
+ * @param WP_User            $user Usuario destino.
+ * @param array<int, string> $pending_fields Campos pendentes.
+ * @return bool
+ */
+function papelito_send_vendor_pending_registration_email( WP_User $user, array $pending_fields ): bool {
+	$recipient = sanitize_email( $user->user_email );
+
+	if ( '' === $recipient || ! is_email( $recipient ) ) {
+		return false;
+	}
+
+	$labels      = papelito_vendor_pending_registration_field_labels();
+	$field_lines = array();
+
+	foreach ( $pending_fields as $field ) {
+		$field = sanitize_text_field( (string) $field );
+		if ( isset( $labels[ $field ] ) ) {
+			$field_lines[] = '- ' . $labels[ $field ];
+		}
+	}
+
+	$store_name = (string) get_user_meta( $user->ID, 'store_name', true );
+	$greeting   = '' !== $store_name ? $store_name : $user->display_name;
+	$frontend   = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : 'http://localhost:3000';
+	$vendor_url = $frontend . '/vendor/dashboard';
+
+	$body_lines = array(
+		sprintf( 'Ola %s,', $greeting ),
+		'',
+		'Seu cadastro foi criado pelo time Papelito, mas ainda faltam alguns dados obrigatorios para concluir a operacao financeira e a integracao.',
+		'',
+		'Campos pendentes:',
+	);
+
+	$body_lines = array_merge( $body_lines, ! empty( $field_lines ) ? $field_lines : array( '- Revise os dados financeiros do cadastro.' ) );
+
+	$body_lines = array_merge(
+		$body_lines,
+		array(
+			'',
+			'Acesse sua area de vendor para revisar e completar essas informacoes:',
+			$vendor_url,
+			'',
+			'Time Papelito',
+		)
+	);
+
+	return wp_mail(
+		$recipient,
+		'Complete seu cadastro de vendor - Papelito',
+		implode( PHP_EOL, $body_lines ),
+		array( 'Content-Type: text/plain; charset=UTF-8' )
+	);
+}
+
+/**
+ * Notifica o vendor sobre dados pendentes no onboarding.
+ *
+ * @param int                $vendor_user_id Vendor destino.
+ * @param array<int, string> $pending_fields Campos pendentes.
+ * @return void
+ */
+function papelito_handle_vendor_pending_registration_notification( $vendor_user_id, $pending_fields = array() ) {
+	$vendor_user_id = absint( $vendor_user_id );
+	$pending_fields = is_array( $pending_fields ) ? array_values( array_filter( array_map( 'strval', $pending_fields ), 'strlen' ) ) : array();
+
+	if ( $vendor_user_id <= 0 || empty( $pending_fields ) ) {
+		return;
+	}
+
+	$signature    = md5( implode( '|', $pending_fields ) );
+	$dedupe_key   = sprintf( 'vendor_registration_pending:%d:%s', $vendor_user_id, $signature );
+	$notification = papelito_dispatch_notification(
+		$vendor_user_id,
+		PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING,
+		array(
+			'pending_fields' => $pending_fields,
+			'pending_count'  => count( $pending_fields ),
+		),
+		$dedupe_key
+	);
+
+	if ( false === $notification ) {
+		return;
+	}
+
+	if ( ! papelito_claim_notification_email_dispatch( $vendor_user_id, PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING, $dedupe_key ) ) {
+		return;
+	}
+
+	$user = get_user_by( 'id', $vendor_user_id );
+	if ( $user instanceof WP_User ) {
+		papelito_send_vendor_pending_registration_email( $user, $pending_fields );
+	}
+}
+add_action( 'papelito_vendor_pending_registration_created', 'papelito_handle_vendor_pending_registration_notification', 10, 2 );
 
 /**
  * Notifica vendor quando estoque zera.

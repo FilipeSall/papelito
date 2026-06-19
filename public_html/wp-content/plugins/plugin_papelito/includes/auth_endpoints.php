@@ -979,15 +979,12 @@ add_action(
 
 					$dispatch = papelito_auth_dispatch_verification_email( $user );
 
-					if ( is_wp_error( $dispatch ) ) {
-						return $dispatch;
-					}
-
 					return new WP_REST_Response(
 						array(
 							'ok'                        => true,
 							'requiresEmailVerification' => true,
 							'email'                     => $user->user_email,
+							'emailSent'                 => ! is_wp_error( $dispatch ),
 						),
 						201
 					);
