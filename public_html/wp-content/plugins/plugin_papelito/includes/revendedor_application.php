@@ -519,6 +519,50 @@ function papelito_save_vendor_pending_registration_fields( int $user_id, array $
 }
 
 /**
+ * Resolve os campos pendentes atuais, recalculando a partir do draft quando necessario.
+ *
+ * @param int $user_id Usuario.
+ * @return array<int, string>
+ */
+function papelito_resolve_vendor_pending_registration_fields( int $user_id ): array {
+	$stored = papelito_get_vendor_pending_registration_fields( $user_id );
+	if ( ! empty( $stored ) ) {
+		return $stored;
+	}
+
+	$draft = papelito_get_vendor_pagarme_recipient_draft( $user_id );
+	if ( ! is_array( $draft ) ) {
+		return array();
+	}
+
+	$user = get_userdata( $user_id );
+	$normalized = papelito_sanitize_vendor_pagarme_step3_partial(
+		$draft,
+		array(
+			'storeName'    => (string) get_user_meta( $user_id, 'store_name', true ),
+			'email'        => $user instanceof WP_User ? (string) $user->user_email : '',
+			'cnpj'         => (string) get_user_meta( $user_id, 'cnpj', true ),
+			'cep'          => (string) get_user_meta( $user_id, 'cep', true ),
+			'street'       => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STREET_META, true ),
+			'number'       => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NUMBER_META, true ),
+			'complement'   => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META, true ),
+			'neighborhood' => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, true ),
+			'city'         => (string) get_user_meta( $user_id, 'city', true ),
+			'state'        => (string) get_user_meta( $user_id, 'state', true ),
+			'firstName'    => (string) get_user_meta( $user_id, 'first_name', true ),
+			'lastName'     => (string) get_user_meta( $user_id, 'last_name', true ),
+		)
+	);
+	$fields     = papelito_collect_vendor_pending_registration_fields( $normalized );
+
+	if ( ! empty( $fields ) ) {
+		papelito_save_vendor_pending_registration_fields( $user_id, $fields );
+	}
+
+	return $fields;
+}
+
+/**
  * Recalcula e persiste os campos pendentes com base no draft informado.
  *
  * @param int                  $user_id Usuario.
@@ -540,7 +584,7 @@ function papelito_refresh_vendor_pending_registration_state( int $user_id, array
 function papelito_get_vendor_pending_registration_rest_response( int $user_id ): array {
 	return array(
 		'draft'         => papelito_get_vendor_pagarme_recipient_draft( $user_id ),
-		'pendingFields' => papelito_get_vendor_pending_registration_fields( $user_id ),
+		'pendingFields' => papelito_resolve_vendor_pending_registration_fields( $user_id ),
 		'updatedAt'     => (string) get_user_meta( $user_id, PAPELITO_VENDOR_PENDING_FIELDS_UPDATED_AT_META, true ),
 	);
 }
@@ -558,7 +602,7 @@ function papelito_get_vendor_application_rest_response( int $user_id ): array {
 	return array(
 		'status'       => $summary['status'],
 		'submittedAt'  => $summary['submittedAt'],
-		'pendingFields' => papelito_get_vendor_pending_registration_fields( $user_id ),
+		'pendingFields' => papelito_resolve_vendor_pending_registration_fields( $user_id ),
 		'application'  => array(
 			'step1' => array(
 				'storeName'        => $summary['storeName'],
@@ -1342,8 +1386,11 @@ add_action(
 			array(
 				array(
 					'methods'             => 'GET',
-					'permission_callback' => static function (): bool {
-						return is_user_logged_in();
+					'permission_callback' => static function () {
+						$check = function_exists( 'papelito_vendor_dashboard_require_seller' )
+							? papelito_vendor_dashboard_require_seller()
+							: false;
+						return is_wp_error( $check ) ? $check : true;
 					},
 					'callback'            => static function () {
 						$user_id = get_current_user_id();
@@ -1357,8 +1404,11 @@ add_action(
 				),
 				array(
 					'methods'             => 'POST',
-					'permission_callback' => static function (): bool {
-						return is_user_logged_in();
+					'permission_callback' => static function () {
+						$check = function_exists( 'papelito_vendor_dashboard_require_seller' )
+							? papelito_vendor_dashboard_require_seller()
+							: false;
+						return is_wp_error( $check ) ? $check : true;
 					},
 					'callback'            => static function ( WP_REST_Request $request ) {
 						$user_id = get_current_user_id();
@@ -2189,6 +2239,10 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 
 	if ( '' === $display_name ) {
 		$display_name = '' !== $store_name ? $store_name : $email;
+	}
+
+	if ( '' === $store_name ) {
+		return new WP_Error( 'papelito_admin_vendor_missing_store_name', 'Informe o nome da loja.', array( 'status' => 422 ) );
 	}
 
 	if ( '' === $street || '' === $number || '' === $neighborhood || '' === $city || '' === $state ) {
