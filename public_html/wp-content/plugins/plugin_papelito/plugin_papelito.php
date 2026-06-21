@@ -20,6 +20,7 @@ require_once __DIR__ . '/includes/catalog-pdf.php';
 require_once __DIR__ . '/includes/flash_sale.php';
 require_once __DIR__ . '/includes/home_assets.php';
 require_once __DIR__ . '/includes/admin_reports.php';
+require_once __DIR__ . '/includes/admin_users.php';
 require_once __DIR__ . '/includes/shipping.php';
 require_once __DIR__ . '/includes/vendor_geo.php';
 require_once __DIR__ . '/includes/vendor_stock.php';
