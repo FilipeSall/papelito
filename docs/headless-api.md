@@ -99,6 +99,64 @@ query Me {
 }
 ```
 
+## Estoque do Vendor (custom)
+
+Endpoints REST do painel de estoque (`/vendor/estoque` no front). Auth: JWT de vendor aprovado.
+
+### `GET /wp-json/papelito/v1/vendor/me/stock`
+
+Lista o catálogo (global) com o estoque sobreposto do vendor autenticado. Aceita filtros aplicados no banco (não só na página atual):
+
+| Param | Tipo | Default | Descrição |
+|---|---|---|---|
+| `search` | string | `''` | Nome do produto ou SKU |
+| `filter` | string | `all` | `all` \| `with_stock` \| `zeroed_only` |
+| `category` | int | `0` | `term_id` de uma categoria (`product_cat`); seleção única |
+| `tags` | string (CSV) | `''` | `term_id`s de tags (`product_tag`) separados por vírgula. Semântica **OR** (produto com qualquer das tags) |
+| `sort` | string | `name_asc` | `name_asc` \| `name_desc` \| `qty_desc` \| `qty_asc` \| `updated_desc`. Valor inválido cai para `name_asc` |
+| `page` / `per_page` | int | `1` / `20` | Paginação sobre o recorte filtrado |
+
+Cada item da resposta inclui `categories` e `tags` (termos do produto; para variações, herdados do produto pai):
+
+```jsonc
+{
+  "items": [
+    {
+      "product_id": 123,
+      "product_name": "Seda King Size",
+      "sku": "SK-1",
+      "qty": 5,
+      "updated_at": "2026-06-21 12:00:00",
+      "is_zeroed": false,
+      "image_url": "https://.../seda.jpg",
+      "categories": [{ "id": 7, "name": "Sedas", "slug": "sedas" }],
+      "tags": [{ "id": 12, "name": "Combo", "slug": "combo" }]
+    }
+  ],
+  "total": 22,
+  "page": 1,
+  "per_page": 20
+}
+```
+
+```bash
+curl -H "Authorization: Bearer <JWT>" \
+  "https://papelitobrasil.com.br/wp-json/papelito/v1/vendor/me/stock?category=7&tags=12,45&sort=qty_desc"
+```
+
+### `GET /wp-json/papelito/v1/vendor/me/stock/taxonomies`
+
+Opções para o drawer de filtros: categorias e tags com `count > 0` (lista global). Cacheado ~10 min (transient, invalidação só por TTL — independente do cache de cobertura).
+
+```jsonc
+{
+  "categories": [{ "id": 7, "name": "Sedas", "slug": "sedas", "count": 3 }],
+  "tags":       [{ "id": 12, "name": "Combo", "slug": "combo", "count": 4 }]
+}
+```
+
+> `PUT /wp-json/papelito/v1/vendor/me/stock` (ajuste de quantidade) não mudou. Os mesmos filtros `category`/`tags`/`sort` existem no endpoint admin `GET /admin/vendors/{id}/stock` (paridade de backend; UI admin fora de escopo).
+
 ## CORS
 
 Allowlist controlada por `PAPELITO_ALLOWED_ORIGINS` no `wp-config.php`. Veja `mu-plugins/papelito-cors.php`.
