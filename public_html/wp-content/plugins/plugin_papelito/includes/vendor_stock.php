@@ -739,9 +739,17 @@ function papelito_vendor_stock_taxonomies() {
 		return $cached;
 	}
 
-	$out = array( 'categories' => array(), 'tags' => array() );
+	$out = array(
+		'categories' => array(),
+		'tags'       => array(),
+	);
 
-	foreach ( array( 'product_cat' => 'categories', 'product_tag' => 'tags' ) as $taxonomy => $key ) {
+	$taxonomies = array(
+		'product_cat' => 'categories',
+		'product_tag' => 'tags',
+	);
+
+	foreach ( $taxonomies as $taxonomy => $key ) {
 		$terms = get_terms(
 			array(
 				'taxonomy'   => $taxonomy,
