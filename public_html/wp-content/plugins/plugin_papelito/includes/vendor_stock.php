@@ -456,6 +456,59 @@ function papelito_vendor_stock_product_image_url( int $product_id ): string {
 }
 
 /**
+ * Indica se a pagina publica de produto (`/produtos/{id}` no front) consegue
+ * renderizar o produto. O catalogo headless esconde produtos sem peso (frete
+ * impossivel) via `hasValidWeight`; espelhamos a mesma regra aqui para nao
+ * gerar links mortos no estoque do vendor.
+ *
+ * Considera publicavel quando o produto efetivo (simples, ou o pai variavel)
+ * tem peso positivo nele mesmo ou em qualquer variacao.
+ */
+function papelito_vendor_stock_product_publicly_viewable( int $effective_id ): bool {
+	if ( $effective_id <= 0 || ! function_exists( 'wc_get_product' ) ) {
+		return false;
+	}
+
+	$product = wc_get_product( $effective_id );
+	if ( ! $product ) {
+		return false;
+	}
+
+	if ( papelito_vendor_stock_has_positive_weight( $product->get_weight() ) ) {
+		return true;
+	}
+
+	if ( $product->is_type( 'variable' ) ) {
+		foreach ( $product->get_children() as $variation_id ) {
+			$variation = wc_get_product( (int) $variation_id );
+			if ( $variation && papelito_vendor_stock_has_positive_weight( $variation->get_weight() ) ) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Peso positivo segundo a mesma normalizacao do front (`hasPositiveWeight`).
+ *
+ * @param mixed $weight Valor de peso retornado pelo WooCommerce.
+ */
+function papelito_vendor_stock_has_positive_weight( $weight ): bool {
+	if ( ! is_string( $weight ) && ! is_numeric( $weight ) ) {
+		return false;
+	}
+
+	$normalized = str_replace( ',', '.', trim( (string) $weight ) );
+	if ( '' === $normalized || ! is_numeric( $normalized ) ) {
+		return false;
+	}
+
+	return (float) $normalized > 0;
+}
+
+/**
  * Busca o historico recente de ajustes por produto.
  *
  * @param int   $vendor_id Vendor alvo.
@@ -665,17 +718,19 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 		$product_ids[]   = $product_id;
 		$effective_ids[] = $effective;
 		$items[]         = array(
-			'product_id'   => $product_id,
-			'product_name' => (string) ( $row['product_name'] ?? '' ),
-			'sku'          => (string) ( $row['sku'] ?? '' ),
-			'qty'          => (int) ( $row['qty'] ?? 0 ),
-			'updated_at'   => (string) ( $row['updated_at'] ?? '' ),
-			'is_zeroed'    => 0 === (int) ( $row['qty'] ?? 0 ),
-			'image_url'    => papelito_vendor_stock_product_image_url( $product_id ),
-			'history'      => array(),
-			'effective_id' => $effective,
-			'categories'   => array(),
-			'tags'         => array(),
+			'product_id'           => $product_id,
+			'public_product_id'    => $effective,
+			'is_publicly_viewable' => papelito_vendor_stock_product_publicly_viewable( $effective ),
+			'product_name'         => (string) ( $row['product_name'] ?? '' ),
+			'sku'                  => (string) ( $row['sku'] ?? '' ),
+			'qty'                  => (int) ( $row['qty'] ?? 0 ),
+			'updated_at'           => (string) ( $row['updated_at'] ?? '' ),
+			'is_zeroed'            => 0 === (int) ( $row['qty'] ?? 0 ),
+			'image_url'            => papelito_vendor_stock_product_image_url( $product_id ),
+			'history'              => array(),
+			'effective_id'         => $effective,
+			'categories'           => array(),
+			'tags'                 => array(),
 		);
 	}
 
