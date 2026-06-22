@@ -107,7 +107,7 @@ function papelito_admin_reports_parse_users_filters( WP_REST_Request $request ):
 		),
 		'applicationStatus' => papelito_admin_reports_normalize_enum(
 			sanitize_text_field( (string) $request->get_param( 'applicationStatus' ) ),
-			array( 'all', 'none', 'pending', 'approved', 'rejected' ),
+			array( 'all', 'none', 'pending', 'incomplete', 'approved', 'rejected' ),
 			'all'
 		),
 		'state'             => strtoupper( sanitize_text_field( (string) $request->get_param( 'state' ) ) ),
@@ -330,6 +330,8 @@ function papelito_admin_reports_application_status_label( string $status ): stri
 	switch ( $status ) {
 		case 'pending':
 			return 'Pendente';
+		case 'incomplete':
+			return 'Cadastro incompleto';
 		case 'approved':
 			return 'Aprovada';
 		case 'rejected':

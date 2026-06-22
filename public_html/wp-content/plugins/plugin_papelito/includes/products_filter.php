@@ -82,6 +82,13 @@ function papelito_matching_vendor_ids($user_cep)
     $vendors_ids = array();
 
     foreach ($vendors as $vendor) {
+        if (
+            function_exists('papelito_get_seller_application_status')
+            && 'approved' !== papelito_get_seller_application_status((int) $vendor->ID)
+        ) {
+            continue;
+        }
+
         $min_ceps = get_user_meta($vendor->ID, 'min_cep');
         $max_ceps = get_user_meta($vendor->ID, 'max_cep');
 

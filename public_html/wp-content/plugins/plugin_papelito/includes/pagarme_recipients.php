@@ -281,6 +281,44 @@ function papelito_pagarme_partner_payload( array $partner, string $fallback_phon
  *
  * @return array<string,mixed>|WP_Error
  */
+/**
+ * Normaliza a conta bancaria do vendor para o contrato `default_bank_account`.
+ *
+ * Os digitos verificadores (`branch_check_digit`/`account_check_digit`) sao
+ * OMITIDOS quando vazios: contas como o Nubank (agencia 0001) nao tem digito de
+ * agencia, e a Pagar.me rejeita a string vazia com
+ * "invalid_parameter | agencia_dv | Invalid format".
+ *
+ * @param array<string,mixed> $bank_account Dados crus do draft (`bankAccount`).
+ * @param string              $fallback_holder_name Nome usado quando holderName vazio.
+ * @param string              $fallback_document   CNPJ usado quando holderDocument vazio.
+ * @return array<string,string>
+ */
+function papelito_pagarme_bank_account_payload( array $bank_account, string $fallback_holder_name, string $fallback_document ): array {
+	$payload = array(
+		'holder_name'     => sanitize_text_field( (string) ( $bank_account['holderName'] ?? $fallback_holder_name ) ),
+		'holder_type'     => sanitize_text_field( (string) ( $bank_account['holderType'] ?? 'company' ) ),
+		'holder_document' => preg_replace( '/\D+/', '', (string) ( $bank_account['holderDocument'] ?? $fallback_document ) ),
+		'bank'            => sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ),
+		'branch_number'   => sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ),
+		'account_number'  => sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ),
+		'type'            => sanitize_text_field( (string) ( $bank_account['type'] ?? 'checking' ) ),
+	);
+
+	$branch_check_digit  = sanitize_text_field( (string) ( $bank_account['branchCheckDigit'] ?? '' ) );
+	$account_check_digit = sanitize_text_field( (string) ( $bank_account['accountCheckDigit'] ?? '' ) );
+
+	if ( '' !== $branch_check_digit ) {
+		$payload['branch_check_digit'] = $branch_check_digit;
+	}
+
+	if ( '' !== $account_check_digit ) {
+		$payload['account_check_digit'] = $account_check_digit;
+	}
+
+	return $payload;
+}
+
 function papelito_pagarme_build_recipient_payload( int $user_id ) {
 	$user = get_userdata( $user_id );
 	if ( ! $user instanceof WP_User ) {
@@ -351,17 +389,7 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 			'transfer_interval' => sanitize_text_field( (string) ( $transfer['interval'] ?? 'Daily' ) ),
 			'transfer_day'      => (int) ( $transfer['day'] ?? 0 ),
 		),
-		'default_bank_account' => array(
-			'holder_name'       => sanitize_text_field( (string) ( $bank_account['holderName'] ?? $store_name ) ),
-			'holder_type'       => sanitize_text_field( (string) ( $bank_account['holderType'] ?? 'company' ) ),
-			'holder_document'   => preg_replace( '/\D+/', '', (string) ( $bank_account['holderDocument'] ?? $cnpj ) ),
-			'bank'              => sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ),
-			'branch_number'     => sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ),
-			'branch_check_digit'=> sanitize_text_field( (string) ( $bank_account['branchCheckDigit'] ?? '' ) ),
-			'account_number'    => sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ),
-			'account_check_digit' => sanitize_text_field( (string) ( $bank_account['accountCheckDigit'] ?? '' ) ),
-			'type'              => sanitize_text_field( (string) ( $bank_account['type'] ?? 'checking' ) ),
-		),
+		'default_bank_account' => papelito_pagarme_bank_account_payload( $bank_account, $store_name, $cnpj ),
 		'register_information' => array(
 			'type'               => 'corporation',
 			'company_name'       => sanitize_text_field( (string) ( $draft['companyName'] ?? $store_name ) ),
@@ -411,17 +439,7 @@ function papelito_pagarme_build_recipient_bank_account_payload( int $user_id ) {
 	$cnpj         = preg_replace( '/\D+/', '', (string) get_user_meta( $user_id, 'cnpj', true ) );
 	$bank_account = isset( $draft['bankAccount'] ) && is_array( $draft['bankAccount'] ) ? $draft['bankAccount'] : array();
 
-	return array(
-		'holder_name'         => sanitize_text_field( (string) ( $bank_account['holderName'] ?? $store_name ) ),
-		'holder_type'         => sanitize_text_field( (string) ( $bank_account['holderType'] ?? 'company' ) ),
-		'holder_document'     => preg_replace( '/\D+/', '', (string) ( $bank_account['holderDocument'] ?? $cnpj ) ),
-		'bank'                => sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ),
-		'branch_number'       => sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ),
-		'branch_check_digit'  => sanitize_text_field( (string) ( $bank_account['branchCheckDigit'] ?? '' ) ),
-		'account_number'      => sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ),
-		'account_check_digit' => sanitize_text_field( (string) ( $bank_account['accountCheckDigit'] ?? '' ) ),
-		'type'                => sanitize_text_field( (string) ( $bank_account['type'] ?? 'checking' ) ),
-	);
+	return papelito_pagarme_bank_account_payload( $bank_account, $store_name, $cnpj );
 }
 
 /**

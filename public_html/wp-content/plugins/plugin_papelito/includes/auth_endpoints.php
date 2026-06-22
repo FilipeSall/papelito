@@ -141,7 +141,7 @@ function papelito_auth_normalize_primary_role( WP_User $user ): string {
 		return 'administrator';
 	}
 
-	if ( papelito_user_is_effective_seller( $user ) ) {
+	if ( function_exists( 'papelito_user_can_access_seller_area' ) && papelito_user_can_access_seller_area( $user ) ) {
 		return 'seller';
 	}
 

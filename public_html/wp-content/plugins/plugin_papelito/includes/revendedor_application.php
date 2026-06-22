@@ -10,6 +10,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 const PAPELITO_VENDOR_APPLICATION_STATUS_META             = 'application_status';
+const PAPELITO_VENDOR_APPLICATION_INCOMPLETE_STATUS       = 'incomplete';
 const PAPELITO_VENDOR_APPLICATION_REJECTION_REASON_META   = 'application_rejection_reason';
 const PAPELITO_VENDOR_APPLICATION_REVIEWED_BY_META        = 'application_reviewed_by';
 const PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META        = 'application_reviewed_at';
@@ -54,6 +55,65 @@ function papelito_get_seller_application_status( int $user_id ): string {
 	}
 
 	return 'none';
+}
+
+/**
+ * Sincroniza o status persistido do vendor com os campos pendentes do cadastro.
+ *
+ * @param int                  $user_id Usuario.
+ * @param array<int, string>   $pending_fields Campos pendentes normalizados.
+ * @return void
+ */
+function papelito_sync_vendor_pending_registration_status( int $user_id, array $pending_fields ): void {
+	$status = papelito_get_seller_application_status( $user_id );
+
+	if ( empty( $pending_fields ) ) {
+		update_user_meta( $user_id, 'papelito_profile_complete', '1' );
+
+		if ( PAPELITO_VENDOR_APPLICATION_INCOMPLETE_STATUS === $status ) {
+			update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META, 'approved' );
+			update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META, papelito_current_utc_mysql() );
+			delete_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REJECTION_REASON_META );
+		}
+
+		return;
+	}
+
+	update_user_meta( $user_id, 'papelito_profile_complete', '0' );
+
+	if ( ! in_array( $status, array( 'pending', 'rejected' ), true ) ) {
+		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META, PAPELITO_VENDOR_APPLICATION_INCOMPLETE_STATUS );
+	}
+}
+
+/**
+ * Dispara a sincronizacao automatica do recebedor Pagar.me quando o cadastro
+ * do vendor esta completo e ainda nao ha recebedor ativo.
+ *
+ * Reusa a mesma regra de completude do cadastro (campos pendentes vazios) e e
+ * idempotente: o handler de `papelito_vendor_approved` faz upsert (POST se nao
+ * houver recipient_id salvo, PUT caso contrario), entao nao duplica conta na
+ * Pagar.me. Vendors ja `active` sao ignorados para evitar resync desnecessario.
+ * Falhas sao tratadas pelo proprio handler (gravam last_error e nao bloqueiam
+ * a conclusao do cadastro).
+ *
+ * @param int                $user_id        Usuario.
+ * @param array<int, string> $pending_fields Campos pendentes normalizados.
+ * @return void
+ */
+function papelito_maybe_autosync_vendor_recipient( int $user_id, array $pending_fields ): void {
+	if ( $user_id <= 0 || ! empty( $pending_fields ) ) {
+		return;
+	}
+
+	if (
+		function_exists( 'papelito_pagarme_vendor_recipient_is_active' )
+		&& papelito_pagarme_vendor_recipient_is_active( $user_id )
+	) {
+		return;
+	}
+
+	do_action( 'papelito_vendor_approved', $user_id );
 }
 
 /**
@@ -124,6 +184,35 @@ function papelito_get_seller_application_address_data( int $user_id ): array {
 		'minCep'       => (string) get_user_meta( $user_id, 'min_cep', true ),
 		'maxCep'       => (string) get_user_meta( $user_id, 'max_cep', true ),
 	);
+}
+
+/**
+ * Retorna as faixas de cobertura salvas para o vendor.
+ *
+ * @param int $user_id Usuario.
+ * @return array<int, array<string, string>>
+ */
+function papelito_get_vendor_coverage_ranges( int $user_id ): array {
+	$min_ranges = (array) get_user_meta( $user_id, 'min_cep', false );
+	$max_ranges = (array) get_user_meta( $user_id, 'max_cep', false );
+	$count      = min( count( $min_ranges ), count( $max_ranges ) );
+	$ranges     = array();
+
+	for ( $index = 0; $index < $count; $index++ ) {
+		$min_cep = sanitize_text_field( (string) $min_ranges[ $index ] );
+		$max_cep = sanitize_text_field( (string) $max_ranges[ $index ] );
+
+		if ( '' === $min_cep || '' === $max_cep ) {
+			continue;
+		}
+
+		$ranges[] = array(
+			'minCep' => $min_cep,
+			'maxCep' => $max_cep,
+		);
+	}
+
+	return $ranges;
 }
 
 /**
@@ -582,7 +671,18 @@ function papelito_refresh_vendor_pending_registration_state( int $user_id, array
  * @return array<string, mixed>
  */
 function papelito_get_vendor_pending_registration_rest_response( int $user_id ): array {
+	$application = papelito_get_vendor_application_rest_response( $user_id );
+
 	return array(
+		'application'   => array(
+			'step1'          => isset( $application['application']['step1'] ) && is_array( $application['application']['step1'] )
+				? $application['application']['step1']
+				: array(),
+			'step2'          => isset( $application['application']['step2'] ) && is_array( $application['application']['step2'] )
+				? $application['application']['step2']
+				: array(),
+			'coverageRanges' => papelito_get_vendor_coverage_ranges( $user_id ),
+		),
 		'draft'         => papelito_get_vendor_pagarme_recipient_draft( $user_id ),
 		'pendingFields' => papelito_resolve_vendor_pending_registration_fields( $user_id ),
 		'updatedAt'     => (string) get_user_meta( $user_id, PAPELITO_VENDOR_PENDING_FIELDS_UPDATED_AT_META, true ),
@@ -680,6 +780,7 @@ function papelito_update_vendor_pagarme_recipient_draft_rest( int $user_id, arra
 
 	papelito_save_vendor_pagarme_recipient_draft( $user_id, $step3 );
 	$pending_fields = papelito_refresh_vendor_pending_registration_state( $user_id, papelito_sanitize_vendor_pagarme_step3_partial( $step3 ) );
+	papelito_sync_vendor_pending_registration_status( $user_id, $pending_fields );
 
 	if ( defined( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META' ) ) {
 		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, '' );
@@ -688,6 +789,8 @@ function papelito_update_vendor_pagarme_recipient_draft_rest( int $user_id, arra
 	if ( defined( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META' ) ) {
 		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, '' );
 	}
+
+	papelito_maybe_autosync_vendor_recipient( $user_id, $pending_fields );
 
 	return array(
 		'draft'         => papelito_get_vendor_pagarme_recipient_draft( $user_id ),
@@ -700,9 +803,105 @@ function papelito_update_vendor_pagarme_recipient_draft_rest( int $user_id, arra
  *
  * @param int                  $user_id Usuario.
  * @param array<string, mixed> $step3 Dados do step 3.
- * @return array<string, mixed>
+ * @return array<string, mixed>|WP_Error
  */
-function papelito_update_vendor_pending_registration_rest( int $user_id, array $step3 ): array {
+function papelito_update_vendor_pending_registration_rest( int $user_id, array $step3 ) {
+	$application = isset( $step3['application'] ) && is_array( $step3['application'] ) ? $step3['application'] : null;
+	$draft_input = isset( $step3['draft'] ) && is_array( $step3['draft'] ) ? $step3['draft'] : $step3;
+
+	if ( is_array( $application ) ) {
+		$step1 = isset( $application['step1'] ) && is_array( $application['step1'] ) ? $application['step1'] : array();
+		$step2 = isset( $application['step2'] ) && is_array( $application['step2'] ) ? $application['step2'] : array();
+
+		$email = sanitize_email( (string) ( $step1['email'] ?? '' ) );
+		$cnpj  = sanitize_text_field( (string) ( $step1['cnpj'] ?? '' ) );
+
+		if ( '' === $email || ! is_email( $email ) ) {
+			return new WP_Error( 'papelito_vendor_invalid_email', 'Informe um e-mail valido.', array( 'status' => 422 ) );
+		}
+
+		$existing_user = get_user_by( 'email', $email );
+		if ( $existing_user instanceof WP_User && (int) $existing_user->ID !== $user_id ) {
+			return new WP_Error( 'papelito_vendor_email_exists', 'Ja existe uma conta com este e-mail.', array( 'status' => 409 ) );
+		}
+
+		if ( 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $cnpj ) ) {
+			return new WP_Error( 'papelito_vendor_invalid_cnpj', 'Informe um CNPJ valido.', array( 'status' => 422 ) );
+		}
+
+		if ( papelito_admin_vendors_cnpj_exists( $cnpj, $user_id ) ) {
+			return new WP_Error( 'papelito_vendor_cnpj_exists', 'Ja existe uma conta com este CNPJ.', array( 'status' => 409 ) );
+		}
+
+		$ranges = papelito_admin_vendors_normalize_coverage_ranges( $application['coverageRanges'] ?? null );
+		if ( is_wp_error( $ranges ) ) {
+			return $ranges;
+		}
+
+		$street       = sanitize_text_field( (string) ( $step2['street'] ?? '' ) );
+		$number       = sanitize_text_field( (string) ( $step2['number'] ?? '' ) );
+		$neighborhood = sanitize_text_field( (string) ( $step2['neighborhood'] ?? '' ) );
+		$state        = sanitize_text_field( (string) ( $step2['state'] ?? '' ) );
+		$city         = sanitize_text_field( (string) ( $step2['city'] ?? '' ) );
+		$store_name   = sanitize_text_field( (string) ( $step1['storeName'] ?? '' ) );
+		$first_name   = sanitize_text_field( (string) ( $step1['firstName'] ?? '' ) );
+		$last_name    = sanitize_text_field( (string) ( $step1['lastName'] ?? '' ) );
+		$display_name = trim( $first_name . ' ' . $last_name );
+
+		if ( '' === $display_name ) {
+			$display_name = '' !== $store_name ? $store_name : $email;
+		}
+
+		if ( '' === $store_name ) {
+			return new WP_Error( 'papelito_vendor_missing_store_name', 'Informe o nome da loja.', array( 'status' => 422 ) );
+		}
+
+		if ( '' === $street || '' === $number || '' === $neighborhood || '' === $city || '' === $state ) {
+			return new WP_Error( 'papelito_vendor_incomplete_address', 'Informe o endereco comercial completo do vendor.', array( 'status' => 422 ) );
+		}
+
+		$user_update = wp_update_user(
+			array(
+				'ID'           => $user_id,
+				'user_email'   => $email,
+				'first_name'   => $first_name,
+				'last_name'    => $last_name,
+				'display_name' => $display_name,
+			)
+		);
+
+		if ( is_wp_error( $user_update ) ) {
+			return $user_update;
+		}
+
+		update_user_meta( $user_id, 'store_name', $store_name );
+		update_user_meta( $user_id, 'phone_number', papelito_auth_format_phone( (string) ( $step1['phone'] ?? '' ) ) );
+		update_user_meta( $user_id, 'cnpj', $cnpj );
+		update_user_meta( $user_id, 'instagram', sanitize_text_field( ltrim( (string) ( $step1['instagram'] ?? '' ), '@' ) ) );
+		update_user_meta( $user_id, 'state', $state );
+		update_user_meta( $user_id, 'city', $city );
+		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STREET_META, $street );
+		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NUMBER_META, $number );
+		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META, sanitize_text_field( (string) ( $step2['complement'] ?? '' ) ) );
+		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, $neighborhood );
+		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META, sanitize_text_field( (string) ( $step1['discoveryChannel'] ?? '' ) ) );
+		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, sanitize_text_field( (string) ( $step1['hasSoldPapelito'] ?? '' ) ) );
+
+		$cep_base = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $step2['cep'] ?? '' ) ) : '';
+		update_user_meta( $user_id, 'cep', $cep_base );
+
+		delete_user_meta( $user_id, 'min_cep' );
+		delete_user_meta( $user_id, 'max_cep' );
+		foreach ( $ranges as $range ) {
+			add_user_meta( $user_id, 'min_cep', $range['minCep'], false );
+			add_user_meta( $user_id, 'max_cep', $range['maxCep'], false );
+		}
+
+		if ( function_exists( 'papelito_apply_vendor_geo' ) && '' !== $cep_base ) {
+			papelito_apply_vendor_geo( $user_id, $cep_base );
+		}
+	}
+
 	$user = get_userdata( $user_id );
 
 	$context = array(
@@ -720,10 +919,11 @@ function papelito_update_vendor_pending_registration_rest( int $user_id, array $
 		'lastName'     => (string) get_user_meta( $user_id, 'last_name', true ),
 	);
 
-	$normalized = papelito_sanitize_vendor_pagarme_step3_partial( $step3, $context );
+	$normalized = papelito_sanitize_vendor_pagarme_step3_partial( $draft_input, $context );
 
 	papelito_save_vendor_pagarme_recipient_draft( $user_id, $normalized );
 	$pending_fields = papelito_refresh_vendor_pending_registration_state( $user_id, $normalized );
+	papelito_sync_vendor_pending_registration_status( $user_id, $pending_fields );
 
 	if ( defined( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META' ) && empty( $pending_fields ) ) {
 		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, '' );
@@ -732,6 +932,8 @@ function papelito_update_vendor_pending_registration_rest( int $user_id, array $
 	if ( defined( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META' ) && empty( $pending_fields ) ) {
 		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, '' );
 	}
+
+	papelito_maybe_autosync_vendor_recipient( $user_id, $pending_fields );
 
 	return papelito_get_vendor_pending_registration_rest_response( $user_id );
 }
@@ -1422,7 +1624,9 @@ add_action(
 							return new WP_Error( 'papelito_invalid_payload', 'Payload invalido.', array( 'status' => 400 ) );
 						}
 
-						return new WP_REST_Response( papelito_update_vendor_pending_registration_rest( $user_id, $payload ), 200 );
+						$result = papelito_update_vendor_pending_registration_rest( $user_id, $payload );
+
+						return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
 					},
 				),
 			)
@@ -1743,7 +1947,7 @@ function papelito_admin_vendors_parse_filters( WP_REST_Request $request ): array
 		'search'  => sanitize_text_field( (string) $request->get_param( 'search' ) ),
 		'status'  => papelito_admin_reports_normalize_enum(
 			sanitize_text_field( (string) $request->get_param( 'status' ) ),
-			array( 'all', 'pending', 'approved', 'rejected' ),
+			array( 'all', 'pending', PAPELITO_VENDOR_APPLICATION_INCOMPLETE_STATUS, 'approved', 'rejected' ),
 			'pending'
 		),
 		'page'    => $page,
@@ -1790,10 +1994,10 @@ function papelito_admin_vendors_where_sql( array $filters, array &$args, bool $i
 	global $wpdb;
 
 	$conditions = array(
-		'(application_status.meta_value IN (%s, %s, %s))',
+		'(application_status.meta_value IN (%s, %s, %s, %s))',
 	);
 
-	array_push( $args, 'pending', 'approved', 'rejected' );
+	array_push( $args, 'pending', PAPELITO_VENDOR_APPLICATION_INCOMPLETE_STATUS, 'approved', 'rejected' );
 
 	if ( ! empty( $filters['search'] ) && is_string( $filters['search'] ) ) {
 		$term         = '%' . $wpdb->esc_like( $filters['search'] ) . '%';
@@ -1943,6 +2147,7 @@ function papelito_admin_vendors_query_summary( array $filters ): array {
 		"
 		SELECT
 			SUM(CASE WHEN application_status.meta_value = 'pending' THEN 1 ELSE 0 END) AS pending_applications,
+			SUM(CASE WHEN application_status.meta_value = 'incomplete' THEN 1 ELSE 0 END) AS incomplete_applications,
 			SUM(CASE WHEN application_status.meta_value = 'approved' THEN 1 ELSE 0 END) AS approved_sellers,
 			SUM(CASE WHEN {$coverage_exists} THEN 1 ELSE 0 END) AS users_with_coverage
 		" . $base_sql . $search_only_where,
@@ -1954,6 +2159,7 @@ function papelito_admin_vendors_query_summary( array $filters ): array {
 	return array(
 		'filteredUsers'       => $filtered_users,
 		'pendingApplications' => isset( $summary['pending_applications'] ) ? (int) $summary['pending_applications'] : 0,
+		'incompleteApplications' => isset( $summary['incomplete_applications'] ) ? (int) $summary['incomplete_applications'] : 0,
 		'approvedSellers'     => isset( $summary['approved_sellers'] ) ? (int) $summary['approved_sellers'] : 0,
 		'usersWithCoverage'   => isset( $summary['users_with_coverage'] ) ? (int) $summary['users_with_coverage'] : 0,
 	);
@@ -2219,7 +2425,7 @@ function papelito_admin_vendors_build_pagarme_draft( array $bank_account, array 
 }
 
 /**
- * Cria um vendor aprovado diretamente pelo painel admin.
+ * Cria um vendor diretamente pelo painel admin.
  *
  * @param array<string, mixed> $input Payload.
  * @param int                  $reviewer_id Admin.
@@ -2368,11 +2574,7 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 		$has_sold = PAPELITO_ADMIN_VENDOR_HAS_SOLD_PAPELITO_DEFAULT;
 	}
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, $has_sold );
-	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META, 'approved' );
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_SUBMITTED_AT_META, papelito_current_utc_mysql() );
-	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META, papelito_current_utc_mysql() );
-	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_BY_META, $reviewer_id );
-	update_user_meta( $user_id, 'papelito_profile_complete', '1' );
 	delete_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REJECTION_REASON_META );
 
 	papelito_save_vendor_pagarme_recipient_draft(
@@ -2380,6 +2582,18 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 		$pagarme_draft
 	);
 	$pending_fields = papelito_refresh_vendor_pending_registration_state( $user_id, $pagarme_draft );
+	papelito_sync_vendor_pending_registration_status( $user_id, $pending_fields );
+
+	if ( empty( $pending_fields ) ) {
+		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META, 'approved' );
+		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META, papelito_current_utc_mysql() );
+		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_BY_META, $reviewer_id );
+		update_user_meta( $user_id, 'papelito_profile_complete', '1' );
+	} else {
+		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META, PAPELITO_VENDOR_APPLICATION_INCOMPLETE_STATUS );
+		update_user_meta( $user_id, 'papelito_profile_complete', '0' );
+		papelito_reset_vendor_application_review( $user_id );
+	}
 
 	if ( function_exists( 'papelito_apply_vendor_geo' ) && '' !== $cep_base ) {
 		papelito_apply_vendor_geo( $user_id, $cep_base );
@@ -2388,7 +2602,7 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 	if ( $is_new_user ) {
 		wp_new_user_notification( $user_id, null, 'user' );
 	}
-	do_action( 'papelito_vendor_approved', $user_id );
+	papelito_maybe_autosync_vendor_recipient( $user_id, $pending_fields );
 	if ( ! empty( $pending_fields ) ) {
 		do_action( 'papelito_vendor_pending_registration_created', $user_id, $pending_fields );
 	}

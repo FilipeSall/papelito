@@ -114,7 +114,7 @@ function papelito_user_has_vendor_coverage( int $user_id ): bool {
  *
  * Regras:
  * - precisa ter a role `seller`;
- * - se existir `application_status`, apenas `approved` libera acesso seller;
+ * - se existir `application_status`, apenas `approved` libera venda;
  * - sem status explicito, aceita somente sellers legados com cobertura salva.
  *
  * @param int|WP_User $user Usuario ou ID.
@@ -136,6 +136,36 @@ function papelito_user_is_effective_seller( $user ): bool {
 
 	if ( '' !== $status ) {
 		return 'approved' === $status;
+	}
+
+	return papelito_user_has_vendor_coverage( $user->ID );
+}
+
+/**
+ * Retorna se o usuario pode acessar a area autenticada de vendor.
+ *
+ * `approved` segue sendo o unico estado que libera venda.
+ * `incomplete` permite apenas concluir o cadastro pendente.
+ *
+ * @param int|WP_User $user Usuario ou ID.
+ * @return bool
+ */
+function papelito_user_can_access_seller_area( $user ): bool {
+	if ( is_numeric( $user ) ) {
+		$user = get_userdata( (int) $user );
+	}
+
+	if ( ! $user instanceof WP_User || ! papelito_user_has_role( $user, 'seller' ) ) {
+		return false;
+	}
+
+	$status_meta_key = defined( 'PAPELITO_VENDOR_APPLICATION_STATUS_META' )
+		? PAPELITO_VENDOR_APPLICATION_STATUS_META
+		: 'application_status';
+	$status          = sanitize_key( (string) get_user_meta( $user->ID, $status_meta_key, true ) );
+
+	if ( '' !== $status ) {
+		return in_array( $status, array( 'approved', 'incomplete' ), true );
 	}
 
 	return papelito_user_has_vendor_coverage( $user->ID );
