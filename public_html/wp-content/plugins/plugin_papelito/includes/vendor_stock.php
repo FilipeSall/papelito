@@ -728,6 +728,46 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	);
 }
 
+/**
+ * Lista categorias e tags (product_cat/product_tag) com count > 0,
+ * para popular o drawer de filtros do estoque. Cache curto por transient.
+ */
+function papelito_vendor_stock_taxonomies() {
+	$cache_key = 'papelito_vendor_stock_taxonomies_v1';
+	$cached    = get_transient( $cache_key );
+	if ( is_array( $cached ) ) {
+		return $cached;
+	}
+
+	$out = array( 'categories' => array(), 'tags' => array() );
+
+	foreach ( array( 'product_cat' => 'categories', 'product_tag' => 'tags' ) as $taxonomy => $key ) {
+		$terms = get_terms(
+			array(
+				'taxonomy'   => $taxonomy,
+				'hide_empty' => true,
+				'orderby'    => 'name',
+				'order'      => 'ASC',
+			)
+		);
+		if ( is_wp_error( $terms ) ) {
+			continue;
+		}
+		foreach ( $terms as $term ) {
+			$out[ $key ][] = array(
+				'id'    => (int) $term->term_id,
+				'name'  => (string) $term->name,
+				'slug'  => (string) $term->slug,
+				'count' => (int) $term->count,
+			);
+		}
+	}
+
+	set_transient( $cache_key, $out, 10 * MINUTE_IN_SECONDS );
+
+	return $out;
+}
+
 /* ------------------------------------------------------------------
  *  Permissões
  * ------------------------------------------------------------------ */
@@ -816,6 +856,21 @@ add_action(
 					);
 
 					return new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/me/stock/taxonomies',
+			array(
+				'methods'             => 'GET',
+				'permission_callback' => static function () {
+					$check = papelito_vendor_stock_require_seller();
+					return is_wp_error( $check ) ? $check : true;
+				},
+				'callback'            => static function () {
+					return new WP_REST_Response( papelito_vendor_stock_taxonomies(), 200 );
 				},
 			)
 		);
