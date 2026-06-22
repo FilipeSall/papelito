@@ -456,6 +456,59 @@ function papelito_vendor_stock_product_image_url( int $product_id ): string {
 }
 
 /**
+ * Indica se a pagina publica de produto (`/produtos/{id}` no front) consegue
+ * renderizar o produto. O catalogo headless esconde produtos sem peso (frete
+ * impossivel) via `hasValidWeight`; espelhamos a mesma regra aqui para nao
+ * gerar links mortos no estoque do vendor.
+ *
+ * Considera publicavel quando o produto efetivo (simples, ou o pai variavel)
+ * tem peso positivo nele mesmo ou em qualquer variacao.
+ */
+function papelito_vendor_stock_product_publicly_viewable( int $effective_id ): bool {
+	if ( $effective_id <= 0 || ! function_exists( 'wc_get_product' ) ) {
+		return false;
+	}
+
+	$product = wc_get_product( $effective_id );
+	if ( ! $product ) {
+		return false;
+	}
+
+	if ( papelito_vendor_stock_has_positive_weight( $product->get_weight() ) ) {
+		return true;
+	}
+
+	if ( $product->is_type( 'variable' ) ) {
+		foreach ( $product->get_children() as $variation_id ) {
+			$variation = wc_get_product( (int) $variation_id );
+			if ( $variation && papelito_vendor_stock_has_positive_weight( $variation->get_weight() ) ) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Peso positivo segundo a mesma normalizacao do front (`hasPositiveWeight`).
+ *
+ * @param mixed $weight Valor de peso retornado pelo WooCommerce.
+ */
+function papelito_vendor_stock_has_positive_weight( $weight ): bool {
+	if ( ! is_string( $weight ) && ! is_numeric( $weight ) ) {
+		return false;
+	}
+
+	$normalized = str_replace( ',', '.', trim( (string) $weight ) );
+	if ( '' === $normalized || ! is_numeric( $normalized ) ) {
+		return false;
+	}
+
+	return (float) $normalized > 0;
+}
+
+/**
  * Busca o historico recente de ajustes por produto.
  *
  * @param int   $vendor_id Vendor alvo.
@@ -531,6 +584,8 @@ function papelito_vendor_stock_recent_logs( int $vendor_id, array $product_ids, 
  * @param int    $vendor_id Vendor alvo.
  * @param array  $args      Argumentos: page (>=1), per_page (1-100),
  *                          search (string), filter (all|with_stock|zeroed_only),
+ *                          sort (name_asc|name_desc|qty_desc|qty_asc|updated_desc),
+ *                          category (int term_id), tags (csv|array de term_id),
  *                          paginate (bool), include_history (bool).
  * @return array{items:array,total:int,page:int,per_page:int}
  */
@@ -544,6 +599,32 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	$filter    = (string) ( $args['filter'] ?? 'all' );
 	$paginate  = ! isset( $args['paginate'] ) || (bool) $args['paginate'];
 	$history   = ! empty( $args['include_history'] );
+
+	$sort     = (string) ( $args['sort'] ?? 'name_asc' );
+	$sort_map = array(
+		'name_asc'     => 'p.post_title ASC, p.ID ASC',
+		'name_desc'    => 'p.post_title DESC, p.ID ASC',
+		'qty_desc'     => 'COALESCE(vs.qty, 0) DESC, p.ID ASC',
+		'qty_asc'      => 'COALESCE(vs.qty, 0) ASC, p.ID ASC',
+		'updated_desc' => 'vs.updated_at IS NULL, vs.updated_at DESC, p.ID ASC',
+	);
+	if ( ! isset( $sort_map[ $sort ] ) ) {
+		$sort = 'name_asc';
+	}
+
+	$category = isset( $args['category'] ) ? (int) $args['category'] : 0;
+
+	$tag_ids = array();
+	if ( ! empty( $args['tags'] ) ) {
+		$raw_tags = is_array( $args['tags'] ) ? $args['tags'] : explode( ',', (string) $args['tags'] );
+		foreach ( $raw_tags as $raw_tag ) {
+			$tag_id = (int) $raw_tag;
+			if ( $tag_id > 0 ) {
+				$tag_ids[] = $tag_id;
+			}
+		}
+		$tag_ids = array_values( array_unique( $tag_ids ) );
+	}
 
 	if ( ! in_array( $filter, array( 'all', 'with_stock', 'zeroed_only' ), true ) ) {
 		$filter = 'all';
@@ -573,26 +654,51 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 
 	$join_sku = "LEFT JOIN {$postmeta} sku ON sku.post_id = p.ID AND sku.meta_key = '_sku'";
 
-	$count_sql = "SELECT COUNT(*) FROM {$posts} p
+	$effective_id = 'COALESCE(NULLIF(p.post_parent, 0), p.ID)';
+
+	$tax_joins  = '';
+	$tax_params = array();
+	$need_group = false;
+
+	if ( $category > 0 ) {
+		$tax_joins   .= " INNER JOIN {$wpdb->term_relationships} cat_tr ON cat_tr.object_id = {$effective_id}";
+		$tax_joins   .= " INNER JOIN {$wpdb->term_taxonomy} cat_tt ON cat_tt.term_taxonomy_id = cat_tr.term_taxonomy_id AND cat_tt.taxonomy = 'product_cat' AND cat_tt.term_id = %d";
+		$tax_params[] = $category;
+	}
+
+	if ( ! empty( $tag_ids ) ) {
+		$placeholders = implode( ',', array_fill( 0, count( $tag_ids ), '%d' ) );
+		$tax_joins   .= " INNER JOIN {$wpdb->term_relationships} tag_tr ON tag_tr.object_id = {$effective_id}";
+		$tax_joins   .= " INNER JOIN {$wpdb->term_taxonomy} tag_tt ON tag_tt.term_taxonomy_id = tag_tr.term_taxonomy_id AND tag_tt.taxonomy = 'product_tag' AND tag_tt.term_id IN ({$placeholders})";
+		$need_group   = true;
+		foreach ( $tag_ids as $tag_id ) {
+			$tax_params[] = $tag_id;
+		}
+	}
+
+	$count_sql = "SELECT COUNT(DISTINCT p.ID) FROM {$posts} p
 		LEFT JOIN {$tables['stock']} vs ON vs.product_id = p.ID AND vs.vendor_id = %d
 		{$join_sku}
+		{$tax_joins}
 		WHERE {$where_sql}";
 
-	$count_params = $params;
-	array_unshift( $count_params, $vendor_id );
+	$count_params = array_merge( array( $vendor_id ), $tax_params, $params );
 
 	$total = (int) $wpdb->get_var( $wpdb->prepare( $count_sql, $count_params ) );
 
+	$group_sql = $need_group ? ' GROUP BY p.ID' : '';
+
 	$select_sql = "SELECT p.ID AS product_id, COALESCE(vs.qty, 0) AS qty, vs.updated_at, vs.notified_zero_at,
-				p.post_title AS product_name, sku.meta_value AS sku
+				p.post_title AS product_name, sku.meta_value AS sku, {$effective_id} AS effective_id
 			FROM {$posts} p
 			LEFT JOIN {$tables['stock']} vs ON vs.product_id = p.ID AND vs.vendor_id = %d
 			{$join_sku}
+			{$tax_joins}
 			WHERE {$where_sql}
-			ORDER BY p.post_title ASC";
+			{$group_sql}
+			ORDER BY {$sort_map[ $sort ]}";
 
-	$select_params   = $params;
-	array_unshift( $select_params, $vendor_id );
+	$select_params = array_merge( array( $vendor_id ), $tax_params, $params );
 
 	if ( $paginate ) {
 		$offset          = ( $page - 1 ) * $per_page;
@@ -602,22 +708,61 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	}
 
 	$rows = $wpdb->get_results( $wpdb->prepare( $select_sql, $select_params ), ARRAY_A );
-	$product_ids = array();
-	$items       = array();
+	$product_ids   = array();
+	$effective_ids = array();
+	$items         = array();
 
 	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
-		$product_id    = (int) ( $row['product_id'] ?? 0 );
-		$product_ids[] = $product_id;
-		$items[]       = array(
-			'product_id'   => $product_id,
-			'product_name' => (string) ( $row['product_name'] ?? '' ),
-			'sku'          => (string) ( $row['sku'] ?? '' ),
-			'qty'          => (int) ( $row['qty'] ?? 0 ),
-			'updated_at'   => (string) ( $row['updated_at'] ?? '' ),
-			'is_zeroed'    => 0 === (int) ( $row['qty'] ?? 0 ),
-			'image_url'    => papelito_vendor_stock_product_image_url( $product_id ),
-			'history'      => array(),
+		$product_id      = (int) ( $row['product_id'] ?? 0 );
+		$effective       = (int) ( $row['effective_id'] ?? $product_id );
+		$product_ids[]   = $product_id;
+		$effective_ids[] = $effective;
+		$items[]         = array(
+			'product_id'           => $product_id,
+			'public_product_id'    => $effective,
+			'is_publicly_viewable' => papelito_vendor_stock_product_publicly_viewable( $effective ),
+			'product_name'         => (string) ( $row['product_name'] ?? '' ),
+			'sku'                  => (string) ( $row['sku'] ?? '' ),
+			'qty'                  => (int) ( $row['qty'] ?? 0 ),
+			'updated_at'           => (string) ( $row['updated_at'] ?? '' ),
+			'is_zeroed'            => 0 === (int) ( $row['qty'] ?? 0 ),
+			'image_url'            => papelito_vendor_stock_product_image_url( $product_id ),
+			'history'              => array(),
+			'effective_id'         => $effective,
+			'categories'           => array(),
+			'tags'                 => array(),
 		);
+	}
+
+	if ( ! empty( $effective_ids ) ) {
+		$unique_ids = array_values( array_unique( array_map( 'intval', $effective_ids ) ) );
+		$term_map   = array();
+
+		foreach ( array(
+			'product_cat' => 'categories',
+			'product_tag' => 'tags',
+		) as $taxonomy => $key ) {
+			$terms = wp_get_object_terms( $unique_ids, $taxonomy, array( 'fields' => 'all_with_object_id' ) );
+			if ( is_wp_error( $terms ) ) {
+				continue;
+			}
+			foreach ( $terms as $term ) {
+				$object_id                          = (int) $term->object_id;
+				$term_map[ $object_id ][ $key ][] = array(
+					'id'   => (int) $term->term_id,
+					'name' => (string) $term->name,
+					'slug' => (string) $term->slug,
+				);
+			}
+		}
+
+		foreach ( $items as &$item ) {
+			$eff                = (int) $item['effective_id'];
+			$item['categories'] = $term_map[ $eff ]['categories'] ?? array();
+			$item['tags']       = $term_map[ $eff ]['tags'] ?? array();
+			unset( $item['effective_id'] );
+		}
+		unset( $item );
 	}
 
 	if ( $history && ! empty( $product_ids ) ) {
@@ -636,6 +781,54 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 		'page'     => $page,
 		'per_page' => $paginate ? $per_page : max( 1, $total ),
 	);
+}
+
+/**
+ * Lista categorias e tags (product_cat/product_tag) com count > 0,
+ * para popular o drawer de filtros do estoque. Cache curto por transient.
+ */
+function papelito_vendor_stock_taxonomies() {
+	$cache_key = 'papelito_vendor_stock_taxonomies_v1';
+	$cached    = get_transient( $cache_key );
+	if ( is_array( $cached ) ) {
+		return $cached;
+	}
+
+	$out = array(
+		'categories' => array(),
+		'tags'       => array(),
+	);
+
+	$taxonomies = array(
+		'product_cat' => 'categories',
+		'product_tag' => 'tags',
+	);
+
+	foreach ( $taxonomies as $taxonomy => $key ) {
+		$terms = get_terms(
+			array(
+				'taxonomy'   => $taxonomy,
+				'hide_empty' => true,
+				'orderby'    => 'name',
+				'order'      => 'ASC',
+			)
+		);
+		if ( is_wp_error( $terms ) ) {
+			continue;
+		}
+		foreach ( $terms as $term ) {
+			$out[ $key ][] = array(
+				'id'    => (int) $term->term_id,
+				'name'  => (string) $term->name,
+				'slug'  => (string) $term->slug,
+				'count' => (int) $term->count,
+			);
+		}
+	}
+
+	set_transient( $cache_key, $out, 10 * MINUTE_IN_SECONDS );
+
+	return $out;
 }
 
 /* ------------------------------------------------------------------
@@ -710,6 +903,22 @@ add_action(
 					'search'   => array( 'type' => 'string', 'default' => '' ),
 					'filter'   => array( 'type' => 'string', 'default' => 'all' ),
 					'paginate' => array( 'type' => 'boolean', 'default' => true ),
+					'category' => array(
+						'type'    => 'integer',
+						'default' => 0,
+					),
+					'tags'     => array(
+						'type'              => 'string',
+						'default'           => '',
+						'sanitize_callback' => static function ( $value ) {
+							$ids = array_filter( array_map( 'intval', explode( ',', (string) $value ) ) );
+							return implode( ',', array_unique( $ids ) );
+						},
+					),
+					'sort'     => array(
+						'type'    => 'string',
+						'default' => 'name_asc',
+					),
 				),
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$user = wp_get_current_user();
@@ -722,10 +931,28 @@ add_action(
 							'search'   => (string) $request->get_param( 'search' ),
 							'filter'   => (string) $request->get_param( 'filter' ),
 							'paginate' => rest_sanitize_boolean( $request->get_param( 'paginate' ) ),
+							'category' => (int) $request->get_param( 'category' ),
+							'tags'     => (string) $request->get_param( 'tags' ),
+							'sort'     => (string) $request->get_param( 'sort' ),
 						)
 					);
 
 					return new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/me/stock/taxonomies',
+			array(
+				'methods'             => 'GET',
+				'permission_callback' => static function () {
+					$check = papelito_vendor_stock_require_seller();
+					return is_wp_error( $check ) ? $check : true;
+				},
+				'callback'            => static function () {
+					return new WP_REST_Response( papelito_vendor_stock_taxonomies(), 200 );
 				},
 			)
 		);
@@ -778,6 +1005,22 @@ add_action(
 					'search'   => array( 'type' => 'string', 'default' => '' ),
 					'filter'   => array( 'type' => 'string', 'default' => 'all' ),
 					'paginate' => array( 'type' => 'boolean', 'default' => true ),
+					'category' => array(
+						'type'    => 'integer',
+						'default' => 0,
+					),
+					'tags'     => array(
+						'type'              => 'string',
+						'default'           => '',
+						'sanitize_callback' => static function ( $value ) {
+							$ids = array_filter( array_map( 'intval', explode( ',', (string) $value ) ) );
+							return implode( ',', array_unique( $ids ) );
+						},
+					),
+					'sort'     => array(
+						'type'    => 'string',
+						'default' => 'name_asc',
+					),
 				),
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$vendor_id = (int) $request->get_param( 'id' );
@@ -795,6 +1038,9 @@ add_action(
 							'search'   => (string) $request->get_param( 'search' ),
 							'filter'   => (string) $request->get_param( 'filter' ),
 							'paginate' => rest_sanitize_boolean( $request->get_param( 'paginate' ) ),
+							'category' => (int) $request->get_param( 'category' ),
+							'tags'     => (string) $request->get_param( 'tags' ),
+							'sort'     => (string) $request->get_param( 'sort' ),
 							'include_history' => true,
 						)
 					);
