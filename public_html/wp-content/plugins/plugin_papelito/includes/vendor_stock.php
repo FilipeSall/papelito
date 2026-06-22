@@ -848,6 +848,22 @@ add_action(
 					'search'   => array( 'type' => 'string', 'default' => '' ),
 					'filter'   => array( 'type' => 'string', 'default' => 'all' ),
 					'paginate' => array( 'type' => 'boolean', 'default' => true ),
+					'category' => array(
+						'type'    => 'integer',
+						'default' => 0,
+					),
+					'tags'     => array(
+						'type'              => 'string',
+						'default'           => '',
+						'sanitize_callback' => static function ( $value ) {
+							$ids = array_filter( array_map( 'intval', explode( ',', (string) $value ) ) );
+							return implode( ',', array_unique( $ids ) );
+						},
+					),
+					'sort'     => array(
+						'type'    => 'string',
+						'default' => 'name_asc',
+					),
 				),
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$user = wp_get_current_user();
@@ -860,6 +876,9 @@ add_action(
 							'search'   => (string) $request->get_param( 'search' ),
 							'filter'   => (string) $request->get_param( 'filter' ),
 							'paginate' => rest_sanitize_boolean( $request->get_param( 'paginate' ) ),
+							'category' => (int) $request->get_param( 'category' ),
+							'tags'     => (string) $request->get_param( 'tags' ),
+							'sort'     => (string) $request->get_param( 'sort' ),
 						)
 					);
 
@@ -931,6 +950,22 @@ add_action(
 					'search'   => array( 'type' => 'string', 'default' => '' ),
 					'filter'   => array( 'type' => 'string', 'default' => 'all' ),
 					'paginate' => array( 'type' => 'boolean', 'default' => true ),
+					'category' => array(
+						'type'    => 'integer',
+						'default' => 0,
+					),
+					'tags'     => array(
+						'type'              => 'string',
+						'default'           => '',
+						'sanitize_callback' => static function ( $value ) {
+							$ids = array_filter( array_map( 'intval', explode( ',', (string) $value ) ) );
+							return implode( ',', array_unique( $ids ) );
+						},
+					),
+					'sort'     => array(
+						'type'    => 'string',
+						'default' => 'name_asc',
+					),
 				),
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$vendor_id = (int) $request->get_param( 'id' );
@@ -948,6 +983,9 @@ add_action(
 							'search'   => (string) $request->get_param( 'search' ),
 							'filter'   => (string) $request->get_param( 'filter' ),
 							'paginate' => rest_sanitize_boolean( $request->get_param( 'paginate' ) ),
+							'category' => (int) $request->get_param( 'category' ),
+							'tags'     => (string) $request->get_param( 'tags' ),
+							'sort'     => (string) $request->get_param( 'sort' ),
 							'include_history' => true,
 						)
 					);
