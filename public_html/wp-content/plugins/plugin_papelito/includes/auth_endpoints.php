@@ -164,6 +164,7 @@ function papelito_auth_normalize_primary_role( WP_User $user ): string {
  */
 function papelito_auth_build_identity_response( WP_User $user ): array {
 	$primary_role = papelito_auth_normalize_primary_role( $user );
+	$profile_complete = '1' === (string) get_user_meta( $user->ID, 'papelito_profile_complete', true );
 
 	return array(
 		'user' => array(
@@ -175,6 +176,7 @@ function papelito_auth_build_identity_response( WP_User $user ): array {
 			'roles'           => array_values( array_map( 'sanitize_key', (array) $user->roles ) ),
 			'role'            => $primary_role,
 			'isAdministrator' => 'administrator' === $primary_role,
+			'profileComplete' => $profile_complete,
 		),
 	);
 }

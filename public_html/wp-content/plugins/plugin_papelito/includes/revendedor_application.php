@@ -117,6 +117,32 @@ function papelito_maybe_autosync_vendor_recipient( int $user_id, array $pending_
 }
 
 /**
+ * Sincroniza o recebedor apos atualizacao de cadastro completo.
+ *
+ * Diferente do autosync de aprovacao, este fluxo tambem deve atualizar vendors
+ * ja ativos quando seus dados bancarios/KYC forem editados.
+ *
+ * @param int                $user_id Usuario.
+ * @param array<int, string> $pending_fields Campos pendentes normalizados.
+ * @return void
+ */
+function papelito_sync_vendor_recipient_after_registration_update( int $user_id, array $pending_fields ): void {
+	if ( $user_id <= 0 || ! empty( $pending_fields ) ) {
+		return;
+	}
+
+	if (
+		! function_exists( 'papelito_pagarme_is_configured' )
+		|| ! function_exists( 'papelito_pagarme_upsert_vendor_recipient' )
+		|| ! papelito_pagarme_is_configured()
+	) {
+		return;
+	}
+
+	papelito_pagarme_upsert_vendor_recipient( $user_id, false );
+}
+
+/**
  * Monta o resumo da triagem de revendedor para o usuario.
  *
  * @param int $user_id Usuario.
@@ -790,7 +816,7 @@ function papelito_update_vendor_pagarme_recipient_draft_rest( int $user_id, arra
 		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, '' );
 	}
 
-	papelito_maybe_autosync_vendor_recipient( $user_id, $pending_fields );
+	papelito_sync_vendor_recipient_after_registration_update( $user_id, $pending_fields );
 
 	return array(
 		'draft'         => papelito_get_vendor_pagarme_recipient_draft( $user_id ),
@@ -933,7 +959,7 @@ function papelito_update_vendor_pending_registration_rest( int $user_id, array $
 		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, '' );
 	}
 
-	papelito_maybe_autosync_vendor_recipient( $user_id, $pending_fields );
+	papelito_sync_vendor_recipient_after_registration_update( $user_id, $pending_fields );
 
 	return papelito_get_vendor_pending_registration_rest_response( $user_id );
 }
@@ -1487,8 +1513,11 @@ add_action(
 			array(
 				array(
 					'methods'             => 'GET',
-					'permission_callback' => static function (): bool {
-						return is_user_logged_in();
+					'permission_callback' => static function () {
+						$check = function_exists( 'papelito_vendor_dashboard_require_seller' )
+							? papelito_vendor_dashboard_require_seller()
+							: false;
+						return is_wp_error( $check ) ? $check : true;
 					},
 					'callback'            => static function () {
 						$user_id = get_current_user_id();
@@ -1502,8 +1531,11 @@ add_action(
 				),
 				array(
 					'methods'             => 'POST',
-					'permission_callback' => static function (): bool {
-						return is_user_logged_in();
+					'permission_callback' => static function () {
+						$check = function_exists( 'papelito_vendor_dashboard_require_seller' )
+							? papelito_vendor_dashboard_require_seller()
+							: false;
+						return is_wp_error( $check ) ? $check : true;
 					},
 					'callback'            => static function ( WP_REST_Request $request ) {
 						$user_id = get_current_user_id();
