@@ -209,6 +209,7 @@ function papelito_get_seller_application_address_data( int $user_id ): array {
 		'state'        => (string) get_user_meta( $user_id, 'state', true ),
 		'minCep'       => (string) get_user_meta( $user_id, 'min_cep', true ),
 		'maxCep'       => (string) get_user_meta( $user_id, 'max_cep', true ),
+		'coverageRanges' => papelito_get_vendor_coverage_ranges( $user_id ),
 	);
 }
 
@@ -751,6 +752,7 @@ function papelito_get_vendor_application_rest_response( int $user_id ): array {
 				'state'        => $address['state'],
 				'minCep'       => $address['minCep'],
 				'maxCep'       => $address['maxCep'],
+				'coverageRanges' => isset( $address['coverageRanges'] ) && is_array( $address['coverageRanges'] ) ? $address['coverageRanges'] : array(),
 			),
 		),
 		'pagarmeDraft' => papelito_get_vendor_pagarme_recipient_draft( $user_id ),
@@ -1178,11 +1180,15 @@ function papelito_validate_vendor_address_step2( array $step2 ) {
  * Converte o payload aninhado do wizard para o contrato legado de triagem.
  *
  * @param array $payload Payload do REST.
- * @return array<string, string>
+ * @return array<string, mixed>
  */
 function papelito_flatten_vendor_application_payload( array $payload ): array {
 	$step1 = isset( $payload['step1'] ) && is_array( $payload['step1'] ) ? $payload['step1'] : array();
 	$step2 = isset( $payload['step2'] ) && is_array( $payload['step2'] ) ? $payload['step2'] : array();
+	$coverage_ranges = isset( $step2['coverageRanges'] ) && is_array( $step2['coverageRanges'] ) ? $step2['coverageRanges'] : array();
+	$first_range = isset( $coverage_ranges[0] ) && is_array( $coverage_ranges[0] ) ? $coverage_ranges[0] : array();
+	$min_cep = isset( $first_range['minCep'] ) ? (string) $first_range['minCep'] : (string) ( $step2['minCep'] ?? '' );
+	$max_cep = isset( $first_range['maxCep'] ) ? (string) $first_range['maxCep'] : (string) ( $step2['maxCep'] ?? '' );
 
 	return array(
 		'storeName'       => (string) ( $step1['storeName'] ?? '' ),
@@ -1195,8 +1201,9 @@ function papelito_flatten_vendor_application_payload( array $payload ): array {
 		'city'            => (string) ( $step2['city'] ?? '' ),
 		'state'           => (string) ( $step2['state'] ?? '' ),
 		'cep'             => (string) ( $step2['cep'] ?? '' ),
-		'minCep'          => (string) ( $step2['minCep'] ?? '' ),
-		'maxCep'          => (string) ( $step2['maxCep'] ?? '' ),
+		'minCep'          => $min_cep,
+		'maxCep'          => $max_cep,
+		'coverageRanges'  => $coverage_ranges,
 		'discoveryChannel' => (string) ( $step1['discoveryChannel'] ?? '' ),
 		'hasSoldPapelito' => (string) ( $step1['hasSoldPapelito'] ?? '' ),
 	);
@@ -1291,6 +1298,14 @@ function papelito_validate_seller_application_input( array $input ) {
 	$state = isset( $input['state'] ) ? (string) $input['state'] : '';
 	if ( '' !== $state && ! array_key_exists( $state, papelito_brazilian_states() ) ) {
 		$errors->add( 'state', 'Selecione um estado válido.' );
+	}
+
+	$coverage_ranges = isset( $input['coverageRanges'] ) && is_array( $input['coverageRanges'] ) ? $input['coverageRanges'] : null;
+	if ( is_array( $coverage_ranges ) && ! empty( $coverage_ranges ) ) {
+		$normalized_ranges = papelito_admin_vendors_normalize_coverage_ranges( $coverage_ranges );
+		if ( is_wp_error( $normalized_ranges ) ) {
+			return $normalized_ranges;
+		}
 	}
 
 	$has_sold = isset( $input['hasSoldPapelito'] ) ? (string) $input['hasSoldPapelito'] : '';
@@ -1473,12 +1488,31 @@ function papelito_submit_seller_application( int $user_id, array $input ) {
 	$cep_base = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['cep'] ?? '' ) ) : '';
 	$min_cep  = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['minCep'] ?? '' ) ) : '';
 	$max_cep  = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['maxCep'] ?? '' ) ) : '';
+	$coverage_ranges_input = isset( $input['coverageRanges'] ) && is_array( $input['coverageRanges'] ) ? $input['coverageRanges'] : array();
+	$normalized_coverage_ranges = array();
+
+	if ( ! empty( $coverage_ranges_input ) ) {
+		$coverage_ranges_result = papelito_admin_vendors_normalize_coverage_ranges( $coverage_ranges_input );
+		if ( ! is_wp_error( $coverage_ranges_result ) ) {
+			$normalized_coverage_ranges = $coverage_ranges_result;
+		}
+	}
+
+	if ( empty( $normalized_coverage_ranges ) && '' !== $min_cep && '' !== $max_cep ) {
+		$normalized_coverage_ranges[] = array(
+			'minCep' => $min_cep,
+			'maxCep' => $max_cep,
+		);
+	}
 
 	update_user_meta( $user_id, 'cep', $cep_base );
 	delete_user_meta( $user_id, 'min_cep' );
 	delete_user_meta( $user_id, 'max_cep' );
-	add_user_meta( $user_id, 'min_cep', $min_cep, false );
-	add_user_meta( $user_id, 'max_cep', $max_cep, false );
+
+	foreach ( $normalized_coverage_ranges as $range ) {
+		add_user_meta( $user_id, 'min_cep', $range['minCep'], false );
+		add_user_meta( $user_id, 'max_cep', $range['maxCep'], false );
+	}
 
 	if ( function_exists( 'papelito_apply_vendor_geo' ) ) {
 		papelito_apply_vendor_geo( $user_id, $cep_base );
@@ -2538,13 +2572,15 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 	$pagarme_draft['companyName'] = sanitize_text_field( (string) ( $raw_pagarme_draft['companyName'] ?? '' ) );
 	$pagarme_draft['tradingName'] = sanitize_text_field( (string) ( $raw_pagarme_draft['tradingName'] ?? '' ) );
 
+	$temporary_password = isset( $input['temporaryPassword'] ) ? (string) $input['temporaryPassword'] : '';
+
 	$is_new_user = ! $existing_user instanceof WP_User;
 	$user_id     = $is_new_user
 		? wp_insert_user(
 			array(
 				'user_login'   => $email,
 				'user_email'   => $email,
-				'user_pass'    => wp_generate_password( 32, true, true ),
+				'user_pass'    => '' !== $temporary_password ? $temporary_password : wp_generate_password( 32, true, true ),
 				'first_name'   => $first_name,
 				'last_name'    => $last_name,
 				'display_name' => $display_name,
