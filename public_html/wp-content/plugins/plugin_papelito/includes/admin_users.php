@@ -944,6 +944,41 @@ function papelito_admin_users_cancel_order( int $user_id, int $order_id, string 
 }
 
 /**
+ * Manually mark a pending user's e-mail as verified (admin action).
+ *
+ * Sets status to 'verified' (same target as real confirmation, which unblocks
+ * the login gate) and records provenance so this is distinguishable from a
+ * user-driven confirmation. Idempotent guard: only acts on pending users.
+ *
+ * @param int $user_id Target user ID.
+ * @return array|WP_Error Updated admin-user detail, or error.
+ */
+function papelito_admin_users_activate_email( int $user_id ) {
+	$user = get_userdata( $user_id );
+	if ( ! $user instanceof WP_User ) {
+		return new WP_Error( 'papelito_admin_user_not_found', 'Usuario nao encontrado.', array( 'status' => 404 ) );
+	}
+
+	if ( ! papelito_auth_requires_email_verification( $user->ID ) ) {
+		return new WP_Error( 'papelito_email_not_pending', 'Conta nao esta com e-mail pendente.', array( 'status' => 409 ) );
+	}
+
+	papelito_auth_mark_email_verified( $user->ID );
+
+	update_user_meta( $user->ID, 'papelito_email_verification_method', 'admin' );
+	update_user_meta( $user->ID, 'papelito_email_verified_by', get_current_user_id() );
+
+	my_plugin_log_json( array(
+		'timestamp' => gmdate( 'c' ),
+		'action'    => 'admin_email_verified',
+		'user_id'   => $user->ID,
+		'admin_id'  => get_current_user_id(),
+	) );
+
+	return papelito_admin_users_get_detail( $user->ID );
+}
+
+/**
  * Permission callback compartilhado.
  *
  * @return bool
@@ -1042,6 +1077,19 @@ add_action(
 				'methods'             => WP_REST_Server::CREATABLE,
 				'permission_callback' => 'papelito_admin_users_require_admin',
 				'callback'            => 'papelito_admin_users_handle_change_role',
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/users/(?P<id>\d+)/activate-email',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'permission_callback' => 'papelito_admin_users_require_admin',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$result = papelito_admin_users_activate_email( absint( $request->get_param( 'id' ) ) );
+					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+				},
 			)
 		);
 
