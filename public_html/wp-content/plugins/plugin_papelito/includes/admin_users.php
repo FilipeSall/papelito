@@ -1082,6 +1082,19 @@ add_action(
 
 		register_rest_route(
 			'papelito/v1/admin',
+			'/users/(?P<id>\d+)/activate-email',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'permission_callback' => 'papelito_admin_users_require_admin',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$result = papelito_admin_users_activate_email( absint( $request->get_param( 'id' ) ) );
+					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
 			'/users/(?P<id>\d+)/orders/(?P<orderId>\d+)/cancel',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
