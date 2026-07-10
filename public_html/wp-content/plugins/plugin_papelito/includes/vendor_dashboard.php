@@ -674,8 +674,12 @@ function papelito_vendor_dashboard_coverage_ranges( int $vendor_id ): array {
 			continue;
 		}
 
+		// O id e derivado do min_cep (unico por vendor, pois faixas nao se
+		// sobrepoem) para ser estavel entre adicoes/remocoes. Um id posicional
+		// (count+1) desloca ao remover uma faixa e faz editar/excluir atingir a
+		// faixa errada.
 		$items[] = array(
-			'id'                => count( $items ) + 1,
+			'id'                => (int) $min_cep,
 			'min_cep'           => $min_cep,
 			'max_cep'           => $max_cep,
 			'min_cep_formatted' => papelito_vendor_dashboard_format_cep( $min_cep ),
@@ -797,7 +801,15 @@ function papelito_vendor_dashboard_add_coverage_range( int $vendor_id, array $pa
 function papelito_vendor_dashboard_update_coverage_range( int $vendor_id, int $range_id, array $payload ) {
 	$ranges = papelito_vendor_dashboard_coverage_ranges( $vendor_id );
 
-	if ( $range_id <= 0 || $range_id > count( $ranges ) ) {
+	$target_index = null;
+	foreach ( $ranges as $index => $range ) {
+		if ( (int) $range['id'] === $range_id ) {
+			$target_index = $index;
+			break;
+		}
+	}
+
+	if ( null === $target_index ) {
 		return new WP_Error( 'papelito_vendor_coverage_range_not_found', 'Faixa de CEP nao encontrada.', array( 'status' => 404 ) );
 	}
 
@@ -813,7 +825,7 @@ function papelito_vendor_dashboard_update_coverage_range( int $vendor_id, int $r
 		return $overlap;
 	}
 
-	$ranges[ $range_id - 1 ] = array_merge( $ranges[ $range_id - 1 ], $candidate );
+	$ranges[ $target_index ] = array_merge( $ranges[ $target_index ], $candidate );
 	$next_ranges            = array_map(
 		static fn( array $range ): array => array(
 			'min_cep' => $range['min_cep'],
@@ -833,11 +845,19 @@ function papelito_vendor_dashboard_update_coverage_range( int $vendor_id, int $r
 function papelito_vendor_dashboard_delete_coverage_range( int $vendor_id, int $range_id ) {
 	$ranges = papelito_vendor_dashboard_coverage_ranges( $vendor_id );
 
-	if ( $range_id <= 0 || $range_id > count( $ranges ) ) {
+	$target_index = null;
+	foreach ( $ranges as $index => $range ) {
+		if ( (int) $range['id'] === $range_id ) {
+			$target_index = $index;
+			break;
+		}
+	}
+
+	if ( null === $target_index ) {
 		return new WP_Error( 'papelito_vendor_coverage_range_not_found', 'Faixa de CEP nao encontrada.', array( 'status' => 404 ) );
 	}
 
-	array_splice( $ranges, $range_id - 1, 1 );
+	array_splice( $ranges, $target_index, 1 );
 
 	$next_ranges = array_map(
 		static fn( array $range ): array => array(

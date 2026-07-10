@@ -896,6 +896,55 @@ function papelito_correios_quote( int $vendor_id, string $destination_cep, array
 	return $result;
 }
 
+/**
+ * Rate limit para cotacao de frete.
+ *
+ * Quando a chamada vem do proxy Next autenticado, usa um identificador de
+ * cliente assinado por token interno para evitar que todos os compradores
+ * compartilhem o mesmo REMOTE_ADDR do servidor de frontend.
+ */
+function papelito_shipping_rate_limit( WP_REST_Request $request, int $max = 60, int $window = 60 ): bool {
+	$user_id = get_current_user_id();
+	if ( $user_id > 0 ) {
+		$key   = 'papelito_shipping_rl_user_' . md5( (string) $user_id );
+		$count = (int) get_transient( $key );
+
+		if ( $count >= $max ) {
+			return false;
+		}
+
+		set_transient( $key, $count + 1, $window );
+
+		return true;
+	}
+
+	$proxy_token = defined( 'PAPELITO_FRONT_PROXY_TOKEN' ) ? (string) PAPELITO_FRONT_PROXY_TOKEN : '';
+	if ( '' === $proxy_token && function_exists( 'papelito_env' ) ) {
+		$proxy_token = (string) papelito_env( 'PAPELITO_FRONT_PROXY_TOKEN', '' );
+	}
+	if ( '' === $proxy_token ) {
+		$proxy_token = (string) getenv( 'PAPELITO_FRONT_PROXY_TOKEN' );
+	}
+
+	$sent_token  = (string) $request->get_header( 'x-papelito-proxy-token' );
+	$client_key  = sanitize_text_field( (string) $request->get_header( 'x-papelito-client-key' ) );
+
+	if ( '' !== $proxy_token && '' !== $client_key && hash_equals( $proxy_token, $sent_token ) ) {
+		$key   = 'papelito_shipping_rl_proxy_' . md5( $client_key );
+		$count = (int) get_transient( $key );
+
+		if ( $count >= $max ) {
+			return false;
+		}
+
+		set_transient( $key, $count + 1, $window );
+
+		return true;
+	}
+
+	return ! function_exists( 'papelito_auth_rate_limit' ) || papelito_auth_rate_limit( 'shipping_quote', $max, $window );
+}
+
 add_action(
 	'rest_api_init',
 	static function (): void {
@@ -906,7 +955,7 @@ add_action(
 				'methods'             => 'POST',
 				'permission_callback' => '__return_true',
 				'callback'            => static function ( WP_REST_Request $request ) {
-					if ( function_exists( 'papelito_auth_rate_limit' ) && ! papelito_auth_rate_limit( 'shipping_quote', 60, 60 ) ) {
+					if ( ! papelito_shipping_rate_limit( $request, 60, 60 ) ) {
 						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
 					}
 

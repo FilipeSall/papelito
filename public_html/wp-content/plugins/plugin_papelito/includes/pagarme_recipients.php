@@ -93,10 +93,12 @@ function papelito_pagarme_save_vendor_recipient_error( int $user_id, $error ): v
 }
 
 /**
- * Monta a resposta REST de erro do recebedor com detalhe controlado.
+ * Monta a resposta REST de erro do recebedor sem vazar detalhe tecnico.
  *
- * Repassa a mensagem amigavel e um resumo dos erros de validacao do Pagar.me,
- * sem expor o corpo cru (`response_body`) nem detalhes internos do gateway.
+ * So retorna o codigo estavel do erro (usado pelo front para mapear uma
+ * mensagem amigavel) e o status HTTP. O corpo cru do gateway (`response_body`,
+ * `pagarme_body`) e os detalhes de validacao (`agencia | Value too long`, etc.)
+ * ficam apenas nos logs / no meta `last_error_detail`, nunca na resposta REST.
  *
  * @param WP_Error $error Erro original.
  * @return WP_Error
@@ -105,17 +107,11 @@ function papelito_pagarme_recipient_error_response( WP_Error $error ): WP_Error 
 	$data   = $error->get_error_data();
 	$status = is_array( $data ) && isset( $data['status'] ) ? (int) $data['status'] : 500;
 
-	$response_data = array( 'status' => $status );
-
-	if ( is_array( $data ) && isset( $data['pagarme_body'] ) && is_array( $data['pagarme_body'] ) ) {
-		$details = papelito_pagarme_collect_error_details( $data['pagarme_body'] );
-
-		if ( ! empty( $details ) ) {
-			$response_data['pagarme_errors'] = $details;
-		}
-	}
-
-	return new WP_Error( $error->get_error_code(), $error->get_error_message(), $response_data );
+	return new WP_Error(
+		$error->get_error_code(),
+		'Nao foi possivel validar os dados do recebedor.',
+		array( 'status' => $status )
+	);
 }
 
 /**
@@ -125,12 +121,11 @@ function papelito_pagarme_recipient_error_response( WP_Error $error ): WP_Error 
  */
 function papelito_pagarme_get_vendor_recipient_state( int $user_id ): array {
 	return array(
-		'recipient_id'      => papelito_pagarme_get_vendor_recipient_id( $user_id ),
-		'status'            => papelito_pagarme_get_vendor_recipient_status( $user_id ),
-		'last_sync_at'      => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, true ) ),
-		'kyc_url'           => sanitize_url( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_URL_META, true ) ),
-		'last_error'        => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, true ) ),
-		'last_error_detail' => (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, true ),
+		'recipient_id' => papelito_pagarme_get_vendor_recipient_id( $user_id ),
+		'status'       => papelito_pagarme_get_vendor_recipient_status( $user_id ),
+		'last_sync_at' => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, true ) ),
+		'kyc_url'      => sanitize_url( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_URL_META, true ) ),
+		'last_error'   => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, true ) ),
 	);
 }
 
@@ -295,12 +290,16 @@ function papelito_pagarme_partner_payload( array $partner, string $fallback_phon
  * @return array<string,string>
  */
 function papelito_pagarme_bank_account_payload( array $bank_account, string $fallback_holder_name, string $fallback_document ): array {
+	// A agencia (branch_number) da Pagar.me aceita no maximo 4 digitos; valores
+	// mais longos disparam "invalid_parameter | agencia | Value too long".
+	$branch_number = substr( preg_replace( '/\D+/', '', (string) ( $bank_account['branchNumber'] ?? '' ) ), 0, 4 );
+
 	$payload = array(
 		'holder_name'     => sanitize_text_field( (string) ( $bank_account['holderName'] ?? $fallback_holder_name ) ),
 		'holder_type'     => sanitize_text_field( (string) ( $bank_account['holderType'] ?? 'company' ) ),
 		'holder_document' => preg_replace( '/\D+/', '', (string) ( $bank_account['holderDocument'] ?? $fallback_document ) ),
 		'bank'            => sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ),
-		'branch_number'   => sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ),
+		'branch_number'   => $branch_number,
 		'account_number'  => sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ),
 		'type'            => sanitize_text_field( (string) ( $bank_account['type'] ?? 'checking' ) ),
 	);
@@ -381,6 +380,18 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 		);
 	}
 
+	$company_name = sanitize_text_field( (string) ( $draft['companyName'] ?? $store_name ) );
+
+	// A Pagar.me exige razao social com pelo menos alguns caracteres; nomes muito
+	// curtos disparam "invalid_parameter | legal_name | Value too short".
+	if ( mb_strlen( trim( $company_name ) ) < 5 ) {
+		return new WP_Error(
+			'papelito_pagarme_invalid_company_name',
+			'A razao social do recebedor precisa ter ao menos 5 caracteres.',
+			array( 'status' => 422 )
+		);
+	}
+
 	return array(
 		'code'                 => sprintf( 'vendor-%d', $user_id ),
 		'payment_mode'         => 'bank_transfer',
@@ -392,7 +403,7 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 		'default_bank_account' => papelito_pagarme_bank_account_payload( $bank_account, $store_name, $cnpj ),
 		'register_information' => array(
 			'type'               => 'corporation',
-			'company_name'       => sanitize_text_field( (string) ( $draft['companyName'] ?? $store_name ) ),
+			'company_name'       => $company_name,
 			'trading_name'       => sanitize_text_field( (string) ( $draft['tradingName'] ?? $store_name ) ),
 			'email'              => sanitize_email( (string) $user->user_email ),
 			'document'           => $cnpj,
