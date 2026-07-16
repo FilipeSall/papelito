@@ -265,7 +265,14 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
 	$result['delivery_time_days'] = absint( $order->get_meta( '_papelito_shipping_delivery_time', true ) );
 	$paid_at             = $order->get_date_paid();
 	$result['paid_at']   = $paid_at ? $paid_at->date_i18n( 'Y-m-d H:i:s' ) : '';
-	$result['tracking_code'] = null;
+	$logistics = function_exists( 'papelito_tracking_order_snapshot' )
+		? papelito_tracking_order_snapshot( (int) $order->get_id() )
+		: array( 'status' => 'not_started', 'all_packages_done' => false, 'packages_total' => 0, 'packages_delivered' => 0, 'last_event_at' => '', 'shipments' => array() );
+	$result['logistics'] = $logistics;
+	$result['shipments'] = $logistics['shipments'];
+	$result['tracking_code'] = ! empty( $logistics['shipments'][0]['tracking_code'] )
+		? $logistics['shipments'][0]['tracking_code']
+		: null;
 	$result['payment'] = function_exists( 'papelito_pagarme_order_payment_snapshot' )
 		? papelito_pagarme_order_payment_snapshot( $order )
 		: array(
@@ -486,9 +493,7 @@ function papelito_vendor_dashboard_next_statuses( string $current ): array {
 		case PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT:
 			return array( PAPELITO_VENDOR_STATUS_PICKING, PAPELITO_VENDOR_STATUS_CANCELLED );
 		case PAPELITO_VENDOR_STATUS_PICKING:
-			return array( PAPELITO_VENDOR_STATUS_SHIPPED, PAPELITO_VENDOR_STATUS_CANCELLED );
-		case PAPELITO_VENDOR_STATUS_SHIPPED:
-			return array( PAPELITO_VENDOR_STATUS_DELIVERED );
+			return array( PAPELITO_VENDOR_STATUS_CANCELLED );
 		default:
 			return array();
 	}
@@ -524,6 +529,14 @@ function papelito_vendor_dashboard_update_order_status( int $order_id, int $vend
 	$current = papelito_vendor_dashboard_order_status( $order );
 	$next    = sanitize_key( (string) $next_status );
 
+	if ( in_array( $next, array( PAPELITO_VENDOR_STATUS_SHIPPED, PAPELITO_VENDOR_STATUS_DELIVERED ), true ) ) {
+		return new WP_Error(
+			'papelito_vendor_logistics_status_protected',
+			'Este status so pode ser confirmado automaticamente pela API Rastro dos Correios.',
+			array( 'status' => 403 )
+		);
+	}
+
 	if ( ! in_array( $next, papelito_vendor_dashboard_next_statuses( $current ), true ) ) {
 		return new WP_Error( 'papelito_vendor_invalid_status_transition', 'Transicao de status invalida.', array( 'status' => 422 ) );
 	}
@@ -534,7 +547,16 @@ function papelito_vendor_dashboard_update_order_status( int $order_id, int $vend
 		return new WP_Error( 'papelito_vendor_cancel_reason_required', 'Informe o motivo do cancelamento.', array( 'status' => 422 ) );
 	}
 
+	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $next && function_exists( 'papelito_tracking_order_shipments' ) && ! empty( papelito_tracking_order_shipments( $order_id ) ) ) {
+		return new WP_Error(
+			'papelito_vendor_shipment_cancel_requires_review',
+			'Este pedido ja possui uma pre-postagem. Solicite o cancelamento administrativo para cancelar tambem nos Correios.',
+			array( 'status' => 409 )
+		);
+	}
+
 	$order->update_meta_data( '_papelito_vendor_status', $next );
+	$order->update_meta_data( '_papelito_vendor_status_source', 'vendor_action' );
 
 	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $next ) {
 		$order->update_meta_data( '_papelito_vendor_cancel_reason', $reason );

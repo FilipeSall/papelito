@@ -124,6 +124,10 @@ function papelito_assert( string $label, $expected, $actual ): void {
 	echo "  FAIL: {$label} -> expected " . var_export( $expected, true ) . ', got ' . var_export( $actual, true ) . "\n";
 }
 
+echo "Scenario 0: protected logistics transitions cannot be performed by a seller\n";
+papelito_assert( 'seller cannot manually mark picking order as shipped', array( 'cancelado' ), papelito_vendor_dashboard_next_statuses( 'em_separacao' ) );
+papelito_assert( 'seller cannot manually mark shipped order as delivered', array(), papelito_vendor_dashboard_next_statuses( 'enviado' ) );
+
 $period = array(
 	'from'     => '2026-06-01',
 	'to'       => '2026-06-30',
