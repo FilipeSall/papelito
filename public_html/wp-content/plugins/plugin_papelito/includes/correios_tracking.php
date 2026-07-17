@@ -541,6 +541,7 @@ function papelito_tracking_schedule_next_poll( int $shipment_id, bool $failed, s
 	} else {
 		$delay = 'out_for_delivery' === $row['status'] ? 10 * MINUTE_IN_SECONDS : 30 * MINUTE_IN_SECONDS;
 	}
+	$delay = papelito_tracking_apply_jitter( $delay );
 	$wpdb->update(
 		$table,
 		array(
@@ -551,6 +552,17 @@ function papelito_tracking_schedule_next_poll( int $shipment_id, bool $failed, s
 		),
 		array( 'id' => $shipment_id )
 	);
+}
+
+/**
+ * Distribui o proximo poll com jitter para evitar thundering herd (objetos
+ * criados/atualizados juntos venceriam no mesmo tick de cron). Aplica +/-20%
+ * sobre o delay, com deslocamento minimo de 60s.
+ */
+function papelito_tracking_apply_jitter( int $delay ): int {
+	$spread = (int) max( MINUTE_IN_SECONDS, round( $delay * 0.2 ) );
+	$offset = function_exists( 'wp_rand' ) ? wp_rand( -$spread, $spread ) : random_int( -$spread, $spread );
+	return (int) max( MINUTE_IN_SECONDS, $delay + $offset );
 }
 
 /** Consulta um envio e ingere todos os eventos retornados. */
@@ -581,15 +593,21 @@ function papelito_tracking_poll_shipment( array $shipment ): void {
 	papelito_tracking_schedule_next_poll( $shipment_id, false );
 }
 
-/** Processa um lote pequeno para respeitar tempo e rate limit do host. */
+/**
+ * Processa os envios vencidos respeitando um teto de lote por execucao. O teto
+ * e filtravel para acompanhar o crescimento sem editar codigo; o cron de 5 min
+ * drena o backlog em ciclos. Ordena por next_poll_at (id como desempate estavel).
+ */
 function papelito_tracking_poll_due_shipments(): void {
 	global $wpdb;
 	$table = papelito_tracking_shipments_table_name();
+	$batch = (int) max( 1, min( 500, (int) apply_filters( 'papelito_tracking_poll_batch_size', 100 ) ) );
 	$rows  = $wpdb->get_results(
 		$wpdb->prepare(
-			"SELECT * FROM {$table} WHERE active = 1 AND tracking_code IS NOT NULL AND next_poll_at <= %s AND created_at >= %s ORDER BY next_poll_at ASC LIMIT 40",
+			"SELECT * FROM {$table} WHERE active = 1 AND tracking_code IS NOT NULL AND next_poll_at <= %s AND created_at >= %s ORDER BY next_poll_at ASC, id ASC LIMIT %d",
 			current_time( 'mysql', true ),
-			gmdate( 'Y-m-d H:i:s', time() - ( 90 * DAY_IN_SECONDS ) )
+			gmdate( 'Y-m-d H:i:s', time() - ( 90 * DAY_IN_SECONDS ) ),
+			$batch
 		),
 		ARRAY_A
 	); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
