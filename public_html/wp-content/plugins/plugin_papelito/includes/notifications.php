@@ -698,12 +698,17 @@ function papelito_notification_users_who_favorited_product( $product_id ) {
 }
 
 /**
- * Notifica admins sobre candidatura de vendor.
+ * Notifica admins sobre uma nova manifestacao de interesse de vendor.
+ *
+ * @param int               $interest_id     Manifestacao.
+ * @param int               $customer_user_id Customer relacionado.
+ * @param array<string,mixed>|null $interest Dados persistidos.
  */
-function papelito_handle_vendor_application_submitted( $vendor_user_id ) {
-	$vendor_user_id = absint( $vendor_user_id );
+function papelito_handle_vendor_interest_submitted( $interest_id, $customer_user_id, $interest = null ) {
+	$interest_id      = absint( $interest_id );
+	$customer_user_id = absint( $customer_user_id );
 
-	if ( $vendor_user_id <= 0 ) {
+	if ( $interest_id <= 0 || $customer_user_id <= 0 ) {
 		return;
 	}
 
@@ -714,18 +719,18 @@ function papelito_handle_vendor_application_submitted( $vendor_user_id ) {
 		)
 	);
 
-	$payload = array(
-		'vendor_user_id' => $vendor_user_id,
-		'store_name'     => (string) get_user_meta( $vendor_user_id, 'store_name', true ),
-		'city'           => (string) get_user_meta( $vendor_user_id, 'city', true ),
-		'state'          => (string) get_user_meta( $vendor_user_id, 'state', true ),
+	$interest = is_array( $interest ) ? $interest : array();
+	$payload  = array(
+		'interest_id'     => $interest_id,
+		'customer_user_id' => $customer_user_id,
+		'store_name'      => (string) ( $interest['storeName'] ?? '' ),
 	);
 
 	foreach ( is_array( $admins ) ? $admins : array() as $admin_id ) {
 		papelito_dispatch_notification( (int) $admin_id, PAPELITO_NOTIF_NEW_VENDOR_APPLICATION, $payload );
 	}
 }
-add_action( 'papelito_vendor_application_submitted', 'papelito_handle_vendor_application_submitted', 10, 1 );
+add_action( 'papelito_vendor_interest_submitted', 'papelito_handle_vendor_interest_submitted', 10, 3 );
 
 /**
  * Notifica vendor aprovado.

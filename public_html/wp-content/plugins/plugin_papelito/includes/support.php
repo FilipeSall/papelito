@@ -85,9 +85,7 @@ function papelito_user_has_role( WP_User $user, string $role ): bool {
 /**
  * Retorna se o usuario possui ao menos uma faixa de cobertura de vendor.
  *
- * Mantem compatibilidade com sellers legados que existiam antes da meta
- * `application_status`, mas evita promover como vendor contas que receberam a
- * role `seller` por engano e nao possuem configuracao minima de cobertura.
+ * Cobertura e requisito operacional separado da role do usuario.
  *
  * @param int $user_id Usuario.
  * @return bool
@@ -110,12 +108,11 @@ function papelito_user_has_vendor_coverage( int $user_id ): bool {
 }
 
 /**
- * Retorna se o usuario deve ser tratado como seller aprovado no sistema.
+ * Retorna se o usuario possui o papel de vendor.
  *
- * Regras:
- * - precisa ter a role `seller`;
- * - se existir `application_status`, apenas `approved` libera venda;
- * - sem status explicito, aceita somente sellers legados com cobertura salva.
+ * A identidade do vendor e definida exclusivamente pela role `seller`.
+ * Cobertura, estoque e recebedor continuam sendo requisitos operacionais de
+ * venda, mas nao alteram o papel da conta.
  *
  * @param int|WP_User $user Usuario ou ID.
  * @return bool
@@ -125,27 +122,13 @@ function papelito_user_is_effective_seller( $user ): bool {
 		$user = get_userdata( (int) $user );
 	}
 
-	if ( ! $user instanceof WP_User || ! papelito_user_has_role( $user, 'seller' ) ) {
-		return false;
-	}
-
-	$status_meta_key = defined( 'PAPELITO_VENDOR_APPLICATION_STATUS_META' )
-		? PAPELITO_VENDOR_APPLICATION_STATUS_META
-		: 'application_status';
-	$status          = sanitize_key( (string) get_user_meta( $user->ID, $status_meta_key, true ) );
-
-	if ( '' !== $status ) {
-		return 'approved' === $status;
-	}
-
-	return papelito_user_has_vendor_coverage( $user->ID );
+	return $user instanceof WP_User && papelito_user_has_role( $user, 'seller' );
 }
 
 /**
  * Retorna se o usuario pode acessar a area autenticada de vendor.
  *
- * `approved` segue sendo o unico estado que libera venda.
- * `incomplete` permite apenas concluir o cadastro pendente.
+ * O acesso autenticado de vendor tambem depende exclusivamente da role.
  *
  * @param int|WP_User $user Usuario ou ID.
  * @return bool
@@ -155,18 +138,5 @@ function papelito_user_can_access_seller_area( $user ): bool {
 		$user = get_userdata( (int) $user );
 	}
 
-	if ( ! $user instanceof WP_User || ! papelito_user_has_role( $user, 'seller' ) ) {
-		return false;
-	}
-
-	$status_meta_key = defined( 'PAPELITO_VENDOR_APPLICATION_STATUS_META' )
-		? PAPELITO_VENDOR_APPLICATION_STATUS_META
-		: 'application_status';
-	$status          = sanitize_key( (string) get_user_meta( $user->ID, $status_meta_key, true ) );
-
-	if ( '' !== $status ) {
-		return in_array( $status, array( 'approved', 'incomplete' ), true );
-	}
-
-	return papelito_user_has_vendor_coverage( $user->ID );
+	return $user instanceof WP_User && papelito_user_has_role( $user, 'seller' );
 }

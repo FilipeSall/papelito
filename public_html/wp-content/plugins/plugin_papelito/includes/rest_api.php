@@ -81,7 +81,6 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 		|| ! function_exists( 'papelito_haversine_km' )
 		|| ! function_exists( 'papelito_matching_vendor_ids' )
 		|| ! function_exists( 'papelito_vendors_with_stock' )
-		|| ! function_exists( 'papelito_get_seller_application_status' )
 	) {
 		return new WP_Error(
 			'papelito_coverage_dependencies_missing',
@@ -125,10 +124,6 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 
 		$user = get_userdata( $vendor_id );
 		if ( ! $user instanceof WP_User || ! in_array( 'seller', (array) $user->roles, true ) ) {
-			continue;
-		}
-
-		if ( 'approved' !== papelito_get_seller_application_status( $vendor_id ) ) {
 			continue;
 		}
 
@@ -377,7 +372,6 @@ function papelito_coverage_maybe_bump_user_meta_cache( $meta_id, $user_id, $meta
 		'store_name',
 		'city',
 		'state',
-		'application_status',
 	);
 
 	if ( in_array( (string) $meta_key, $coverage_meta_keys, true ) ) {
@@ -411,7 +405,6 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty, 
 		|| ! function_exists( 'papelito_geocode_cep' )
 		|| ! function_exists( 'papelito_haversine_km' )
 		|| ! function_exists( 'papelito_matching_vendor_ids' )
-		|| ! function_exists( 'papelito_get_seller_application_status' )
 	) {
 		return new WP_Error(
 			'papelito_coverage_dependencies_missing',
@@ -464,7 +457,6 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty, 
 			isset( $matching_lookup[ $active_vendor ] )
 			&& $user instanceof WP_User
 			&& in_array( 'seller', (array) $user->roles, true )
-			&& 'approved' === papelito_get_seller_application_status( $active_vendor )
 		) {
 			$lead_time_days = (int) get_user_meta( $active_vendor, 'shipping_lead_time_days', true );
 
@@ -530,7 +522,6 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty, 
 				if (
 					! $user instanceof WP_User
 					|| ! in_array( 'seller', (array) $user->roles, true )
-					|| 'approved' !== papelito_get_seller_application_status( $vendor_id )
 				) {
 					$vendor_cache[ $vendor_id ] = null;
 					continue;

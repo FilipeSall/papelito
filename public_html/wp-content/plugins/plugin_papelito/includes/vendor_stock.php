@@ -435,10 +435,6 @@ function papelito_vendor_stock_is_operational_vendor( $user ): bool {
 		return false;
 	}
 
-	if ( function_exists( 'papelito_get_seller_application_status' ) ) {
-		return 'approved' === papelito_get_seller_application_status( (int) $user->ID );
-	}
-
 	return true;
 }
 

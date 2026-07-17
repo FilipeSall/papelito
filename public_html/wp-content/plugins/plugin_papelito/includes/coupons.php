@@ -699,13 +699,6 @@ add_action(
 					$options = array();
 
 					foreach ( $users as $user ) {
-						if ( function_exists( 'papelito_get_seller_application_status' ) ) {
-							$status = papelito_get_seller_application_status( (int) $user->ID );
-							if ( 'approved' !== $status ) {
-								continue;
-							}
-						}
-
 						$store_name = (string) get_user_meta( $user->ID, 'store_name', true );
 						$options[]  = array(
 							'id'         => (int) $user->ID,

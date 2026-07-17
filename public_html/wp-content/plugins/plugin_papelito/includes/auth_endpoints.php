@@ -695,56 +695,6 @@ function papelito_auth_validate_register_payload( array $data ) {
 }
 
 /**
- * Valida o payload de onboarding de seller.
- *
- * @param array $data
- * @return WP_Error|null
- */
-function papelito_auth_validate_seller_register_payload( array $data ) {
-	$errors = papelito_auth_validate_register_payload( $data );
-	$errors = $errors instanceof WP_Error ? $errors : new WP_Error();
-
-	$required_fields = array(
-		'store_name' => 'Informe o nome da loja.',
-		'cnpj'       => 'Informe um CNPJ válido.',
-		'state'      => 'Informe o estado.',
-		'city'       => 'Informe a cidade.',
-		'instagram'  => 'Informe o Instagram da loja.',
-	);
-
-	foreach ( $required_fields as $field => $message ) {
-		if ( empty( $data[ $field ] ) ) {
-			$errors->add( $field, $message );
-		}
-	}
-
-	$min_cep = isset( $data['min_cep'] ) ? (string) $data['min_cep'] : '';
-	$max_cep = isset( $data['max_cep'] ) ? (string) $data['max_cep'] : '';
-
-	if ( ! papelito_auth_is_valid_cep( $min_cep ) ) {
-		$errors->add( 'min_cep', 'CEP mínimo inválido. Formato esperado: 01310-000.' );
-	}
-
-	if ( ! papelito_auth_is_valid_cep( $max_cep ) ) {
-		$errors->add( 'max_cep', 'CEP máximo inválido. Formato esperado: 01310-000.' );
-	}
-
-	$min_cep_digits = preg_replace( '/\D+/', '', $min_cep );
-	$max_cep_digits = preg_replace( '/\D+/', '', $max_cep );
-
-	if ( '' !== $min_cep_digits && '' !== $max_cep_digits && (int) $min_cep_digits > (int) $max_cep_digits ) {
-		$errors->add( 'max_cep', 'O CEP máximo deve ser maior ou igual ao CEP mínimo.' );
-	}
-
-	$has_sold = isset( $data['has_sold_papelito'] ) ? (string) $data['has_sold_papelito'] : '';
-	if ( '' !== $has_sold && ! in_array( $has_sold, array( 'sim', 'nao' ), true ) ) {
-		$errors->add( 'has_sold_papelito', 'Valor inválido para histórico de venda Papelito.' );
-	}
-
-	return $errors->has_errors() ? $errors : null;
-}
-
-/**
  * Cria um usuário a partir de um payload validado de cadastro.
  *
  * @param array $data
@@ -795,82 +745,6 @@ function papelito_auth_create_registered_user( array $data ) {
 	return $user instanceof WP_User
 		? $user
 		: new WP_Error( 'papelito_user_lookup_failed', 'Falha ao carregar usuário recém-criado.', array( 'status' => 500 ) );
-}
-
-/**
- * Cria um seller a partir do payload validado do onboarding headless.
- *
- * @param array $data
- * @return WP_User|WP_Error
- */
-function papelito_auth_create_registered_seller( array $data ) {
-	$email = sanitize_email( (string) $data['email'] );
-
-	if ( email_exists( $email ) ) {
-		return new WP_Error(
-			'papelito_email_exists',
-			'Já existe uma conta com este e-mail.',
-			array( 'status' => 409 )
-		);
-	}
-
-	$user_id = wp_insert_user(
-		array(
-			'user_login'   => $email,
-			'user_email'   => $email,
-			'user_pass'    => (string) $data['password'],
-			'first_name'   => sanitize_text_field( (string) $data['first_name'] ),
-			'last_name'    => sanitize_text_field( (string) $data['last_name'] ),
-			'display_name' => sanitize_text_field( trim( (string) $data['first_name'] . ' ' . (string) $data['last_name'] ) ),
-			'role'         => 'seller',
-		)
-	);
-
-	if ( is_wp_error( $user_id ) ) {
-		return $user_id;
-	}
-
-	$meta_keys = array(
-		'store_name',
-		'phone_number',
-		'cnpj',
-		'cpf',
-		'instagram',
-		'state',
-		'city',
-		'cep',
-		'discovery_channel',
-		'has_sold_papelito',
-	);
-
-	foreach ( $meta_keys as $key ) {
-		if ( isset( $data[ $key ] ) && '' !== $data[ $key ] ) {
-			$value = 'phone_number' === $key
-				? papelito_auth_format_phone( (string) $data[ $key ] )
-				: sanitize_text_field( (string) $data[ $key ] );
-			update_user_meta( $user_id, $key, $value );
-		}
-	}
-
-	if ( ! empty( $data['min_cep'] ) ) {
-		update_user_meta( $user_id, 'min_cep', sanitize_text_field( (string) $data['min_cep'] ) );
-	}
-
-	if ( ! empty( $data['max_cep'] ) ) {
-		update_user_meta( $user_id, 'max_cep', sanitize_text_field( (string) $data['max_cep'] ) );
-	}
-
-	if ( function_exists( 'papelito_apply_vendor_geo' ) ) {
-		papelito_apply_vendor_geo( $user_id, (string) ( $data['cep'] ?? '' ) );
-	}
-
-	update_user_meta( $user_id, 'papelito_profile_complete', '1' );
-
-	$user = get_userdata( $user_id );
-
-	return $user instanceof WP_User
-		? $user
-		: new WP_Error( 'papelito_user_lookup_failed', 'Falha ao carregar usuário seller recém-criado.', array( 'status' => 500 ) );
 }
 
 add_action(
@@ -1230,22 +1104,6 @@ add_action(
 					papelito_auth_mark_email_verified( $user->ID );
 
 					return new WP_REST_Response( array( 'ok' => true ), 200 );
-				},
-			)
-		);
-
-		register_rest_route(
-			'papelito/v1',
-			'/auth/register-seller',
-			array(
-				'methods'             => 'POST',
-				'permission_callback' => '__return_true',
-				'callback'            => static function () {
-					return new WP_Error(
-						'papelito_register_seller_disabled',
-						'Use o fluxo autenticado em /revendedor para enviar a candidatura de vendor.',
-						array( 'status' => 410 )
-					);
 				},
 			)
 		);

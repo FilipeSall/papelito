@@ -76,7 +76,6 @@ function papelito_admin_users_base_sql(): string {
 		LEFT JOIN {$usermeta_table} city_meta ON city_meta.user_id = u.ID AND city_meta.meta_key = 'city'
 		LEFT JOIN {$usermeta_table} first_name ON first_name.user_id = u.ID AND first_name.meta_key = 'first_name'
 		LEFT JOIN {$usermeta_table} last_name ON last_name.user_id = u.ID AND last_name.meta_key = 'last_name'
-		LEFT JOIN {$usermeta_table} application_status ON application_status.user_id = u.ID AND application_status.meta_key = 'application_status'
 		LEFT JOIN {$usermeta_table} email_verification_status ON email_verification_status.user_id = u.ID AND email_verification_status.meta_key = 'papelito_email_verification_status'
 	";
 }
@@ -113,7 +112,6 @@ function papelito_admin_users_where_sql( array $filters, array &$args ): string 
 	global $wpdb;
 
 	$conditions      = array( '1=1' );
-	$coverage_exists = papelito_admin_users_coverage_exists_sql();
 
 	if ( ! empty( $filters['search'] ) && is_string( $filters['search'] ) ) {
 		$term         = '%' . $wpdb->esc_like( $filters['search'] ) . '%';
@@ -127,27 +125,18 @@ function papelito_admin_users_where_sql( array $filters, array &$args ): string 
 	} elseif ( 'seller' === $filters['role'] ) {
 		$conditions[] = 'cap.meta_value LIKE %s';
 		$args[]       = '%"seller"%';
-		$conditions[] = "(application_status.meta_value = 'approved' OR ((application_status.meta_value IS NULL OR application_status.meta_value = '') AND {$coverage_exists}))";
 	} elseif ( 'customer' === $filters['role'] ) {
 		$conditions[] = 'cap.meta_value NOT LIKE %s';
 		$args[]       = '%"administrator"%';
-		$conditions[] = "(
-			cap.meta_value LIKE %s
-			OR (
-				cap.meta_value LIKE %s
-				AND NOT (application_status.meta_value = 'approved' OR ((application_status.meta_value IS NULL OR application_status.meta_value = '') AND {$coverage_exists}))
-			)
-		)";
+		$conditions[] = 'cap.meta_value LIKE %s';
 		$args[] = '%"customer"%';
-		$args[] = '%"seller"%';
 	} elseif ( 'other' === $filters['role'] ) {
 		$conditions[] = 'cap.meta_value NOT LIKE %s';
 		$args[]       = '%"administrator"%';
 		$conditions[] = 'cap.meta_value NOT LIKE %s';
 		$args[]       = '%"customer"%';
-		$conditions[] = '(cap.meta_value NOT LIKE %s OR ((application_status.meta_value IS NULL OR application_status.meta_value <> %s) AND NOT (' . $coverage_exists . ')))';
+		$conditions[] = 'cap.meta_value NOT LIKE %s';
 		$args[]       = '%"seller"%';
-		$args[]       = 'approved';
 	}
 
 	return ' WHERE ' . implode( ' AND ', $conditions );
@@ -294,19 +283,7 @@ function papelito_admin_users_sales_orders_count( int $user_id ): int {
  * @return bool
  */
 function papelito_admin_users_is_vendor_related( WP_User $user ): bool {
-	$status = function_exists( 'papelito_get_seller_application_status' )
-		? papelito_get_seller_application_status( (int) $user->ID )
-		: 'none';
-
-	if ( 'none' !== $status ) {
-		return true;
-	}
-
-	if ( in_array( 'seller', (array) $user->roles, true ) ) {
-		return true;
-	}
-
-	return function_exists( 'papelito_user_has_vendor_coverage' ) && papelito_user_has_vendor_coverage( (int) $user->ID );
+	return papelito_user_has_role( $user, 'seller' );
 }
 
 /**
@@ -356,18 +333,6 @@ function papelito_admin_users_account_status( WP_User $user ): string {
 	$email_status = sanitize_key( (string) get_user_meta( $user->ID, 'papelito_email_verification_status', true ) );
 	if ( 'pending' === $email_status ) {
 		return 'email_pending';
-	}
-
-	$vendor_status = function_exists( 'papelito_get_seller_application_status' )
-		? papelito_get_seller_application_status( (int) $user->ID )
-		: 'none';
-
-	if ( 'pending' === $vendor_status ) {
-		return 'vendor_pending';
-	}
-
-	if ( 'rejected' === $vendor_status ) {
-		return 'vendor_rejected';
 	}
 
 	if ( user_can( $user, 'manage_options' ) ) {
@@ -626,7 +591,6 @@ function papelito_admin_users_query_rows( array $filters ): array {
 			COALESCE(city_meta.meta_value, '') AS city,
 			COALESCE(first_name.meta_value, '') AS first_name,
 			COALESCE(last_name.meta_value, '') AS last_name,
-			COALESCE(application_status.meta_value, '') AS application_status,
 			COALESCE(email_verification_status.meta_value, '') AS email_verification_status,
 			CASE WHEN {$coverage_exists} THEN 1 ELSE 0 END AS has_coverage
 	";
@@ -667,7 +631,6 @@ function papelito_admin_users_query_summary( array $filters ): array {
 	$args[] = '%"administrator"%';
 	$args[] = '%"seller"%';
 	$args[] = '%"customer"%';
-	$args[] = '%"seller"%';
 	$args[] = '%"administrator"%';
 	$args[] = '%"customer"%';
 	$args[] = '%"seller"%';
@@ -678,9 +641,9 @@ function papelito_admin_users_query_summary( array $filters ): array {
 		SELECT
 			COUNT(*) AS total_users,
 			SUM(CASE WHEN cap.meta_value LIKE %s THEN 1 ELSE 0 END) AS admins_count,
-			SUM(CASE WHEN cap.meta_value LIKE %s AND (application_status.meta_value = 'approved' OR ((application_status.meta_value IS NULL OR application_status.meta_value = '') AND {$coverage_exists})) THEN 1 ELSE 0 END) AS sellers_count,
-			SUM(CASE WHEN cap.meta_value NOT LIKE %s AND (cap.meta_value LIKE %s OR (cap.meta_value LIKE %s AND NOT (application_status.meta_value = 'approved' OR ((application_status.meta_value IS NULL OR application_status.meta_value = '') AND {$coverage_exists})))) THEN 1 ELSE 0 END) AS customers_count,
-			SUM(CASE WHEN cap.meta_value NOT LIKE %s AND cap.meta_value NOT LIKE %s AND (cap.meta_value NOT LIKE %s OR ((application_status.meta_value IS NULL OR application_status.meta_value <> 'approved') AND NOT ({$coverage_exists}))) THEN 1 ELSE 0 END) AS others_count
+			SUM(CASE WHEN cap.meta_value LIKE %s THEN 1 ELSE 0 END) AS sellers_count,
+			SUM(CASE WHEN cap.meta_value LIKE %s THEN 1 ELSE 0 END) AS customers_count,
+			SUM(CASE WHEN cap.meta_value NOT LIKE %s AND cap.meta_value NOT LIKE %s AND cap.meta_value NOT LIKE %s THEN 1 ELSE 0 END) AS others_count
 		" . $base_sql . $where_sql,
 		$args
 	);
@@ -758,7 +721,6 @@ function papelito_admin_users_base_detail( WP_User $user ): array {
 		'accountStatusLabel' => papelito_admin_users_account_status_label( $account_state ),
 		'registeredAt'       => (string) $user->user_registered,
 		'isVendor'           => papelito_admin_users_is_vendor_related( $user ),
-		'vendorApplicationStatus' => function_exists( 'papelito_get_seller_application_status' ) ? papelito_get_seller_application_status( (int) $user->ID ) : 'none',
 		'emailVerificationStatus' => (string) get_user_meta( $user->ID, 'papelito_email_verification_status', true ),
 	);
 }

@@ -73,17 +73,6 @@ function papelito_validate_active_vendor( int $vendor_id, string $user_cep ) {
 		);
 	}
 
-	if (
-		function_exists( 'papelito_get_seller_application_status' )
-		&& 'approved' !== papelito_get_seller_application_status( $vendor_id )
-	) {
-		return new WP_Error(
-			'papelito_active_vendor_not_approved',
-			'Vendor nao esta aprovado.',
-			array( 'status' => 403 )
-		);
-	}
-
 	if ( '' === $user_cep || strlen( $user_cep ) !== 8 ) {
 		return new WP_Error(
 			'papelito_account_cep_missing',
@@ -185,13 +174,6 @@ function papelito_resolve_default_vendor_id( int $user_id ): ?int {
 		$user = get_userdata( $vendor_id );
 
 		if ( ! $user instanceof WP_User || ! in_array( 'seller', (array) $user->roles, true ) ) {
-			continue;
-		}
-
-		if (
-			function_exists( 'papelito_get_seller_application_status' )
-			&& 'approved' !== papelito_get_seller_application_status( $vendor_id )
-		) {
 			continue;
 		}
 
@@ -381,13 +363,6 @@ function papelito_available_vendors_for_user( int $user_id ) {
 		$user = get_userdata( $vendor_id );
 
 		if ( ! $user instanceof WP_User || ! in_array( 'seller', (array) $user->roles, true ) ) {
-			continue;
-		}
-
-		if (
-			function_exists( 'papelito_get_seller_application_status' )
-			&& 'approved' !== papelito_get_seller_application_status( $vendor_id )
-		) {
 			continue;
 		}
 

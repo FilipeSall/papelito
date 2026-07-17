@@ -307,17 +307,6 @@ function papelito_order_routing_resolve_items( array $items ) {
 		return $vendor;
 	}
 
-	if (
-		function_exists( 'papelito_get_seller_application_status' ) &&
-		'approved' !== papelito_get_seller_application_status( $vendor_id )
-	) {
-		return new WP_Error(
-			'papelito_checkout_vendor_not_approved',
-			'O vendor selecionado nao esta apto para receber pedidos.',
-			array( 'status' => 422 )
-		);
-	}
-
 	$vendor_name = papelito_order_routing_vendor_name( $vendor_id );
 	$lines       = array();
 

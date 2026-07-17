@@ -105,11 +105,6 @@ function papelito_admin_reports_parse_users_filters( WP_REST_Request $request ):
 			array( 'all', 'administrator', 'customer', 'seller' ),
 			'all'
 		),
-		'applicationStatus' => papelito_admin_reports_normalize_enum(
-			sanitize_text_field( (string) $request->get_param( 'applicationStatus' ) ),
-			array( 'all', 'none', 'pending', 'incomplete', 'approved', 'rejected' ),
-			'all'
-		),
 		'state'             => strtoupper( sanitize_text_field( (string) $request->get_param( 'state' ) ) ),
 		'city'              => sanitize_text_field( (string) $request->get_param( 'city' ) ),
 		'coverage'          => papelito_admin_reports_normalize_enum(
@@ -181,7 +176,6 @@ function papelito_admin_reports_users_base_sql(): string {
 		LEFT JOIN {$usermeta_table} cnpj ON cnpj.user_id = u.ID AND cnpj.meta_key = 'cnpj'
 		LEFT JOIN {$usermeta_table} state_meta ON state_meta.user_id = u.ID AND state_meta.meta_key = 'state'
 		LEFT JOIN {$usermeta_table} city_meta ON city_meta.user_id = u.ID AND city_meta.meta_key = 'city'
-		LEFT JOIN {$usermeta_table} application_status ON application_status.user_id = u.ID AND application_status.meta_key = 'application_status'
 		LEFT JOIN {$usermeta_table} first_name ON first_name.user_id = u.ID AND first_name.meta_key = 'first_name'
 		LEFT JOIN {$usermeta_table} last_name ON last_name.user_id = u.ID AND last_name.meta_key = 'last_name'
 	";
@@ -208,15 +202,6 @@ function papelito_admin_reports_users_where_sql( array $filters, array &$args ):
 	if ( 'all' !== $filters['role'] && is_string( $filters['role'] ) ) {
 		$conditions[] = 'cap.meta_value LIKE %s';
 		$args[]       = '%"' . $filters['role'] . '"%';
-	}
-
-	if ( 'all' !== $filters['applicationStatus'] && is_string( $filters['applicationStatus'] ) ) {
-		if ( 'none' === $filters['applicationStatus'] ) {
-			$conditions[] = "(application_status.meta_value IS NULL OR application_status.meta_value = '')";
-		} else {
-			$conditions[] = 'application_status.meta_value = %s';
-			$args[]       = $filters['applicationStatus'];
-		}
 	}
 
 	if ( ! empty( $filters['state'] ) && is_string( $filters['state'] ) ) {
@@ -317,27 +302,6 @@ function papelito_admin_reports_role_label( string $role ): string {
 			return 'Customer';
 		default:
 			return 'Outro';
-	}
-}
-
-/**
- * Label do status de triagem.
- *
- * @param string $status Status cru.
- * @return string
- */
-function papelito_admin_reports_application_status_label( string $status ): string {
-	switch ( $status ) {
-		case 'pending':
-			return 'Pendente';
-		case 'incomplete':
-			return 'Cadastro incompleto';
-		case 'approved':
-			return 'Aprovada';
-		case 'rejected':
-			return 'Rejeitada';
-		default:
-			return 'Sem triagem';
 	}
 }
 
@@ -484,7 +448,6 @@ function papelito_admin_reports_query_user_rows( array $filters, bool $for_expor
 			COALESCE(cnpj.meta_value, '') AS cnpj,
 			COALESCE(state_meta.meta_value, '') AS state,
 			COALESCE(city_meta.meta_value, '') AS city,
-			COALESCE(application_status.meta_value, '') AS application_status,
 			COALESCE(first_name.meta_value, '') AS first_name,
 			COALESCE(last_name.meta_value, '') AS last_name
 	";
@@ -524,8 +487,6 @@ function papelito_admin_reports_query_user_rows( array $filters, bool $for_expor
 			'email'                  => isset( $raw_row['user_email'] ) ? (string) $raw_row['user_email'] : '',
 			'role'                   => $role,
 			'roleLabel'              => papelito_admin_reports_role_label( $role ),
-			'applicationStatus'      => isset( $raw_row['application_status'] ) && '' !== $raw_row['application_status'] ? (string) $raw_row['application_status'] : 'none',
-			'applicationStatusLabel' => papelito_admin_reports_application_status_label( isset( $raw_row['application_status'] ) ? (string) $raw_row['application_status'] : '' ),
 			'storeName'              => isset( $raw_row['store_name'] ) ? (string) $raw_row['store_name'] : '',
 			'phoneNumber'            => isset( $raw_row['phone_number'] ) ? (string) $raw_row['phone_number'] : '',
 			'cnpj'                   => isset( $raw_row['cnpj'] ) ? (string) $raw_row['cnpj'] : '',
@@ -571,8 +532,7 @@ function papelito_admin_reports_query_users_summary( array $filters ): array {
 		"
 		SELECT
 			COUNT(*) AS filtered_users,
-			SUM(CASE WHEN application_status.meta_value = 'pending' THEN 1 ELSE 0 END) AS pending_applications,
-			SUM(CASE WHEN cap.meta_value LIKE %s THEN 1 ELSE 0 END) AS approved_sellers,
+			SUM(CASE WHEN cap.meta_value LIKE %s THEN 1 ELSE 0 END) AS vendors_count,
 			SUM(CASE WHEN {$coverage_exists} THEN 1 ELSE 0 END) AS users_with_coverage
 		" . $base_sql . $where_sql,
 		$args
@@ -582,8 +542,7 @@ function papelito_admin_reports_query_users_summary( array $filters ): array {
 
 	return array(
 		'filteredUsers'      => isset( $summary['filtered_users'] ) ? (int) $summary['filtered_users'] : 0,
-		'pendingApplications' => isset( $summary['pending_applications'] ) ? (int) $summary['pending_applications'] : 0,
-		'approvedSellers'    => isset( $summary['approved_sellers'] ) ? (int) $summary['approved_sellers'] : 0,
+		'vendorsCount'       => isset( $summary['vendors_count'] ) ? (int) $summary['vendors_count'] : 0,
 		'usersWithCoverage'  => isset( $summary['users_with_coverage'] ) ? (int) $summary['users_with_coverage'] : 0,
 	);
 }
@@ -721,7 +680,6 @@ function papelito_admin_reports_generate_users_xlsx( array $rows ) {
 				'Nome',
 				'E-mail',
 				'Role',
-				'Triagem',
 				'Loja',
 				'Telefone',
 				'CNPJ',
@@ -743,7 +701,6 @@ function papelito_admin_reports_generate_users_xlsx( array $rows ) {
 					papelito_admin_reports_normalize_export_text( $row['name'] ?? '' ),
 					papelito_admin_reports_normalize_export_text( $row['email'] ?? '' ),
 					papelito_admin_reports_normalize_export_text( $row['roleLabel'] ?? '' ),
-					papelito_admin_reports_normalize_export_text( $row['applicationStatusLabel'] ?? '' ),
 					papelito_admin_reports_normalize_export_text( $row['storeName'] ?? '' ),
 					papelito_admin_reports_normalize_export_text( $row['phoneNumber'] ?? '' ),
 					papelito_admin_reports_normalize_export_text( $row['cnpj'] ?? '' ),
