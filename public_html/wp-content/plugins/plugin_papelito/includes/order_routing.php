@@ -16,6 +16,10 @@ if ( ! defined( 'PAPELITO_ORDER_VENDOR_STATUS_AWAITING_SHIPMENT' ) ) {
 	define( 'PAPELITO_ORDER_VENDOR_STATUS_AWAITING_SHIPMENT', 'aguardando_envio' );
 }
 
+if ( ! defined( 'PAPELITO_CHECKOUT_ATTEMPT_ID_META' ) ) {
+	define( 'PAPELITO_CHECKOUT_ATTEMPT_ID_META', '_papelito_checkout_attempt_id' );
+}
+
 /**
  * Verifica se um valor e uma instancia da classe WooCommerce esperada.
  *
@@ -37,6 +41,88 @@ function papelito_order_routing_normalize_payment_method( $value ): string {
 	$method = sanitize_key( (string) $value );
 
 	return in_array( $method, array( 'credit_card', 'pix', 'boleto' ), true ) ? $method : '';
+}
+
+/**
+ * Normaliza a chave idempotente enviada pelo checkout.
+ */
+function papelito_order_routing_normalize_checkout_attempt_id( $value ): string {
+	$attempt_id = sanitize_text_field( (string) $value );
+	$attempt_id = substr( $attempt_id, 0, 120 );
+
+	return preg_match( '/^[A-Za-z0-9._:-]{8,120}$/', $attempt_id ) ? $attempt_id : '';
+}
+
+/**
+ * Busca um pedido ja criado pela mesma tentativa de checkout.
+ */
+function papelito_order_routing_find_order_by_attempt( int $user_id, string $attempt_id ) {
+	if ( '' === $attempt_id || ! function_exists( 'wc_get_orders' ) ) {
+		return null;
+	}
+
+	$orders = wc_get_orders(
+		array(
+			'customer_id' => $user_id,
+			'limit'       => 1,
+			'orderby'     => 'date',
+			'order'       => 'DESC',
+			'meta_key'    => PAPELITO_CHECKOUT_ATTEMPT_ID_META,
+			'meta_value'  => $attempt_id,
+			'return'      => 'objects',
+		)
+	);
+
+	return isset( $orders[0] ) ? $orders[0] : null;
+}
+
+/**
+ * Monta a resposta de um pedido ja existente para retry idempotente.
+ */
+function papelito_order_routing_existing_order_response( object $order ) {
+	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
+		return null;
+	}
+
+	$pagarme_order_id = method_exists( $order, 'get_meta' ) && defined( 'PAPELITO_PAGARME_ORDER_ID_META' )
+		? sanitize_text_field( (string) $order->get_meta( PAPELITO_PAGARME_ORDER_ID_META, true ) )
+		: '';
+
+	if ( '' === $pagarme_order_id ) {
+		return new WP_Error(
+			'papelito_checkout_attempt_in_progress',
+			'Este checkout ja esta sendo processado. Aguarde alguns instantes.',
+			array( 'status' => 409 )
+		);
+	}
+
+	$total_cents = method_exists( $order, 'get_meta' )
+		? max( 0, (int) $order->get_meta( '_papelito_authoritative_total_cents', true ) )
+		: 0;
+
+	return array_filter(
+		array(
+			'order_id'     => method_exists( $order, 'get_id' ) ? $order->get_id() : 0,
+			'order_number' => method_exists( $order, 'get_order_number' ) ? $order->get_order_number() : '',
+			'status'       => method_exists( $order, 'get_status' ) ? $order->get_status() : '',
+			'payment'      => function_exists( 'papelito_pagarme_order_payment_snapshot' )
+				? papelito_pagarme_order_payment_snapshot( $order )
+				: array(
+					'method' => '',
+					'state'  => '',
+				),
+			'totals'       => $total_cents > 0
+				? array(
+					'subtotalCents' => 0,
+					'discountCents' => 0,
+					'itemsCents'    => 0,
+					'shippingCents' => 0,
+					'totalCents'    => $total_cents,
+				)
+				: null,
+		),
+		static fn( $value ): bool => null !== $value
+	);
 }
 
 /**
@@ -374,7 +460,7 @@ function papelito_order_routing_add_coupon_item( $order, array $coupon ): void {
  * @param string $payment_method Metodo de pagamento.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_order_routing_create_order( int $user_id, array $address, array $lines, array $shipping, ?array $coupon, string $payment_method ) {
+function papelito_order_routing_create_order( int $user_id, array $address, array $lines, array $shipping, ?array $coupon, string $payment_method, string $checkout_attempt_id = '' ) {
 	if ( ! function_exists( 'wc_create_order' ) || ! class_exists( 'WC_Order' ) || ! class_exists( 'WC_Order_Item_Shipping' ) || ! class_exists( 'WC_Order_Item_Product' ) ) {
 		return new WP_Error(
 			'papelito_checkout_woocommerce_unavailable',
@@ -465,6 +551,10 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 		$order->update_meta_data( '_papelito_shipping_neighborhood', sanitize_text_field( (string) ( $address['neighborhood'] ?? '' ) ) );
 		$order->update_meta_data( '_papelito_stock_decremented', '0' );
 		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_ORDER_VENDOR_STATUS_AWAITING_PAYMENT );
+
+		if ( '' !== $checkout_attempt_id ) {
+			$order->update_meta_data( PAPELITO_CHECKOUT_ATTEMPT_ID_META, $checkout_attempt_id );
+		}
 
 		$authoritative_total_cents = papelito_pricing_to_cents( (float) ( $shipping['price'] ?? 0 ) );
 		foreach ( $lines as $line ) {
@@ -750,6 +840,23 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 	}
 
 	$user_id = get_current_user_id();
+	$checkout_attempt_id = papelito_order_routing_normalize_checkout_attempt_id( $payload['checkout_attempt_id'] ?? '' );
+
+	if ( '' !== $checkout_attempt_id ) {
+		$existing_order = papelito_order_routing_find_order_by_attempt( $user_id, $checkout_attempt_id );
+		if ( is_object( $existing_order ) ) {
+			$existing_response = papelito_order_routing_existing_order_response( $existing_order );
+
+			if ( is_wp_error( $existing_response ) ) {
+				return $existing_response;
+			}
+
+			if ( is_array( $existing_response ) ) {
+				return new WP_REST_Response( $existing_response, 200 );
+			}
+		}
+	}
+
 	$address = papelito_order_routing_normalize_address( $payload['address'] ?? null );
 	if ( is_wp_error( $address ) ) {
 		return $address;
@@ -829,7 +936,7 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		return $recipient_validation;
 	}
 
-	$created = papelito_order_routing_create_order( $user_id, $address, $lines, $shipping, $coupon, (string) $payment['method'] );
+	$created = papelito_order_routing_create_order( $user_id, $address, $lines, $shipping, $coupon, (string) $payment['method'], $checkout_attempt_id );
 	if ( is_wp_error( $created ) ) {
 		return $created;
 	}

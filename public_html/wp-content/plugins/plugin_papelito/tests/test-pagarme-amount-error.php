@@ -7,6 +7,10 @@
 
 define( 'ABSPATH', __DIR__ );
 function sanitize_text_field( mixed $value ) { return trim( (string) $value ); }
+function sanitize_key( mixed $value ) {
+	$value = strtolower( (string) $value );
+	return preg_replace( '/[^a-z0-9_\-]/', '', $value );
+}
 function wp_json_encode( mixed $value, $flags = 0 ) { return json_encode( $value, $flags ); }
 function papelito_env( $key, $default = '' ) { return 'sk_test_example'; }
 class WP_Error {

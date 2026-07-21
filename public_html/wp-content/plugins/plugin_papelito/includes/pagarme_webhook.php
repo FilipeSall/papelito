@@ -138,17 +138,12 @@ function papelito_pagarme_webhook_identifiers( array $payload ): array {
 }
 
 /**
- * Processa o webhook Pagar.me.
+ * Processa um payload Pagar.me ja autenticado.
+ *
+ * @param array<string,mixed> $payload Corpo do evento.
+ * @param callable|null       $reconcile_order Callback opcional para testes/simulador.
  */
-function papelito_pagarme_handle_webhook( WP_REST_Request $request ) {
-	$auth = papelito_pagarme_validate_webhook_auth();
-
-	if ( is_wp_error( $auth ) ) {
-		return $auth;
-	}
-
-	$payload      = $request->get_json_params();
-	$payload      = is_array( $payload ) ? $payload : array();
+function papelito_pagarme_process_webhook_payload( array $payload, ?callable $reconcile_order = null ) {
 	$identifiers  = papelito_pagarme_webhook_identifiers( $payload );
 	$event_type   = $identifiers['event_type'];
 
@@ -182,7 +177,9 @@ function papelito_pagarme_handle_webhook( WP_REST_Request $request ) {
 		return new WP_REST_Response( array( 'ok' => true, 'ignored' => true ), 200 );
 	}
 
-	$reconciled = papelito_pagarme_reconcile_wc_order( $order );
+	$reconciled = is_callable( $reconcile_order )
+		? $reconcile_order( $order, $payload, $identifiers )
+		: papelito_pagarme_reconcile_wc_order( $order );
 
 	if ( is_wp_error( $reconciled ) ) {
 		return $reconciled;
@@ -195,6 +192,22 @@ function papelito_pagarme_handle_webhook( WP_REST_Request $request ) {
 	}
 
 	return new WP_REST_Response( array( 'ok' => true ), 200 );
+}
+
+/**
+ * Processa o webhook Pagar.me.
+ */
+function papelito_pagarme_handle_webhook( WP_REST_Request $request ) {
+	$auth = papelito_pagarme_validate_webhook_auth();
+
+	if ( is_wp_error( $auth ) ) {
+		return $auth;
+	}
+
+	$payload = $request->get_json_params();
+	$payload = is_array( $payload ) ? $payload : array();
+
+	return papelito_pagarme_process_webhook_payload( $payload );
 }
 
 add_action(

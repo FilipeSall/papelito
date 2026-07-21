@@ -35,6 +35,7 @@ require_once __DIR__ . '/includes/pagarme_client.php';
 require_once __DIR__ . '/includes/pagarme_recipients.php';
 require_once __DIR__ . '/includes/pagarme_payments.php';
 require_once __DIR__ . '/includes/pagarme_webhook.php';
+require_once __DIR__ . '/includes/pagarme_simulator.php';
 require_once __DIR__ . '/includes/order_routing.php';
 require_once __DIR__ . '/includes/vendor_dashboard.php';
 require_once __DIR__ . '/includes/vendor_messaging.php';

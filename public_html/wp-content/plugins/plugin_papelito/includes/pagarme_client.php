@@ -30,6 +30,40 @@ function papelito_pagarme_secret_key(): string {
 }
 
 /**
+ * Retorna o tipo de ambiente WordPress normalizado.
+ */
+function papelito_pagarme_environment_type(): string {
+	if ( function_exists( 'wp_get_environment_type' ) ) {
+		return sanitize_key( wp_get_environment_type() );
+	}
+
+	return sanitize_key( (string) papelito_env( 'WP_ENVIRONMENT_TYPE', 'production' ) );
+}
+
+/**
+ * Valida se a chave Pagar.me pertence ao ambiente atual.
+ */
+function papelito_pagarme_validate_environment_key(): bool {
+	$key         = papelito_pagarme_secret_key();
+	$env_type    = papelito_pagarme_environment_type();
+	$is_test_key = 0 === strpos( $key, 'sk_test_' );
+
+	if ( '' === $key ) {
+		return false;
+	}
+
+	if ( 'production' === $env_type ) {
+		return ! $is_test_key;
+	}
+
+	if ( in_array( $env_type, array( 'local', 'development' ), true ) ) {
+		return $is_test_key;
+	}
+
+	return true;
+}
+
+/**
  * Retorna o usuario de Basic Auth do webhook.
  */
 function papelito_pagarme_webhook_user(): string {
@@ -51,7 +85,7 @@ function papelito_pagarme_webhook_pass(): string {
  * Indica se a integracao server-side esta configurada.
  */
 function papelito_pagarme_is_configured(): bool {
-	return '' !== papelito_pagarme_secret_key();
+	return '' !== papelito_pagarme_secret_key() && papelito_pagarme_validate_environment_key();
 }
 
 /**
@@ -203,6 +237,14 @@ function papelito_pagarme_request( string $method, string $path, ?array $body = 
 		return new WP_Error(
 			'papelito_pagarme_not_configured',
 			'Pagar.me nao configurado no ambiente.',
+			array( 'status' => 500 )
+		);
+	}
+
+	if ( ! papelito_pagarme_validate_environment_key() ) {
+		return new WP_Error(
+			'papelito_pagarme_environment_mismatch',
+			'As credenciais Pagar.me nao correspondem ao ambiente atual.',
 			array( 'status' => 500 )
 		);
 	}
