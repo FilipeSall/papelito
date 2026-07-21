@@ -183,6 +183,134 @@ function papelito_flash_sale_normalize_campaign( array $campaign ): ?array {
 }
 
 /**
+ * Codifica bytes em base64 URL-safe sem padding.
+ *
+ * @param string $value Bytes crus.
+ * @return string
+ */
+function papelito_flash_sale_base64url_encode( string $value ): string {
+	return rtrim( strtr( base64_encode( $value ), '+/', '-_' ), '=' );
+}
+
+/**
+ * Decodifica base64 URL-safe.
+ *
+ * @param string $value Valor codificado.
+ * @return string|false
+ */
+function papelito_flash_sale_base64url_decode( string $value ) {
+	$padding = strlen( $value ) % 4;
+	if ( $padding > 0 ) {
+		$value .= str_repeat( '=', 4 - $padding );
+	}
+
+	return base64_decode( strtr( $value, '-_', '+/' ), true );
+}
+
+/**
+ * Fingerprint estável dos dados que alteram uma promoção.
+ *
+ * @param array<string,mixed> $campaign Campanha normalizada.
+ * @return string
+ */
+function papelito_flash_sale_campaign_fingerprint( array $campaign ): string {
+	$canonical = array(
+		'title'           => sanitize_text_field( (string) ( $campaign['title'] ?? '' ) ),
+		'starts_at'       => sanitize_text_field( (string) ( $campaign['starts_at'] ?? '' ) ),
+		'ends_at'         => sanitize_text_field( (string) ( $campaign['ends_at'] ?? '' ) ),
+		'productIds'      => papelito_flash_sale_normalize_product_ids( $campaign['productIds'] ?? array() ),
+		'discountPercent' => papelito_flash_sale_clamp_discount( $campaign['discountPercent'] ?? 0 ),
+	);
+
+	return hash( 'sha256', (string) wp_json_encode( $canonical, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
+}
+
+/**
+ * Cria prova assinada de que o item foi adicionado pela vitrine ativa.
+ *
+ * @param array<string,mixed>|null $campaign Campanha normalizada.
+ * @param int                      $product_id Produto da vitrine.
+ * @return string
+ */
+function papelito_flash_sale_create_promotion_context( ?array $campaign, int $product_id ): string {
+	if ( null === $campaign || 'active' !== ( $campaign['status'] ?? '' ) ) {
+		return '';
+	}
+
+	if ( ! in_array( $product_id, papelito_flash_sale_normalize_product_ids( $campaign['productIds'] ?? array() ), true ) ) {
+		return '';
+	}
+
+	$ends_at = papelito_flash_sale_parse_datetime( (string) ( $campaign['ends_at'] ?? '' ) );
+	if ( ! $ends_at instanceof DateTimeImmutable ) {
+		return '';
+	}
+
+	$payload = array(
+		'v'   => 1,
+		'pid' => $product_id,
+		'fp'  => papelito_flash_sale_campaign_fingerprint( $campaign ),
+		'exp' => $ends_at->getTimestamp(),
+	);
+	$encoded = papelito_flash_sale_base64url_encode(
+		(string) wp_json_encode( $payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE )
+	);
+	$signature = hash_hmac( 'sha256', $encoded, wp_salt( 'auth' ), true );
+
+	return $encoded . '.' . papelito_flash_sale_base64url_encode( $signature );
+}
+
+/**
+ * Valida a prova assinada contra a campanha ativa atual.
+ *
+ * @param string $context Contexto enviado pela linha do carrinho.
+ * @param int    $product_id Produto esperado.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_flash_sale_resolve_promotion_context( string $context, int $product_id ) {
+	if ( '' === $context || strlen( $context ) > 2048 || 2 !== count( explode( '.', $context ) ) ) {
+		return new WP_Error( 'papelito_promotion_context_invalid', 'A oferta deste item não pôde ser validada.', array( 'status' => 409 ) );
+	}
+
+	list( $encoded, $encoded_signature ) = explode( '.', $context, 2 );
+	$signature                           = papelito_flash_sale_base64url_decode( $encoded_signature );
+	$expected                            = hash_hmac( 'sha256', $encoded, wp_salt( 'auth' ), true );
+
+	if ( ! is_string( $signature ) || ! hash_equals( $expected, $signature ) ) {
+		return new WP_Error( 'papelito_promotion_context_invalid', 'A oferta deste item não pôde ser validada.', array( 'status' => 409 ) );
+	}
+
+	$decoded = papelito_flash_sale_base64url_decode( $encoded );
+	$payload = is_string( $decoded ) ? json_decode( $decoded, true ) : null;
+	if ( ! is_array( $payload ) || 1 !== (int) ( $payload['v'] ?? 0 ) ) {
+		return new WP_Error( 'papelito_promotion_context_invalid', 'A oferta deste item não pôde ser validada.', array( 'status' => 409 ) );
+	}
+
+	if ( $product_id <= 0 || $product_id !== (int) ( $payload['pid'] ?? 0 ) ) {
+		return new WP_Error( 'papelito_promotion_context_product_mismatch', 'A oferta não pertence a este produto.', array( 'status' => 409 ) );
+	}
+
+	if ( (int) ( $payload['exp'] ?? 0 ) < time() ) {
+		return new WP_Error( 'papelito_promotion_context_expired', 'A oferta deste item expirou.', array( 'status' => 409 ) );
+	}
+
+	$campaign = papelito_flash_sale_normalize_campaign( papelito_flash_sale_get_raw_campaign() );
+	if ( null === $campaign || 'active' !== ( $campaign['status'] ?? '' ) ) {
+		return new WP_Error( 'papelito_promotion_context_expired', 'A oferta deste item expirou.', array( 'status' => 409 ) );
+	}
+
+	if ( ! in_array( $product_id, papelito_flash_sale_normalize_product_ids( $campaign['productIds'] ?? array() ), true ) ) {
+		return new WP_Error( 'papelito_promotion_context_stale', 'A campanha deste item foi alterada.', array( 'status' => 409 ) );
+	}
+
+	if ( ! hash_equals( papelito_flash_sale_campaign_fingerprint( $campaign ), (string) ( $payload['fp'] ?? '' ) ) ) {
+		return new WP_Error( 'papelito_promotion_context_stale', 'A campanha deste item foi alterada.', array( 'status' => 409 ) );
+	}
+
+	return $campaign;
+}
+
+/**
  * Converte preço para float.
  *
  * @param mixed $value Valor textual/numérico.
@@ -219,6 +347,158 @@ function papelito_flash_sale_load_product( int $product_id ): ?WC_Product {
 	}
 
 	return $product;
+}
+
+/**
+ * Mapeia um produto elegível para o seletor administrativo.
+ *
+ * @param WC_Product $product Produto publicado e elegível.
+ * @return array<string,mixed>
+ */
+function papelito_flash_sale_build_admin_candidate( WC_Product $product ): array {
+	$image_id   = (int) $product->get_image_id();
+	$image_url  = $image_id > 0 ? wp_get_attachment_image_url( $image_id, 'thumbnail' ) : '';
+	$categories = wc_get_product_terms( $product->get_id(), 'product_cat', array( 'fields' => 'all' ) );
+	$tags       = wc_get_product_terms( $product->get_id(), 'product_tag', array( 'fields' => 'all' ) );
+	$map_term   = static function ( $term ): array {
+		return array(
+			'id'     => isset( $term->term_id ) ? (int) $term->term_id : (int) ( $term->id ?? 0 ),
+			'name'   => sanitize_text_field( (string) ( $term->name ?? '' ) ),
+			'parent' => isset( $term->parent ) ? (int) $term->parent : 0,
+			'slug'   => sanitize_title( (string) ( $term->slug ?? '' ) ),
+		);
+	};
+
+	return array(
+		'id'            => (int) $product->get_id(),
+		'name'          => sanitize_text_field( (string) $product->get_name() ),
+		'sku'           => sanitize_text_field( (string) $product->get_sku() ),
+		'status'        => sanitize_key( (string) $product->get_status() ),
+		'type'          => method_exists( $product, 'get_type' ) ? sanitize_key( (string) $product->get_type() ) : 'simple',
+		'price'         => (string) $product->get_price( 'edit' ),
+		'regularPrice'  => (string) $product->get_regular_price( 'edit' ),
+		'permalink'     => (string) get_permalink( $product->get_id() ),
+		'weight'        => method_exists( $product, 'get_weight' ) ? (string) $product->get_weight( 'edit' ) : '',
+		'stockStatus'   => method_exists( $product, 'get_stock_status' ) ? sanitize_key( (string) $product->get_stock_status() ) : 'instock',
+		'stockQuantity' => method_exists( $product, 'get_stock_quantity' ) ? $product->get_stock_quantity() : null,
+		'dateModified'  => method_exists( $product, 'get_date_modified' ) && $product->get_date_modified()
+			? $product->get_date_modified()->date( DATE_ATOM )
+			: '',
+		'images'        => $image_url
+			? array(
+				array(
+					'id'       => $image_id,
+					'src'      => (string) $image_url,
+					'alt'      => sanitize_text_field( (string) $product->get_name() ),
+					'position' => 0,
+				),
+			)
+			: array(),
+		'categories'    => array_values( array_map( $map_term, is_array( $categories ) ? $categories : array() ) ),
+		'tags'          => array_values( array_map( $map_term, is_array( $tags ) ? $tags : array() ) ),
+	);
+}
+
+/**
+ * Consulta produtos elegíveis usando a mesma regra aplicada ao salvar.
+ *
+ * @param array<string,mixed> $args Filtros de busca.
+ * @return array{items:array<int,array<string,mixed>>,page:int,perPage:int,total:int,totalPages:int}
+ */
+function papelito_flash_sale_query_eligible_products( array $args = array() ): array {
+	$page       = max( 1, absint( $args['page'] ?? 1 ) );
+	$per_page   = min( 100, max( 1, absint( $args['per_page'] ?? 24 ) ) );
+	$search     = sanitize_text_field( (string) ( $args['search'] ?? '' ) );
+	$category   = absint( $args['category'] ?? 0 );
+	$query_args = array(
+		'post_type'              => 'product',
+		'post_status'            => 'publish',
+		'fields'                 => 'ids',
+		'posts_per_page'         => -1,
+		'orderby'                => 'modified',
+		'order'                  => 'DESC',
+		'no_found_rows'          => true,
+		'update_post_meta_cache' => false,
+		'update_post_term_cache' => false,
+	);
+
+	if ( $category > 0 ) {
+		$query_args['tax_query'] = array(
+			array(
+				'taxonomy' => 'product_cat',
+				'field'    => 'term_id',
+				'terms'    => $category,
+			),
+		);
+	}
+
+	$search_filter = null;
+	if ( '' !== $search ) {
+		$query_args['s'] = $search;
+		$search_filter = static function ( string $where ) use ( $search ): string {
+			global $wpdb;
+
+			$like = '%' . $wpdb->esc_like( $search ) . '%';
+			if ( ctype_digit( $search ) ) {
+				return $wpdb->prepare(
+					" AND ( {$wpdb->posts}.ID = %d OR {$wpdb->posts}.post_title LIKE %s OR EXISTS ( SELECT 1 FROM {$wpdb->postmeta} flash_sku WHERE flash_sku.post_id = {$wpdb->posts}.ID AND flash_sku.meta_key = '_sku' AND flash_sku.meta_value LIKE %s ) ) ",
+					absint( $search ),
+					$like,
+					$like
+				);
+			}
+
+			return $wpdb->prepare(
+				" AND ( {$wpdb->posts}.post_title LIKE %s OR EXISTS ( SELECT 1 FROM {$wpdb->postmeta} flash_sku WHERE flash_sku.post_id = {$wpdb->posts}.ID AND flash_sku.meta_key = '_sku' AND flash_sku.meta_value LIKE %s ) ) ",
+				$like,
+				$like
+			);
+		};
+		add_filter( 'posts_search', $search_filter, 20, 1 );
+	}
+
+	$query = new WP_Query( $query_args );
+
+	if ( null !== $search_filter ) {
+		remove_filter( 'posts_search', $search_filter, 20 );
+	}
+
+	$eligible = array();
+	foreach ( (array) $query->posts as $product_id ) {
+		$product = papelito_flash_sale_load_product( (int) $product_id );
+		if ( ! $product instanceof WC_Product ) {
+			continue;
+		}
+
+		if ( '' !== $search ) {
+			$id_matches   = ctype_digit( $search ) && (int) $search === (int) $product->get_id();
+			$name_matches = false !== stripos( (string) $product->get_name(), $search );
+			$sku_matches  = false !== stripos( (string) $product->get_sku(), $search );
+			if ( ! $id_matches && ! $name_matches && ! $sku_matches ) {
+				continue;
+			}
+		}
+
+		$eligible[] = $product;
+	}
+
+	$total       = count( $eligible );
+	$total_pages = max( 1, (int) ceil( $total / $per_page ) );
+	$safe_page   = min( $page, $total_pages );
+	$offset      = ( $safe_page - 1 ) * $per_page;
+
+	return array(
+		'items'      => array_values(
+			array_map(
+				'papelito_flash_sale_build_admin_candidate',
+				array_slice( $eligible, $offset, $per_page )
+			)
+		),
+		'page'       => $safe_page,
+		'perPage'    => $per_page,
+		'total'      => $total,
+		'totalPages' => $total_pages,
+	);
 }
 
 /**
@@ -556,7 +836,9 @@ add_action(
 						$product = papelito_flash_sale_load_product( $product_id );
 
 						if ( $product instanceof WC_Product ) {
-							$products[] = papelito_flash_sale_build_product_payload( $product, $campaign['discountPercent'] );
+							$product_payload                     = papelito_flash_sale_build_product_payload( $product, $campaign['discountPercent'] );
+							$product_payload['promotionContext'] = papelito_flash_sale_create_promotion_context( $campaign, $product_id );
+							$products[]                          = $product_payload;
 						}
 					}
 
@@ -579,6 +861,36 @@ add_action(
 					);
 				},
 			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/flash-sale/products',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => static function (): bool {
+					return current_user_can( 'manage_options' );
+				},
+				'args'                => array(
+					'page'     => array( 'sanitize_callback' => 'absint', 'default' => 1 ),
+					'per_page' => array( 'sanitize_callback' => 'absint', 'default' => 24 ),
+					'search'   => array( 'sanitize_callback' => 'sanitize_text_field', 'default' => '' ),
+					'category' => array( 'sanitize_callback' => 'absint', 'default' => 0 ),
+				),
+				'callback'            => static function ( WP_REST_Request $request ): WP_REST_Response {
+					return new WP_REST_Response(
+						papelito_flash_sale_query_eligible_products(
+							array(
+								'page'     => $request->get_param( 'page' ),
+								'per_page' => $request->get_param( 'per_page' ),
+								'search'   => $request->get_param( 'search' ),
+								'category' => $request->get_param( 'category' ),
+							)
+						),
+						200
+					);
+				},
+			),
 		);
 
 		register_rest_route(

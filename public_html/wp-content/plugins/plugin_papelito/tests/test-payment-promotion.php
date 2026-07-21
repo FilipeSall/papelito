@@ -28,6 +28,10 @@ function sanitize_key( $key ) {
 	return preg_replace( '/[^a-z0-9_\-]/', '', $key );
 }
 
+function sanitize_text_field( mixed $value ) {
+	return trim( (string) $value );
+}
+
 function add_action( ...$args ) {}
 function add_filter( ...$args ) {}
 
@@ -118,6 +122,34 @@ papelito_pagarme_mark_vendor_status_unpaid( $order );
 papelito_assert( 'legacy failed order becomes cancelado', PAPELITO_VENDOR_STATUS_CANCELLED, $order->meta['_papelito_vendor_status'] );
 papelito_pagarme_mark_vendor_status_unpaid( $order );
 papelito_assert( 'legacy cancellation is idempotent', 1, count( $order->notes ) );
+
+echo "Scenario 7: discounted multi-quantity lines never create zero-cent items\n";
+$product = new class() {
+	public function get_name() { return 'Produto promocional'; }
+};
+$payload_items = papelito_pagarme_order_items_payload(
+	array(
+		array(
+			'product'     => $product,
+			'product_id'  => 11776,
+			'qty'         => 3,
+			'total'       => 0.02,
+			'total_cents' => 2,
+		),
+		array(
+			'product'     => $product,
+			'product_id'  => 11777,
+			'qty'         => 1,
+			'total'       => 0.0,
+			'total_cents' => 0,
+		),
+	),
+	array( 'price' => 0.01 )
+);
+papelito_assert( 'product and shipping are represented', 2, count( $payload_items ) );
+papelito_assert( 'discounted line remains positive', 2, $payload_items[0]['amount'] ?? null );
+papelito_assert( 'zero-value lines are omitted', array(), array_values( array_filter( $payload_items, static fn( array $item ): bool => (int) $item['amount'] <= 0 ) ) );
+papelito_assert( 'payload sum remains exact', 3, papelito_pagarme_items_total_cents( $payload_items ) );
 
 echo "\n";
 if ( $failures > 0 ) {

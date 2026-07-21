@@ -726,12 +726,31 @@ add_action(
 					$code       = (string) ( $payload['code'] ?? '' );
 					$cart_items = is_array( $payload['cart_items'] ?? null ) ? $payload['cart_items'] : array();
 
-					$result = papelito_coupon_apply_resolve( $code, $cart_items, get_current_user_id() );
-					if ( is_wp_error( $result ) ) {
-						return $result;
+					$quote = function_exists( 'papelito_pricing_quote' )
+						? papelito_pricing_quote( $cart_items, $code, get_current_user_id(), 0 )
+						: papelito_coupon_apply_resolve( $code, $cart_items, get_current_user_id() );
+					if ( is_wp_error( $quote ) ) {
+						return $quote;
 					}
 
-					return new WP_REST_Response( $result, 200 );
+					if ( isset( $quote['totals'], $quote['coupon'] ) ) {
+						$coupon = is_array( $quote['coupon'] ) ? $quote['coupon'] : array();
+						return new WP_REST_Response(
+							array(
+								'ok'                  => true,
+								'code'                => (string) ( $coupon['code'] ?? strtoupper( trim( $code ) ) ),
+								'discount_type'       => (string) ( $coupon['discountType'] ?? 'percent' ),
+								'discount_value'      => papelito_pricing_from_cents( (int) ( $coupon['discountValueCents'] ?? 0 ) ),
+								'applied_product_ids' => array_map( 'intval', (array) ( $coupon['appliedProductIds'] ?? array() ) ),
+								'applied'              => (bool) ( $coupon['applied'] ?? false ),
+								'message'              => (string) ( $coupon['message'] ?? '' ),
+								'quote'                => $quote,
+							),
+							200
+						);
+					}
+
+					return new WP_REST_Response( $quote, 200 );
 				},
 			)
 		);

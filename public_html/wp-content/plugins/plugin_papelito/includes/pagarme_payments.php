@@ -31,7 +31,7 @@ if ( ! defined( 'PAPELITO_PAGARME_ORDER_ID_META' ) ) {
  *
  * @return array<string,mixed>
  */
-function papelito_pagarme_order_payment_snapshot( $order ): array {
+function papelito_pagarme_order_payment_snapshot( object $order ): array {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
 		return array(
 			'method' => '',
@@ -169,23 +169,24 @@ function papelito_pagarme_order_items_payload( array $lines, array $shipping ): 
 
 	foreach ( $lines as $line ) {
 		$qty          = max( 1, (int) $line['qty'] );
-		$total_cents  = (int) round( 100 * (float) $line['total'] );
-		$base_amount  = intdiv( $total_cents, $qty );
-		$remainder    = $total_cents - ( $base_amount * $qty );
+		$total_cents  = isset( $line['total_cents'] )
+			? max( 0, (int) $line['total_cents'] )
+			: (int) round( 100 * (float) $line['total'] );
 		$product_code = 'product-' . (int) $line['product_id'];
 		$name         = is_object( $line['product'] ) && method_exists( $line['product'], 'get_name' )
 			? sanitize_text_field( (string) $line['product']->get_name() )
 			: 'Produto Papelito';
 
-		for ( $i = 0; $i < $qty; $i++ ) {
-			$unit_amount = $base_amount + ( $i === ( $qty - 1 ) ? $remainder : 0 );
-			$items[]     = array(
-				'amount'      => max( 0, $unit_amount ),
-				'description' => $name,
-				'quantity'    => 1,
-				'code'        => $product_code . '-' . ( $i + 1 ),
-			);
+		if ( $total_cents <= 0 ) {
+			continue;
 		}
+
+		$items[] = array(
+			'amount'      => $total_cents,
+			'description' => $qty > 1 ? sprintf( '%s x%d', $name, $qty ) : $name,
+			'quantity'    => 1,
+			'code'        => $product_code,
+		);
 	}
 
 	$shipping_cents = (int) round( 100 * (float) ( $shipping['price'] ?? 0 ) );
@@ -200,6 +201,17 @@ function papelito_pagarme_order_items_payload( array $lines, array $shipping ): 
 	}
 
 	return $items;
+}
+
+/**
+ * Soma o valor financeiro representado pelos itens da API.
+ */
+function papelito_pagarme_items_total_cents( array $items ): int {
+	$total = 0;
+	foreach ( $items as $item ) {
+		$total += max( 0, (int) ( $item['amount'] ?? 0 ) ) * max( 1, (int) ( $item['quantity'] ?? 1 ) );
+	}
+	return $total;
 }
 
 /**
@@ -298,7 +310,7 @@ function papelito_pagarme_vendor_split_payload( int $vendor_id, int $amount ) {
  * @param array<int,array<string,mixed>> $lines Linhas do pedido.
  * @return true|WP_Error
  */
-function papelito_pagarme_reserve_order_stock( $order, array $lines ) {
+function papelito_pagarme_reserve_order_stock( object $order, array $lines ) {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
 		return new WP_Error( 'papelito_checkout_invalid_order_instance', 'Pedido invalido para reservar estoque.', array( 'status' => 500 ) );
 	}
@@ -358,7 +370,7 @@ function papelito_pagarme_reserve_order_stock( $order, array $lines ) {
  * @param array<int,array<string,mixed>> $lines Linhas do pedido.
  * @return true|WP_Error
  */
-function papelito_pagarme_release_order_stock( $order, array $lines, string $reason = 'payment_release' ) {
+function papelito_pagarme_release_order_stock( object $order, array $lines, string $reason = 'payment_release' ) {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
 		return new WP_Error( 'papelito_checkout_invalid_order_instance', 'Pedido invalido para liberar estoque.', array( 'status' => 500 ) );
 	}
@@ -446,7 +458,7 @@ function papelito_pagarme_timestamp( string $value ): int {
 /**
  * Indica se a reserva local ja passou do prazo do meio de pagamento.
  */
-function papelito_pagarme_order_reservation_expired( $order ): bool {
+function papelito_pagarme_order_reservation_expired( object $order ): bool {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
 		return false;
 	}
@@ -472,7 +484,7 @@ function papelito_pagarme_order_reservation_expired( $order ): bool {
 /**
  * Libera estoque e marca o pedido como falho quando a cobranca nao pode mais ser paga.
  */
-function papelito_pagarme_release_order_stock_for_terminal_state( $order, string $reason = 'payment_terminal' ) {
+function papelito_pagarme_release_order_stock_for_terminal_state( object $order, string $reason = 'payment_terminal' ) {
 	$lines = function_exists( 'papelito_order_routing_order_lines' )
 		? papelito_order_routing_order_lines( $order )
 		: array();
@@ -490,7 +502,7 @@ function papelito_pagarme_release_order_stock_for_terminal_state( $order, string
  * @param array<string,mixed> $response Resposta do pedido Pagar.me.
  * @return array<string,mixed>
  */
-function papelito_pagarme_store_order_response( $order, array $response, string $method ): array {
+function papelito_pagarme_store_order_response( object $order, array $response, string $method ): array {
 	$charge           = papelito_pagarme_primary_charge( $response );
 	$last_transaction = isset( $charge['last_transaction'] ) && is_array( $charge['last_transaction'] ) ? $charge['last_transaction'] : array();
 	$state            = sanitize_key( (string) ( $charge['status'] ?? $response['status'] ?? 'pending' ) );
@@ -524,7 +536,7 @@ function papelito_pagarme_store_order_response( $order, array $response, string 
 /**
  * Indica se o pedido ja esta pago em WooCommerce ou no estado Pagar.me local.
  */
-function papelito_pagarme_order_has_paid_status( $order ): bool {
+function papelito_pagarme_order_has_paid_status( object $order ): bool {
 	if ( ! is_object( $order ) ) {
 		return false;
 	}
@@ -551,7 +563,7 @@ function papelito_pagarme_order_has_paid_status( $order ): bool {
 /**
  * Move o pedido conforme o estado conciliado da cobranca.
  */
-function papelito_pagarme_apply_order_state( $order, string $state, bool $paid ): void {
+function papelito_pagarme_apply_order_state( object $order, string $state, bool $paid ): void {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'payment_complete' ) ) {
 		return;
 	}
@@ -575,7 +587,7 @@ function papelito_pagarme_apply_order_state( $order, string $state, bool $paid )
  * "aguardando envio" quando o pagamento e confirmado. Idempotente: nao
  * regride pedidos que ja avancaram na esteira de fulfillment.
  */
-function papelito_pagarme_promote_vendor_status_on_payment( $order ): void {
+function papelito_pagarme_promote_vendor_status_on_payment( object $order ): void {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) || ! defined( 'PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT' ) ) {
 		return;
 	}
@@ -597,7 +609,7 @@ function papelito_pagarme_promote_vendor_status_on_payment( $order ): void {
  * entra em estado terminal sem confirmacao, evitando que o pedido conte
  * como venda. Nao mexe em pedidos ja enviados/entregues.
  */
-function papelito_pagarme_mark_vendor_status_unpaid( $order ): void {
+function papelito_pagarme_mark_vendor_status_unpaid( object $order ): void {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
 		return;
 	}
@@ -641,19 +653,26 @@ function papelito_pagarme_mark_vendor_status_unpaid( $order ): void {
  * @param array<string,mixed> $shipping Frete.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_pagarme_create_order_payment( $order, int $customer_id, array $payment, array $address, array $lines, array $shipping ) {
+function papelito_pagarme_create_order_payment( object $order, int $customer_id, array $payment, array $address, array $lines, array $shipping ) {
 	$customer = papelito_pagarme_customer_payload( $customer_id, $address );
 	if ( is_wp_error( $customer ) ) {
 		return $customer;
 	}
 
 	$order_total = (int) round( 100 * (float) ( method_exists( $order, 'get_total' ) ? $order->get_total() : 0 ) );
+	$method      = sanitize_key( (string) $payment['method'] );
+	$minimum     = function_exists( 'papelito_pricing_validate_payment_amount' )
+		? papelito_pricing_validate_payment_amount( $method, $order_total, (int) ( $payment['installments'] ?? 1 ) )
+		: true;
+	if ( is_wp_error( $minimum ) ) {
+		return $minimum;
+	}
+
 	$split       = papelito_pagarme_vendor_split_payload( (int) $lines[0]['vendor_id'], $order_total );
 	if ( is_wp_error( $split ) ) {
 		return $split;
 	}
 
-	$method        = sanitize_key( (string) $payment['method'] );
 	$billing_input = isset( $payment['billing_address'] ) && is_array( $payment['billing_address'] )
 		? $payment['billing_address']
 		: $address;
@@ -700,10 +719,26 @@ function papelito_pagarme_create_order_payment( $order, int $customer_id, array 
 		$payments[ $index ]['split'] = $split;
 	}
 
+	$items       = papelito_pagarme_order_items_payload( $lines, $shipping );
+	$items_total = papelito_pagarme_items_total_cents( $items );
+	$split_total = array_sum( array_map( static fn( array $entry ): int => (int) ( $entry['amount'] ?? 0 ), $split ) );
+	if ( empty( $items ) || $items_total !== $order_total || $split_total !== $order_total ) {
+		return new WP_Error(
+			'papelito_checkout_total_mismatch',
+			'Os valores do pedido ficaram inconsistentes antes do pagamento. Atualize o carrinho e tente novamente.',
+			array(
+				'status'          => 409,
+				'items_cents'     => $items_total,
+				'order_cents'     => $order_total,
+				'split_cents'     => $split_total,
+			)
+		);
+	}
+
 	$request_body = array(
 		'code'     => 'woo-order-' . $order->get_id(),
 		'customer' => $customer,
-		'items'    => papelito_pagarme_order_items_payload( $lines, $shipping ),
+		'items'    => $items,
 		'payments' => $payments,
 	);
 
@@ -744,7 +779,7 @@ function papelito_pagarme_create_order_payment( $order, int $customer_id, array 
  *
  * @return array<string,mixed>|WP_Error
  */
-function papelito_pagarme_reconcile_wc_order( $order ) {
+function papelito_pagarme_reconcile_wc_order( object $order ) {
 	$pagarme_order_id = sanitize_text_field( (string) $order->get_meta( PAPELITO_PAGARME_ORDER_ID_META, true ) );
 
 	if ( '' === $pagarme_order_id ) {
@@ -778,7 +813,7 @@ function papelito_pagarme_reconcile_wc_order( $order ) {
 /**
  * Atualiza dados pendentes do pagamento exibido no checkout, com throttle.
  */
-function papelito_pagarme_maybe_reconcile_checkout_order( $order ) {
+function papelito_pagarme_maybe_reconcile_checkout_order( object $order ) {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) || ! method_exists( $order, 'update_meta_data' ) ) {
 		return null;
 	}

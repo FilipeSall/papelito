@@ -164,6 +164,30 @@ function papelito_pagarme_collect_error_details( array $body ): array {
 }
 
 /**
+ * Detecta rejeições de valor/mínimo sem depender do formato exato da v5.
+ *
+ * @param array<string,mixed> $body Corpo decodificado.
+ */
+function papelito_pagarme_is_amount_error( array $body ): bool {
+	$haystack = strtolower( (string) wp_json_encode( $body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) );
+	$needles  = array(
+		'amount',
+		'valor mínimo',
+		'valor minimo',
+		'minimum amount',
+		'greater than or equal',
+	);
+
+	foreach ( $needles as $needle ) {
+		if ( false !== strpos( $haystack, $needle ) ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
  * Faz uma requisicao autenticada ao Pagar.me.
  *
  * @param string               $method Metodo HTTP.
@@ -220,27 +244,28 @@ function papelito_pagarme_request( string $method, string $path, ?array $body = 
 	$decoded  = '' !== $raw_body ? json_decode( $raw_body, true ) : array();
 
 	if ( $status < 200 || $status >= 300 ) {
+		$message = papelito_pagarme_error_message( $decoded, $status );
 		error_log(
 			sprintf(
 				'[papelito_pagarme] %s %s -> HTTP %d: %s',
 				strtoupper( $method ),
 				$path,
 				$status,
-				$raw_body
+				substr( sanitize_text_field( $message ), 0, 500 )
 			)
 		);
+		$is_amount_error = is_array( $decoded ) && papelito_pagarme_is_amount_error( $decoded );
 
 		return new WP_Error(
-			'papelito_pagarme_request_failed',
-			papelito_pagarme_error_message( $decoded, $status ),
+			$is_amount_error ? 'papelito_pagarme_amount_rejected' : 'papelito_pagarme_request_failed',
+			$is_amount_error
+				? 'O Pagar.me rejeitou o valor desta cobrança. Revise o total e a quantidade de parcelas.'
+				: $message,
 			array(
-				'status'        => $status,
-				'pagarme_body'  => is_array( $decoded ) ? $decoded : array(),
-				'response_body' => $raw_body,
+				'status' => $status,
 			)
 		);
 	}
 
 	return is_array( $decoded ) ? $decoded : array();
 }
-

@@ -7,6 +7,10 @@
 
 defined( 'ABSPATH' ) || exit;
 
+if ( ! function_exists( 'papelito_pricing_quote' ) ) {
+	require_once __DIR__ . '/pricing.php';
+}
+
 if ( ! defined( 'PAPELITO_ORDER_VENDOR_STATUS_AWAITING_SHIPMENT' ) ) {
 	define( 'PAPELITO_ORDER_VENDOR_STATUS_AWAITING_PAYMENT', 'aguardando_pagamento' );
 	define( 'PAPELITO_ORDER_VENDOR_STATUS_AWAITING_SHIPMENT', 'aguardando_envio' );
@@ -201,51 +205,7 @@ function papelito_order_routing_normalize_address( $address ) {
  * @return array<int,array{product_id:int,qty:int,vendor_id:int,vendor_name:string}>|WP_Error
  */
 function papelito_order_routing_normalize_items( $items ) {
-	if ( ! is_array( $items ) || empty( $items ) ) {
-		return new WP_Error(
-			'papelito_checkout_empty_items',
-			'Carrinho vazio para concluir o pedido.',
-			array( 'status' => 422 )
-		);
-	}
-
-	$normalized = array();
-
-	foreach ( $items as $item ) {
-		if ( ! is_array( $item ) ) {
-			continue;
-		}
-
-		$product_id  = absint( $item['product_id'] ?? 0 );
-		$qty         = max( 0, (int) ( $item['qty'] ?? 0 ) );
-		$vendor_id   = absint( $item['vendor_id'] ?? 0 );
-		$vendor_name = sanitize_text_field( (string) ( $item['vendor_name'] ?? '' ) );
-
-		if ( $product_id <= 0 || $qty <= 0 || $vendor_id <= 0 ) {
-			return new WP_Error(
-				'papelito_checkout_invalid_items',
-				'Itens invalidos para concluir o pedido.',
-				array( 'status' => 422 )
-			);
-		}
-
-		$normalized[] = array(
-			'product_id'  => $product_id,
-			'qty'         => $qty,
-			'vendor_id'   => $vendor_id,
-			'vendor_name' => $vendor_name,
-		);
-	}
-
-	if ( empty( $normalized ) ) {
-		return new WP_Error(
-			'papelito_checkout_empty_items',
-			'Carrinho vazio para concluir o pedido.',
-			array( 'status' => 422 )
-		);
-	}
-
-	return $normalized;
+	return papelito_pricing_normalize_items( $items );
 }
 
 /**
@@ -273,93 +233,7 @@ function papelito_order_routing_vendor_name( int $vendor_id ): string {
  * @return array{vendor_id:int,vendor_name:string,lines:array<int,array<string,mixed>>}|WP_Error
  */
 function papelito_order_routing_resolve_items( array $items ) {
-	if ( ! function_exists( 'wc_get_product' ) ) {
-		return new WP_Error(
-			'papelito_checkout_woocommerce_unavailable',
-			'WooCommerce indisponivel para concluir o pedido.',
-			array( 'status' => 500 )
-		);
-	}
-
-	$vendor_ids = array_values(
-		array_unique(
-			array_map(
-				static function ( array $item ): int {
-					return (int) $item['vendor_id'];
-				},
-				$items
-			)
-		)
-	);
-
-	if ( 1 !== count( $vendor_ids ) ) {
-		return new WP_Error(
-			'papelito_checkout_mixed_vendor_not_supported',
-			'O checkout atual suporta apenas um vendor por pedido.',
-			array( 'status' => 422 )
-		);
-	}
-
-	$vendor_id = (int) $vendor_ids[0];
-	$vendor    = papelito_shipping_get_vendor( $vendor_id );
-
-	if ( is_wp_error( $vendor ) ) {
-		return $vendor;
-	}
-
-	$vendor_name = papelito_order_routing_vendor_name( $vendor_id );
-	$lines       = array();
-
-	foreach ( $items as $item ) {
-		$product = wc_get_product( $item['product_id'] );
-
-		if ( ! $product ) {
-			return new WP_Error(
-				'papelito_product_not_found',
-				'Produto do carrinho nao encontrado.',
-				array( 'status' => 404 )
-			);
-		}
-
-		$current_stock = (int) papelito_get_vendor_stock( $vendor_id, $item['product_id'] );
-		if ( $current_stock < $item['qty'] ) {
-			return new WP_Error(
-				'papelito_checkout_insufficient_stock',
-				sprintf( 'Estoque insuficiente para o produto "%s".', $product->get_name() ),
-				array(
-					'status'     => 409,
-					'product_id' => $item['product_id'],
-					'available'  => $current_stock,
-					'requested'  => (int) $item['qty'],
-				)
-			);
-		}
-
-		$unit_price = (float) $product->get_price();
-		if ( $unit_price < 0 ) {
-			$unit_price = 0.0;
-		}
-
-		$subtotal = round( $unit_price * (int) $item['qty'], 2 );
-
-		$lines[] = array(
-			'product'      => $product,
-			'product_id'   => (int) $item['product_id'],
-			'qty'          => (int) $item['qty'],
-			'vendor_id'    => $vendor_id,
-			'vendor_name'  => $vendor_name,
-			'unit_price'   => $unit_price,
-			'subtotal'     => $subtotal,
-			'total'        => $subtotal,
-			'discount'     => 0.0,
-		);
-	}
-
-	return array(
-		'vendor_id'   => $vendor_id,
-		'vendor_name' => $vendor_name,
-		'lines'       => $lines,
-	);
+	return papelito_pricing_resolve_items( $items );
 }
 
 /**
@@ -632,18 +506,22 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 
 			$item = $order->get_item( $item_id );
 
-				if ( papelito_order_routing_is_wc_instance( $item, 'WC_Order_Item_Product' ) ) {
-					$item->add_meta_data( '_vendor_id', $vendor_id, true );
-					$item->add_meta_data( '_vendor_name', $vendor_name, true );
-					$item->save();
-				}
+			if ( papelito_order_routing_is_wc_instance( $item, 'WC_Order_Item_Product' ) ) {
+				$item->add_meta_data( '_vendor_id', $vendor_id, true );
+				$item->add_meta_data( '_vendor_name', $vendor_name, true );
+				$item->add_meta_data( '_papelito_discount_source', sanitize_key( (string) ( $line['discount_source'] ?? 'none' ) ), true );
+				$item->add_meta_data( '_papelito_subtotal_cents', (int) ( $line['subtotal_cents'] ?? 0 ), true );
+				$item->add_meta_data( '_papelito_discount_cents', (int) ( $line['discount_cents'] ?? 0 ), true );
+				$item->add_meta_data( '_papelito_total_cents', (int) ( $line['total_cents'] ?? 0 ), true );
+				$item->save();
 			}
+		}
 
-			$shipping_item_class = 'WC_Order_Item_Shipping';
-			$shipping_item       = new $shipping_item_class();
-			$shipping_item->set_method_id( 'papelito_correios_' . strtolower( sanitize_key( (string) ( $shipping['service'] ?? 'shipping' ) ) ) );
-			$shipping_item->set_method_title( sanitize_text_field( (string) ( $shipping['name'] ?? $shipping['service'] ?? 'Correios' ) ) );
-			$shipping_item->set_total( (float) ( $shipping['price'] ?? 0 ) );
+		$shipping_item_class = 'WC_Order_Item_Shipping';
+		$shipping_item       = new $shipping_item_class();
+		$shipping_item->set_method_id( 'papelito_correios_' . strtolower( sanitize_key( (string) ( $shipping['service'] ?? 'shipping' ) ) ) );
+		$shipping_item->set_method_title( sanitize_text_field( (string) ( $shipping['name'] ?? $shipping['service'] ?? 'Correios' ) ) );
+		$shipping_item->set_total( (float) ( $shipping['price'] ?? 0 ) );
 		$shipping_item->add_meta_data( '_papelito_shipping_service_code', sanitize_text_field( (string) ( $shipping['code'] ?? '' ) ), true );
 		$order->add_item( $shipping_item );
 
@@ -660,6 +538,7 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_ORDER_VENDOR_STATUS_AWAITING_PAYMENT );
 
 		$order->calculate_totals( false );
+		$order->update_meta_data( '_papelito_authoritative_total_cents', papelito_pricing_to_cents( $order->get_total() ) );
 		$order->add_order_note( 'Pedido criado via checkout headless Papelito.' );
 		$order->save();
 	} catch ( Throwable $throwable ) {
@@ -685,7 +564,7 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
  *
  * @return array<int,array<string,mixed>>
  */
-function papelito_order_routing_order_lines( $order ): array {
+function papelito_order_routing_order_lines( object $order ): array {
 	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
 		return array();
 	}
@@ -979,19 +858,30 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		return $shipping;
 	}
 
-	$coupon = papelito_order_routing_resolve_coupon(
+	$pricing = papelito_pricing_apply_discounts(
+		$resolved_items,
 		sanitize_text_field( (string) ( $payload['coupon_code'] ?? '' ) ),
-		$resolved_items['lines'],
-		$user_id
+		$user_id,
+		papelito_pricing_to_cents( $shipping['price'] ?? 0 )
 	);
-	if ( is_wp_error( $coupon ) ) {
-		return $coupon;
+	if ( is_wp_error( $pricing ) ) {
+		return $pricing;
 	}
 
-	$lines   = papelito_order_routing_apply_coupon_to_lines( $resolved_items['lines'], $coupon );
+	$lines   = (array) $pricing['lines'];
+	$coupon  = isset( $pricing['coupon_data'] ) && is_array( $pricing['coupon_data'] ) ? $pricing['coupon_data'] : null;
 	$payment = papelito_order_routing_normalize_payment( $payload['payment'] ?? null, $address );
 	if ( is_wp_error( $payment ) ) {
 		return $payment;
+	}
+
+	$amount_validation = papelito_pricing_validate_payment_amount(
+		(string) $payment['method'],
+		(int) ( $pricing['totals']['totalCents'] ?? 0 ),
+		(int) ( $payment['installments'] ?? 1 )
+	);
+	if ( is_wp_error( $amount_validation ) ) {
+		return $amount_validation;
 	}
 
 	$created = papelito_order_routing_create_order( $user_id, $address, $lines, $shipping, $coupon, (string) $payment['method'] );
@@ -1025,8 +915,14 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 			papelito_pagarme_mark_vendor_status_unpaid( $order );
 		}
 		$order->save();
+		$error_code = $result->get_error_code();
+		if ( 'papelito_pagarme_amount_rejected' === $error_code ) {
+			$error_code = 'papelito_checkout_gateway_amount_rejected';
+		} elseif ( 'papelito_checkout_total_mismatch' !== $error_code ) {
+			$error_code = 'papelito_checkout_payment_unavailable';
+		}
 		return new WP_Error(
-			'papelito_checkout_payment_unavailable',
+			$error_code,
 			$result->get_error_message(),
 			array( 'status' => is_array( $result->get_error_data() ) ? (int) ( $result->get_error_data()['status'] ?? 502 ) : 502 )
 		);
@@ -1037,6 +933,21 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 	if ( function_exists( 'papelito_pagarme_payment_state_releases_stock' ) && papelito_pagarme_payment_state_releases_stock( $payment_state ) ) {
 		papelito_pagarme_release_order_stock( $order, $lines, 'payment_failed' );
 	}
+
+	$result['totals']      = $pricing['totals'];
+	$result['lines']       = array_map(
+		static fn( array $line ): array => array(
+			'productId'      => (int) $line['product_id'],
+			'quantity'       => (int) $line['qty'],
+			'subtotalCents'  => (int) $line['subtotal_cents'],
+			'discountCents'  => (int) $line['discount_cents'],
+			'totalCents'     => (int) $line['total_cents'],
+			'discountSource' => (string) $line['discount_source'],
+		),
+		$lines
+	);
+	$result['coupon']      = $pricing['coupon'];
+	$result['adjustments'] = $pricing['adjustments'];
 
 	return new WP_REST_Response( $result, 200 );
 }

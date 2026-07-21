@@ -29,6 +29,7 @@ require_once __DIR__ . '/includes/notifications.php';
 require_once __DIR__ . '/includes/correios_tracking.php';
 require_once __DIR__ . '/includes/active_vendor.php';
 require_once __DIR__ . '/includes/coupons.php';
+require_once __DIR__ . '/includes/pricing.php';
 require_once __DIR__ . '/includes/pagarme_client.php';
 require_once __DIR__ . '/includes/pagarme_recipients.php';
 require_once __DIR__ . '/includes/pagarme_payments.php';
