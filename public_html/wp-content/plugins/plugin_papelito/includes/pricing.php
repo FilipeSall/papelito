@@ -7,6 +7,10 @@
 
 defined( 'ABSPATH' ) || exit;
 
+if ( ! defined( 'PAPELITO_PRICING_MAX_ITEMS' ) ) {
+	define( 'PAPELITO_PRICING_MAX_ITEMS', 120 );
+}
+
 /**
  * Converte valor monetário em centavos inteiros.
  *
@@ -53,7 +57,16 @@ function papelito_pricing_normalize_items( $items ) {
 		return new WP_Error( 'papelito_checkout_empty_items', 'Carrinho vazio para concluir o pedido.', array( 'status' => 422 ) );
 	}
 
+	if ( count( $items ) > PAPELITO_PRICING_MAX_ITEMS ) {
+		return new WP_Error(
+			'papelito_checkout_too_many_items',
+			'O carrinho excedeu o limite de itens permitido.',
+			array( 'status' => 422, 'maximum' => PAPELITO_PRICING_MAX_ITEMS )
+		);
+	}
+
 	$normalized = array();
+	$product_ids = array();
 	foreach ( $items as $item ) {
 		if ( ! is_array( $item ) ) {
 			continue;
@@ -67,6 +80,15 @@ function papelito_pricing_normalize_items( $items ) {
 		if ( $product_id <= 0 || $qty <= 0 || $vendor_id <= 0 ) {
 			return new WP_Error( 'papelito_checkout_invalid_items', 'Itens invalidos para concluir o pedido.', array( 'status' => 422 ) );
 		}
+
+		if ( isset( $product_ids[ $product_id ] ) ) {
+			return new WP_Error(
+				'papelito_checkout_duplicate_item',
+				'O carrinho possui produtos duplicados.',
+				array( 'status' => 422, 'product_id' => $product_id )
+			);
+		}
+		$product_ids[ $product_id ] = true;
 
 		$normalized[] = array(
 			'product_id'       => $product_id,
@@ -148,7 +170,7 @@ function papelito_pricing_resolve_items( array $items ) {
 				$discount_percent = min( 99, max( 0, (int) ( $campaign['discountPercent'] ?? 0 ) ) );
 				$promotion        = array(
 					'reference_unit_cents' => $reference_unit_cents,
-					'total_cents'          => (int) round( $reference_unit_cents * ( 100 - $discount_percent ) / 100 ) * (int) $item['qty'],
+					'total_cents'          => ( (int) round( $reference_unit_cents * ( 100 - $discount_percent ) / 100 ) ) * (int) $item['qty'],
 				);
 			}
 		}
@@ -390,9 +412,15 @@ function papelito_pricing_installment_minimum_cents(): int {
 	return max( 1, (int) apply_filters( 'papelito_installment_minimum_cents', 100 ) );
 }
 
+function papelito_pricing_max_installments(): int {
+	return max( 1, (int) apply_filters( 'papelito_max_installments', 6 ) );
+}
+
 function papelito_pricing_payment_restrictions( int $total_cents ): array {
 	$installment_minimum = papelito_pricing_installment_minimum_cents();
-	$max_installments    = $total_cents > 0 ? min( 6, intdiv( $total_cents, $installment_minimum ) ) : 0;
+	$max_installments    = $total_cents > 0
+		? min( papelito_pricing_max_installments(), intdiv( $total_cents, $installment_minimum ) )
+		: 0;
 
 	return array(
 		'creditCardMinimumCents' => papelito_pricing_payment_minimum_cents( 'credit_card' ),
@@ -426,6 +454,39 @@ function papelito_pricing_validate_payment_amount( string $method, int $total_ce
 		);
 	}
 
+	if ( 'credit_card' === $method && $installments > papelito_pricing_max_installments() ) {
+		return new WP_Error(
+			'papelito_checkout_installments_exceeded',
+			'O parcelamento máximo permitido é de ' . papelito_pricing_max_installments() . ' vezes.',
+			array( 'status' => 422, 'maximum_installments' => papelito_pricing_max_installments() )
+		);
+	}
+
+	return true;
+}
+
+/**
+ * Protege a cotação pública contra abuso por IP.
+ *
+ * @return true|WP_Error
+ */
+function papelito_pricing_check_rate_limit() {
+	if ( ! function_exists( 'papelito_auth_rate_limit' ) ) {
+		return new WP_Error(
+			'papelito_pricing_rate_limit_unavailable',
+			'Não foi possível validar a cotação agora.',
+			array( 'status' => 503 )
+		);
+	}
+
+	if ( ! papelito_auth_rate_limit( 'cart_pricing', 60, 60 ) ) {
+		return new WP_Error(
+			'papelito_rate_limited',
+			'Muitas tentativas de cotação. Tente novamente em alguns instantes.',
+			array( 'status' => 429 )
+		);
+	}
+
 	return true;
 }
 
@@ -439,6 +500,11 @@ add_action(
 				'methods'             => WP_REST_Server::CREATABLE,
 				'permission_callback' => '__return_true',
 				'callback'            => static function ( WP_REST_Request $request ) {
+					$rate_limit = papelito_pricing_check_rate_limit();
+					if ( is_wp_error( $rate_limit ) ) {
+						return $rate_limit;
+					}
+
 					$payload = $request->get_json_params();
 					$payload = is_array( $payload ) ? $payload : array();
 					$shipping_selection = isset( $payload['shipping'] ) && is_array( $payload['shipping'] )

@@ -17,6 +17,12 @@ function sanitize_text_field( mixed $value ) { return trim( (string) $value ); }
 function wc_format_decimal( mixed $value ) { return (string) $value; }
 function wp_unslash( mixed $value ) { return $value; }
 
+$papelito_test_rate_limit_allowed = true;
+function papelito_auth_rate_limit( string $bucket, int $max = 20, int $window = 60 ): bool {
+	global $papelito_test_rate_limit_allowed;
+	return $papelito_test_rate_limit_allowed;
+}
+
 class WP_Error {
 	private string $code;
 	private string $message;
@@ -140,9 +146,11 @@ echo "Scenario 5: payment minimums and installment floor are enforced\n";
 $card_too_small = papelito_pricing_validate_payment_amount( 'credit_card', 99, 1 );
 $pix_minimum = papelito_pricing_validate_payment_amount( 'pix', 1, 1 );
 $installment_too_small = papelito_pricing_validate_payment_amount( 'credit_card', 121, 2 );
+$installments_exceeded = papelito_pricing_validate_payment_amount( 'credit_card', 1000, 7 );
 papelito_assert_same( 'card below R$1 rejected', 'papelito_checkout_amount_below_minimum', $card_too_small->get_error_code() );
 papelito_assert_same( 'Pix R$0.01 accepted', true, $pix_minimum );
 papelito_assert_same( 'installment below R$1 rejected', 'papelito_checkout_installment_below_minimum', $installment_too_small->get_error_code() );
+papelito_assert_same( 'more than six installments rejected', 'papelito_checkout_installments_exceeded', $installments_exceeded->get_error_code() );
 
 echo "Scenario 6: selected shipping is recalculated instead of accepting browser cents\n";
 $with_shipping = papelito_pricing_quote(
@@ -154,6 +162,17 @@ $with_shipping = papelito_pricing_quote(
 );
 papelito_assert_same( 'authoritative shipping', 1036, $with_shipping['totals']['shippingCents'] ?? null );
 papelito_assert_same( 'authoritative total with shipping', 1157, $with_shipping['totals']['totalCents'] ?? null );
+
+echo "Scenario 7: abusive pricing payloads are rejected\n";
+$too_many_items = papelito_pricing_normalize_items( array_fill( 0, 121, papelito_test_item() ) );
+$duplicate_items = papelito_pricing_normalize_items( array( papelito_test_item(), papelito_test_item() ) );
+papelito_assert_same( 'more than 120 items rejected', 'papelito_checkout_too_many_items', $too_many_items->get_error_code() );
+papelito_assert_same( 'duplicate product rejected', 'papelito_checkout_duplicate_item', $duplicate_items->get_error_code() );
+
+echo "Scenario 8: public pricing rate limit fails closed\n";
+$papelito_test_rate_limit_allowed = false;
+$rate_limited = papelito_pricing_check_rate_limit();
+papelito_assert_same( 'rate limit error', 'papelito_rate_limited', $rate_limited->get_error_code() );
 
 echo "\n";
 if ( $failures > 0 ) {

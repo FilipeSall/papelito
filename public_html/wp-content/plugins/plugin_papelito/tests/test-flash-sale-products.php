@@ -107,6 +107,8 @@ function wc_get_product_terms( mixed $product_id, $taxonomy, $args ) {
 
 class WP_Query {
 	public array $posts = array();
+	public int $found_posts = 0;
+	public int $max_num_pages = 0;
 
 	public function __construct( array $args ) {
 		global $papelito_test_products;
@@ -115,12 +117,25 @@ class WP_Query {
 			$products,
 			static function ( WC_Product $product ) use ( $args ): bool {
 				if ( 'publish' !== $product->get_status() ) return false;
+				if ( ! papelito_product_has_valid_weight( $product ) ) return false;
 				if ( isset( $args['p'] ) && (int) $args['p'] !== $product->get_id() ) return false;
 				if ( isset( $args['tax_query'][0]['terms'] ) && (int) $args['tax_query'][0]['terms'] !== $product->category_id ) return false;
+				if ( isset( $args['s'] ) && '' !== trim( (string) $args['s'] ) ) {
+					$search = trim( (string) $args['s'] );
+					$id_matches = ctype_digit( $search ) && (int) $search === $product->get_id();
+					$name_matches = false !== stripos( $product->get_name(), $search );
+					$sku_matches = false !== stripos( $product->get_sku(), $search );
+					if ( ! $id_matches && ! $name_matches && ! $sku_matches ) return false;
+				}
 				return true;
 			}
 		);
 		usort( $products, static fn( WC_Product $left, WC_Product $right ): int => $right->get_id() <=> $left->get_id() );
+		$this->found_posts = count( $products );
+		$per_page = max( 1, (int) ( $args['posts_per_page'] ?? 24 ) );
+		$page = max( 1, (int) ( $args['paged'] ?? 1 ) );
+		$this->max_num_pages = (int) ceil( $this->found_posts / $per_page );
+		$products = array_slice( $products, ( $page - 1 ) * $per_page, $per_page );
 		$this->posts = array_map( static fn( WC_Product $product ): int => $product->get_id(), $products );
 	}
 }

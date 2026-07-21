@@ -275,11 +275,11 @@ function papelito_pagarme_customer_payload( int $user_id, array $address ) {
 }
 
 /**
- * Retorna o split unico para o vendor.
+ * Valida se o vendor possui recebedor ativo.
  *
- * @return array<int,array<string,mixed>>|WP_Error
+ * @return true|WP_Error
  */
-function papelito_pagarme_vendor_split_payload( int $vendor_id, int $amount ) {
+function papelito_pagarme_validate_vendor_recipient( int $vendor_id ) {
 	$recipient_id = papelito_pagarme_get_vendor_recipient_id( $vendor_id );
 
 	if ( '' === $recipient_id || ! papelito_pagarme_vendor_recipient_is_active( $vendor_id ) ) {
@@ -289,6 +289,22 @@ function papelito_pagarme_vendor_split_payload( int $vendor_id, int $amount ) {
 			array( 'status' => 422 )
 		);
 	}
+
+	return true;
+}
+
+/**
+ * Retorna o split unico para o vendor.
+ *
+ * @return array<int,array<string,mixed>>|WP_Error
+ */
+function papelito_pagarme_vendor_split_payload( int $vendor_id, int $amount ) {
+	$validation = papelito_pagarme_validate_vendor_recipient( $vendor_id );
+	if ( is_wp_error( $validation ) ) {
+		return $validation;
+	}
+
+	$recipient_id = papelito_pagarme_get_vendor_recipient_id( $vendor_id );
 
 	return array(
 		array(
@@ -659,7 +675,26 @@ function papelito_pagarme_create_order_payment( object $order, int $customer_id,
 		return $customer;
 	}
 
-	$order_total = (int) round( 100 * (float) ( method_exists( $order, 'get_total' ) ? $order->get_total() : 0 ) );
+	$wc_order_total = (int) round( 100 * (float) ( method_exists( $order, 'get_total' ) ? $order->get_total() : 0 ) );
+	$order_total    = method_exists( $order, 'get_meta' )
+		? max( 0, (int) $order->get_meta( '_papelito_authoritative_total_cents', true ) )
+		: 0;
+	if ( $order_total <= 0 ) {
+		$order_total = $wc_order_total;
+	}
+
+	if ( abs( $wc_order_total - $order_total ) > 1 ) {
+		return new WP_Error(
+			'papelito_checkout_total_mismatch',
+			'Os valores do pedido ficaram inconsistentes antes do pagamento. Atualize o carrinho e tente novamente.',
+			array(
+				'status'              => 409,
+				'order_cents'         => $order_total,
+				'woocommerce_cents'   => $wc_order_total,
+			)
+		);
+	}
+
 	$method      = sanitize_key( (string) $payment['method'] );
 	$minimum     = function_exists( 'papelito_pricing_validate_payment_amount' )
 		? papelito_pricing_validate_payment_amount( $method, $order_total, (int) ( $payment['installments'] ?? 1 ) )

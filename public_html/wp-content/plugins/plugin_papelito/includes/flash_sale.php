@@ -226,6 +226,13 @@ function papelito_flash_sale_campaign_fingerprint( array $campaign ): string {
 }
 
 /**
+ * Retorna uma chave exclusiva para assinar contextos promocionais.
+ */
+function papelito_flash_sale_context_signing_key(): string {
+	return hash_hmac( 'sha256', 'papelito-flash-sale-context-v1', wp_salt( 'auth' ) );
+}
+
+/**
  * Cria prova assinada de que o item foi adicionado pela vitrine ativa.
  *
  * @param array<string,mixed>|null $campaign Campanha normalizada.
@@ -255,7 +262,7 @@ function papelito_flash_sale_create_promotion_context( ?array $campaign, int $pr
 	$encoded = papelito_flash_sale_base64url_encode(
 		(string) wp_json_encode( $payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE )
 	);
-	$signature = hash_hmac( 'sha256', $encoded, wp_salt( 'auth' ), true );
+	$signature = hash_hmac( 'sha256', $encoded, papelito_flash_sale_context_signing_key(), true );
 
 	return $encoded . '.' . papelito_flash_sale_base64url_encode( $signature );
 }
@@ -274,7 +281,7 @@ function papelito_flash_sale_resolve_promotion_context( string $context, int $pr
 
 	list( $encoded, $encoded_signature ) = explode( '.', $context, 2 );
 	$signature                           = papelito_flash_sale_base64url_decode( $encoded_signature );
-	$expected                            = hash_hmac( 'sha256', $encoded, wp_salt( 'auth' ), true );
+	$expected                            = hash_hmac( 'sha256', $encoded, papelito_flash_sale_context_signing_key(), true );
 
 	if ( ! is_string( $signature ) || ! hash_equals( $expected, $signature ) ) {
 		return new WP_Error( 'papelito_promotion_context_invalid', 'A oferta deste item não pôde ser validada.', array( 'status' => 409 ) );
@@ -414,10 +421,11 @@ function papelito_flash_sale_query_eligible_products( array $args = array() ): a
 		'post_type'              => 'product',
 		'post_status'            => 'publish',
 		'fields'                 => 'ids',
-		'posts_per_page'         => -1,
+		'posts_per_page'         => $per_page,
+		'paged'                  => $page,
 		'orderby'                => 'modified',
 		'order'                  => 'DESC',
-		'no_found_rows'          => true,
+		'no_found_rows'          => false,
 		'update_post_meta_cache' => false,
 		'update_post_term_cache' => false,
 	);
@@ -432,7 +440,35 @@ function papelito_flash_sale_query_eligible_products( array $args = array() ): a
 		);
 	}
 
-	$search_filter = null;
+	$search_filter      = null;
+	$eligibility_filter = static function ( string $where ): string {
+		global $wpdb;
+
+		return $where . "
+			AND (
+				EXISTS (
+					SELECT 1
+					FROM {$wpdb->postmeta} flash_weight
+					WHERE flash_weight.post_id = {$wpdb->posts}.ID
+						AND flash_weight.meta_key = '_weight'
+						AND CAST(flash_weight.meta_value AS DECIMAL(20,6)) > 0
+				)
+				OR EXISTS (
+					SELECT 1
+					FROM {$wpdb->posts} flash_variation
+					INNER JOIN {$wpdb->postmeta} flash_variation_weight
+						ON flash_variation_weight.post_id = flash_variation.ID
+					WHERE flash_variation.post_parent = {$wpdb->posts}.ID
+						AND flash_variation.post_type = 'product_variation'
+						AND flash_variation.post_status = 'publish'
+						AND flash_variation_weight.meta_key = '_weight'
+						AND CAST(flash_variation_weight.meta_value AS DECIMAL(20,6)) > 0
+				)
+			)
+		";
+	};
+	add_filter( 'posts_where', $eligibility_filter, 20, 1 );
+
 	if ( '' !== $search ) {
 		$query_args['s'] = $search;
 		$search_filter = static function ( string $where ) use ( $search ): string {
@@ -458,10 +494,19 @@ function papelito_flash_sale_query_eligible_products( array $args = array() ): a
 	}
 
 	$query = new WP_Query( $query_args );
+	$total = (int) $query->found_posts;
+	$total_pages = max( 1, (int) ceil( $total / $per_page ) );
+	$safe_page   = min( $page, $total_pages );
+
+	if ( $safe_page !== $page ) {
+		$query_args['paged'] = $safe_page;
+		$query               = new WP_Query( $query_args );
+	}
 
 	if ( null !== $search_filter ) {
 		remove_filter( 'posts_search', $search_filter, 20 );
 	}
+	remove_filter( 'posts_where', $eligibility_filter, 20 );
 
 	$eligible = array();
 	foreach ( (array) $query->posts as $product_id ) {
@@ -482,16 +527,11 @@ function papelito_flash_sale_query_eligible_products( array $args = array() ): a
 		$eligible[] = $product;
 	}
 
-	$total       = count( $eligible );
-	$total_pages = max( 1, (int) ceil( $total / $per_page ) );
-	$safe_page   = min( $page, $total_pages );
-	$offset      = ( $safe_page - 1 ) * $per_page;
-
 	return array(
 		'items'      => array_values(
 			array_map(
 				'papelito_flash_sale_build_admin_candidate',
-				array_slice( $eligible, $offset, $per_page )
+				$eligible
 			)
 		),
 		'page'       => $safe_page,

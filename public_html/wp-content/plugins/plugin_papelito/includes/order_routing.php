@@ -242,8 +242,20 @@ function papelito_order_routing_resolve_items( array $items ) {
  * @return true|WP_Error
  */
 function papelito_order_routing_validate_vendor_coverage( int $vendor_id, string $destination_cep ) {
-	if ( '' === $destination_cep || ! function_exists( 'papelito_matching_vendor_ids' ) ) {
-		return true;
+	if ( '' === $destination_cep ) {
+		return new WP_Error(
+			'papelito_checkout_invalid_shipping',
+			'Informe um CEP de destino válido.',
+			array( 'status' => 422 )
+		);
+	}
+
+	if ( ! function_exists( 'papelito_matching_vendor_ids' ) ) {
+		return new WP_Error(
+			'papelito_checkout_coverage_unavailable',
+			'Não foi possível validar a cobertura do vendor agora.',
+			array( 'status' => 503 )
+		);
 	}
 
 	$covering_ids = array_map( 'intval', papelito_matching_vendor_ids( (int) $destination_cep ) );
@@ -301,91 +313,6 @@ function papelito_order_routing_resolve_shipping( int $vendor_id, string $destin
 		'A cotacao de frete mudou. Selecione novamente a opcao de entrega.',
 		array( 'status' => 409 )
 	);
-}
-
-/**
- * Revalida o cupom atual contra os precos resolvidos no backend.
- *
- * @param string $coupon_code Codigo do cupom.
- * @param array<int,array<string,mixed>> $lines Linhas do pedido.
- * @param int $user_id Usuario logado.
- * @return array<string,mixed>|null|WP_Error
- */
-function papelito_order_routing_resolve_coupon( string $coupon_code, array $lines, int $user_id ) {
-	$normalized_code = strtoupper( trim( sanitize_text_field( $coupon_code ) ) );
-
-	if ( '' === $normalized_code ) {
-		return null;
-	}
-
-	$cart_items = array_map(
-		static function ( array $line ): array {
-			return array(
-				'product_id' => (int) $line['product_id'],
-				'vendor_id'  => (int) $line['vendor_id'],
-				'qty'        => (int) $line['qty'],
-				'price'      => (float) $line['unit_price'],
-			);
-		},
-		$lines
-	);
-
-	$result = papelito_coupon_apply_resolve( $normalized_code, $cart_items, $user_id );
-
-	if ( is_wp_error( $result ) ) {
-		return $result;
-	}
-
-	return $result;
-}
-
-/**
- * Distribui o desconto do cupom pelas linhas qualificadas.
- *
- * @param array<int,array<string,mixed>> $lines  Linhas do pedido.
- * @param array<string,mixed>|null       $coupon Cupom resolvido.
- * @return array<int,array<string,mixed>>
- */
-function papelito_order_routing_apply_coupon_to_lines( array $lines, ?array $coupon ): array {
-	if ( null === $coupon || empty( $coupon['discount_value'] ) || empty( $coupon['applied_product_ids'] ) ) {
-		return $lines;
-	}
-
-	$applied_product_ids = array_map( 'intval', (array) $coupon['applied_product_ids'] );
-	$discount_total      = round( (float) $coupon['discount_value'], 2 );
-	$eligible_indexes    = array();
-	$eligible_subtotal   = 0.0;
-
-	foreach ( $lines as $index => $line ) {
-		if ( in_array( (int) $line['product_id'], $applied_product_ids, true ) ) {
-			$eligible_indexes[] = $index;
-			$eligible_subtotal += (float) $line['subtotal'];
-		}
-	}
-
-	if ( empty( $eligible_indexes ) || $eligible_subtotal <= 0 ) {
-		return $lines;
-	}
-
-	$remaining_discount = min( $discount_total, round( $eligible_subtotal, 2 ) );
-	$last_index         = count( $eligible_indexes ) - 1;
-
-	foreach ( $eligible_indexes as $position => $index ) {
-		$line_subtotal = round( (float) $lines[ $index ]['subtotal'], 2 );
-
-		if ( $position === $last_index ) {
-			$line_discount = round( max( 0, min( $remaining_discount, $line_subtotal ) ), 2 );
-		} else {
-			$line_discount = round( ( $line_subtotal / $eligible_subtotal ) * $discount_total, 2 );
-			$line_discount = max( 0, min( $line_discount, $line_subtotal, $remaining_discount ) );
-			$remaining_discount = round( $remaining_discount - $line_discount, 2 );
-		}
-
-		$lines[ $index ]['discount'] = $line_discount;
-		$lines[ $index ]['total']    = round( max( 0, $line_subtotal - $line_discount ), 2 );
-	}
-
-	return $lines;
 }
 
 /**
@@ -537,8 +464,13 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 		$order->update_meta_data( '_papelito_stock_decremented', '0' );
 		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_ORDER_VENDOR_STATUS_AWAITING_PAYMENT );
 
+		$authoritative_total_cents = papelito_pricing_to_cents( (float) ( $shipping['price'] ?? 0 ) );
+		foreach ( $lines as $line ) {
+			$authoritative_total_cents += max( 0, (int) ( $line['total_cents'] ?? 0 ) );
+		}
+
 		$order->calculate_totals( false );
-		$order->update_meta_data( '_papelito_authoritative_total_cents', papelito_pricing_to_cents( $order->get_total() ) );
+		$order->update_meta_data( '_papelito_authoritative_total_cents', $authoritative_total_cents );
 		$order->add_order_note( 'Pedido criado via checkout headless Papelito.' );
 		$order->save();
 	} catch ( Throwable $throwable ) {
@@ -884,6 +816,17 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		return $amount_validation;
 	}
 
+	$recipient_validation = function_exists( 'papelito_pagarme_validate_vendor_recipient' )
+		? papelito_pagarme_validate_vendor_recipient( (int) $resolved_items['vendor_id'] )
+		: new WP_Error(
+			'papelito_checkout_payment_unavailable',
+			'Não foi possível validar o recebedor do vendor.',
+			array( 'status' => 503 )
+		);
+	if ( is_wp_error( $recipient_validation ) ) {
+		return $recipient_validation;
+	}
+
 	$created = papelito_order_routing_create_order( $user_id, $address, $lines, $shipping, $coupon, (string) $payment['method'] );
 	if ( is_wp_error( $created ) ) {
 		return $created;
@@ -901,6 +844,10 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 	$reserved = papelito_pagarme_reserve_order_stock( $order, $lines );
 	if ( is_wp_error( $reserved ) ) {
 		$order->add_order_note( 'Falha ao reservar estoque para o pagamento: ' . $reserved->get_error_message() );
+		$order->update_status( 'failed' );
+		if ( function_exists( 'papelito_pagarme_mark_vendor_status_unpaid' ) ) {
+			papelito_pagarme_mark_vendor_status_unpaid( $order );
+		}
 		$order->save();
 		return $reserved;
 	}
