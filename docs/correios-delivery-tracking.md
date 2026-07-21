@@ -13,11 +13,11 @@ O vendedor e o comprador não podem enviar `enviado` ou `entregue` pelas APIs do
 - `_papelito_logistics_status`: projeção logística separada do estado comercial/operacional;
 - notas do WooCommerce: trilha humana das transições projetadas.
 
-A instalação ocorre automaticamente com `PAPELITO_DB_VERSION=1.5`.
+A instalação ocorre automaticamente com `PAPELITO_DB_VERSION=1.8.0`.
 
 ## Agendamento
 
-O hook `papelito_correios_tracking_poll_due` roda a cada cinco minutos pelo Action Scheduler. Quando ele não estiver disponível, usa WP-Cron. Cada execução processa até 40 envios e cada objeto é reconsultado em 10 minutos quando saiu para entrega ou em 30 minutos nos demais estados. Falhas usam backoff exponencial até seis horas.
+O hook `papelito_correios_tracking_poll_due` roda a cada cinco minutos pelo Action Scheduler. Quando ele não estiver disponível, usa WP-Cron. Cada execução processa até 100 envios por padrão (limite filtrável entre 1 e 500) e cada objeto é reconsultado em 10 minutos quando saiu para entrega ou em 30 minutos nos demais estados. Falhas usam backoff exponencial até seis horas.
 
 Para produção, configure um cron real que acione o WordPress; não dependa exclusivamente de tráfego HTTP para disparar WP-Cron.
 
@@ -47,14 +47,18 @@ array(
 
 O adapter não recebe payload do frontend. Ele deve montar todos os dados a partir do pedido, dos itens e do cadastro validado do vendor.
 
-Esse adapter permanece desabilitado até que o contrato confirme o serviço `86720 — API PRE POSTAGEM` e que o schema vigente seja exportado do CWS autenticado. O manual público não contém o schema completo; por isso nenhum campo de criação foi presumido no plugin. Depois da habilitação, o adapter deve:
+O modo é controlado por `PAPELITO_CORREIOS_PREPOST_MODE=disabled|mock|real`. `mock` só é registrado em `WP_ENVIRONMENT_TYPE=local|development`, cria um S10 estruturalmente válido marcado com `is_test=1`, um PDF `SEM VALIDADE POSTAL` e nunca entra no polling real. Staging e produção bloqueiam todas as flags `DEV_*`. `real` permanece fail-closed até que exista um provider registrado, o contrato confirme o serviço `86720 — API PRE POSTAGEM` e o schema vigente seja exportado do CWS autenticado. O manual público não contém o schema completo; por isso nenhum campo de criação foi presumido no plugin. Depois da habilitação, o adapter deve:
+
+Quando `PAPELITO_CORREIOS_MANUAL_TRACKING_ENABLED=true`, o vendor pode cadastrar um S10 gerado externamente somente depois de uma tentativa automática persistida como `not_created` e pertencente ao catálogo seguro de erros. Resultado incerto, geração em andamento ou etiqueta existente não libera o formulário. Esse fallback não garante que a credencial Rastro conseguirá consultar objetos que não estejam vinculados ao contrato do remetente.
+
+No local, `PAPELITO_CORREIOS_DEV_HEALTH_SOURCE=mock|real` controla a saúde que antecede a geração simulada. `healthy` produz somente o fake; `unhealthy` ou `unknown` abre o fallback manual porque nenhum POST de criação real é executado. A fonte real é opt-in, consulta apenas autenticação e serviço `86720`, usa cache de 15 minutos e não faz retry. Os cenários determinísticos são configurados por `PAPELITO_CORREIOS_DEV_HEALTH_SCENARIO=healthy|unhealthy|unknown` e `PAPELITO_CORREIOS_DEV_TRACKING_SCENARIO=preposted|posted|in_transit|delivered|cancelled|expired`.
 
 1. criar a pré-postagem com o schema oficial vigente;
 2. solicitar o rótulo usando as mesmas credenciais;
 3. consultar a pré-postagem e obter o código atribuído pelos Correios;
 4. devolver apenas os três campos acima ao núcleo de rastreamento.
 
-Até a habilitação, somente um administrador com `manage_woocommerce` pode associar um código por `POST /papelito/v1/admin/orders/{id}/shipments`, deixando nota de auditoria. O vendor nunca pode informar um código arbitrário.
+O endpoint manual do vendor revalida ownership, pagamento, estado de separação, ausência de envio ativo e elegibilidade dentro de transação. O endpoint administrativo com `manage_woocommerce` permanece disponível para migração e suporte auditado.
 
 ## Eventos adicionais e exceções
 

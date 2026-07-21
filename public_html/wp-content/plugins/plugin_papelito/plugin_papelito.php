@@ -23,6 +23,7 @@ require_once __DIR__ . '/includes/home_assets.php';
 require_once __DIR__ . '/includes/admin_reports.php';
 require_once __DIR__ . '/includes/admin_users.php';
 require_once __DIR__ . '/includes/shipping.php';
+require_once __DIR__ . '/includes/correios_prepostage.php';
 require_once __DIR__ . '/includes/vendor_geo.php';
 require_once __DIR__ . '/includes/vendor_stock.php';
 require_once __DIR__ . '/includes/notifications.php';
@@ -40,7 +41,7 @@ require_once __DIR__ . '/includes/vendor_messaging.php';
 require_once __DIR__ . '/includes/vendor_processing_alerts.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.6.1' );
+	define( 'PAPELITO_DB_VERSION', '1.8.0' );
 }
 
 /**

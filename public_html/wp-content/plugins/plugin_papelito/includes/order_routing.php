@@ -461,6 +461,8 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 		$order->update_meta_data( '_papelito_shipping_service_code', sanitize_text_field( (string) ( $shipping['code'] ?? '' ) ) );
 		$order->update_meta_data( '_papelito_shipping_service_name', sanitize_text_field( (string) ( $shipping['name'] ?? $shipping['service'] ?? '' ) ) );
 		$order->update_meta_data( '_papelito_shipping_delivery_time', absint( $shipping['delivery_time'] ?? 0 ) );
+		// WooCommerce nao possui campo nativo de bairro; preserve o snapshot para expedicao.
+		$order->update_meta_data( '_papelito_shipping_neighborhood', sanitize_text_field( (string) ( $address['neighborhood'] ?? '' ) ) );
 		$order->update_meta_data( '_papelito_stock_decremented', '0' );
 		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_ORDER_VENDOR_STATUS_AWAITING_PAYMENT );
 
