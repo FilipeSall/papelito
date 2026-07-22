@@ -11,6 +11,7 @@ services:
       - "${WEB_PORT:-8080}:80"
     volumes:
       - ./public_html:/var/www/html
+      - private_labels_data:/var/www/papelito-private
       - ./docker/php-apache/php-local.ini:/usr/local/etc/php/conf.d/zz-local.ini:ro
       - ./docker/php-apache/msmtprc:/etc/msmtprc:ro
     environment:
@@ -105,3 +106,4 @@ services:
 
 volumes:
   db_data:
+  private_labels_data:

@@ -951,6 +951,10 @@ function papelito_tracking_apply_test_fixture_status( int $shipment_id ): void {
 		$scenario = 'preposted';
 	}
 	$fixture = $fixtures[ $scenario ];
+	$row     = $wpdb->get_row(
+		$wpdb->prepare( 'SELECT order_id FROM ' . papelito_tracking_shipments_table_name() . ' WHERE id = %d', $shipment_id ),
+		ARRAY_A
+	); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 	$wpdb->update(
 		papelito_tracking_shipments_table_name(),
 		array(
@@ -967,6 +971,9 @@ function papelito_tracking_apply_test_fixture_status( int $shipment_id ): void {
 		array( '%s', '%d', '%s', '%s', '%s', '%s', '%s', '%s' ),
 		array( '%d', '%d' )
 	);
+	if ( is_array( $row ) && in_array( $fixture['status'], array( 'posted', 'in_transit', 'out_for_delivery', 'pickup_available', 'delivery_failed', 'returning', 'returned', 'lost', 'delivered' ), true ) ) {
+		papelito_tracking_reconcile_order_status( absint( $row['order_id'] ?? 0 ) );
+	}
 }
 
 /** Cadastra um S10 somente depois de uma falha automatica segura. */
@@ -1523,13 +1530,49 @@ add_filter(
 );
 add_action( 'init', 'papelito_tracking_ensure_schedule', 20 );
 
+/** Recria um PDF mock local quando o arquivo efemero foi perdido. */
+function papelito_tracking_restore_missing_mock_label( array $row, string $path ) {
+	if (
+		'mock' !== sanitize_key( (string) ( $row['provider'] ?? '' ) )
+		|| empty( $row['is_test'] )
+		|| ! function_exists( 'papelito_correios_prepostage_is_test_environment' )
+		|| ! papelito_correios_prepostage_is_test_environment()
+		|| ! function_exists( 'papelito_correios_mock_pdf' )
+	) {
+		return new WP_Error( 'papelito_label_file_missing', 'O arquivo da etiqueta nao esta disponivel.', array( 'status' => 404 ) );
+	}
+
+	$prepost_id    = sanitize_text_field( (string) ( $row['prepost_id'] ?? '' ) );
+	$tracking_code = papelito_tracking_normalize_code( $row['tracking_code'] ?? '' );
+	if ( '' === $prepost_id || '' === $tracking_code ) {
+		return new WP_Error( 'papelito_label_file_missing', 'O arquivo da etiqueta nao esta disponivel.', array( 'status' => 404 ) );
+	}
+
+	$contents = papelito_correios_mock_pdf( $prepost_id, $tracking_code );
+	$sha256   = hash( 'sha256', $contents );
+	if ( ! hash_equals( (string) ( $row['label_sha256'] ?? '' ), $sha256 ) ) {
+		return new WP_Error( 'papelito_label_integrity_failed', 'A etiqueta falhou na verificacao de integridade.', array( 'status' => 500 ) );
+	}
+
+	$directory = dirname( $path );
+	if ( ! wp_mkdir_p( $directory ) ) {
+		return new WP_Error( 'papelito_label_storage_unavailable', 'Nao foi possivel preparar o armazenamento privado da etiqueta.', array( 'status' => 500 ) );
+	}
+	papelito_tracking_harden_private_labels_dir( $directory );
+	if ( strlen( $contents ) !== file_put_contents( $path, $contents, LOCK_EX ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		return new WP_Error( 'papelito_label_storage_failed', 'Nao foi possivel armazenar a etiqueta.', array( 'status' => 500 ) );
+	}
+
+	return $contents;
+}
+
 /** Carrega um rotulo privado depois da verificacao de pedido e vendor. */
 function papelito_tracking_private_label_response( int $order_id, int $shipment_id, int $vendor_id ) {
 	global $wpdb;
 	$table = papelito_tracking_shipments_table_name();
 	$row   = $wpdb->get_row(
 		$wpdb->prepare(
-			"SELECT id, label_storage_key, label_sha256 FROM {$table} WHERE id = %d AND order_id = %d AND vendor_id = %d AND active = 1",
+			"SELECT id, provider, is_test, prepost_id, tracking_code, label_storage_key, label_sha256 FROM {$table} WHERE id = %d AND order_id = %d AND vendor_id = %d AND active = 1",
 			$shipment_id,
 			$order_id,
 			$vendor_id
@@ -1545,9 +1588,14 @@ function papelito_tracking_private_label_response( int $order_id, int $shipment_
 	}
 	$path = trailingslashit( papelito_tracking_private_labels_dir() ) . $key;
 	if ( ! is_file( $path ) || ! is_readable( $path ) ) {
-		return new WP_Error( 'papelito_label_file_missing', 'O arquivo da etiqueta nao esta disponivel.', array( 'status' => 404 ) );
+		$restored = papelito_tracking_restore_missing_mock_label( $row, $path );
+		if ( is_wp_error( $restored ) ) {
+			return $restored;
+		}
+		$contents = $restored;
+	} else {
+		$contents = file_get_contents( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
 	}
-	$contents = file_get_contents( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
 	if ( false === $contents || ! hash_equals( (string) $row['label_sha256'], hash( 'sha256', $contents ) ) ) {
 		return new WP_Error( 'papelito_label_integrity_failed', 'A etiqueta falhou na verificacao de integridade.', array( 'status' => 500 ) );
 	}

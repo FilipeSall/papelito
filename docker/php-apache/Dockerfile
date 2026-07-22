@@ -26,4 +26,9 @@ RUN apt-get update \
     && chown -R www-data:www-data /var/www/html /var/www/papelito-private \
     && rm -rf /var/lib/apt/lists/*
 
+COPY docker/php-apache/entrypoint.sh /usr/local/bin/papelito-entrypoint
+RUN chmod +x /usr/local/bin/papelito-entrypoint
+
 WORKDIR /var/www/html
+ENTRYPOINT ["papelito-entrypoint"]
+CMD ["apache2-foreground"]
