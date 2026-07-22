@@ -42,7 +42,7 @@ require_once __DIR__ . '/includes/vendor_messaging.php';
 require_once __DIR__ . '/includes/vendor_processing_alerts.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.8.0' );
+	define( 'PAPELITO_DB_VERSION', '1.9.0' );
 }
 
 /**

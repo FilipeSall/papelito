@@ -15,6 +15,7 @@ if ( ! defined( 'PAPELITO_TRACKING_SHIPMENTS_TABLE' ) ) {
 	define( 'PAPELITO_TRACKING_SHIPMENTS_TABLE', 'papelito_shipments' );
 	define( 'PAPELITO_TRACKING_EVENTS_TABLE', 'papelito_tracking_events' );
 	define( 'PAPELITO_TRACKING_POLL_HOOK', 'papelito_correios_tracking_poll_due' );
+	define( 'PAPELITO_PREPOST_RECONCILE_HOOK', 'papelito_correios_prepostage_reconcile_due' );
 	define( 'PAPELITO_TRACKING_SOURCE_POLL', 'correios_poll' );
 }
 
@@ -46,6 +47,10 @@ function papelito_tracking_install_tables(): void {
   provider VARCHAR(24) NOT NULL DEFAULT 'correios',
   generation_status VARCHAR(24) NOT NULL DEFAULT 'generated',
   creation_outcome VARCHAR(24) NOT NULL DEFAULT 'created',
+  reconciliation_status VARCHAR(24) NOT NULL DEFAULT 'none',
+  reconciliation_attempts SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  next_reconciliation_at DATETIME NULL DEFAULT NULL,
+  support_review_required TINYINT(1) NOT NULL DEFAULT 0,
   manual_fallback_eligible TINYINT(1) NOT NULL DEFAULT 0,
   manual_fallback_consumed_at DATETIME NULL DEFAULT NULL,
   is_test TINYINT(1) NOT NULL DEFAULT 0,
@@ -76,7 +81,8 @@ function papelito_tracking_install_tables(): void {
   UNIQUE KEY uq_prepost_id (prepost_id),
   KEY idx_order_active (order_id, active),
   KEY idx_vendor_order (vendor_id, order_id),
-  KEY idx_poll_due (active, next_poll_at)
+  KEY idx_poll_due (active, next_poll_at),
+  KEY idx_reconciliation_due (active, generation_status, next_reconciliation_at)
 ) {$charset_collate};";
 
 	$sql_events = "CREATE TABLE {$events} (
@@ -122,6 +128,9 @@ function papelito_tracking_manual_fallback_error_catalog(): array {
 		'papelito_correios_unavailable'                => array( 'category' => 'temporarily_unavailable', 'message' => 'O servico dos Correios esta temporariamente indisponivel.' ),
 		'papelito_correios_dev_health_unhealthy'       => array( 'category' => 'dev_health_unhealthy', 'message' => 'A verificacao local indicou que a integracao nao esta disponivel.' ),
 		'papelito_correios_dev_health_unknown'         => array( 'category' => 'dev_health_unknown', 'message' => 'Nao foi possivel confirmar a saude da integracao no teste local.' ),
+		'papelito_label_storage_failed'                => array( 'category' => 'storage', 'message' => 'Nao foi possivel armazenar a etiqueta.' ),
+		'papelito_label_storage_unavailable'           => array( 'category' => 'storage', 'message' => 'Nao foi possivel preparar o armazenamento privado da etiqueta.' ),
+		'papelito_support_manual_release'              => array( 'category' => 'support_release', 'message' => 'O suporte liberou o cadastro manual depois de revisar a tentativa anterior.' ),
 	);
 }
 
@@ -164,6 +173,30 @@ function papelito_tracking_manual_fallback_error_from_row( array $row ): WP_Erro
 	$catalog = papelito_tracking_manual_fallback_error_catalog();
 	$item    = $catalog[ $code ] ?? array( 'category' => 'unknown', 'message' => 'Nao foi possivel gerar a etiqueta automaticamente.' );
 	return new WP_Error( $code ?: 'papelito_correios_generation_failed', $item['message'], array( 'status' => 409, 'category' => $item['category'], 'retryable' => false, 'creation_outcome' => 'not_created', 'manual_fallback_available' => true ) );
+}
+
+/** Escreve um log estruturado sem credenciais ou dados sensiveis. */
+function papelito_tracking_log( string $event, array $context = array() ): void {
+	$allowed = array(
+		'order_id',
+		'shipment_id',
+		'vendor_id',
+		'idempotency_key',
+		'previous_status',
+		'new_status',
+		'creation_outcome',
+		'reconciliation_status',
+		'provider',
+		'error_code',
+		'origin',
+	);
+	$payload = array( 'event' => sanitize_key( $event ) );
+	foreach ( $allowed as $key ) {
+		if ( isset( $context[ $key ] ) && '' !== (string) $context[ $key ] ) {
+			$payload[ $key ] = sanitize_text_field( (string) $context[ $key ] );
+		}
+	}
+	error_log( 'papelito_tracking ' . wp_json_encode( $payload ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 }
 
 /**
@@ -260,6 +293,11 @@ function papelito_tracking_public_shipment( array $shipment ): array {
 		'provider'        => sanitize_key( (string) ( $shipment['provider'] ?? 'correios' ) ),
 		'is_test'         => ! empty( $shipment['is_test'] ),
 		'generation_status' => sanitize_key( (string) ( $shipment['generation_status'] ?? 'generated' ) ),
+		'creation_outcome' => sanitize_key( (string) ( $shipment['creation_outcome'] ?? 'created' ) ),
+		'reconciliation_status' => sanitize_key( (string) ( $shipment['reconciliation_status'] ?? 'none' ) ),
+		'reconciliation_attempts' => absint( $shipment['reconciliation_attempts'] ?? 0 ),
+		'next_reconciliation_at' => (string) ( $shipment['next_reconciliation_at'] ?? '' ),
+		'support_review_required' => ! empty( $shipment['support_review_required'] ),
 		'tracking_code'   => sanitize_text_field( (string) ( $shipment['tracking_code'] ?? '' ) ),
 		'service_code'    => sanitize_text_field( (string) ( $shipment['service_code'] ?? '' ) ),
 		'status'          => sanitize_key( (string) ( $shipment['status'] ?? 'tracking_pending' ) ),
@@ -285,8 +323,14 @@ function papelito_tracking_order_snapshot( int $order_id ): array {
 	$status     = empty( $rows ) ? 'not_started' : 'tracking_pending';
 	$max_rank   = -1;
 	$generation_status = empty( $rows ) ? 'not_started' : 'generated';
+	$creation_outcome = empty( $rows ) ? 'not_created' : 'created';
+	$reconciliation_status = 'none';
+	$reconciliation_attempts = 0;
+	$next_reconciliation_at = '';
+	$support_review_required = false;
 	if ( is_array( $fallback_attempt ) ) {
 		$generation_status = 'failed';
+		$creation_outcome = 'not_created';
 	}
 	$rank_by_status = array(
 		'tracking_pending' => 0,
@@ -306,6 +350,18 @@ function papelito_tracking_order_snapshot( int $order_id ): array {
 		$row_generation = sanitize_key( (string) ( $row['generation_status'] ?? 'generated' ) );
 		if ( in_array( $row_generation, array( 'generating', 'uncertain', 'failed' ), true ) ) {
 			$generation_status = $row_generation;
+		}
+		$row_reconciliation = sanitize_key( (string) ( $row['reconciliation_status'] ?? 'none' ) );
+		if ( 'none' !== $row_reconciliation ) {
+			$reconciliation_status = $row_reconciliation;
+		}
+		if ( ! empty( $row['support_review_required'] ) ) {
+			$support_review_required = true;
+		}
+		$creation_outcome = sanitize_key( (string) ( $row['creation_outcome'] ?? $creation_outcome ) );
+		$reconciliation_attempts = max( $reconciliation_attempts, absint( $row['reconciliation_attempts'] ?? 0 ) );
+		if ( ! empty( $row['next_reconciliation_at'] ) && ( '' === $next_reconciliation_at || (string) $row['next_reconciliation_at'] < $next_reconciliation_at ) ) {
+			$next_reconciliation_at = (string) $row['next_reconciliation_at'];
 		}
 		$row_status = sanitize_key( (string) $row['status'] );
 		$row_rank   = $rank_by_status[ $row_status ] ?? absint( $row['status_rank'] ?? 0 );
@@ -328,9 +384,14 @@ function papelito_tracking_order_snapshot( int $order_id ): array {
 	return array(
 		'status'             => $status,
 		'generation_status'  => $generation_status,
+		'creation_outcome'   => $creation_outcome,
+		'reconciliation_status' => $reconciliation_status,
+		'reconciliation_attempts' => $reconciliation_attempts,
+		'next_reconciliation_at' => $next_reconciliation_at,
+		'support_review_required' => $support_review_required,
 		'automatic_generation_enabled' => function_exists( 'papelito_correios_prepostage_readiness' ) && ! is_wp_error( papelito_correios_prepostage_readiness() ),
 		'manual_registration_enabled'  => $manual_enabled,
-		'manual_fallback_available'     => $manual_enabled && is_array( $fallback_attempt ),
+		'manual_fallback_available'     => $manual_enabled && ! $support_review_required && is_array( $fallback_attempt ),
 		'generation_error_code'         => is_array( $fallback_attempt ) ? sanitize_key( (string) ( $fallback_attempt['last_error_code'] ?? '' ) ) : '',
 		'all_packages_done'  => $all_done,
 		'packages_total'     => count( $rows ),
@@ -361,6 +422,10 @@ function papelito_tracking_create_shipment( int $order_id, int $vendor_id, array
 			'provider'       => '' !== $provider ? $provider : 'correios',
 			'generation_status' => 'generated',
 			'creation_outcome' => 'created',
+			'reconciliation_status' => 'none',
+			'reconciliation_attempts' => 0,
+			'next_reconciliation_at' => null,
+			'support_review_required' => 0,
 			'manual_fallback_eligible' => 0,
 			'is_test'        => $is_test ? 1 : 0,
 			'idempotency_key' => ! empty( $data['idempotency_key'] ) ? sanitize_text_field( (string) $data['idempotency_key'] ) : null,
@@ -373,7 +438,7 @@ function papelito_tracking_create_shipment( int $order_id, int $vendor_id, array
 			'created_at'     => current_time( 'mysql', true ),
 			'updated_at'     => current_time( 'mysql', true ),
 		),
-		array( '%d', '%d', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s' )
+		array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s' )
 	);
 
 	if ( false === $inserted ) {
@@ -409,6 +474,10 @@ function papelito_tracking_reserve_generation( int $order_id, int $vendor_id, st
 			'provider'          => sanitize_key( $provider ),
 			'generation_status' => 'generating',
 			'creation_outcome' => 'uncertain',
+			'reconciliation_status' => 'pending',
+			'reconciliation_attempts' => 0,
+			'next_reconciliation_at' => current_time( 'mysql', true ),
+			'support_review_required' => 0,
 			'manual_fallback_eligible' => 0,
 			'is_test'          => 'mock' === sanitize_key( $provider ) ? 1 : 0,
 			'idempotency_key'   => $idempotency_key,
@@ -417,7 +486,7 @@ function papelito_tracking_reserve_generation( int $order_id, int $vendor_id, st
 			'created_at'        => $now,
 			'updated_at'        => $now,
 		),
-		array( '%d', '%d', '%s', '%s', '%s', '%d', '%d', '%s', '%s', '%s', '%d', '%s', '%s' )
+		array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%d', '%d', '%s', '%s', '%d', '%s', '%s' )
 	);
 	if ( false !== $inserted ) {
 		return array( 'id' => absint( $wpdb->insert_id ), 'replay' => false );
@@ -431,7 +500,8 @@ function papelito_tracking_reserve_generation( int $order_id, int $vendor_id, st
 	if ( 'failed' === sanitize_key( (string) ( $row['generation_status'] ?? '' ) ) && empty( $row['active'] ) && empty( $row['manual_fallback_eligible'] ) ) {
 		$updated = $wpdb->query(
 			$wpdb->prepare(
-				"UPDATE {$table} SET generation_status = 'generating', creation_outcome = 'uncertain', active = 1, last_error_code = NULL, updated_at = %s WHERE id = %d AND generation_status = 'failed' AND active = 0 AND manual_fallback_eligible = 0",
+				"UPDATE {$table} SET generation_status = 'generating', creation_outcome = 'uncertain', reconciliation_status = 'pending', next_reconciliation_at = %s, active = 1, last_error_code = NULL, support_review_required = 0, updated_at = %s WHERE id = %d AND generation_status = 'failed' AND active = 0 AND manual_fallback_eligible = 0",
+				$now,
 				$now,
 				absint( $row['id'] )
 			)
@@ -457,13 +527,16 @@ function papelito_tracking_fail_generation( int $shipment_id, WP_Error $error ):
 		array(
 			'generation_status' => $not_created ? 'failed' : 'uncertain',
 			'creation_outcome'  => $not_created ? 'not_created' : ( 'created' === $outcome ? 'created' : 'uncertain' ),
+			'reconciliation_status' => $not_created ? 'not_needed' : 'pending',
+			'next_reconciliation_at' => $not_created ? null : current_time( 'mysql', true ),
+			'support_review_required' => 0,
 			'manual_fallback_eligible' => $eligible ? 1 : 0,
 			'last_error_code'   => sanitize_key( $error->get_error_code() ),
 			'active'            => $not_created ? 0 : 1,
 			'updated_at'        => current_time( 'mysql', true ),
 		),
 		array( 'id' => $shipment_id ),
-		array( '%s', '%s', '%d', '%s', '%d', '%s' ),
+		array( '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%d', '%s' ),
 		array( '%d' )
 	);
 	if ( method_exists( $error, 'add_data' ) ) {
@@ -476,23 +549,55 @@ function papelito_tracking_fail_generation( int $shipment_id, WP_Error $error ):
 
 /** Diretorio privado, deliberadamente fora do webroot do WordPress. */
 function papelito_tracking_private_labels_dir(): string {
+	if ( function_exists( 'papelito_correios_prepostage_config' ) ) {
+		$configured = papelito_correios_prepostage_config( 'PAPELITO_PRIVATE_LABELS_DIR', '' );
+		if ( '' !== $configured ) {
+			return $configured;
+		}
+	}
 	$base = dirname( untrailingslashit( ABSPATH ) ) . '/papelito-private/labels';
+	if ( is_dir( dirname( $base ) ) || is_writable( dirname( dirname( $base ) ) ) ) {
+		return (string) apply_filters( 'papelito_tracking_private_labels_dir', $base );
+	}
+	if ( defined( 'WP_CONTENT_DIR' ) ) {
+		$base = trailingslashit( WP_CONTENT_DIR ) . 'uploads/papelito-private-labels';
+	}
 	return (string) apply_filters( 'papelito_tracking_private_labels_dir', $base );
 }
 
+/** Tenta bloquear acesso HTTP quando o fallback local cair dentro de uploads. */
+function papelito_tracking_harden_private_labels_dir( string $directory ): void {
+	if ( defined( 'WP_CONTENT_DIR' ) && 0 === strpos( $directory, trailingslashit( WP_CONTENT_DIR ) . 'uploads/' ) ) {
+		$htaccess = trailingslashit( $directory ) . '.htaccess';
+		if ( ! file_exists( $htaccess ) ) {
+			file_put_contents( $htaccess, "Require all denied\nDeny from all\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		}
+		$index = trailingslashit( $directory ) . 'index.html';
+		if ( ! file_exists( $index ) ) {
+			file_put_contents( $index, '' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		}
+	}
+}
+
 /** Persiste um PDF privado e retorna somente sua chave opaca e checksum. */
-function papelito_tracking_store_private_label( string $idempotency_key, string $contents ) {
+function papelito_tracking_store_private_label( string $idempotency_key, string $contents, string $provider = '' ) {
+	$creation_outcome = 'mock' === sanitize_key( $provider )
+		&& function_exists( 'papelito_correios_prepostage_is_test_environment' )
+		&& papelito_correios_prepostage_is_test_environment()
+		? 'not_created'
+		: 'created';
 	if ( '' === $contents || 0 !== strpos( $contents, '%PDF-' ) ) {
-		return new WP_Error( 'papelito_label_invalid', 'O provider nao retornou um PDF de etiqueta valido.', array( 'status' => 502, 'category' => 'invalid_provider_response', 'creation_outcome' => 'created' ) );
+		return new WP_Error( 'papelito_label_invalid', 'O provider nao retornou um PDF de etiqueta valido.', array( 'status' => 502, 'category' => 'invalid_provider_response', 'creation_outcome' => $creation_outcome ) );
 	}
 	$directory = papelito_tracking_private_labels_dir();
 	if ( ! wp_mkdir_p( $directory ) ) {
-		return new WP_Error( 'papelito_label_storage_unavailable', 'Nao foi possivel preparar o armazenamento privado da etiqueta.', array( 'status' => 500, 'category' => 'storage', 'creation_outcome' => 'created' ) );
+		return new WP_Error( 'papelito_label_storage_unavailable', 'Nao foi possivel preparar o armazenamento privado da etiqueta.', array( 'status' => 500, 'category' => 'storage', 'creation_outcome' => $creation_outcome ) );
 	}
+	papelito_tracking_harden_private_labels_dir( $directory );
 	$key  = hash( 'sha256', $idempotency_key . '|label' ) . '.pdf';
 	$path = trailingslashit( $directory ) . $key;
 	if ( strlen( $contents ) !== file_put_contents( $path, $contents, LOCK_EX ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-		return new WP_Error( 'papelito_label_storage_failed', 'Nao foi possivel armazenar a etiqueta.', array( 'status' => 500, 'category' => 'storage', 'creation_outcome' => 'created' ) );
+		return new WP_Error( 'papelito_label_storage_failed', 'Nao foi possivel armazenar a etiqueta.', array( 'status' => 500, 'category' => 'storage', 'creation_outcome' => $creation_outcome ) );
 	}
 
 	return array( 'key' => $key, 'sha256' => hash( 'sha256', $contents ) );
@@ -511,6 +616,9 @@ function papelito_tracking_complete_generation( int $shipment_id, string $provid
 		array(
 			'generation_status' => 'generated',
 			'creation_outcome'  => 'created',
+			'reconciliation_status' => 'resolved_created',
+			'next_reconciliation_at' => null,
+			'support_review_required' => 0,
 			'manual_fallback_eligible' => 0,
 			'is_test'           => 'mock' === $provider ? 1 : 0,
 			'tracking_code'     => $tracking_code,
@@ -525,13 +633,193 @@ function papelito_tracking_complete_generation( int $shipment_id, string $provid
 			'last_error_code'   => null,
 			'updated_at'        => current_time( 'mysql', true ),
 		),
-		array( 'id' => $shipment_id, 'generation_status' => 'generating' )
+		array( 'id' => $shipment_id )
 	);
 	if ( 1 !== $updated ) {
 		return new WP_Error( 'papelito_tracking_completion_failed', 'Nao foi possivel concluir a geracao da etiqueta.', array( 'status' => 500, 'category' => 'internal' ) );
 	}
 
 	return true;
+}
+
+/** Monta um erro publico para resultado incerto com o estado atual da verificacao. */
+function papelito_tracking_generation_uncertain_error( array $row ): WP_Error {
+	return new WP_Error(
+		'papelito_correios_generation_uncertain',
+		empty( $row['support_review_required'] )
+			? 'A solicitacao anterior foi enviada e ainda esta sendo verificada para evitar duplicidade.'
+			: 'A solicitacao anterior precisa de revisao do suporte antes de qualquer nova etiqueta.',
+		array(
+			'status'                    => 409,
+			'category'                  => 'uncertain',
+			'retryable'                 => false,
+			'creation_outcome'          => sanitize_key( (string) ( $row['creation_outcome'] ?? 'uncertain' ) ),
+			'reconciliation_status'     => sanitize_key( (string) ( $row['reconciliation_status'] ?? 'pending' ) ),
+			'reconciliation_attempts'   => absint( $row['reconciliation_attempts'] ?? 0 ),
+			'next_reconciliation_at'    => (string) ( $row['next_reconciliation_at'] ?? '' ),
+			'support_review_required'   => ! empty( $row['support_review_required'] ),
+			'manual_fallback_available' => false,
+		)
+	);
+}
+
+/** Agenda nova reconciliacao de uma tentativa incerta com backoff e jitter. */
+function papelito_tracking_schedule_next_reconciliation( array $row, string $status, string $error_code = '' ): void {
+	global $wpdb;
+	$attempts = min( 6, absint( $row['reconciliation_attempts'] ?? 0 ) + 1 );
+	$delay    = papelito_tracking_apply_jitter( min( 2 * HOUR_IN_SECONDS, 5 * MINUTE_IN_SECONDS * ( 2 ** max( 0, $attempts - 1 ) ) ) );
+	$wpdb->update(
+		papelito_tracking_shipments_table_name(),
+		array(
+			'reconciliation_status'   => sanitize_key( $status ),
+			'reconciliation_attempts' => $attempts,
+			'next_reconciliation_at'  => gmdate( 'Y-m-d H:i:s', time() + $delay ),
+			'last_error_code'         => '' !== $error_code ? sanitize_key( $error_code ) : sanitize_key( (string) ( $row['last_error_code'] ?? '' ) ),
+			'updated_at'              => current_time( 'mysql', true ),
+		),
+		array( 'id' => absint( $row['id'] ) ),
+		array( '%s', '%d', '%s', '%s', '%s' ),
+		array( '%d' )
+	);
+}
+
+/** Marca uma tentativa como dependente de revisao humana auditavel. */
+function papelito_tracking_mark_support_review_required( array $row, string $reason = 'provider_reconciliation_unavailable' ): void {
+	global $wpdb;
+	$wpdb->update(
+		papelito_tracking_shipments_table_name(),
+		array(
+			'generation_status'        => 'uncertain',
+			'reconciliation_status'    => 'needs_support',
+			'next_reconciliation_at'   => null,
+			'support_review_required'  => 1,
+			'manual_fallback_eligible' => 0,
+			'last_error_code'          => sanitize_key( $reason ),
+			'updated_at'               => current_time( 'mysql', true ),
+		),
+		array( 'id' => absint( $row['id'] ) ),
+		array( '%s', '%s', '%s', '%d', '%d', '%s', '%s' ),
+		array( '%d' )
+	);
+}
+
+/** Reconstroi deterministicamente uma pre-postagem mock sem chamada externa. */
+function papelito_tracking_mock_reconciliation_data( $order, int $vendor_id ) {
+	if ( ! function_exists( 'papelito_correios_prepostage_is_test_environment' ) || ! papelito_correios_prepostage_is_test_environment() ) {
+		return array( 'status' => 'needs_support', 'reason' => 'mock_reconciliation_forbidden' );
+	}
+	if ( ! class_exists( 'Papelito_Correios_Mock_Prepostage_Adapter' ) ) {
+		return array( 'status' => 'needs_support', 'reason' => 'mock_adapter_missing' );
+	}
+	$adapter = new Papelito_Correios_Mock_Prepostage_Adapter();
+	$data    = $adapter->create( $order, $vendor_id );
+	if ( is_wp_error( $data ) ) {
+		$error_data = $data->get_error_data();
+		return array(
+			'status' => ! empty( $error_data['creation_outcome'] ) && 'not_created' === sanitize_key( (string) $error_data['creation_outcome'] ) ? 'not_created' : 'still_uncertain',
+			'error'  => $data,
+		);
+	}
+	return array( 'status' => 'created', 'data' => $data );
+}
+
+/** Reconcilia uma tentativa cujo resultado externo ficou incerto. */
+function papelito_tracking_reconcile_generation( $order, int $vendor_id, array $attempt, string $origin = 'automatic' ) {
+	global $wpdb;
+	$shipment_id = absint( $attempt['id'] ?? 0 );
+	if ( $shipment_id <= 0 ) {
+		return new WP_Error( 'papelito_reconciliation_attempt_invalid', 'Tentativa de envio invalida.', array( 'status' => 500 ) );
+	}
+
+	$table = papelito_tracking_shipments_table_name();
+	$wpdb->query( 'START TRANSACTION' );
+	$row = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d FOR UPDATE", $shipment_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	if ( ! is_array( $row ) ) {
+		$wpdb->query( 'ROLLBACK' );
+		return new WP_Error( 'papelito_reconciliation_attempt_missing', 'Tentativa de envio nao encontrada.', array( 'status' => 404 ) );
+	}
+	if ( 'generated' === sanitize_key( (string) ( $row['generation_status'] ?? '' ) ) ) {
+		$wpdb->query( 'COMMIT' );
+		return papelito_tracking_order_snapshot( absint( $row['order_id'] ) );
+	}
+	if ( ! in_array( sanitize_key( (string) ( $row['generation_status'] ?? '' ) ), array( 'generating', 'uncertain' ), true ) ) {
+		$wpdb->query( 'COMMIT' );
+		return papelito_tracking_order_snapshot( absint( $row['order_id'] ) );
+	}
+	$wpdb->update(
+		$table,
+		array( 'reconciliation_status' => 'checking', 'updated_at' => current_time( 'mysql', true ) ),
+		array( 'id' => $shipment_id ),
+		array( '%s', '%s' ),
+		array( '%d' )
+	);
+	$wpdb->query( 'COMMIT' );
+
+	$provider = sanitize_key( (string) ( $row['provider'] ?? 'correios' ) );
+	$result   = 'mock' === $provider
+		? papelito_tracking_mock_reconciliation_data( $order, $vendor_id )
+		: apply_filters( 'papelito_correios_reconcile_prepostage', null, $row, $order, $vendor_id );
+
+	if ( is_wp_error( $result ) ) {
+		papelito_tracking_schedule_next_reconciliation( $row, 'still_uncertain', $result->get_error_code() );
+		papelito_tracking_log( 'reconciliation_uncertain', array( 'order_id' => $row['order_id'], 'shipment_id' => $shipment_id, 'vendor_id' => $vendor_id, 'provider' => $provider, 'error_code' => $result->get_error_code(), 'origin' => $origin ) );
+		return papelito_tracking_generation_uncertain_error( array_merge( $row, array( 'reconciliation_status' => 'still_uncertain' ) ) );
+	}
+	if ( ! is_array( $result ) || empty( $result['status'] ) ) {
+		papelito_tracking_mark_support_review_required( $row );
+		papelito_tracking_log( 'reconciliation_needs_support', array( 'order_id' => $row['order_id'], 'shipment_id' => $shipment_id, 'vendor_id' => $vendor_id, 'provider' => $provider, 'origin' => $origin ) );
+		return papelito_tracking_generation_uncertain_error( array_merge( $row, array( 'reconciliation_status' => 'needs_support', 'support_review_required' => 1 ) ) );
+	}
+
+	$status = sanitize_key( (string) $result['status'] );
+	if ( 'created' === $status && isset( $result['data'] ) && is_array( $result['data'] ) ) {
+		$key   = sanitize_text_field( (string) ( $row['idempotency_key'] ?? '' ) );
+		$label = array();
+		if ( isset( $result['data']['label_contents'] ) ) {
+			$label = papelito_tracking_store_private_label( $key, (string) $result['data']['label_contents'], $provider );
+			if ( is_wp_error( $label ) ) {
+				$error_data = $label->get_error_data();
+				if ( is_array( $error_data ) && 'not_created' === sanitize_key( (string) ( $error_data['creation_outcome'] ?? '' ) ) ) {
+					papelito_tracking_fail_generation( $shipment_id, $label );
+				} else {
+					papelito_tracking_schedule_next_reconciliation( $row, 'still_uncertain', $label->get_error_code() );
+				}
+				return $label;
+			}
+		}
+		$completed = papelito_tracking_complete_generation( $shipment_id, $provider, $result['data'], $label );
+		if ( is_wp_error( $completed ) ) {
+			papelito_tracking_schedule_next_reconciliation( $row, 'still_uncertain', $completed->get_error_code() );
+			return $completed;
+		}
+		if ( 'mock' === $provider ) {
+			papelito_tracking_apply_test_fixture_status( $shipment_id );
+		}
+		papelito_tracking_log( 'reconciliation_created', array( 'order_id' => $row['order_id'], 'shipment_id' => $shipment_id, 'vendor_id' => $vendor_id, 'provider' => $provider, 'previous_status' => $row['generation_status'], 'new_status' => 'generated', 'creation_outcome' => 'created', 'origin' => $origin ) );
+		return papelito_tracking_order_snapshot( absint( $row['order_id'] ) );
+	}
+
+	if ( 'not_created' === $status ) {
+		$error = isset( $result['error'] ) && is_wp_error( $result['error'] )
+			? $result['error']
+			: new WP_Error(
+				sanitize_key( (string) ( $result['error_code'] ?? $row['last_error_code'] ?? 'papelito_correios_unavailable' ) ),
+				'Os Correios confirmaram que a pre-postagem anterior nao foi criada.',
+				array( 'status' => 409, 'category' => 'not_created', 'retryable' => true, 'creation_outcome' => 'not_created' )
+			);
+		papelito_tracking_fail_generation( $shipment_id, $error );
+		papelito_tracking_log( 'reconciliation_not_created', array( 'order_id' => $row['order_id'], 'shipment_id' => $shipment_id, 'vendor_id' => $vendor_id, 'provider' => $provider, 'previous_status' => $row['generation_status'], 'new_status' => 'failed', 'creation_outcome' => 'not_created', 'origin' => $origin ) );
+		return papelito_tracking_order_snapshot( absint( $row['order_id'] ) );
+	}
+
+	if ( 'still_uncertain' === $status ) {
+		$error = isset( $result['error'] ) && is_wp_error( $result['error'] ) ? $result['error']->get_error_code() : sanitize_key( (string) ( $result['reason'] ?? '' ) );
+		papelito_tracking_schedule_next_reconciliation( $row, 'still_uncertain', $error );
+		return papelito_tracking_generation_uncertain_error( array_merge( $row, array( 'reconciliation_status' => 'still_uncertain' ) ) );
+	}
+
+	papelito_tracking_mark_support_review_required( $row, sanitize_key( (string) ( $result['reason'] ?? 'reconciliation_needs_support' ) ) );
+	return papelito_tracking_generation_uncertain_error( array_merge( $row, array( 'reconciliation_status' => 'needs_support', 'support_review_required' => 1 ) ) );
 }
 
 /**
@@ -566,7 +854,7 @@ function papelito_tracking_generate_shipment( $order, int $vendor_id ) {
 			return papelito_tracking_order_snapshot( (int) $order->get_id() );
 		}
 		if ( 'uncertain' === $generation_status ) {
-			return new WP_Error( 'papelito_correios_generation_uncertain', 'A solicitacao anterior teve resultado incerto. O suporte precisa reconciliar antes de uma nova tentativa.', array( 'status' => 409, 'category' => 'uncertain', 'retryable' => false ) );
+			return papelito_tracking_reconcile_generation( $order, $vendor_id, $existing[0], 'vendor_retry' );
 		}
 		return new WP_Error( 'papelito_correios_generation_in_progress', 'A etiqueta deste pedido ja esta sendo gerada.', array( 'status' => 409, 'category' => 'in_progress', 'retryable' => true ) );
 	}
@@ -584,7 +872,7 @@ function papelito_tracking_generate_shipment( $order, int $vendor_id ) {
 			return papelito_tracking_order_snapshot( (int) $order->get_id() );
 		}
 		if ( 'uncertain' === $row_generation ) {
-			return new WP_Error( 'papelito_correios_generation_uncertain', 'A solicitacao anterior teve resultado incerto. O suporte precisa reconciliar antes de uma nova tentativa.', array( 'status' => 409, 'category' => 'uncertain', 'retryable' => false ) );
+			return papelito_tracking_reconcile_generation( $order, $vendor_id, $reserved['row'], 'idempotent_replay' );
 		}
 		if ( 'failed' === $row_generation && ! empty( $reserved['row']['manual_fallback_eligible'] ) ) {
 			return papelito_tracking_manual_fallback_error_from_row( $reserved['row'] );
@@ -616,7 +904,7 @@ function papelito_tracking_generate_shipment( $order, int $vendor_id ) {
 
 	$label = array();
 	if ( isset( $result['label_contents'] ) ) {
-		$label = papelito_tracking_store_private_label( $key, (string) $result['label_contents'] );
+		$label = papelito_tracking_store_private_label( $key, (string) $result['label_contents'], $provider );
 		if ( is_wp_error( $label ) ) {
 			papelito_tracking_fail_generation( $shipment_id, $label );
 			return $label;
@@ -682,7 +970,7 @@ function papelito_tracking_apply_test_fixture_status( int $shipment_id ): void {
 }
 
 /** Cadastra um S10 somente depois de uma falha automatica segura. */
-function papelito_tracking_register_manual_shipment( $order, int $vendor_id, string $tracking_code ) {
+function papelito_tracking_register_manual_shipment( $order, int $vendor_id, string $tracking_code, array $manual_data = array() ) {
 	global $wpdb;
 	if ( ! function_exists( 'papelito_correios_manual_tracking_enabled' ) || ! papelito_correios_manual_tracking_enabled() ) {
 		return new WP_Error( 'papelito_manual_tracking_disabled', 'O cadastro manual de rastreamento nao esta habilitado.', array( 'status' => 403, 'category' => 'not_configured', 'retryable' => false ) );
@@ -701,6 +989,26 @@ function papelito_tracking_register_manual_shipment( $order, int $vendor_id, str
 
 	$order_id = absint( $order->get_id() );
 	$table    = papelito_tracking_shipments_table_name();
+	$service_code = sanitize_text_field( (string) ( $manual_data['service_code'] ?? '' ) );
+	if ( '' === $service_code && method_exists( $order, 'get_meta' ) ) {
+		$service_code = sanitize_text_field( (string) $order->get_meta( '_papelito_shipping_service_code', true ) );
+	}
+	$posted_at = sanitize_text_field( (string) ( $manual_data['posted_at'] ?? '' ) );
+	if ( '' === $service_code ) {
+		return new WP_Error( 'papelito_manual_service_required', 'Informe o servico usado na postagem manual.', array( 'status' => 422, 'category' => 'validation', 'retryable' => false ) );
+	}
+	if ( 1 !== preg_match( '/^\d{4}-\d{2}-\d{2}$/', $posted_at ) ) {
+		return new WP_Error( 'papelito_manual_posted_at_required', 'Informe a data da postagem ou geracao manual.', array( 'status' => 422, 'category' => 'validation', 'retryable' => false ) );
+	}
+	$note = sanitize_textarea_field( (string) ( $manual_data['note'] ?? '' ) );
+	if ( strlen( $note ) < 10 ) {
+		return new WP_Error( 'papelito_manual_note_required', 'Informe uma observacao explicando o cadastro manual.', array( 'status' => 422, 'category' => 'validation', 'retryable' => false ) );
+	}
+	$label_url = sanitize_text_field( (string) ( $manual_data['label_url'] ?? '' ) );
+	if ( '' !== $label_url && false === filter_var( $label_url, FILTER_VALIDATE_URL ) ) {
+		return new WP_Error( 'papelito_manual_label_url_invalid', 'Informe uma URL de etiqueta valida ou deixe o campo vazio.', array( 'status' => 422, 'category' => 'validation', 'retryable' => false ) );
+	}
+
 	$wpdb->query( 'START TRANSACTION' );
 	$attempt = papelito_tracking_manual_fallback_attempt( $order_id, $vendor_id, true );
 	$active  = $wpdb->get_row(
@@ -720,7 +1028,6 @@ function papelito_tracking_register_manual_shipment( $order, int $vendor_id, str
 	}
 
 	$is_test      = function_exists( 'papelito_correios_prepostage_is_test_environment' ) && papelito_correios_prepostage_is_test_environment();
-	$service_code = method_exists( $order, 'get_meta' ) ? sanitize_text_field( (string) $order->get_meta( '_papelito_shipping_service_code', true ) ) : '';
 	$key          = hash( 'sha256', implode( '|', array( 'manual-v1', $order_id, $vendor_id, $service_code ) ) );
 	$shipment_id = papelito_tracking_create_shipment(
 		$order_id,
@@ -753,10 +1060,74 @@ function papelito_tracking_register_manual_shipment( $order, int $vendor_id, str
 		papelito_tracking_apply_test_fixture_status( absint( $shipment_id ) );
 	}
 	if ( method_exists( $order, 'add_order_note' ) ) {
-		$order->add_order_note( sprintf( 'Codigo de rastreamento associado manualmente pelo vendor ao envio #%d.', $shipment_id ) );
+		$order->add_order_note(
+			sprintf(
+				'Codigo de rastreamento associado manualmente pelo vendor ao envio #%d. Servico: %s. Data: %s. Observacao: %s%s',
+				$shipment_id,
+				$service_code,
+				$posted_at,
+				$note,
+				'' !== $label_url ? '. Etiqueta: ' . $label_url : ''
+			)
+		);
 		$order->save();
 	}
 
+	return papelito_tracking_order_snapshot( $order_id );
+}
+
+/** Libera fallback manual por decisao auditada do suporte. */
+function papelito_tracking_admin_release_manual_fallback( $order, int $admin_id, string $reason, string $evidence ) {
+	global $wpdb;
+	if ( ! function_exists( 'papelito_correios_manual_tracking_enabled' ) || ! papelito_correios_manual_tracking_enabled() ) {
+		return new WP_Error( 'papelito_manual_tracking_disabled', 'O cadastro manual de rastreamento nao esta habilitado.', array( 'status' => 403 ) );
+	}
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_id' ) ) {
+		return new WP_Error( 'papelito_tracking_order_invalid', 'Pedido invalido.', array( 'status' => 422 ) );
+	}
+	$reason   = sanitize_textarea_field( $reason );
+	$evidence = sanitize_textarea_field( $evidence );
+	if ( strlen( $reason ) < 12 || strlen( $evidence ) < 12 ) {
+		return new WP_Error( 'papelito_manual_release_reason_required', 'Informe motivo e evidencia da liberacao manual.', array( 'status' => 422 ) );
+	}
+	$order_id = absint( $order->get_id() );
+	$table    = papelito_tracking_shipments_table_name();
+	$wpdb->query( 'START TRANSACTION' );
+	$row = $wpdb->get_row(
+		$wpdb->prepare( "SELECT * FROM {$table} WHERE order_id = %d AND active = 1 AND generation_status = 'uncertain' ORDER BY id DESC LIMIT 1 FOR UPDATE", $order_id ),
+		ARRAY_A
+	); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	if ( ! is_array( $row ) ) {
+		$wpdb->query( 'ROLLBACK' );
+		return new WP_Error( 'papelito_manual_release_not_available', 'Nao ha tentativa incerta ativa para liberar.', array( 'status' => 409 ) );
+	}
+	$updated = $wpdb->update(
+		$table,
+		array(
+			'generation_status'        => 'failed',
+			'creation_outcome'         => 'not_created',
+			'reconciliation_status'    => 'support_released_manual',
+			'next_reconciliation_at'   => null,
+			'support_review_required'  => 0,
+			'manual_fallback_eligible' => 1,
+			'last_error_code'          => 'papelito_support_manual_release',
+			'active'                   => 0,
+			'updated_at'               => current_time( 'mysql', true ),
+		),
+		array( 'id' => absint( $row['id'] ) ),
+		array( '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%d', '%s' ),
+		array( '%d' )
+	);
+	if ( 1 !== $updated ) {
+		$wpdb->query( 'ROLLBACK' );
+		return new WP_Error( 'papelito_manual_release_conflict', 'A tentativa mudou durante a liberacao.', array( 'status' => 409 ) );
+	}
+	$wpdb->query( 'COMMIT' );
+	if ( method_exists( $order, 'add_order_note' ) ) {
+		$order->add_order_note( sprintf( 'Fallback manual liberado pelo suporte (usuario #%d). Motivo: %s. Evidencia: %s', $admin_id, $reason, $evidence ) );
+		$order->save();
+	}
+	papelito_tracking_log( 'manual_fallback_released', array( 'order_id' => $order_id, 'shipment_id' => $row['id'], 'vendor_id' => $row['vendor_id'], 'origin' => 'support' ) );
 	return papelito_tracking_order_snapshot( $order_id );
 }
 
@@ -1077,6 +1448,31 @@ function papelito_tracking_poll_due_shipments(): void {
 }
 add_action( PAPELITO_TRACKING_POLL_HOOK, 'papelito_tracking_poll_due_shipments' );
 
+/** Processa tentativas de pre-postagem incertas vencidas. */
+function papelito_tracking_reconcile_due_generations(): void {
+	global $wpdb;
+	if ( ! function_exists( 'wc_get_order' ) ) {
+		return;
+	}
+	$table = papelito_tracking_shipments_table_name();
+	$batch = (int) max( 1, min( 50, (int) apply_filters( 'papelito_prepostage_reconciliation_batch_size', 20 ) ) );
+	$rows  = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT * FROM {$table} WHERE active = 1 AND generation_status = 'uncertain' AND support_review_required = 0 AND (next_reconciliation_at IS NULL OR next_reconciliation_at <= %s) ORDER BY COALESCE(next_reconciliation_at, created_at) ASC, id ASC LIMIT %d",
+			current_time( 'mysql', true ),
+			$batch
+		),
+		ARRAY_A
+	); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		$order = wc_get_order( absint( $row['order_id'] ?? 0 ) );
+		if ( is_object( $order ) ) {
+			papelito_tracking_reconcile_generation( $order, absint( $row['vendor_id'] ?? 0 ), $row, 'scheduled' );
+		}
+	}
+}
+add_action( PAPELITO_PREPOST_RECONCILE_HOOK, 'papelito_tracking_reconcile_due_generations' );
+
 /** Retorna indicadores operacionais sem expor credenciais ou dados pessoais. */
 function papelito_tracking_health_snapshot(): array {
 	global $wpdb;
@@ -1106,10 +1502,16 @@ function papelito_tracking_ensure_schedule(): void {
 		if ( ! as_has_scheduled_action( PAPELITO_TRACKING_POLL_HOOK ) ) {
 			as_schedule_recurring_action( time() + MINUTE_IN_SECONDS, 5 * MINUTE_IN_SECONDS, PAPELITO_TRACKING_POLL_HOOK, array(), 'papelito' );
 		}
+		if ( ! as_has_scheduled_action( PAPELITO_PREPOST_RECONCILE_HOOK ) ) {
+			as_schedule_recurring_action( time() + MINUTE_IN_SECONDS, 5 * MINUTE_IN_SECONDS, PAPELITO_PREPOST_RECONCILE_HOOK, array(), 'papelito' );
+		}
 		return;
 	}
 	if ( ! wp_next_scheduled( PAPELITO_TRACKING_POLL_HOOK ) ) {
 		wp_schedule_event( time() + MINUTE_IN_SECONDS, 'papelito_five_minutes', PAPELITO_TRACKING_POLL_HOOK );
+	}
+	if ( ! wp_next_scheduled( PAPELITO_PREPOST_RECONCILE_HOOK ) ) {
+		wp_schedule_event( time() + MINUTE_IN_SECONDS, 'papelito_five_minutes', PAPELITO_PREPOST_RECONCILE_HOOK );
 	}
 }
 add_filter(
@@ -1217,11 +1619,25 @@ add_action(
 					if ( is_wp_error( $order ) ) {
 						return $order;
 					}
-					$result = papelito_tracking_register_manual_shipment( $order, get_current_user_id(), (string) $request->get_param( 'tracking_code' ) );
+					$result = papelito_tracking_register_manual_shipment(
+						$order,
+						get_current_user_id(),
+						(string) $request->get_param( 'tracking_code' ),
+						array(
+							'service_code' => $request->get_param( 'service_code' ),
+							'posted_at'    => $request->get_param( 'posted_at' ),
+							'note'         => $request->get_param( 'note' ),
+							'label_url'    => $request->get_param( 'label_url' ),
+						)
+					);
 					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 201 );
 				},
 				'args'                => array(
 					'tracking_code' => array( 'type' => 'string', 'required' => true ),
+					'service_code'  => array( 'type' => 'string', 'required' => false ),
+					'posted_at'     => array( 'type' => 'string', 'required' => true ),
+					'note'          => array( 'type' => 'string', 'required' => true ),
+					'label_url'     => array( 'type' => 'string', 'required' => false ),
 				),
 			)
 		);
@@ -1299,6 +1715,32 @@ add_action(
 					'tracking_code' => array( 'type' => 'string', 'required' => true ),
 					'prepost_id'    => array( 'type' => 'string', 'required' => false ),
 					'service_code'  => array( 'type' => 'string', 'required' => false ),
+				),
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/admin/orders/(?P<id>\d+)/shipments/manual-release',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'permission_callback' => static fn(): bool => current_user_can( 'manage_woocommerce' ),
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$order = function_exists( 'wc_get_order' ) ? wc_get_order( absint( $request->get_param( 'id' ) ) ) : null;
+					if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
+						return new WP_Error( 'papelito_order_not_found', 'Pedido nao encontrado.', array( 'status' => 404 ) );
+					}
+					$result = papelito_tracking_admin_release_manual_fallback(
+						$order,
+						get_current_user_id(),
+						(string) $request->get_param( 'reason' ),
+						(string) $request->get_param( 'evidence' )
+					);
+					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+				},
+				'args'                => array(
+					'reason'   => array( 'type' => 'string', 'required' => true ),
+					'evidence' => array( 'type' => 'string', 'required' => true ),
 				),
 			)
 		);

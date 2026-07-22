@@ -22,7 +22,8 @@ RUN apt-get update \
     && a2enconf servername \
     && curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp \
     && chmod +x /usr/local/bin/wp \
-    && chown www-data:www-data /var/www/html \
+    && mkdir -p /var/www/papelito-private/labels \
+    && chown -R www-data:www-data /var/www/html /var/www/papelito-private \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /var/www/html
