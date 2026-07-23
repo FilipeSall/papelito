@@ -40,9 +40,15 @@ require_once __DIR__ . '/includes/order_routing.php';
 require_once __DIR__ . '/includes/vendor_dashboard.php';
 require_once __DIR__ . '/includes/vendor_messaging.php';
 require_once __DIR__ . '/includes/vendor_processing_alerts.php';
+require_once __DIR__ . '/includes/company_flags.php';
+require_once __DIR__ . '/includes/cnpj_validation.php';
+require_once __DIR__ . '/includes/customer_identity.php';
+require_once __DIR__ . '/includes/company_schema.php';
+require_once __DIR__ . '/includes/company_repository.php';
+require_once __DIR__ . '/includes/cnpj_providers.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.9.0' );
+	define( 'PAPELITO_DB_VERSION', '1.10.0' );
 }
 
 /**
@@ -79,6 +85,10 @@ function papelito_maybe_migrate_db() {
 
 	if ( function_exists( 'papelito_vendor_interests_backfill_legacy' ) ) {
 		papelito_vendor_interests_backfill_legacy();
+	}
+
+	if ( function_exists( 'papelito_company_install_tables' ) ) {
+		papelito_company_install_tables();
 	}
 
 	update_option( 'papelito_db_version', PAPELITO_DB_VERSION, true );
