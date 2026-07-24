@@ -116,6 +116,8 @@ papelito_assert_same( 'valid value is preserved', 'attempt-123', papelito_order_
 echo "Scenario 2: existing completed checkout attempt returns the stored order\n";
 $order = new WC_Order( 321, 77 );
 $order->meta[ PAPELITO_CHECKOUT_ATTEMPT_ID_META ]     = 'attempt-123';
+$order->meta[ PAPELITO_CHECKOUT_ATTEMPT_COMPANY_META ] = 44;
+$order->meta[ PAPELITO_CHECKOUT_ATTEMPT_HASH_META ]    = 'stable-hash';
 $order->meta[ PAPELITO_PAGARME_ORDER_ID_META ]       = 'ord_123';
 $order->meta[ PAPELITO_PAGARME_PAYMENT_METHOD_META ] = 'boleto';
 $order->meta[ PAPELITO_PAGARME_PAYMENT_STATE_META ]  = 'waiting_payment';
@@ -128,7 +130,15 @@ $response = papelito_order_routing_existing_order_response( $found );
 papelito_assert_same( 'response reuses order id', 321, $response['order_id'] ?? null );
 papelito_assert_same( 'response reuses payment state', 'waiting_payment', $response['payment']['state'] ?? null );
 
-echo "Scenario 3: in-progress attempt blocks duplicate creation\n";
+echo "Scenario 3: attempt identity protects company and payload\n";
+papelito_assert_same( 'same company and payload are accepted', true, papelito_order_routing_validate_existing_attempt( $order, 44, 'stable-hash' ) );
+$company_conflict = papelito_order_routing_validate_existing_attempt( $order, 45, 'stable-hash' );
+papelito_assert_same( 'company change is rejected', true, is_wp_error( $company_conflict ) );
+papelito_assert_same( 'company change is conflict', 409, $company_conflict->get_error_data()['status'] ?? null );
+$payload_conflict = papelito_order_routing_validate_existing_attempt( $order, 44, 'changed-hash' );
+papelito_assert_same( 'payload change is rejected', true, is_wp_error( $payload_conflict ) );
+
+echo "Scenario 4: in-progress attempt blocks duplicate creation\n";
 $order->meta[ PAPELITO_PAGARME_ORDER_ID_META ] = '';
 $response                                      = papelito_order_routing_existing_order_response( $order );
 papelito_assert_same( 'in-progress duplicate returns WP_Error', true, is_wp_error( $response ) );

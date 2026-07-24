@@ -231,6 +231,45 @@ function papelito_pagarme_resolve_customer_document( int $user_id ): string {
 	return '';
 }
 
+/** @return array<string,mixed>|WP_Error */
+function papelito_pagarme_b2b_customer_payload_from_order( object $order ) {
+	$company_id = (int) $order->get_meta( '_papelito_company_id', true );
+	$name = sanitize_text_field( (string) $order->get_meta( '_papelito_company_legal_name', true ) );
+	$email = sanitize_email( (string) $order->get_meta( '_papelito_company_billing_email', true ) );
+	$cnpj = sanitize_text_field( (string) $order->get_meta( '_papelito_company_cnpj', true ) );
+	$phone = sanitize_text_field( (string) $order->get_meta( '_papelito_company_phone', true ) );
+	$length = static fn( string $value ): int => function_exists( 'mb_strlen' ) ? mb_strlen( $value ) : strlen( $value );
+	if ( $company_id <= 0 || '' === $name || ! is_email( $email ) || $length( $name ) > 64 || $length( $email ) > 64 || strlen( $cnpj ) > 16 ) {
+		return new WP_Error( 'papelito_b2b_pagarme_customer_invalid', 'Os dados fiscais da empresa não atendem aos limites do pagamento.', array( 'status' => 422 ) );
+	}
+	if ( function_exists( 'papelito_cnpj_is_alphanumeric' ) && papelito_cnpj_is_alphanumeric( $cnpj ) && ! papelito_b2b_flag( 'PAPELITO_ALPHANUMERIC_CNPJ_PAYMENT_ENABLED' ) ) {
+		return new WP_Error( 'papelito_b2b_cnpj_alphanumeric_payment_unsupported', 'O pagamento para CNPJ alfanumérico ainda não está disponível.', array( 'status' => 422 ) );
+	}
+	$address = array();
+	foreach ( array( 'cep', 'state', 'city', 'neighborhood', 'street', 'number', 'complement' ) as $field ) {
+		$address[ $field ] = sanitize_text_field( (string) $order->get_meta( '_papelito_company_fiscal_' . $field, true ) );
+	}
+	foreach ( array( 'cep', 'state', 'city', 'neighborhood', 'street', 'number' ) as $field ) {
+		if ( '' === $address[ $field ] ) {
+			return new WP_Error( 'papelito_b2b_fiscal_address_incomplete', 'O endereço fiscal da empresa está incompleto.', array( 'status' => 422 ) );
+		}
+	}
+	$normalized_phone = function_exists( 'papelito_auth_normalize_phone' ) ? papelito_auth_normalize_phone( $phone ) : preg_replace( '/\\D+/', '', $phone );
+	if ( ! is_string( $normalized_phone ) || ! in_array( strlen( $normalized_phone ), array( 10, 11 ), true ) ) {
+		return new WP_Error( 'papelito_b2b_business_phone_invalid', 'O telefone empresarial é inválido para pagamento.', array( 'status' => 422 ) );
+	}
+	return array(
+		'name' => $name,
+		'email' => $email,
+		'code' => 'papelito-company-' . $company_id,
+		'document_type' => 'CNPJ',
+		'document' => $cnpj,
+		'type' => 'company',
+		'phones' => array( 'mobile_phone' => papelito_pagarme_phone_payload( $phone ) ),
+		'address' => papelito_pagarme_address_payload( $address ),
+	);
+}
+
 /**
  * Monta o payload do cliente.
  *
@@ -690,7 +729,9 @@ function papelito_pagarme_mark_vendor_status_unpaid( object $order ): void {
  * @return array<string,mixed>|WP_Error
  */
 function papelito_pagarme_create_order_payment( object $order, int $customer_id, array $payment, array $address, array $lines, array $shipping ) {
-	$customer = papelito_pagarme_customer_payload( $customer_id, $address );
+	$customer = '1' === (string) $order->get_meta( '_papelito_b2b_snapshot_version', true )
+		? papelito_pagarme_b2b_customer_payload_from_order( $order )
+		: papelito_pagarme_customer_payload( $customer_id, $address );
 	if ( is_wp_error( $customer ) ) {
 		return $customer;
 	}

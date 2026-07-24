@@ -19,6 +19,99 @@ if ( ! defined( 'PAPELITO_ORDER_VENDOR_STATUS_AWAITING_SHIPMENT' ) ) {
 if ( ! defined( 'PAPELITO_CHECKOUT_ATTEMPT_ID_META' ) ) {
 	define( 'PAPELITO_CHECKOUT_ATTEMPT_ID_META', '_papelito_checkout_attempt_id' );
 }
+if ( ! defined( 'PAPELITO_CHECKOUT_ATTEMPT_COMPANY_META' ) ) {
+	define( 'PAPELITO_CHECKOUT_ATTEMPT_COMPANY_META', '_papelito_checkout_attempt_company_id' );
+}
+if ( ! defined( 'PAPELITO_CHECKOUT_ATTEMPT_HASH_META' ) ) {
+	define( 'PAPELITO_CHECKOUT_ATTEMPT_HASH_META', '_papelito_checkout_attempt_request_hash' );
+}
+if ( ! defined( 'PAPELITO_B2B_SNAPSHOT_VERSION' ) ) {
+	define( 'PAPELITO_B2B_SNAPSHOT_VERSION', '1' );
+}
+
+function papelito_order_routing_sort_payload( $value ) {
+	if ( ! is_array( $value ) ) {
+		return $value;
+	}
+	foreach ( $value as $key => $item ) {
+		$value[ $key ] = papelito_order_routing_sort_payload( $item );
+	}
+	ksort( $value );
+	return $value;
+}
+
+function papelito_order_routing_checkout_request_hash( array $payload ): string {
+	$normalized = $payload;
+	if ( isset( $normalized['payment']['card_token_id'] ) ) {
+		$normalized['payment']['card_token_id'] = hash_hmac( 'sha256', (string) $normalized['payment']['card_token_id'], wp_salt( 'papelito_checkout_attempt' ) );
+	}
+	return hash_hmac( 'sha256', (string) wp_json_encode( papelito_order_routing_sort_payload( $normalized ) ), wp_salt( 'papelito_checkout_attempt' ) );
+}
+
+/** @return array<string,mixed>|WP_Error */
+function papelito_order_routing_resolve_b2b_snapshot( int $user_id, array $payload ) {
+	if ( ! function_exists( 'papelito_b2b_is_cohort' ) || ! papelito_b2b_is_cohort( $user_id ) ) {
+		return array();
+	}
+	$context = papelito_company_context( $user_id );
+	$capability = papelito_company_purchase_capability( $user_id, $context );
+	if ( empty( $capability['canPurchase'] ) || ! is_array( $capability['company'] ?? null ) || ! is_array( $capability['membership'] ?? null ) ) {
+		return new WP_Error( 'papelito_b2b_purchase_not_allowed', 'Sua empresa não está apta para pagamento.', array( 'status' => 403, 'purchaseBlockReason' => $capability['purchaseBlockReason'] ?? 'company_or_membership_not_approved' ) );
+	}
+	$expected_company_id = absint( $payload['expected_company_id'] ?? 0 );
+	$company = $capability['company'];
+	if ( $expected_company_id <= 0 || $expected_company_id !== (int) $company['id'] ) {
+		return new WP_Error( 'papelito_checkout_company_context_changed', 'A empresa ativa mudou. Revise o checkout antes de continuar.', array( 'status' => 409 ) );
+	}
+	$membership = $capability['membership'];
+	return array(
+		'company' => $company,
+		'membership' => $membership,
+		'company_id' => (int) $company['id'],
+		'buyer_user_id' => $user_id,
+		'expected_company_id' => $expected_company_id,
+	);
+}
+
+function papelito_order_routing_store_b2b_snapshot( object $order, array $snapshot ): void {
+	if ( empty( $snapshot['company'] ) || ! is_array( $snapshot['company'] ) || empty( $snapshot['membership'] ) || ! is_array( $snapshot['membership'] ) ) {
+		return;
+	}
+	$company = $snapshot['company'];
+	$member = $snapshot['membership'];
+	$meta = array(
+		'_papelito_b2b_snapshot_version' => PAPELITO_B2B_SNAPSHOT_VERSION,
+		'_papelito_company_id' => (int) $company['id'],
+		'_papelito_buyer_user_id' => (int) $snapshot['buyer_user_id'],
+		'_papelito_company_cnpj' => (string) $company['cnpj'],
+		'_papelito_company_legal_name' => (string) $company['legal_name'],
+		'_papelito_company_status' => (string) $company['company_status'],
+		'_papelito_company_registry_status' => (string) $company['registry_status'],
+		'_papelito_company_ownership_status' => (string) $company['ownership_status'],
+		'_papelito_company_verified_at' => (string) $company['verified_at'],
+		'_papelito_company_provider_source' => (string) $company['provider_source'],
+		'_papelito_company_provider_checked_at' => (string) $company['provider_checked_at'],
+		'_papelito_company_provider_data_hash' => (string) $company['provider_data_hash'],
+		'_papelito_company_billing_email' => (string) $company['billing_email'],
+		'_papelito_company_billing_email_verified_at' => (string) $company['billing_email_verified_at'],
+		'_papelito_company_phone' => (string) $company['phone'],
+		'_papelito_membership_id' => (int) $member['id'],
+		'_papelito_membership_role' => (string) $member['member_role'],
+		'_papelito_membership_status' => (string) $member['member_status'],
+		'_papelito_membership_approved_at' => (string) $member['approved_at'],
+		'_papelito_membership_expires_at' => (string) $member['expires_at'],
+	);
+	foreach ( array( 'cep', 'state', 'city', 'neighborhood', 'street', 'number', 'complement' ) as $field ) {
+		$meta[ '_papelito_company_fiscal_' . $field ] = (string) ( $company[ 'fiscal_' . $field ] ?? '' );
+	}
+	foreach ( $meta as $key => $value ) {
+		$order->update_meta_data( $key, $value );
+	}
+	$order->update_meta_data( '_billing_cnpj', (string) $company['cnpj'] );
+	$order->update_meta_data( '_billing_company', (string) $company['legal_name'] );
+	$order->update_meta_data( '_billing_email', (string) $company['billing_email'] );
+	$order->update_meta_data( '_billing_phone', (string) $company['phone'] );
+}
 
 /**
  * Verifica se um valor e uma instancia da classe WooCommerce esperada.
@@ -123,6 +216,18 @@ function papelito_order_routing_existing_order_response( object $order ) {
 		),
 		static fn( $value ): bool => null !== $value
 	);
+}
+
+function papelito_order_routing_validate_existing_attempt( object $order, int $company_id, string $request_hash ) {
+	$stored_company = (int) $order->get_meta( PAPELITO_CHECKOUT_ATTEMPT_COMPANY_META, true );
+	$stored_hash = sanitize_text_field( (string) $order->get_meta( PAPELITO_CHECKOUT_ATTEMPT_HASH_META, true ) );
+	if ( $stored_company !== $company_id ) {
+		return new WP_Error( 'papelito_checkout_company_context_changed', 'A empresa desta tentativa não corresponde à empresa ativa.', array( 'status' => 409 ) );
+	}
+	if ( '' === $stored_hash || ! hash_equals( $stored_hash, $request_hash ) ) {
+		return new WP_Error( 'papelito_checkout_attempt_payload_conflict', 'Esta tentativa de checkout foi reutilizada com dados diferentes.', array( 'status' => 409 ) );
+	}
+	return true;
 }
 
 /**
@@ -460,7 +565,7 @@ function papelito_order_routing_add_coupon_item( $order, array $coupon ): void {
  * @param string $payment_method Metodo de pagamento.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_order_routing_create_order( int $user_id, array $address, array $lines, array $shipping, ?array $coupon, string $payment_method, string $checkout_attempt_id = '' ) {
+function papelito_order_routing_create_order( int $user_id, array $address, array $lines, array $shipping, ?array $coupon, string $payment_method, string $checkout_attempt_id = '', array $b2b_snapshot = array(), string $request_hash = '' ) {
 	if ( ! function_exists( 'wc_create_order' ) || ! class_exists( 'WC_Order' ) || ! class_exists( 'WC_Order_Item_Shipping' ) || ! class_exists( 'WC_Order_Item_Product' ) ) {
 		return new WP_Error(
 			'papelito_checkout_woocommerce_unavailable',
@@ -499,12 +604,31 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 	$vendor_id   = (int) $lines[0]['vendor_id'];
 	$vendor_name = (string) $lines[0]['vendor_name'];
 	$wc_address  = papelito_order_routing_build_wc_address( $user_id, $address );
+	$billing_address = $wc_address;
+	if ( ! empty( $b2b_snapshot['company'] ) && is_array( $b2b_snapshot['company'] ) ) {
+		$company = $b2b_snapshot['company'];
+		$billing_address = array_merge(
+			$billing_address,
+			array(
+				'first_name' => '',
+				'last_name' => '',
+				'company' => (string) $company['legal_name'],
+				'email' => (string) $company['billing_email'],
+				'phone' => (string) $company['phone'],
+				'address_1' => trim( (string) $company['fiscal_street'] . ', ' . (string) $company['fiscal_number'] ),
+				'address_2' => (string) $company['fiscal_complement'],
+				'city' => (string) $company['fiscal_city'],
+				'state' => (string) $company['fiscal_state'],
+				'postcode' => (string) $company['fiscal_cep'],
+			)
+		);
+	}
 
 	try {
 		$order->set_currency( get_woocommerce_currency() );
 		$order->set_payment_method( 'papelito_headless_' . $payment_method );
 		$order->set_payment_method_title( papelito_order_routing_payment_method_label( $payment_method ) );
-		$order->set_address( $wc_address, 'billing' );
+		$order->set_address( $billing_address, 'billing' );
 		$order->set_address( $wc_address, 'shipping' );
 
 		foreach ( $lines as $line ) {
@@ -551,22 +675,12 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 		$order->update_meta_data( '_papelito_shipping_neighborhood', sanitize_text_field( (string) ( $address['neighborhood'] ?? '' ) ) );
 		$order->update_meta_data( '_papelito_stock_decremented', '0' );
 		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_ORDER_VENDOR_STATUS_AWAITING_PAYMENT );
-		if ( '1' === (string) get_user_meta( $user_id, 'papelito_b2b_required', true ) && function_exists( 'papelito_company_context' ) ) {
-			$b2b = papelito_company_context( $user_id );
-			$company = ! empty( $b2b['companyId'] ) ? papelito_company_get( (int) $b2b['companyId'] ) : null;
-			if ( $company ) {
-				$order->update_meta_data( '_papelito_company_id', (int) $company['id'] );
-				$order->update_meta_data( '_papelito_buyer_user_id', $user_id );
-				$order->update_meta_data( '_billing_cnpj', (string) $company['cnpj'] );
-				$order->update_meta_data( '_billing_company', (string) $company['legal_name'] );
-				$order->update_meta_data( '_papelito_company_registry_status', (string) $company['registry_status'] );
-				$order->update_meta_data( '_papelito_company_ownership_status', (string) $company['ownership_status'] );
-				$order->update_meta_data( '_papelito_membership_role', (string) $b2b['membershipRole'] );
-			}
-		}
+		papelito_order_routing_store_b2b_snapshot( $order, $b2b_snapshot );
 
 		if ( '' !== $checkout_attempt_id ) {
 			$order->update_meta_data( PAPELITO_CHECKOUT_ATTEMPT_ID_META, $checkout_attempt_id );
+			$order->update_meta_data( PAPELITO_CHECKOUT_ATTEMPT_COMPANY_META, (int) ( $b2b_snapshot['company_id'] ?? 0 ) );
+			$order->update_meta_data( PAPELITO_CHECKOUT_ATTEMPT_HASH_META, $request_hash );
 		}
 
 		$authoritative_total_cents = papelito_pricing_to_cents( (float) ( $shipping['price'] ?? 0 ) );
@@ -853,14 +967,20 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 	}
 
 	$user_id = get_current_user_id();
-	if ( function_exists( 'papelito_can_purchase' ) && ! papelito_can_purchase( $user_id ) ) {
-		return new WP_Error( 'papelito_b2b_purchase_not_allowed', 'Sua conta não está autorizada a realizar compras.', array( 'status' => 403 ) );
+	$b2b_snapshot = papelito_order_routing_resolve_b2b_snapshot( $user_id, $payload );
+	if ( is_wp_error( $b2b_snapshot ) ) {
+		return $b2b_snapshot;
 	}
 	$checkout_attempt_id = papelito_order_routing_normalize_checkout_attempt_id( $payload['checkout_attempt_id'] ?? '' );
+	$request_hash = papelito_order_routing_checkout_request_hash( $payload );
 
 	if ( '' !== $checkout_attempt_id ) {
 		$existing_order = papelito_order_routing_find_order_by_attempt( $user_id, $checkout_attempt_id );
 		if ( is_object( $existing_order ) ) {
+			$attempt_valid = papelito_order_routing_validate_existing_attempt( $existing_order, (int) ( $b2b_snapshot['company_id'] ?? 0 ), $request_hash );
+			if ( is_wp_error( $attempt_valid ) ) {
+				return $attempt_valid;
+			}
 			$existing_response = papelito_order_routing_existing_order_response( $existing_order );
 
 			if ( is_wp_error( $existing_response ) ) {
@@ -952,7 +1072,7 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		return $recipient_validation;
 	}
 
-	$created = papelito_order_routing_create_order( $user_id, $address, $lines, $shipping, $coupon, (string) $payment['method'], $checkout_attempt_id );
+	$created = papelito_order_routing_create_order( $user_id, $address, $lines, $shipping, $coupon, (string) $payment['method'], $checkout_attempt_id, $b2b_snapshot, $request_hash );
 	if ( is_wp_error( $created ) ) {
 		return $created;
 	}
