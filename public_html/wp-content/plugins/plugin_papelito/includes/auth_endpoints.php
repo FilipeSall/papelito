@@ -166,7 +166,7 @@ function papelito_auth_build_identity_response( WP_User $user ): array {
 	$primary_role = papelito_auth_normalize_primary_role( $user );
 	$profile_complete = '1' === (string) get_user_meta( $user->ID, 'papelito_profile_complete', true );
 
-	return array(
+	$response = array(
 		'user' => array(
 			'databaseId'      => $user->ID,
 			'email'           => $user->user_email,
@@ -179,6 +179,45 @@ function papelito_auth_build_identity_response( WP_User $user ): array {
 			'profileComplete' => $profile_complete,
 		),
 	);
+	if ( function_exists( 'papelito_company_context' ) ) {
+		$response['b2b'] = papelito_company_context( $user->ID );
+	}
+	return $response;
+}
+
+function papelito_auth_complete_b2b_onboarding( int $user_id ) {
+	$onboarding = papelito_company_onboarding_get( $user_id );
+	if ( null === $onboarding || ( ! empty( $onboarding['expires_at'] ) && strtotime( (string) $onboarding['expires_at'] ) < time() ) ) {
+		return new WP_Error( 'onboarding_required', 'Retome seu onboarding B2B para continuar.', array( 'status' => 409, 'onboardingRequired' => true ) );
+	}
+	if ( 'completed' === (string) $onboarding['status'] ) {
+		return array( 'status' => 'completed', 'idempotent' => true );
+	}
+
+	$type = (string) $onboarding['onboarding_type'];
+	if ( 'create_company' === $type ) {
+		$profile = papelito_company_profile_get( $user_id );
+		$cpf     = $profile ? papelito_customer_profile_get_cpf( $user_id ) : null;
+		$birth   = $profile && ! empty( $profile['birth_date_ciphertext'] ) ? papelito_pii_decrypt( (string) $profile['birth_date_ciphertext'] ) : null;
+		if ( ! is_string( $cpf ) || ! is_string( $birth ) ) {
+			return new WP_Error( 'onboarding_required', 'Retome seu onboarding B2B para continuar.', array( 'status' => 409, 'onboardingRequired' => true ) );
+		}
+		$result = papelito_company_create_owner_candidate( $user_id, array( 'cpf' => $cpf, 'birth_date' => $birth, 'cnpj' => (string) $onboarding['target_cnpj'] ) );
+		if ( is_wp_error( $result ) ) { papelito_company_onboarding_mark_error( $user_id, $result->get_error_code() ); return $result; }
+		$company_id = (int) ( $result['company_id'] ?? 0 );
+		papelito_company_onboarding_mark_completed( $user_id, $company_id, (int) ( $result['membership_id'] ?? 0 ) );
+		return array( 'status' => 'completed', 'company_id' => $company_id );
+	}
+
+	if ( 'join_company' === $type ) {
+		$result = papelito_company_access_request_submit( $user_id, (string) $onboarding['target_cnpj'] );
+		if ( is_wp_error( $result ) ) { papelito_company_onboarding_mark_error( $user_id, $result->get_error_code() ); return $result; }
+		$pending = papelito_company_members_pending_for_user( $user_id );
+		papelito_company_onboarding_mark_completed( $user_id, null, ! empty( $pending[0]['id'] ) ? (int) $pending[0]['id'] : null );
+		return array( 'status' => 'completed' );
+	}
+
+	return new WP_Error( 'onboarding_required', 'Complete seu onboarding B2B para continuar.', array( 'status' => 409, 'onboardingRequired' => true ) );
 }
 
 /**
@@ -606,6 +645,10 @@ function papelito_auth_find_or_create_google_user( array $payload ) {
 		}
 
 		papelito_auth_mark_email_verified( $user->ID );
+		if ( '1' !== (string) get_user_meta( $user->ID, 'papelito_profile_complete', true ) && null === papelito_company_onboarding_get( $user->ID ) ) {
+			papelito_b2b_mark_cohort( $user->ID );
+			papelito_company_onboarding_mark_google( $user->ID );
+		}
 
 		return $user;
 	}
@@ -631,6 +674,8 @@ function papelito_auth_find_or_create_google_user( array $payload ) {
 	}
 
 	update_user_meta( $user_id, 'papelito_profile_complete', '0' );
+	papelito_b2b_mark_cohort( $user_id );
+	papelito_company_onboarding_mark_google( $user_id );
 	papelito_auth_mark_email_verified( $user_id );
 
 	$user = get_userdata( $user_id );
@@ -677,15 +722,9 @@ function papelito_auth_validate_register_payload( array $data ) {
 		$errors->add( 'cep', 'CEP inválido. Formato esperado: 01310-000.' );
 	}
 
-	// Campos de vendor (store_name, cnpj, state, city) são opcionais — só valida se fornecidos.
-	if ( ! empty( $data['cnpj'] ) && ! preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', (string) $data['cnpj'] ) ) {
-		$errors->add( 'cnpj', 'CNPJ inválido. Formato esperado: 12.345.678/0001-90.' );
-	}
-
-	// CPF do comprador é opcional — só valida o formato se fornecido.
-	if ( ! empty( $data['cpf'] ) && 11 !== strlen( preg_replace( '/\D+/', '', (string) $data['cpf'] ) ) ) {
-		$errors->add( 'cpf', 'CPF inválido. Formato esperado: 123.456.789-00.' );
-	}
+	if ( ! papelito_validate_cnpj( (string) ( $data['cnpj'] ?? '' ) ) ) { $errors->add( 'cnpj', 'CNPJ inválido.' ); }
+	if ( ! isset( $data['birth_date'] ) || ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', (string) $data['birth_date'] ) ) { $errors->add( 'birth_date', 'Data de nascimento inválida.' ); }
+	if ( ! papelito_validate_cpf( (string) ( $data['cpf'] ?? '' ) ) ) { $errors->add( 'cpf', 'CPF inválido.' ); }
 
 	if ( ! empty( $data['state'] ) && ! array_key_exists( (string) $data['state'], papelito_brazilian_states() ) ) {
 		$errors->add( 'state', 'Estado inválido.' );
@@ -726,7 +765,7 @@ function papelito_auth_create_registered_user( array $data ) {
 		return $user_id;
 	}
 
-	$meta_keys = array( 'store_name', 'phone_number', 'cnpj', 'cpf', 'instagram', 'state', 'city', 'cep' );
+	$meta_keys = array( 'phone_number', 'instagram', 'state', 'city', 'cep' );
 
 	foreach ( $meta_keys as $key ) {
 		if ( isset( $data[ $key ] ) && '' !== $data[ $key ] ) {
@@ -737,8 +776,18 @@ function papelito_auth_create_registered_user( array $data ) {
 		}
 	}
 
-	update_user_meta( $user_id, 'papelito_profile_complete', '1' );
+	update_user_meta( $user_id, 'papelito_profile_complete', '0' );
 	papelito_auth_mark_email_pending( $user_id );
+
+	$profile = papelito_company_profile_upsert( $user_id, (string) $data['cpf'], (string) ( $data['birth_date'] ?? '' ) );
+	if ( is_wp_error( $profile ) ) { wp_delete_user( $user_id ); return $profile; }
+	$requested_onboarding = (string) ( $data['onboarding_type'] ?? $data['intent'] ?? '' );
+	$onboarding_type      = in_array( $requested_onboarding, array( 'create_company', 'join_company' ), true )
+		? $requested_onboarding
+		: 'create_company';
+	$onboarding = papelito_company_onboarding_upsert( $user_id, $onboarding_type, (string) ( $data['cnpj'] ?? '' ), 'pending_email' );
+	if ( is_wp_error( $onboarding ) ) { wp_delete_user( $user_id ); return $onboarding; }
+	papelito_b2b_mark_cohort( $user_id );
 
 	$user = get_userdata( $user_id );
 
@@ -933,8 +982,14 @@ add_action(
 					}
 
 					papelito_auth_mark_email_verified( $user->ID );
+					papelito_company_onboarding_mark_email_confirmed( $user->ID );
+					$b2b_result = papelito_auth_complete_b2b_onboarding( $user->ID );
+					if ( is_wp_error( $b2b_result ) && 'onboarding_required' !== $b2b_result->get_error_code() ) {
+						return $b2b_result;
+					}
+					update_user_meta( $user->ID, 'papelito_profile_complete', '1' );
 
-					return new WP_REST_Response( array( 'ok' => true ), 200 );
+					return new WP_REST_Response( array( 'ok' => true, 'onboardingRequired' => is_wp_error( $b2b_result ), 'b2b' => papelito_company_context( $user->ID ) ), 200 );
 				},
 			)
 		);

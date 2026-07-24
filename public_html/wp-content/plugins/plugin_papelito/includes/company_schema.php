@@ -32,6 +32,14 @@ if ( ! defined( 'PAPELITO_COMPANY_AUDIT_LOG_TABLE' ) ) {
 	define( 'PAPELITO_COMPANY_AUDIT_LOG_TABLE', 'papelito_company_audit_log' );
 }
 
+if ( ! defined( 'PAPELITO_COMPANY_IDEMPOTENCY_TABLE' ) ) {
+	define( 'PAPELITO_COMPANY_IDEMPOTENCY_TABLE', 'papelito_company_idempotency' );
+}
+
+if ( ! defined( 'PAPELITO_B2B_ONBOARDING_TABLE' ) ) {
+	define( 'PAPELITO_B2B_ONBOARDING_TABLE', 'papelito_b2b_onboarding' );
+}
+
 /**
  * Resolve os nomes completos (com prefixo) das tabelas do modelo B2B.
  *
@@ -46,6 +54,8 @@ function papelito_company_table_names(): array {
 		'members'     => $wpdb->prefix . PAPELITO_COMPANY_MEMBERS_TABLE,
 		'invitations' => $wpdb->prefix . PAPELITO_COMPANY_INVITATIONS_TABLE,
 		'audit'       => $wpdb->prefix . PAPELITO_COMPANY_AUDIT_LOG_TABLE,
+		'idempotency' => $wpdb->prefix . PAPELITO_COMPANY_IDEMPOTENCY_TABLE,
+		'onboarding' => $wpdb->prefix . PAPELITO_B2B_ONBOARDING_TABLE,
 	);
 }
 
@@ -66,6 +76,7 @@ function papelito_company_install_tables(): void {
   cpf_hmac CHAR(64) NOT NULL,
   cpf_ciphertext LONGTEXT NOT NULL,
   cpf_last4 CHAR(4) NOT NULL,
+  birth_date_ciphertext LONGTEXT NULL DEFAULT NULL,
   identity_status VARCHAR(32) NOT NULL DEFAULT 'pending',
   identity_method VARCHAR(32) NULL DEFAULT NULL,
   identity_checked_at DATETIME NULL DEFAULT NULL,
@@ -103,6 +114,9 @@ function papelito_company_install_tables(): void {
   created_by_user_id BIGINT UNSIGNED NOT NULL,
   verified_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
   verified_at DATETIME NULL DEFAULT NULL,
+  ownership_rejection_reason VARCHAR(255) NULL DEFAULT NULL,
+  ownership_rejected_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  ownership_rejected_at DATETIME NULL DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY  (id),
@@ -119,12 +133,22 @@ function papelito_company_install_tables(): void {
   user_id BIGINT UNSIGNED NOT NULL,
   member_role VARCHAR(24) NOT NULL DEFAULT 'buyer',
   member_status VARCHAR(32) NOT NULL DEFAULT 'pending_company_approval',
+  membership_origin VARCHAR(24) NOT NULL DEFAULT 'owner_candidate',
   requested_at DATETIME NULL DEFAULT NULL,
+  request_count INT UNSIGNED NOT NULL DEFAULT 0,
+  last_request_at DATETIME NULL DEFAULT NULL,
   invited_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
   approved_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
   approved_at DATETIME NULL DEFAULT NULL,
   rejected_at DATETIME NULL DEFAULT NULL,
   rejected_reason VARCHAR(255) NULL DEFAULT NULL,
+  rejected_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  suspended_at DATETIME NULL DEFAULT NULL,
+  suspended_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  revoked_at DATETIME NULL DEFAULT NULL,
+  revoked_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  role_changed_at DATETIME NULL DEFAULT NULL,
+  role_changed_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
   expires_at DATETIME NULL DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -170,10 +194,46 @@ function papelito_company_install_tables(): void {
   KEY idx_company_created (company_id, created_at)
 ) {$charset_collate};";
 
+	$idempotency_sql = "CREATE TABLE {$tables['idempotency']} (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  actor_user_id BIGINT UNSIGNED NOT NULL,
+  operation VARCHAR(64) NOT NULL,
+  key_hash CHAR(64) NOT NULL,
+  request_hash CHAR(64) NOT NULL,
+  resource_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  response_code SMALLINT UNSIGNED NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME NOT NULL,
+  PRIMARY KEY  (id),
+  UNIQUE KEY uniq_actor_operation_key (actor_user_id, operation, key_hash),
+  KEY idx_expires_at (expires_at)
+) {$charset_collate};";
+
+	$onboarding_sql = "CREATE TABLE {$tables['onboarding']} (
+  user_id BIGINT UNSIGNED NOT NULL,
+  onboarding_type VARCHAR(32) NOT NULL,
+  target_cnpj CHAR(14) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'pending_email',
+  company_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  membership_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  expires_at DATETIME NULL DEFAULT NULL,
+  email_confirmed_at DATETIME NULL DEFAULT NULL,
+  completed_at DATETIME NULL DEFAULT NULL,
+  last_error_code VARCHAR(64) NULL DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY  (user_id),
+  KEY idx_onboarding_status (status),
+  KEY idx_onboarding_type_status (onboarding_type, status),
+  KEY idx_onboarding_expires (expires_at)
+) {$charset_collate};";
+
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 	dbDelta( $profiles_sql );
 	dbDelta( $companies_sql );
 	dbDelta( $members_sql );
 	dbDelta( $invitations_sql );
 	dbDelta( $audit_sql );
+	dbDelta( $idempotency_sql );
+	dbDelta( $onboarding_sql );
 }

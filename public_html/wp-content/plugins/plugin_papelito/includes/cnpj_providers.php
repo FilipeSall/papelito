@@ -160,7 +160,7 @@ function papelito_cnpj_adapter_brasilapi( string $cnpj ): array {
 		'brasilapi',
 		static function ( array $body ) {
 			$situacao = strtolower( (string) ( $body['descricao_situacao_cadastral'] ?? '' ) );
-			$status   = ( 'ativa' === $situacao || '' === $situacao ) ? 'active' : 'inactive';
+			$status   = 'ativa' === $situacao ? 'active' : ( '' === $situacao ? 'unavailable' : 'inactive' );
 
 			return papelito_cnpj_result(
 				$status,
@@ -198,14 +198,15 @@ function papelito_cnpj_adapter_cnpjws( string $cnpj ): array {
 		);
 	}
 
-	$response = papelito_cnpj_http_get( 'https://publica.cnpj.ws/cnpj/' . rawurlencode( $cnpj ), $args );
+	$base_url = '' === $token ? 'https://publica.cnpj.ws/cnpj/' : 'https://comercial.cnpj.ws/cnpj/';
+	$response = papelito_cnpj_http_get( $base_url . rawurlencode( $cnpj ), $args );
 
 	return papelito_cnpj_interpret_response(
 		$response,
 		'cnpjws',
 		static function ( array $body ) {
 			$situacao = strtolower( (string) ( $body['estabelecimento']['situacao_cadastral'] ?? '' ) );
-			$status   = ( 'ativa' === $situacao || '' === $situacao ) ? 'active' : 'inactive';
+			$status   = 'ativa' === $situacao ? 'active' : ( '' === $situacao ? 'unavailable' : 'inactive' );
 
 			return papelito_cnpj_result(
 				$status,
@@ -246,7 +247,7 @@ function papelito_cnpj_adapter_receitaws( string $cnpj ): array {
 			}
 
 			$situacao = strtolower( (string) ( $body['situacao'] ?? '' ) );
-			$status   = ( 'ativa' === $situacao || '' === $situacao ) ? 'active' : 'inactive';
+			$status   = 'ativa' === $situacao ? 'active' : ( '' === $situacao ? 'unavailable' : 'inactive' );
 
 			return papelito_cnpj_result(
 				$status,
@@ -272,7 +273,7 @@ function papelito_cnpj_adapter_receitaws( string $cnpj ): array {
  *
  * @return array<string,mixed>
  */
-function papelito_cnpj_lookup( string $raw_cnpj ): array {
+function papelito_cnpj_lookup( string $raw_cnpj, bool $include_evidence = false ): array {
 	$cnpj = papelito_normalize_cnpj( $raw_cnpj );
 
 	if ( '' === $cnpj || ! papelito_validate_cnpj( $cnpj ) ) {
@@ -281,7 +282,7 @@ function papelito_cnpj_lookup( string $raw_cnpj ): array {
 
 	$cache_key = PAPELITO_CNPJ_CACHE_PREFIX . $cnpj;
 	$cached    = get_transient( $cache_key );
-	if ( is_array( $cached ) ) {
+	if ( ! $include_evidence && is_array( $cached ) ) {
 		$cached['from_cache'] = true;
 		return $cached;
 	}
@@ -292,6 +293,8 @@ function papelito_cnpj_lookup( string $raw_cnpj ): array {
 	$active_result   = null;
 	$inactive_result = null;
 	$saw_unsupported = false;
+	$saw_unavailable = false;
+	$saw_not_found   = false;
 
 	foreach ( papelito_cnpj_providers() as $provider ) {
 		if ( microtime( true ) >= $deadline ) {
@@ -313,13 +316,10 @@ function papelito_cnpj_lookup( string $raw_cnpj ): array {
 			$active_result = $result;
 		} elseif ( 'inactive' === $result['status'] ) {
 			$inactive_result = $result;
-		}
-
-		if ( 'active' === $result['status'] && null === $inactive_result ) {
-			// Sucesso antecipado só quando ainda não há divergência registrada.
-			$final = $result;
-			papelito_cnpj_cache_result( $cache_key, $final );
-			return $final;
+		} elseif ( 'unavailable' === $result['status'] ) {
+			$saw_unavailable = true;
+		} elseif ( 'not_found' === $result['status'] ) {
+			$saw_not_found = true;
 		}
 	}
 
@@ -338,6 +338,18 @@ function papelito_cnpj_lookup( string $raw_cnpj ): array {
 	if ( null !== $inactive_result ) {
 		papelito_cnpj_cache_result( $cache_key, $inactive_result );
 		return $inactive_result;
+	}
+
+	if ( $saw_unavailable ) {
+		$final = papelito_cnpj_result( 'unavailable', 'multiple', array( 'cnpj' => $cnpj ) );
+		papelito_cnpj_cache_result( $cache_key, $final );
+		return $final;
+	}
+
+	if ( $saw_not_found ) {
+		$final = papelito_cnpj_result( 'not_found', 'multiple', array( 'cnpj' => $cnpj ) );
+		papelito_cnpj_cache_result( $cache_key, $final );
+		return $final;
 	}
 
 	if ( $saw_unsupported && ( null === $last_result || 'provider_unsupported' === $last_result['status'] ) ) {

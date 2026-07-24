@@ -283,7 +283,11 @@ function papelito_admin_users_sales_orders_count( int $user_id ): int {
  * @return bool
  */
 function papelito_admin_users_is_vendor_related( WP_User $user ): bool {
-	return papelito_user_has_role( $user, 'seller' );
+	if ( function_exists( 'papelito_user_has_role' ) ) {
+		return papelito_user_has_role( $user, 'seller' );
+	}
+
+	return in_array( 'seller', (array) ( $user->roles ?? array() ), true );
 }
 
 /**

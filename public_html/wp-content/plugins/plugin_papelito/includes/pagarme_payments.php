@@ -238,6 +238,26 @@ function papelito_pagarme_resolve_customer_document( int $user_id ): string {
  * @return array<string,mixed>|WP_Error
  */
 function papelito_pagarme_customer_payload( int $user_id, array $address ) {
+	if ( '1' === (string) get_user_meta( $user_id, 'papelito_b2b_required', true ) ) {
+		$context = function_exists( 'papelito_company_context' ) ? papelito_company_context( $user_id ) : array();
+		if ( empty( $context['canPurchase'] ) || empty( $context['companyId'] ) ) {
+			return new WP_Error( 'papelito_b2b_purchase_not_allowed', 'Empresa não autorizada para pagamento.', array( 'status' => 403 ) );
+		}
+		$company = papelito_company_get( (int) $context['companyId'] );
+		if ( ! $company || 'active' !== $company['registry_status'] ) {
+			return new WP_Error( 'papelito_b2b_company_unavailable', 'Empresa não disponível para pagamento.', array( 'status' => 422 ) );
+		}
+		return array(
+			'name'          => (string) $company['legal_name'],
+			'email'         => (string) $company['billing_email'],
+			'code'          => 'papelito-company-' . (int) $company['id'],
+			'document_type' => 'CNPJ',
+			'document'      => (string) $company['cnpj'],
+			'type'          => 'company',
+			'phones'        => array( 'mobile_phone' => papelito_pagarme_phone_payload( (string) $company['phone'] ) ),
+			'address'       => papelito_pagarme_billing_address_payload( $address ),
+		);
+	}
 	$user = get_userdata( $user_id );
 	if ( ! $user instanceof WP_User ) {
 		return new WP_Error( 'papelito_checkout_customer_not_found', 'Cliente nao encontrado.', array( 'status' => 404 ) );

@@ -161,7 +161,26 @@ function papelito_company_member_upsert( int $company_id, int $user_id, array $d
 		'updated_at'    => $now,
 	);
 
-	foreach ( array( 'invited_by_user_id', 'approved_by_user_id', 'requested_at', 'approved_at', 'expires_at' ) as $optional ) {
+	$optional_fields = array(
+		'membership_origin',
+		'invited_by_user_id',
+		'approved_by_user_id',
+		'requested_at',
+		'request_count',
+		'last_request_at',
+		'approved_at',
+		'rejected_at',
+		'rejected_reason',
+		'rejected_by_user_id',
+		'suspended_at',
+		'suspended_by_user_id',
+		'revoked_at',
+		'revoked_by_user_id',
+		'role_changed_at',
+		'role_changed_by_user_id',
+		'expires_at',
+	);
+	foreach ( $optional_fields as $optional ) {
 		if ( array_key_exists( $optional, $data ) ) {
 			$row[ $optional ] = $data[ $optional ];
 		}
@@ -216,6 +235,76 @@ function papelito_company_members_active_for_user( int $user_id ): array {
 	);
 
 	return is_array( $rows ) ? $rows : array();
+}
+
+/**
+ * Busca um vínculo pelo id do member (para rotas /members/{id}).
+ *
+ * @return array<string,mixed>|null
+ */
+function papelito_company_member_get_by_id( int $member_id ): ?array {
+	global $wpdb;
+
+	$tables = papelito_company_table_names();
+	$row    = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tables['members']} WHERE id = %d", $member_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+
+	return null === $row ? null : $row;
+}
+
+/**
+ * Lista membros de uma empresa filtrando por conjunto de status.
+ *
+ * @param array<int,string> $statuses Lista de member_status a incluir (vazio = todos).
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_company_members_list( int $company_id, array $statuses = array() ): array {
+	global $wpdb;
+
+	$tables = papelito_company_table_names();
+
+	if ( empty( $statuses ) ) {
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$tables['members']} WHERE company_id = %d ORDER BY created_at ASC", $company_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+		return is_array( $rows ) ? $rows : array();
+	}
+
+	$placeholders = implode( ', ', array_fill( 0, count( $statuses ), '%s' ) );
+	$params       = array_merge( array( $company_id ), array_values( $statuses ) );
+	$rows         = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$tables['members']} WHERE company_id = %d AND member_status IN ( {$placeholders} ) ORDER BY created_at ASC", $params ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+
+	return is_array( $rows ) ? $rows : array();
+}
+
+/**
+ * Lista convites de uma empresa (opcionalmente por status).
+ *
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_company_invitations_list( int $company_id, ?string $status = null ): array {
+	global $wpdb;
+
+	$tables = papelito_company_table_names();
+
+	if ( null === $status || '' === $status ) {
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$tables['invitations']} WHERE company_id = %d ORDER BY created_at DESC", $company_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+	} else {
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$tables['invitations']} WHERE company_id = %d AND invitation_status = %s ORDER BY created_at DESC", $company_id, $status ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+	}
+
+	return is_array( $rows ) ? $rows : array();
+}
+
+/**
+ * Busca um convite pelo id (para rotas /invitations/{id}/*).
+ *
+ * @return array<string,mixed>|null
+ */
+function papelito_company_invitation_get( int $invitation_id ): ?array {
+	global $wpdb;
+
+	$tables = papelito_company_table_names();
+	$row    = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tables['invitations']} WHERE id = %d", $invitation_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+
+	return null === $row ? null : $row;
 }
 
 /**

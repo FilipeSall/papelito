@@ -476,7 +476,7 @@ function papelito_collect_vendor_pending_registration_fields( array $step3 ): ar
 	if ( ! is_email( sanitize_email( (string) ( $partner['email'] ?? '' ) ) ) ) {
 		$pending[] = 'partner.email';
 	}
-	if ( ! papelito_validate_cpf( (string) ( $partner['document'] ?? '' ) ) ) {
+if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' ) ) ) {
 		$pending[] = 'partner.document';
 	}
 	if ( '' === sanitize_text_field( (string) ( $partner['motherName'] ?? '' ) ) ) {
@@ -524,7 +524,7 @@ function papelito_collect_vendor_pending_registration_fields( array $step3 ): ar
 		$pending[] = 'bankAccount.holderName';
 	}
 	if ( 'individual' === $holder_type ) {
-		if ( ! papelito_validate_cpf( $holder_document ) ) {
+if ( ! papelito_revendedor_validate_cpf( $holder_document ) ) {
 			$pending[] = 'bankAccount.holderDocument';
 		}
 	} elseif ( 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $holder_document ) ) {
@@ -980,7 +980,7 @@ function papelito_sanitize_vendor_pagarme_draft( $value ) {
  * @param string $value CPF.
  * @return bool
  */
-function papelito_validate_cpf( string $value ): bool {
+function papelito_revendedor_validate_cpf( string $value ): bool {
 	$digits = preg_replace( '/\D+/', '', $value );
 
 	if ( ! is_string( $digits ) || 11 !== strlen( $digits ) || preg_match( '/^(\d)\1{10}$/', $digits ) ) {
@@ -1056,7 +1056,7 @@ function papelito_validate_vendor_pagarme_step3( array $step3 ) {
 		if ( ! is_email( sanitize_email( (string) ( $partner['email'] ?? '' ) ) ) ) {
 			$errors->add( 'partnerEmail', 'Informe um e-mail valido para o socio.' );
 		}
-		if ( ! papelito_validate_cpf( (string) ( $partner['document'] ?? '' ) ) ) {
+if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' ) ) ) {
 			$errors->add( 'partnerDocument', 'Informe um CPF valido para o socio.' );
 		}
 		if ( '' === sanitize_text_field( (string) ( $partner['motherName'] ?? '' ) ) ) {
@@ -1108,7 +1108,7 @@ function papelito_validate_vendor_pagarme_step3( array $step3 ) {
 
 	$holder_document = (string) ( $bank_account['holderDocument'] ?? '' );
 	if ( 'individual' === $holder_type ) {
-		if ( ! papelito_validate_cpf( $holder_document ) ) {
+if ( ! papelito_revendedor_validate_cpf( $holder_document ) ) {
 			$errors->add( 'bankHolderDocument', 'Informe um CPF valido para o titular.' );
 		}
 	} elseif ( 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $holder_document ) ) {
@@ -2096,7 +2096,7 @@ function papelito_admin_vendors_normalize_bank_account( $bank_account ) {
 	}
 
 	if ( 'individual' === $holder_type ) {
-		if ( ! papelito_validate_cpf( $normalized['holderDocument'] ) ) {
+if ( ! papelito_revendedor_validate_cpf( $normalized['holderDocument'] ) ) {
 			$errors->add( 'bankHolderDocument', 'Informe um CPF valido para o titular.' );
 		}
 	} elseif ( 'company' === $holder_type && 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $normalized['holderDocument'] ) ) {

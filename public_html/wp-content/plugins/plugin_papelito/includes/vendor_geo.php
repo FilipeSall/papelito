@@ -13,7 +13,7 @@ const PAPELITO_GEO_CACHE_MISS_TTL   = DAY_IN_SECONDS;
 const PAPELITO_GEO_REMOTE_TIMEOUT   = 5;
 const PAPELITO_GEO_NOMINATIM_AGENT  = 'PapelitoMarketplace/1.0 (+https://papelitobrasil.com)';
 
-function papelito_normalize_cep( string $cep ): string {
+function papelito_geo_normalize_cep( string $cep ): string {
 	$digits = preg_replace( '/\D+/', '', $cep );
 	return is_string( $digits ) && 8 === strlen( $digits ) ? $digits : '';
 }
@@ -24,7 +24,7 @@ function papelito_normalize_cep( string $cep ): string {
  * @param string $cep CEP em qualquer formato.
  */
 function papelito_geocode_cep( string $cep ): ?array {
-	$normalized = papelito_normalize_cep( $cep );
+	$normalized = papelito_geo_normalize_cep( $cep );
 	if ( '' === $normalized ) {
 		return null;
 	}
@@ -280,7 +280,7 @@ function papelito_admin_recompute_vendor_geo( WP_REST_Request $request ) {
 	}
 
 	$cep_raw = (string) get_user_meta( $user_id, 'cep', true );
-	if ( '' === papelito_normalize_cep( $cep_raw ) ) {
+if ( '' === papelito_geo_normalize_cep( $cep_raw ) ) {
 		return new WP_REST_Response(
 			array( 'ok' => false, 'message' => 'Vendor sem CEP base cadastrado.' ),
 			422

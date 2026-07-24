@@ -15,7 +15,8 @@ class WP_Error {
 	public function __construct( public string $code = '', public string $message = '', public mixed $data = null ) {}
 }
 function is_wp_error( mixed $v ) { return $v instanceof WP_Error; }
-function papelito_env( string $key, $default = null ) { return $default; }
+$papelito_test_env = array();
+function papelito_env( string $key, $default = null ) { global $papelito_test_env; return $papelito_test_env[ $key ] ?? $default; }
 
 /* Filter registry (only papelito_cnpj_http_response is used). */
 $papelito_filters = array();
@@ -149,6 +150,29 @@ papelito_cnpj_lookup( $numeric );
 global $papelito_transients;
 $cached_entry = $papelito_transients[ PAPELITO_CNPJ_CACHE_PREFIX . $numeric ] ?? array();
 papelito_assert_same( 'raw QSA not cached', true, ! isset( $cached_entry['qsa'] ) );
+
+/* 10. A successful response with no registration status is not active. */
+papelito_test_script_http( array(
+	'brasilapi'       => papelito_resp( 200, array( 'razao_social' => 'SEM STATUS' ) ),
+	'publica.cnpj.ws' => papelito_resp( 404, array() ),
+	'receitaws'       => papelito_resp( 404, array() ),
+) );
+$r = papelito_cnpj_lookup( $numeric );
+papelito_assert_same( '200 without status → unavailable', 'unavailable', $r['status'] );
+
+/* 11. Commercial CNPJ.ws endpoint is selected when the token is configured. */
+global $papelito_test_env;
+$papelito_test_env['PAPELITO_CNPJWS_TOKEN'] = 'test-token';
+$seen_commercial = false;
+global $papelito_filters, $papelito_transients;
+$papelito_filters = array(); $papelito_transients = array();
+add_filter( 'papelito_cnpj_http_response', static function ( $pre, $url, $args ) use ( &$seen_commercial ) {
+	if ( false !== strpos( $url, 'comercial.cnpj.ws' ) ) { $seen_commercial = true; return papelito_resp( 200, array( 'razao_social' => 'ACME', 'estabelecimento' => array( 'situacao_cadastral' => 'Ativa' ) ) ); }
+	return papelito_resp( 503, array() );
+} );
+papelito_cnpj_lookup( $numeric );
+papelito_assert_same( 'token uses commercial cnpjws endpoint', true, $seen_commercial );
+$papelito_test_env = array();
 
 if ( $failures > 0 ) {
 	echo "RESULT: {$failures} assertion(s) FAILED\n";

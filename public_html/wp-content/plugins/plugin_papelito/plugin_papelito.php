@@ -44,11 +44,22 @@ require_once __DIR__ . '/includes/company_flags.php';
 require_once __DIR__ . '/includes/cnpj_validation.php';
 require_once __DIR__ . '/includes/customer_identity.php';
 require_once __DIR__ . '/includes/company_schema.php';
+require_once __DIR__ . '/includes/company_onboarding.php';
 require_once __DIR__ . '/includes/company_repository.php';
 require_once __DIR__ . '/includes/cnpj_providers.php';
+require_once __DIR__ . '/includes/company_idempotency.php';
+require_once __DIR__ . '/includes/company_authz.php';
+require_once __DIR__ . '/includes/company_services.php';
+require_once __DIR__ . '/includes/company_active_context.php';
+require_once __DIR__ . '/includes/company_membership_services.php';
+require_once __DIR__ . '/includes/company_invitation_services.php';
+require_once __DIR__ . '/includes/company_access_request_services.php';
+require_once __DIR__ . '/includes/company_endpoints.php';
+require_once __DIR__ . '/includes/company_admin_endpoints.php';
+require_once __DIR__ . '/includes/company_management_endpoints.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.10.0' );
+	define( 'PAPELITO_DB_VERSION', '1.13.0' );
 }
 
 /**

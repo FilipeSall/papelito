@@ -551,6 +551,19 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 		$order->update_meta_data( '_papelito_shipping_neighborhood', sanitize_text_field( (string) ( $address['neighborhood'] ?? '' ) ) );
 		$order->update_meta_data( '_papelito_stock_decremented', '0' );
 		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_ORDER_VENDOR_STATUS_AWAITING_PAYMENT );
+		if ( '1' === (string) get_user_meta( $user_id, 'papelito_b2b_required', true ) && function_exists( 'papelito_company_context' ) ) {
+			$b2b = papelito_company_context( $user_id );
+			$company = ! empty( $b2b['companyId'] ) ? papelito_company_get( (int) $b2b['companyId'] ) : null;
+			if ( $company ) {
+				$order->update_meta_data( '_papelito_company_id', (int) $company['id'] );
+				$order->update_meta_data( '_papelito_buyer_user_id', $user_id );
+				$order->update_meta_data( '_billing_cnpj', (string) $company['cnpj'] );
+				$order->update_meta_data( '_billing_company', (string) $company['legal_name'] );
+				$order->update_meta_data( '_papelito_company_registry_status', (string) $company['registry_status'] );
+				$order->update_meta_data( '_papelito_company_ownership_status', (string) $company['ownership_status'] );
+				$order->update_meta_data( '_papelito_membership_role', (string) $b2b['membershipRole'] );
+			}
+		}
 
 		if ( '' !== $checkout_attempt_id ) {
 			$order->update_meta_data( PAPELITO_CHECKOUT_ATTEMPT_ID_META, $checkout_attempt_id );
@@ -840,6 +853,9 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 	}
 
 	$user_id = get_current_user_id();
+	if ( function_exists( 'papelito_can_purchase' ) && ! papelito_can_purchase( $user_id ) ) {
+		return new WP_Error( 'papelito_b2b_purchase_not_allowed', 'Sua conta não está autorizada a realizar compras.', array( 'status' => 403 ) );
+	}
 	$checkout_attempt_id = papelito_order_routing_normalize_checkout_attempt_id( $payload['checkout_attempt_id'] ?? '' );
 
 	if ( '' !== $checkout_attempt_id ) {
