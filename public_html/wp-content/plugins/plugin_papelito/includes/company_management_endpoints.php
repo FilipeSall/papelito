@@ -62,6 +62,10 @@ function papelito_company_mgmt_active_company_id( int $user_id ) {
  * @return array{replayed:bool,resourceId:int}|WP_Error
  */
 function papelito_company_mgmt_idempotent( WP_REST_Request $request, int $actor, string $operation, array $intent, callable $run ) {
+	$writes = papelito_b2b_require_company_writes();
+	if ( is_wp_error( $writes ) ) {
+		return $writes;
+	}
 	$key  = (string) $request->get_header( 'Idempotency-Key' );
 	$hash = papelito_company_idempotency_request_hash( $intent );
 
@@ -105,7 +109,7 @@ function papelito_company_mgmt_member_view( array $row ): array {
 		'displayName' => $user instanceof WP_User ? $user->display_name : '',
 		'email'       => $user instanceof WP_User ? $user->user_email : '',
 		'role'        => (string) $row['member_role'],
-		'status'      => (string) $row['member_status'],
+		'status'      => papelito_company_member_is_operationally_active( $row ) ? (string) $row['member_status'] : 'expired',
 		'origin'      => (string) ( $row['membership_origin'] ?? '' ),
 		'expiresAt'   => $row['expires_at'] ?? null,
 	);
@@ -130,6 +134,52 @@ function papelito_company_mgmt_invitation_view( array $row ): array {
 	);
 }
 
+function papelito_company_mgmt_send_billing_email_confirmation( int $company_id, string $email ) {
+	$token   = wp_generate_password( 48, false, false );
+	$expires = gmdate( 'Y-m-d H:i:s', time() + DAY_IN_SECONDS );
+	$updated = papelito_company_update( $company_id, array( 'pending_billing_email' => $email, 'pending_billing_email_token_hash' => hash( 'sha256', $token ), 'pending_billing_email_expires_at' => $expires, 'billing_email_verification_sent_at' => current_time( 'mysql', true ) ) );
+	if ( is_wp_error( $updated ) ) {
+		return $updated;
+	}
+	$base = rtrim( (string) papelito_env( 'PAPELITO_FRONTEND_URL', 'http://localhost:3000' ), '/' );
+	wp_mail( $email, 'Confirme o e-mail de faturamento da Papelito', "Confirme o e-mail de faturamento: {$base}/confirmar-email-faturamento?token=" . rawurlencode( $token ) );
+	return true;
+}
+
+function papelito_company_mgmt_update_details( int $actor, int $company_id, array $body ) {
+	$loaded = papelito_company_authz_load( $actor, $company_id );
+	if ( is_wp_error( $loaded ) || ! papelito_company_authz_can_manage( $loaded['membership'] ?? array() ) ) {
+		return is_wp_error( $loaded ) ? $loaded : new WP_Error( 'papelito_b2b_forbidden', 'Ação não permitida.', array( 'status' => 403 ) );
+	}
+	$company = $loaded['company'];
+	if ( array_key_exists( 'phone', $body ) ) {
+		$phone = sanitize_text_field( (string) $body['phone'] );
+		$result = papelito_company_update( $company_id, array( 'phone' => $phone ?: null ) );
+		if ( is_wp_error( $result ) ) { return $result; }
+		papelito_company_audit( $company_id, $actor, 'company_phone_updated', array( 'target_user_id' => $actor ) );
+	}
+	if ( array_key_exists( 'billingEmail', $body ) ) {
+		$email = sanitize_email( (string) $body['billingEmail'] );
+		if ( '' === $email || ! is_email( $email ) ) { return new WP_Error( 'papelito_b2b_invalid_billing_email', 'E-mail de faturamento inválido.', array( 'status' => 422 ) ); }
+		$result = papelito_company_mgmt_send_billing_email_confirmation( $company_id, $email );
+		if ( is_wp_error( $result ) ) { return $result; }
+		papelito_company_audit( $company_id, $actor, 'billing_email_confirmation_requested', array( 'target_user_id' => $actor ) );
+	}
+	return true;
+}
+
+function papelito_company_mgmt_audit_view( int $company_id, int $actor, array $row ): array {
+	$payload = json_decode( (string) $row['payload_json'], true );
+	$payload = is_array( $payload ) ? $payload : array();
+	$target  = (int) ( $payload['target_user_id'] ?? $payload['requester_user_id'] ?? 0 );
+	$person = static function ( int $user_id ) use ( $company_id ): ?array {
+		if ( $user_id <= 0 ) { return null; }
+		$user = get_userdata( $user_id ); $member = papelito_company_member_get( $company_id, $user_id );
+		return array( 'displayName' => $user instanceof WP_User ? $user->display_name : 'Usuário removido', 'role' => $member['member_role'] ?? null );
+	};
+	return array( 'action' => (string) $row['action'], 'createdAt' => (string) $row['created_at'], 'actor' => $person( (int) $row['actor_user_id'] ), 'target' => $person( $target ) );
+}
+
 add_action(
 	'rest_api_init',
 	static function (): void {
@@ -143,6 +193,7 @@ add_action(
 				'methods'             => 'POST',
 				'permission_callback' => 'papelito_company_mgmt_permission',
 				'callback'            => static function ( WP_REST_Request $r ) {
+					$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
 					if ( ! papelito_auth_rate_limit( 'company_request_access', 10, 60 ) ) {
 						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
 					}
@@ -166,6 +217,65 @@ add_action(
 			)
 		);
 
+		register_rest_route(
+			$ns,
+			'/companies/current',
+			array(
+				'methods' => 'PATCH',
+				'permission_callback' => 'papelito_company_mgmt_permission',
+				'callback' => static function ( WP_REST_Request $r ) {
+					$actor = get_current_user_id(); $company_id = papelito_company_mgmt_active_company_id( $actor );
+					if ( is_wp_error( $company_id ) ) { return $company_id; }
+					$body = (array) $r->get_json_params();
+					$outcome = papelito_company_mgmt_idempotent( $r, $actor, 'company_details_update', $body, static function () use ( $actor, $company_id, $body ) {
+						$result = papelito_company_mgmt_update_details( $actor, $company_id, $body ); return is_wp_error( $result ) ? $result : $company_id;
+					} );
+					return is_wp_error( $outcome ) ? $outcome : new WP_REST_Response( papelito_company_context( $actor ), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			$ns,
+			'/companies/current/audit',
+			array(
+				'methods' => 'GET',
+				'permission_callback' => 'papelito_company_mgmt_permission',
+				'callback' => static function ( WP_REST_Request $r ) {
+					$actor = get_current_user_id(); $company_id = papelito_company_mgmt_active_company_id( $actor );
+					if ( is_wp_error( $company_id ) ) { return $company_id; }
+					$loaded = papelito_company_authz_load( $actor, $company_id );
+					if ( is_wp_error( $loaded ) || ! in_array( (string) ( $loaded['membership']['member_role'] ?? '' ), array( 'owner', 'admin' ), true ) ) { return new WP_Error( 'papelito_b2b_forbidden', 'Ação não permitida.', array( 'status' => 403 ) ); }
+					$page = max( 1, (int) $r->get_param( 'page' ) ); $per_page = min( 50, max( 1, (int) ( $r->get_param( 'perPage' ) ?: 20 ) ) ); global $wpdb; $tables = papelito_company_table_names();
+					$rows = $wpdb->get_results( $wpdb->prepare( "SELECT actor_user_id, action, payload_json, created_at FROM {$tables['audit']} WHERE company_id = %d ORDER BY id DESC LIMIT %d OFFSET %d", $company_id, $per_page, ( $page - 1 ) * $per_page ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+					return new WP_REST_Response( array( 'items' => array_map( static fn( array $row ): array => papelito_company_mgmt_audit_view( $company_id, $actor, $row ), is_array( $rows ) ? $rows : array() ), 'page' => $page, 'perPage' => $per_page ), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			$ns,
+			'/companies/current/billing-email/resend',
+			array( 'methods' => 'POST', 'permission_callback' => 'papelito_company_mgmt_permission', 'callback' => static function ( WP_REST_Request $r ) {
+				$actor = get_current_user_id(); $company_id = papelito_company_mgmt_active_company_id( $actor ); if ( is_wp_error( $company_id ) ) { return $company_id; }
+				$outcome = papelito_company_mgmt_idempotent( $r, $actor, 'billing_email_resend', array(), static function () use ( $actor, $company_id ) { $loaded = papelito_company_authz_load( $actor, $company_id ); if ( is_wp_error( $loaded ) || ! papelito_company_authz_can_manage( $loaded['membership'] ?? array() ) ) { return new WP_Error( 'papelito_b2b_forbidden', 'Ação não permitida.', array( 'status' => 403 ) ); } $email = (string) ( $loaded['company']['pending_billing_email'] ?? '' ); if ( '' === $email ) { return new WP_Error( 'papelito_b2b_no_pending_billing_email', 'Não há e-mail pendente.', array( 'status' => 409 ) ); } $result = papelito_company_mgmt_send_billing_email_confirmation( $company_id, $email ); return is_wp_error( $result ) ? $result : $company_id; } );
+				return is_wp_error( $outcome ) ? $outcome : new WP_REST_Response( papelito_company_context( $actor ), 200 );
+			} )
+		);
+
+		register_rest_route(
+			$ns,
+			'/companies/billing-email/confirm',
+			array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $r ) {
+				if ( ! papelito_auth_rate_limit( 'billing_email_confirm', 20, 60 ) ) { return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas.', array( 'status' => 429 ) ); }
+				$token = (string) ( (array) $r->get_json_params() )['token']; if ( '' === $token ) { return new WP_Error( 'papelito_b2b_invalid_billing_token', 'Token inválido.', array( 'status' => 422 ) ); }
+				global $wpdb; $tables = papelito_company_table_names(); $company = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tables['companies']} WHERE pending_billing_email_token_hash = %s AND pending_billing_email_expires_at > UTC_TIMESTAMP()", hash( 'sha256', $token ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
+				if ( ! is_array( $company ) ) { return new WP_Error( 'papelito_b2b_invalid_billing_token', 'Token inválido ou expirado.', array( 'status' => 404 ) ); }
+				$updated = papelito_company_update( (int) $company['id'], array( 'billing_email' => (string) $company['pending_billing_email'], 'billing_email_verified_at' => current_time( 'mysql', true ), 'pending_billing_email' => null, 'pending_billing_email_token_hash' => null, 'pending_billing_email_expires_at' => null ) );
+				if ( is_wp_error( $updated ) ) { return $updated; } papelito_company_audit( (int) $company['id'], null, 'billing_email_verified', array() ); return new WP_REST_Response( array( 'ok' => true ), 200 );
+			} )
+		);
+
 		/* --- Selecionar empresa ativa --- */
 		register_rest_route(
 			$ns,
@@ -175,6 +285,7 @@ add_action(
 				'permission_callback' => 'papelito_company_mgmt_permission',
 				'callback'            => static function ( WP_REST_Request $r ) {
 					$user_id    = get_current_user_id();
+					$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
 					$company_id = (int) ( ( (array) $r->get_json_params() )['companyId'] ?? 0 );
 					if ( $company_id <= 0 ) {
 						return new WP_Error( 'papelito_b2b_invalid_company', 'Empresa inválida.', array( 'status' => 422 ) );
@@ -237,7 +348,18 @@ add_action(
 							} elseif ( isset( $body['status'] ) ) {
 								$res = papelito_company_member_set_status( $user_id, $company_id, $target_user_id, (string) $body['status'] );
 							} elseif ( array_key_exists( 'expiresAt', $body ) ) {
-								$expires = empty( $body['expiresAt'] ) ? null : gmdate( 'Y-m-d H:i:s', (int) strtotime( (string) $body['expiresAt'] ) );
+								$raw_expires = $body['expiresAt'];
+								if ( null === $raw_expires ) {
+									$expires = null;
+								} elseif ( ! is_string( $raw_expires ) || '' === trim( $raw_expires ) ) {
+									return new WP_Error( 'papelito_b2b_invalid_expiration', 'Data de expiração inválida.', array( 'status' => 422 ) );
+								} else {
+									$date = DateTimeImmutable::createFromFormat( DateTimeInterface::RFC3339, $raw_expires );
+									if ( ! $date || $date->getTimestamp() <= time() ) {
+										return new WP_Error( 'papelito_b2b_invalid_expiration', 'Data de expiração deve estar no futuro.', array( 'status' => 422 ) );
+									}
+									$expires = $date->setTimezone( new DateTimeZone( 'UTC' ) )->format( 'Y-m-d H:i:s' );
+								}
 								$res     = papelito_company_member_set_expiration( $user_id, $company_id, $target_user_id, $expires );
 							} else {
 								return new WP_Error( 'papelito_b2b_no_op', 'Nada a atualizar.', array( 'status' => 422 ) );
@@ -601,6 +723,7 @@ add_action(
 					if ( ! papelito_auth_rate_limit( 'invitation_accept', 20, 60 ) ) {
 						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
 					}
+					$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
 					$user_id = get_current_user_id();
 					$result  = papelito_company_invitation_accept_token( $user_id, (string) $r['token'] );
 					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );

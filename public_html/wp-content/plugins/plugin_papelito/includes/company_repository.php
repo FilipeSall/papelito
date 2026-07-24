@@ -220,6 +220,19 @@ function papelito_company_member_get( int $company_id, int $user_id ): ?array {
 	return null === $row ? null : $row;
 }
 
+function papelito_company_member_is_operationally_active( ?array $member ): bool {
+	if ( null === $member || 'active' !== (string) $member['member_status'] ) {
+		return false;
+	}
+
+	if ( empty( $member['expires_at'] ) ) {
+		return true;
+	}
+
+	$expires_at = strtotime( (string) $member['expires_at'] );
+	return false !== $expires_at && $expires_at > time();
+}
+
 /**
  * Lista os vínculos ativos de um usuário (para seleção da empresa ativa da sessão).
  *
@@ -230,7 +243,7 @@ function papelito_company_members_active_for_user( int $user_id ): array {
 
 	$tables = papelito_company_table_names();
 	$rows   = $wpdb->get_results(
-		$wpdb->prepare( "SELECT * FROM {$tables['members']} WHERE user_id = %d AND member_status = %s", $user_id, 'active' ), // phpcs:ignore WordPress.DB.PreparedSQL
+		$wpdb->prepare( "SELECT * FROM {$tables['members']} WHERE user_id = %d AND member_status = %s AND ( expires_at IS NULL OR expires_at > UTC_TIMESTAMP() )", $user_id, 'active' ), // phpcs:ignore WordPress.DB.PreparedSQL
 		ARRAY_A
 	);
 
@@ -315,7 +328,7 @@ function papelito_company_count_active_owners( int $company_id ): int {
 
 	$tables = papelito_company_table_names();
 	$count  = $wpdb->get_var(
-		$wpdb->prepare( "SELECT COUNT(*) FROM {$tables['members']} WHERE company_id = %d AND member_role = %s AND member_status = %s", $company_id, 'owner', 'active' ) // phpcs:ignore WordPress.DB.PreparedSQL
+		$wpdb->prepare( "SELECT COUNT(*) FROM {$tables['members']} WHERE company_id = %d AND member_role = %s AND member_status = %s AND ( expires_at IS NULL OR expires_at > UTC_TIMESTAMP() )", $company_id, 'owner', 'active' ) // phpcs:ignore WordPress.DB.PreparedSQL
 	);
 
 	return (int) $count;

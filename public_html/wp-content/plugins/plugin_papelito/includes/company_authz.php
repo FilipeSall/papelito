@@ -56,7 +56,10 @@ function papelito_company_authz_load( int $actor_user_id, int $company_id ) {
 	}
 
 	$membership = papelito_company_member_get( $company_id, $actor_user_id );
-	if ( null === $membership || 'active' !== $membership['member_status'] ) {
+	$is_active = function_exists( 'papelito_company_member_is_operationally_active' )
+		? papelito_company_member_is_operationally_active( $membership )
+		: null !== $membership && 'active' === $membership['member_status'];
+	if ( ! $is_active ) {
 		// Anti-enumeração: quem não é membro ativo não distingue "não existe" de "sem permissão".
 		return new WP_Error( 'papelito_b2b_forbidden', 'Ação não permitida.', array( 'status' => 403 ) );
 	}

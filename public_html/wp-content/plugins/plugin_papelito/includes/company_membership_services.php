@@ -107,6 +107,14 @@ function papelito_company_member_set_expiration( int $actor_user_id, int $compan
 		return $guard;
 	}
 
+	$target = papelito_company_member_get( $company_id, $target_user_id );
+	if ( null === $target ) {
+		return new WP_Error( 'papelito_b2b_member_not_found', 'Membro não encontrado.', array( 'status' => 404 ) );
+	}
+	if ( 'owner' === (string) $target['member_role'] && null !== $expires_at ) {
+		return new WP_Error( 'papelito_b2b_owner_expiration_forbidden', 'Owner não pode possuir expiração.', array( 'status' => 422 ) );
+	}
+
 	$member = papelito_company_member_upsert( $company_id, $target_user_id, array( 'expires_at' => $expires_at ) );
 	if ( is_wp_error( $member ) ) {
 		return $member;

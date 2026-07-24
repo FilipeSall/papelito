@@ -67,7 +67,38 @@ function papelito_company_owner_evidence( WP_User $user, string $cpf, string $bi
 function papelito_company_audit( int $company_id, ?int $actor_user_id, string $action, array $payload = array() ): void {
 	global $wpdb;
 	$tables = papelito_company_table_names();
-	$wpdb->insert( $tables['audit'], array( 'company_id' => $company_id, 'actor_user_id' => $actor_user_id, 'action' => sanitize_key( $action ), 'payload_json' => wp_json_encode( $payload ), 'created_at' => current_time( 'mysql', true ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	$allowed = array( 'target_user_id', 'requester_user_id', 'invitation_id', 'attempt', 'role', 'invited_role', 'cpf_locked', 'has_expiration', 'registry_status', 'provider', 'source' );
+	$safe    = array();
+	foreach ( $allowed as $key ) {
+		if ( array_key_exists( $key, $payload ) && is_scalar( $payload[ $key ] ) ) {
+			$safe[ $key ] = $payload[ $key ];
+		}
+	}
+	$wpdb->insert( $tables['audit'], array( 'company_id' => $company_id, 'actor_user_id' => $actor_user_id, 'action' => sanitize_key( $action ), 'payload_json' => wp_json_encode( $safe ), 'created_at' => current_time( 'mysql', true ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+}
+
+function papelito_company_context_view( array $company, ?array $membership ): array {
+	$role       = (string) ( $membership['member_role'] ?? '' );
+	$is_manager = in_array( $role, array( 'owner', 'admin' ), true );
+	$verified   = ! empty( $company['billing_email_verified_at'] );
+	$status     = ! empty( $company['pending_billing_email'] ) ? 'pending' : ( $verified ? 'verified' : 'unverified' );
+	$address    = array_filter( array( 'cep' => $company['fiscal_cep'], 'state' => $company['fiscal_state'], 'city' => $company['fiscal_city'], 'neighborhood' => $company['fiscal_neighborhood'], 'street' => $company['fiscal_street'], 'number' => $company['fiscal_number'], 'complement' => $company['fiscal_complement'] ), static fn( $value ) => null !== $value && '' !== $value );
+
+	return array(
+		'legalName'          => (string) $company['legal_name'],
+		'tradeName'          => $company['trade_name'] ?? null,
+		'cnpj'               => (string) $company['cnpj'],
+		'registryStatus'     => (string) $company['registry_status'],
+		'ownershipStatus'    => (string) $company['ownership_status'],
+		'status'             => (string) $company['company_status'],
+		'fiscalAddress'      => empty( $address ) ? null : $address,
+		'providerSource'     => $company['provider_source'] ?? null,
+		'providerCheckedAt'  => $company['provider_checked_at'] ?? null,
+		'billingEmail'       => ( $verified || $is_manager ) ? (string) $company['billing_email'] : null,
+		'pendingBillingEmail'=> $is_manager ? ( $company['pending_billing_email'] ?? null ) : null,
+		'billingEmailStatus' => $status,
+		'phone'              => $company['phone'] ?? null,
+	);
 }
 
 function papelito_company_create_owner_candidate( int $user_id, array $input ): array|WP_Error {
@@ -174,6 +205,7 @@ function papelito_company_context( int $user_id ): array {
 			'membershipExpiresAt'    => $member['expires_at'] ?? null,
 		)
 	);
+	$base['company'] = papelito_company_context_view( $company, $member );
 	$base['canPurchase'] = papelito_can_purchase( $user_id, $base );
 
 	return $base;

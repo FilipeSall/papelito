@@ -24,6 +24,7 @@ add_action( 'rest_api_init', static function (): void {
 	} ) );
 
 	register_rest_route( 'papelito/v1', '/onboarding/customer-profile', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
+		$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
 		$user_id = papelito_company_require_authenticated_user(); if ( is_wp_error( $user_id ) ) { return $user_id; }
 		$data = (array) $request->get_json_params();
 		$cep  = preg_replace( '/\D+/', '', (string) ( $data['cep'] ?? '' ) ) ?? '';
@@ -35,6 +36,8 @@ add_action( 'rest_api_init', static function (): void {
 	} ) );
 
 	register_rest_route( 'papelito/v1', '/companies', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
+		if ( ! papelito_b2b_company_model_enabled() ) { return new WP_Error( 'papelito_b2b_company_rollout_disabled', 'Cadastro empresarial temporariamente indisponível.', array( 'status' => 503 ) ); }
+		$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
 		$user_id = papelito_company_require_authenticated_user(); if ( is_wp_error( $user_id ) ) { return $user_id; }
 		$input = papelito_company_validate_owner_input( (array) $request->get_json_params() ); if ( is_wp_error( $input ) ) { return $input; }
 		$result = papelito_company_create_owner_candidate( $user_id, $input );
@@ -42,10 +45,6 @@ add_action( 'rest_api_init', static function (): void {
 		if ( is_wp_error( $result ) ) { return $result; }
 		papelito_company_onboarding_mark_completed( $user_id, (int) $result['company_id'], (int) ( $result['membership_id'] ?? 0 ) );
 		return new WP_REST_Response( array_merge( $result, papelito_company_context( $user_id ) ), 201 );
-	} ) );
-
-	register_rest_route( 'papelito/v1', '/companies/current', array( 'methods' => 'GET', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function () {
-		$user_id = papelito_company_require_authenticated_user(); return is_wp_error( $user_id ) ? $user_id : new WP_REST_Response( papelito_company_context( $user_id ), 200 );
 	} ) );
 
 	register_rest_route( 'papelito/v1', '/companies/current/resubmit-owner', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function () {

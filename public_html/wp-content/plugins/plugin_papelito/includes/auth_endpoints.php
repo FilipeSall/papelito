@@ -653,6 +653,10 @@ function papelito_auth_find_or_create_google_user( array $payload ) {
 		return $user;
 	}
 
+	if ( ! papelito_b2b_company_model_enabled() ) {
+		return new WP_Error( 'papelito_b2b_company_rollout_disabled', 'Cadastro empresarial temporariamente indisponível.', array( 'status' => 503 ) );
+	}
+
 	$user_id = wp_insert_user(
 		array(
 			'user_login'   => $email,
@@ -879,6 +883,13 @@ add_action(
 				'methods'             => 'POST',
 				'permission_callback' => '__return_true',
 				'callback'            => static function ( WP_REST_Request $request ) {
+					if ( ! papelito_b2b_company_model_enabled() ) {
+						return new WP_Error( 'papelito_b2b_company_rollout_disabled', 'Cadastro empresarial temporariamente indisponível.', array( 'status' => 503 ) );
+					}
+					$writes = papelito_b2b_require_company_writes();
+					if ( is_wp_error( $writes ) ) {
+						return $writes;
+					}
 					if ( ! papelito_auth_rate_limit( 'register', 10, 60 ) ) {
 						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
 					}

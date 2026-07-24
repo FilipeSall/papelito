@@ -124,7 +124,10 @@ function papelito_company_active_resolve( int $user_id, array $active_members ):
 function papelito_company_active_select( int $user_id, int $company_id ) {
 	$member = papelito_company_member_get( $company_id, $user_id );
 
-	if ( null === $member || 'active' !== $member['member_status'] ) {
+	$is_active = function_exists( 'papelito_company_member_is_operationally_active' )
+		? papelito_company_member_is_operationally_active( $member )
+		: null !== $member && 'active' === $member['member_status'];
+	if ( ! $is_active ) {
 		return new WP_Error( 'papelito_b2b_membership_not_active', 'Você não possui uma associação ativa nesta empresa.', array( 'status' => 403 ) );
 	}
 

@@ -59,7 +59,7 @@ require_once __DIR__ . '/includes/company_admin_endpoints.php';
 require_once __DIR__ . '/includes/company_management_endpoints.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.13.0' );
+	define( 'PAPELITO_DB_VERSION', '1.14.0' );
 }
 
 /**
