@@ -151,6 +151,12 @@ function papelito_company_context( int $user_id ): array {
 		'availableCompanies'         => array(),
 		'canPurchase'                => false,
 		'purchaseBlockReason'        => null,
+		'purchaseMode'               => 'blocked',
+		'requiresB2bOnboarding'      => false,
+		'userContextType'            => 'customer',
+		'isInternalAdmin'            => false,
+		'isVendor'                   => false,
+		'hasCustomerContext'         => false,
 	);
 	if ( function_exists( 'papelito_legacy_context' ) ) {
 		$base = array_merge( $base, papelito_legacy_context( $user_id ) );
@@ -221,6 +227,12 @@ function papelito_company_context_with_purchase_capability( int $user_id, array 
 	$capability = papelito_company_purchase_capability( $user_id, $context );
 	$context['canPurchase'] = $capability['canPurchase'];
 	$context['purchaseBlockReason'] = $capability['purchaseBlockReason'];
+	$context['purchaseMode'] = $capability['purchaseMode'];
+	$context['requiresB2bOnboarding'] = $capability['requiresB2bOnboarding'];
+	$context['userContextType'] = $capability['userContextType'];
+	$context['isInternalAdmin'] = $capability['isInternalAdmin'];
+	$context['isVendor'] = $capability['isVendor'];
+	$context['hasCustomerContext'] = $capability['hasCustomerContext'];
 	return $context;
 }
 
@@ -278,65 +290,144 @@ function papelito_company_resubmit_owner_candidate( int $user_id ) {
 	return papelito_company_context( $user_id );
 }
 
-function papelito_can_purchase( int $user_id, ?array $context = null ): bool {
-	if ( ! papelito_b2b_is_cohort( $user_id ) ) { return true; }
-	$context = $context ?? papelito_company_context( $user_id );
-	$expires = isset( $context['membershipExpiresAt'] ) ? strtotime( (string) $context['membershipExpiresAt'] ) : false;
-	return 'verified' === $context['identityStatus'] && 'active' === $context['companyStatus'] && 'active' === $context['companyRegistryStatus'] && 'verified' === $context['companyOwnershipStatus'] && 'active' === $context['membershipStatus'] && in_array( $context['membershipRole'], array( 'owner', 'admin', 'buyer' ), true ) && ( false === $expires || $expires > time() );
+function papelito_user_is_internal_admin( WP_User $user ): bool {
+	return papelito_user_has_role( $user, 'administrator' ) || user_can( $user, 'manage_options' ) || user_can( $user, 'papelito_manage_companies' ) || user_can( $user, 'papelito_manage_b2b_companies' );
 }
 
-/**
- * Calcula a capacidade de compra B2B e o motivo estável de bloqueio.
- *
- * @return array{canPurchase:bool,purchaseBlockReason:?string,company:?array<string,mixed>,membership:?array<string,mixed>}
- */
-function papelito_company_purchase_capability( int $user_id, ?array $context = null ): array {
-	if ( ! papelito_b2b_is_cohort( $user_id ) ) {
-		return array( 'canPurchase' => true, 'purchaseBlockReason' => null, 'company' => null, 'membership' => null );
-	}
+function papelito_user_is_vendor( WP_User $user ): bool {
+	return papelito_user_is_effective_seller( $user );
+}
 
+function papelito_user_is_customer_buyer( WP_User $user ): bool {
+	if ( papelito_user_has_role( $user, 'customer' ) || papelito_b2b_is_cohort( $user->ID ) ) {
+		return true;
+	}
+	if ( function_exists( 'papelito_company_members_active_for_user' ) && ! empty( papelito_company_members_active_for_user( $user->ID ) ) ) {
+		return true;
+	}
+	return function_exists( 'papelito_company_members_pending_for_user' ) && ! empty( papelito_company_members_pending_for_user( $user->ID ) );
+}
+
+function papelito_user_context_type( WP_User $user ): string {
+	$internal_admin = papelito_user_is_internal_admin( $user );
+	$vendor = papelito_user_is_vendor( $user );
+	$customer = papelito_user_is_customer_buyer( $user );
+	if ( $customer && ( $internal_admin || $vendor ) ) {
+		return 'hybrid';
+	}
+	if ( $internal_admin ) {
+		return 'internal_admin';
+	}
+	if ( $vendor ) {
+		return 'vendor';
+	}
+	return 'customer';
+}
+
+function papelito_company_purchase_capability_result( array $base, bool $can_purchase, string $purchase_mode, ?string $reason, ?array $company, ?array $membership ): array {
+	return array_merge(
+		$base,
+		array(
+			'canPurchase' => $can_purchase,
+			'purchaseMode' => $purchase_mode,
+			'purchaseBlockReason' => $reason,
+			'requiresB2bOnboarding' => 'blocked' === $purchase_mode,
+			'company' => $company,
+			'membership' => $membership,
+		)
+	);
+}
+
+function papelito_can_purchase( int $user_id, ?array $context = null ): bool {
+	return ! empty( papelito_company_purchase_capability( $user_id, $context )['canPurchase'] );
+}
+
+function papelito_company_purchase_capability( int $user_id, ?array $context = null ): array {
+	$user = get_userdata( $user_id );
+	if ( ! $user instanceof WP_User ) {
+		return papelito_company_purchase_capability_result( array( 'userContextType' => 'customer', 'isInternalAdmin' => false, 'isVendor' => false, 'hasCustomerContext' => false ), false, 'not_buyer', 'not_a_customer_buyer', null, null );
+	}
+	$internal_admin = papelito_user_is_internal_admin( $user );
+	$vendor = papelito_user_is_vendor( $user );
+	$customer = papelito_user_is_customer_buyer( $user );
+	$base = array(
+		'userContextType' => papelito_user_context_type( $user ),
+		'isInternalAdmin' => $internal_admin,
+		'isVendor' => $vendor,
+		'hasCustomerContext' => $customer,
+	);
+	if ( ! $customer ) {
+		return papelito_company_purchase_capability_result( $base, false, 'not_buyer', 'not_a_customer_buyer', null, null );
+	}
 	$context = $context ?? papelito_company_context( $user_id );
+	$identity_status = (string) ( $context['identityStatus'] ?? 'incomplete' );
+	if ( in_array( $identity_status, array( 'rejected', 'suspended' ), true ) ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'identity_rejected', null, null );
+	}
+	if ( 'verified' !== $identity_status ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'identity_incomplete', null, null );
+	}
+	if ( ! empty( $context['companySelectionRequired'] ) ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'company_selection_required', null, null );
+	}
 	if ( empty( $context['companyId'] ) ) {
-		return array( 'canPurchase' => false, 'purchaseBlockReason' => 'company_required', 'company' => null, 'membership' => null );
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'company_missing', null, null );
 	}
 	$company = papelito_company_get( (int) $context['companyId'] );
 	$membership = $company ? papelito_company_member_get( (int) $company['id'], $user_id ) : null;
-	if ( ! $company || ! $membership || ! papelito_can_purchase( $user_id, $context ) ) {
-		return array( 'canPurchase' => false, 'purchaseBlockReason' => 'company_or_membership_not_approved', 'company' => $company, 'membership' => $membership );
+	if ( ! $company ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'company_missing', null, null );
+	}
+	if ( 'suspended' === (string) $company['company_status'] ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'company_suspended', $company, $membership );
+	}
+	if ( 'archived' === (string) $company['company_status'] || 'rejected' === (string) $company['ownership_status'] ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'company_rejected', $company, $membership );
+	}
+	if ( 'onboarding' === (string) $company['company_status'] || 'verified' !== (string) $company['ownership_status'] ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'company_pending_review', $company, $membership );
+	}
+	if ( in_array( (string) $company['registry_status'], array( 'unavailable', 'provider_unsupported' ), true ) ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'company_registry_unavailable', $company, $membership );
+	}
+	if ( 'conflict' === (string) $company['registry_status'] ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'company_provider_conflict', $company, $membership );
+	}
+	if ( 'active' !== (string) $company['registry_status'] ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'company_registry_inactive', $company, $membership );
+	}
+	if ( ! $membership ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'membership_missing', $company, null );
+	}
+	$membership_status = (string) $membership['member_status'];
+	if ( 'suspended' === $membership_status ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'membership_suspended', $company, $membership );
+	}
+	if ( ! empty( $membership['expires_at'] ) && strtotime( (string) $membership['expires_at'] ) <= time() ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'membership_expired', $company, $membership );
+	}
+	if ( 'active' !== $membership_status ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'membership_pending', $company, $membership );
+	}
+	if ( ! in_array( (string) $membership['member_role'], papelito_company_purchasing_roles(), true ) ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'role_cannot_purchase', $company, $membership );
 	}
 	if ( empty( $company['billing_email_verified_at'] ) || ! is_email( (string) $company['billing_email'] ) ) {
-		return array( 'canPurchase' => false, 'purchaseBlockReason' => 'billing_email_not_confirmed', 'company' => $company, 'membership' => $membership );
-	}
-	$length = static function( string $value ): int {
-		return function_exists( 'mb_strlen' ) ? mb_strlen( $value, 'UTF-8' ) : strlen( $value );
-	};
-	if ( '' === trim( (string) $company['legal_name'] ) || $length( (string) $company['legal_name'] ) > 64 ) {
-		return array( 'canPurchase' => false, 'purchaseBlockReason' => 'pagarme_customer_name_invalid', 'company' => $company, 'membership' => $membership );
-	}
-	if ( $length( (string) $company['billing_email'] ) > 64 ) {
-		return array( 'canPurchase' => false, 'purchaseBlockReason' => 'pagarme_customer_email_too_long', 'company' => $company, 'membership' => $membership );
-	}
-	$customer_code = 'papelito-company-' . (int) $company['id'];
-	if ( $length( $customer_code ) > 52 ) {
-		return array( 'canPurchase' => false, 'purchaseBlockReason' => 'pagarme_customer_code_too_long', 'company' => $company, 'membership' => $membership );
-	}
-	global $wpdb;
-	$tables = papelito_company_table_names();
-	$duplicate_email = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$tables['companies']} WHERE billing_email = %s AND id != %d LIMIT 1", (string) $company['billing_email'], (int) $company['id'] ) ); // phpcs:ignore WordPress.DB.PreparedSQL
-	if ( null !== $duplicate_email ) {
-		return array( 'canPurchase' => false, 'purchaseBlockReason' => 'pagarme_billing_email_conflict', 'company' => $company, 'membership' => $membership );
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'billing_email_unverified', $company, $membership );
 	}
 	foreach ( array( 'fiscal_cep', 'fiscal_state', 'fiscal_city', 'fiscal_neighborhood', 'fiscal_street', 'fiscal_number' ) as $field ) {
 		if ( '' === trim( (string) ( $company[ $field ] ?? '' ) ) ) {
-			return array( 'canPurchase' => false, 'purchaseBlockReason' => 'fiscal_address_incomplete', 'company' => $company, 'membership' => $membership );
+			return papelito_company_purchase_capability_result( $base, false, 'blocked', 'fiscal_address_incomplete', $company, $membership );
 		}
 	}
+	$length = static fn( string $value ): int => function_exists( 'mb_strlen' ) ? mb_strlen( $value, 'UTF-8' ) : strlen( $value );
 	$phone = function_exists( 'papelito_auth_normalize_phone' ) ? papelito_auth_normalize_phone( (string) $company['phone'] ) : preg_replace( '/\\D+/', '', (string) $company['phone'] );
-	if ( ! is_string( $phone ) || ! in_array( strlen( $phone ), array( 10, 11 ), true ) ) {
-		return array( 'canPurchase' => false, 'purchaseBlockReason' => 'business_phone_invalid', 'company' => $company, 'membership' => $membership );
+	$customer_code = 'papelito-company-' . (int) $company['id'];
+	if ( '' === trim( (string) $company['legal_name'] ) || $length( (string) $company['legal_name'] ) > 64 || $length( (string) $company['billing_email'] ) > 64 || $length( $customer_code ) > 52 || ! is_string( $phone ) || ! in_array( strlen( $phone ), array( 10, 11 ), true ) ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'payment_profile_incomplete', $company, $membership );
 	}
 	if ( function_exists( 'papelito_cnpj_is_alphanumeric' ) && papelito_cnpj_is_alphanumeric( (string) $company['cnpj'] ) && ! papelito_b2b_flag( 'PAPELITO_ALPHANUMERIC_CNPJ_PAYMENT_ENABLED' ) ) {
-		return array( 'canPurchase' => false, 'purchaseBlockReason' => 'cnpj_alphanumeric_payment_unsupported', 'company' => $company, 'membership' => $membership );
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'alphanumeric_cnpj_payment_disabled', $company, $membership );
 	}
-	return array( 'canPurchase' => true, 'purchaseBlockReason' => null, 'company' => $company, 'membership' => $membership );
+	return papelito_company_purchase_capability_result( $base, true, 'b2b', null, $company, $membership );
 }

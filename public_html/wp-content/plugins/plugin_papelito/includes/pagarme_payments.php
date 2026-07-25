@@ -238,8 +238,12 @@ function papelito_pagarme_b2b_customer_payload_from_order( object $order ) {
 	$email = sanitize_email( (string) $order->get_meta( '_papelito_company_billing_email', true ) );
 	$cnpj = sanitize_text_field( (string) $order->get_meta( '_papelito_company_cnpj', true ) );
 	$phone = sanitize_text_field( (string) $order->get_meta( '_papelito_company_phone', true ) );
+	$code = sanitize_text_field( (string) $order->get_meta( '_papelito_company_pagarme_customer_code', true ) );
+	if ( '' === $code && $company_id > 0 ) {
+		$code = 'papelito-company-' . $company_id;
+	}
 	$length = static fn( string $value ): int => function_exists( 'mb_strlen' ) ? mb_strlen( $value ) : strlen( $value );
-	if ( $company_id <= 0 || '' === $name || ! is_email( $email ) || $length( $name ) > 64 || $length( $email ) > 64 || strlen( $cnpj ) > 16 ) {
+	if ( $company_id <= 0 || '' === $name || ! is_email( $email ) || $length( $name ) > 64 || $length( $email ) > 64 || $length( $code ) > 52 || strlen( $cnpj ) > 16 ) {
 		return new WP_Error( 'papelito_b2b_pagarme_customer_invalid', 'Os dados fiscais da empresa não atendem aos limites do pagamento.', array( 'status' => 422 ) );
 	}
 	if ( function_exists( 'papelito_cnpj_is_alphanumeric' ) && papelito_cnpj_is_alphanumeric( $cnpj ) && ! papelito_b2b_flag( 'PAPELITO_ALPHANUMERIC_CNPJ_PAYMENT_ENABLED' ) ) {
@@ -247,7 +251,10 @@ function papelito_pagarme_b2b_customer_payload_from_order( object $order ) {
 	}
 	$address = array();
 	foreach ( array( 'cep', 'state', 'city', 'neighborhood', 'street', 'number', 'complement' ) as $field ) {
-		$address[ $field ] = sanitize_text_field( (string) $order->get_meta( '_papelito_company_fiscal_' . $field, true ) );
+		$address[ $field ] = sanitize_text_field( (string) $order->get_meta( '_papelito_fiscal_' . $field, true ) );
+		if ( '' === $address[ $field ] ) {
+			$address[ $field ] = sanitize_text_field( (string) $order->get_meta( '_papelito_company_fiscal_' . $field, true ) );
+		}
 	}
 	foreach ( array( 'cep', 'state', 'city', 'neighborhood', 'street', 'number' ) as $field ) {
 		if ( '' === $address[ $field ] ) {
@@ -261,7 +268,7 @@ function papelito_pagarme_b2b_customer_payload_from_order( object $order ) {
 	return array(
 		'name' => $name,
 		'email' => $email,
-		'code' => 'papelito-company-' . $company_id,
+		'code' => $code,
 		'document_type' => 'CNPJ',
 		'document' => $cnpj,
 		'type' => 'company',
@@ -729,7 +736,7 @@ function papelito_pagarme_mark_vendor_status_unpaid( object $order ): void {
  * @return array<string,mixed>|WP_Error
  */
 function papelito_pagarme_create_order_payment( object $order, int $customer_id, array $payment, array $address, array $lines, array $shipping ) {
-	$customer = '1' === (string) $order->get_meta( '_papelito_b2b_snapshot_version', true )
+	$customer = '1' === (string) $order->get_meta( '_papelito_company_snapshot_version', true ) || '1' === (string) $order->get_meta( '_papelito_b2b_snapshot_version', true )
 		? papelito_pagarme_b2b_customer_payload_from_order( $order )
 		: papelito_pagarme_customer_payload( $customer_id, $address );
 	if ( is_wp_error( $customer ) ) {

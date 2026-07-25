@@ -50,13 +50,10 @@ function papelito_order_routing_checkout_request_hash( array $payload ): string 
 
 /** @return array<string,mixed>|WP_Error */
 function papelito_order_routing_resolve_b2b_snapshot( int $user_id, array $payload ) {
-	if ( ! function_exists( 'papelito_b2b_is_cohort' ) || ! papelito_b2b_is_cohort( $user_id ) ) {
-		return array();
-	}
 	$context = papelito_company_context( $user_id );
 	$capability = papelito_company_purchase_capability( $user_id, $context );
 	if ( empty( $capability['canPurchase'] ) || ! is_array( $capability['company'] ?? null ) || ! is_array( $capability['membership'] ?? null ) ) {
-		return new WP_Error( 'papelito_b2b_purchase_not_allowed', 'Sua empresa não está apta para pagamento.', array( 'status' => 403, 'purchaseBlockReason' => $capability['purchaseBlockReason'] ?? 'company_or_membership_not_approved' ) );
+		return new WP_Error( 'papelito_b2b_purchase_not_allowed', 'Sua empresa não está apta para pagamento.', array( 'status' => 403, 'purchaseMode' => $capability['purchaseMode'] ?? 'blocked', 'purchaseBlockReason' => $capability['purchaseBlockReason'] ?? 'not_a_customer_buyer' ) );
 	}
 	$expected_company_id = absint( $payload['expected_company_id'] ?? 0 );
 	$company = $capability['company'];
@@ -80,16 +77,20 @@ function papelito_order_routing_store_b2b_snapshot( object $order, array $snapsh
 	$company = $snapshot['company'];
 	$member = $snapshot['membership'];
 	$meta = array(
+		'_papelito_company_snapshot_version' => PAPELITO_B2B_SNAPSHOT_VERSION,
 		'_papelito_b2b_snapshot_version' => PAPELITO_B2B_SNAPSHOT_VERSION,
 		'_papelito_company_id' => (int) $company['id'],
 		'_papelito_buyer_user_id' => (int) $snapshot['buyer_user_id'],
 		'_papelito_company_cnpj' => (string) $company['cnpj'],
 		'_papelito_company_legal_name' => (string) $company['legal_name'],
+		'_papelito_company_trade_name' => (string) ( $company['trade_name'] ?? '' ),
+		'_papelito_company_pagarme_customer_code' => 'papelito-company-' . (int) $company['id'],
 		'_papelito_company_status' => (string) $company['company_status'],
 		'_papelito_company_registry_status' => (string) $company['registry_status'],
 		'_papelito_company_ownership_status' => (string) $company['ownership_status'],
-		'_papelito_company_verified_at' => (string) $company['verified_at'],
-		'_papelito_company_provider_source' => (string) $company['provider_source'],
+		'_papelito_company_verified_at' => (string) ( $company['verified_at'] ?? '' ),
+		'_papelito_company_verification_source' => (string) ( $company['provider_source'] ?? '' ),
+		'_papelito_company_provider_source' => (string) ( $company['provider_source'] ?? '' ),
 		'_papelito_company_provider_checked_at' => (string) $company['provider_checked_at'],
 		'_papelito_company_provider_data_hash' => (string) $company['provider_data_hash'],
 		'_papelito_company_billing_email' => (string) $company['billing_email'],
@@ -102,6 +103,7 @@ function papelito_order_routing_store_b2b_snapshot( object $order, array $snapsh
 		'_papelito_membership_expires_at' => (string) $member['expires_at'],
 	);
 	foreach ( array( 'cep', 'state', 'city', 'neighborhood', 'street', 'number', 'complement' ) as $field ) {
+		$meta[ '_papelito_fiscal_' . $field ] = (string) ( $company[ 'fiscal_' . $field ] ?? '' );
 		$meta[ '_papelito_company_fiscal_' . $field ] = (string) ( $company[ 'fiscal_' . $field ] ?? '' );
 	}
 	foreach ( $meta as $key => $value ) {
@@ -327,19 +329,12 @@ function papelito_order_routing_require_customer() {
 		);
 	}
 
-	if ( papelito_user_is_effective_seller( $user ) ) {
+	$capability = papelito_company_purchase_capability( $user->ID );
+	if ( empty( $capability['canPurchase'] ) ) {
 		return new WP_Error(
-			'papelito_checkout_seller_blocked',
-			papelito_seller_purchase_block_message(),
-			array( 'status' => 403 )
-		);
-	}
-
-	if ( ! papelito_user_has_role( $user, 'customer' ) && ! papelito_user_has_role( $user, 'seller' ) ) {
-		return new WP_Error(
-			'papelito_checkout_customer_only',
-			'Somente consumidores finais podem concluir o checkout.',
-			array( 'status' => 403 )
+			'papelito_b2b_purchase_not_allowed',
+			'Sua empresa não está apta para pagamento.',
+			array( 'status' => 403, 'purchaseMode' => $capability['purchaseMode'], 'purchaseBlockReason' => $capability['purchaseBlockReason'] )
 		);
 	}
 
