@@ -705,10 +705,9 @@ function papelito_notification_users_who_favorited_product( $product_id ) {
  * @param array<string,mixed>|null $interest Dados persistidos.
  */
 function papelito_handle_vendor_interest_submitted( $interest_id, $customer_user_id, $interest = null ) {
-	$interest_id      = absint( $interest_id );
-	$customer_user_id = absint( $customer_user_id );
+	$interest_id = absint( $interest_id );
 
-	if ( $interest_id <= 0 || $customer_user_id <= 0 ) {
+	if ( $interest_id <= 0 ) {
 		return;
 	}
 
@@ -721,9 +720,10 @@ function papelito_handle_vendor_interest_submitted( $interest_id, $customer_user
 
 	$interest = is_array( $interest ) ? $interest : array();
 	$payload  = array(
-		'interest_id'     => $interest_id,
-		'customer_user_id' => $customer_user_id,
-		'store_name'      => (string) ( $interest['storeName'] ?? '' ),
+		'interest_id'      => $interest_id,
+		'customer_user_id' => absint( $customer_user_id ),
+		'visibility'       => (string) ( $interest['visibility'] ?? 'customer' ),
+		'store_name'       => (string) ( $interest['storeName'] ?? '' ),
 	);
 
 	foreach ( is_array( $admins ) ? $admins : array() as $admin_id ) {

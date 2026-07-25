@@ -251,6 +251,9 @@ function papelito_company_invitation_accept_token( int $user_id, string $token )
 	}
 
 	papelito_b2b_mark_cohort( $user_id );
+	if ( function_exists( 'papelito_legacy_complete_if_ready' ) ) {
+		papelito_legacy_complete_if_ready( $user_id, 'invitation_accepted' );
+	}
 	papelito_company_audit(
 		$company_id,
 		$user_id,

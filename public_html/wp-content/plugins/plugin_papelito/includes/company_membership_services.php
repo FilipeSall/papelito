@@ -84,6 +84,9 @@ function papelito_company_member_set_status( int $actor_user_id, int $company_id
 	if ( is_wp_error( $member ) ) {
 		return $member;
 	}
+	if ( 'reactivate' === $action && function_exists( 'papelito_legacy_complete_if_ready' ) ) {
+		papelito_legacy_complete_if_ready( $target_user_id, 'membership_reactivated' );
+	}
 
 	// Ao suspender/revogar, invalida a seleção de empresa ativa do alvo se apontava para esta empresa.
 	if ( in_array( $action, array( 'suspend', 'revoke' ), true ) && papelito_company_active_get_selection( $target_user_id ) === $company_id ) {

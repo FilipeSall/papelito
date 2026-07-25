@@ -15,6 +15,15 @@ GitHub → Actions → Deploy → Run workflow → escolher target/artifact.
 2. Restaurar: `ssh ... 'tar xzf $REMOTE_BACKUP_DIR_PRODUCTION/<arq>.tgz -C /tmp/restore && rsync -av /tmp/restore/<artifact>/ $TARGET_DIR/'`.
 3. `wp cache flush`.
 
+## Rollback B2B Step 4
+
+1. Desligar `PAPELITO_B2B_LEGACY_WARNING_ENABLED`, `PAPELITO_B2B_LEGACY_EMAIL_ENABLED` e
+   `PAPELITO_B2B_LEGACY_MIGRATION_ENABLED`.
+2. Manter `PAPELITO_B2B_PURCHASE_ENFORCED=false` enquanto o Step 5 não for aprovado.
+3. Não remover `papelito_b2b_legacy_cohort`, logs de campanha, empresas, memberships ou
+   onboardings.
+4. Não reverter usuários já migrados (`papelito_b2b_required=1`) para checkout legado.
+
 ## Hotfix urgente em produção
 1. Editar via SSH (último recurso).
 2. Imediatamente depois rodar `bash scripts/pull-from-prod.sh` localmente.

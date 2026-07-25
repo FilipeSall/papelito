@@ -33,7 +33,8 @@ function papelito_vendor_interests_install_table(): void {
 	$charset_collate = $wpdb->get_charset_collate();
 	$sql             = "CREATE TABLE {$table} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  customer_user_id BIGINT UNSIGNED NOT NULL,
+  customer_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  visibility ENUM('customer','public') NOT NULL DEFAULT 'customer',
   store_name VARCHAR(191) NOT NULL,
   first_name VARCHAR(100) NOT NULL,
   last_name VARCHAR(100) NOT NULL,
@@ -46,6 +47,9 @@ function papelito_vendor_interests_install_table(): void {
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY  (id),
   UNIQUE KEY uq_customer_user_id (customer_user_id),
+  UNIQUE KEY uq_public_cnpj (cnpj, visibility),
+  UNIQUE KEY uq_public_email (email, visibility),
+  KEY idx_visibility_created (visibility, created_at),
   KEY idx_created_at (created_at)
 ) {$charset_collate};";
 
@@ -142,6 +146,48 @@ function papelito_vendor_interests_require_customer() {
 }
 
 /**
+ * Permission callback compartilhado entre customer autenticado e visitante anonimo.
+ *
+ * Para customers, exige role `customer`. Para visitantes, exige rate limit por IP
+ * dentro do bucket `vendor_interest_public`. Visitantes que violem o rate limit
+ * recebem 429 sem distinguir de origem do bloqueio.
+ *
+ * @return true|WP_Error
+ */
+function papelito_vendor_interests_require_visitor_or_customer() {
+	$user_id = get_current_user_id();
+
+	if ( $user_id > 0 ) {
+		if ( ! papelito_vendor_interests_is_customer( $user_id ) ) {
+			return new WP_Error(
+				'papelito_vendor_interest_customer_only',
+				'Apenas customers podem registrar interesse em se tornar vendor.',
+				array( 'status' => 403 )
+			);
+		}
+		return true;
+	}
+
+	if ( ! function_exists( 'papelito_auth_rate_limit' ) ) {
+		return new WP_Error(
+			'papelito_rate_limit_unavailable',
+			'Nao foi possivel validar o envio agora.',
+			array( 'status' => 503 )
+		);
+	}
+
+	if ( ! papelito_auth_rate_limit( 'vendor_interest_public', 5, 60 ) ) {
+		return new WP_Error(
+			'papelito_rate_limited',
+			'Voce excedeu o limite de envios. Tente novamente em alguns minutos.',
+			array( 'status' => 429 )
+		);
+	}
+
+	return true;
+}
+
+/**
  * Permission callback dos endpoints administrativos.
  */
 function papelito_vendor_interests_require_admin(): bool {
@@ -157,9 +203,13 @@ function papelito_vendor_interests_require_admin(): bool {
 function papelito_vendor_interests_normalize_row( $row ): array {
 	$data = is_object( $row ) ? get_object_vars( $row ) : (array) $row;
 
+	$customer_user_id = isset( $data['customer_user_id'] ) ? (int) $data['customer_user_id'] : 0;
+	$visibility       = isset( $data['visibility'] ) ? (string) $data['visibility'] : 'customer';
+
 	return array(
 		'id'                => absint( $data['id'] ?? 0 ),
-		'customerUserId'    => absint( $data['customer_user_id'] ?? 0 ),
+		'customerUserId'    => $customer_user_id > 0 ? $customer_user_id : null,
+		'visibility'        => in_array( $visibility, array( 'customer', 'public' ), true ) ? $visibility : 'customer',
 		'storeName'         => (string) ( $data['store_name'] ?? '' ),
 		'firstName'         => (string) ( $data['first_name'] ?? '' ),
 		'lastName'          => (string) ( $data['last_name'] ?? '' ),
@@ -219,10 +269,14 @@ function papelito_vendor_interests_validate_input( array $input ) {
 		}
 	}
 
-	$cnpj_digits = preg_replace( '/\D+/', '', $values['cnpj'] );
-	if ( ! is_string( $cnpj_digits ) || 14 !== strlen( $cnpj_digits ) ) {
+	$cnpj_normalized = function_exists( 'papelito_normalize_cnpj' ) ? papelito_normalize_cnpj( $values['cnpj'] ) : preg_replace( '/\D+/', '', $values['cnpj'] );
+	if ( ! is_string( $cnpj_normalized ) || 14 !== strlen( $cnpj_normalized ) ) {
 		return new WP_Error( 'papelito_vendor_interest_invalid_cnpj', 'Informe um CNPJ valido.', array( 'status' => 422 ) );
 	}
+	if ( function_exists( 'papelito_validate_cnpj' ) && ! papelito_validate_cnpj( $values['cnpj'] ) ) {
+		return new WP_Error( 'papelito_vendor_interest_invalid_cnpj', 'Informe um CNPJ valido.', array( 'status' => 422 ) );
+	}
+	$values['cnpj'] = $cnpj_normalized;
 
 	$phone_digits = preg_replace( '/\D+/', '', $values['phone'] );
 	if ( ! is_string( $phone_digits ) || strlen( $phone_digits ) < 10 || strlen( $phone_digits ) > 13 ) {
@@ -241,31 +295,77 @@ function papelito_vendor_interests_validate_input( array $input ) {
 }
 
 /**
+ * Procura uma manifestacao publica duplicada por CNPJ canônico ou e-mail.
+ *
+ * @param string $cnpj  CNPJ já normalizado (14 caracteres canônicos).
+ * @param string $email E-mail já validado.
+ * @return array<string,mixed>|null
+ */
+function papelito_vendor_interests_find_public_duplicate( string $cnpj, string $email ): ?array {
+	global $wpdb;
+
+	$table = papelito_vendor_interests_table_name();
+
+	$by_cnpj = $wpdb->get_row(
+		$wpdb->prepare(
+			"SELECT * FROM {$table} WHERE visibility = %s AND cnpj = %s ORDER BY id DESC LIMIT 1",
+			'public',
+			$cnpj
+		)
+	);
+	if ( $by_cnpj ) {
+		return papelito_vendor_interests_normalize_row( $by_cnpj );
+	}
+
+	$by_email = $wpdb->get_row(
+		$wpdb->prepare(
+			"SELECT * FROM {$table} WHERE visibility = %s AND email = %s ORDER BY id DESC LIMIT 1",
+			'public',
+			$email
+		)
+	);
+
+	return $by_email ? papelito_vendor_interests_normalize_row( $by_email ) : null;
+}
+
+/**
  * Registra a manifestacao sem modificar o usuario.
  *
- * @param int                 $customer_user_id Customer autenticado.
+ * Para customer autenticado: $customer_user_id > 0, $visibility = 'customer'.
+ * Para visitante anonimo: $customer_user_id = 0, $visibility = 'public'.
+ *
+ * @param int                 $customer_user_id Customer autenticado (0 se visitante).
  * @param array<string,mixed> $input Payload.
  * @return array<string,mixed>|WP_Error
  */
 function papelito_vendor_interests_create( int $customer_user_id, array $input ) {
 	global $wpdb;
 
-	if ( ! papelito_vendor_interests_is_customer( $customer_user_id ) ) {
-		return new WP_Error( 'papelito_vendor_interest_customer_only', 'Apenas customers podem registrar interesse.', array( 'status' => 403 ) );
-	}
+	$is_customer = $customer_user_id > 0 && papelito_vendor_interests_is_customer( $customer_user_id );
+	$visibility  = $is_customer ? 'customer' : 'public';
 
-	$existing = papelito_vendor_interests_find_by_customer( $customer_user_id );
-	if ( null !== $existing ) {
-		return new WP_Error(
-			'papelito_vendor_interest_already_exists',
-			'O interesse deste customer ja foi registrado.',
-			array( 'status' => 409, 'interest' => $existing )
-		);
+	if ( $customer_user_id > 0 && ! $is_customer ) {
+		return new WP_Error( 'papelito_vendor_interest_customer_only', 'Apenas customers podem registrar interesse.', array( 'status' => 403 ) );
 	}
 
 	$values = papelito_vendor_interests_validate_input( $input );
 	if ( is_wp_error( $values ) ) {
 		return $values;
+	}
+
+	$existing = null;
+	if ( $is_customer ) {
+		$existing = papelito_vendor_interests_find_by_customer( $customer_user_id );
+	} else {
+		$existing = papelito_vendor_interests_find_public_duplicate( (string) $values['cnpj'], (string) $values['email'] );
+	}
+
+	if ( null !== $existing ) {
+		return new WP_Error(
+			'papelito_vendor_interest_already_exists',
+			'O interesse desta loja ja foi registrado.',
+			array( 'status' => 409, 'interest' => $existing )
+		);
 	}
 
 	$created_at = current_time( 'mysql', true );
@@ -274,19 +374,22 @@ function papelito_vendor_interests_create( int $customer_user_id, array $input )
 		array_merge(
 			$values,
 			array(
-				'customer_user_id' => $customer_user_id,
+				'customer_user_id' => $is_customer ? $customer_user_id : null,
+				'visibility'       => $visibility,
 				'created_at'       => $created_at,
 			)
 		),
-		array( '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s' )
+		array( '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s' )
 	);
 
 	if ( false === $inserted ) {
-		$existing = papelito_vendor_interests_find_by_customer( $customer_user_id );
+		$existing = $is_customer
+			? papelito_vendor_interests_find_by_customer( $customer_user_id )
+			: papelito_vendor_interests_find_public_duplicate( (string) $values['cnpj'], (string) $values['email'] );
 		if ( null !== $existing ) {
 			return new WP_Error(
 				'papelito_vendor_interest_already_exists',
-				'O interesse deste customer ja foi registrado.',
+				'O interesse desta loja ja foi registrado.',
 				array( 'status' => 409, 'interest' => $existing )
 			);
 		}
@@ -294,12 +397,17 @@ function papelito_vendor_interests_create( int $customer_user_id, array $input )
 		return new WP_Error( 'papelito_vendor_interest_insert_failed', 'Nao foi possivel registrar o interesse.', array( 'status' => 500 ) );
 	}
 
-	$interest = papelito_vendor_interests_find_by_customer( $customer_user_id );
-	do_action( 'papelito_vendor_interest_submitted', absint( $wpdb->insert_id ), $customer_user_id, $interest );
+	$interest_id = (int) $wpdb->insert_id;
+	$interest    = $is_customer
+		? papelito_vendor_interests_find_by_customer( $customer_user_id )
+		: papelito_vendor_interests_find_public_duplicate( (string) $values['cnpj'], (string) $values['email'] );
+
+	do_action( 'papelito_vendor_interest_submitted', $interest_id, $customer_user_id, $interest );
 
 	return array(
-		'success'  => true,
-		'interest' => $interest,
+		'success'    => true,
+		'visibility' => $visibility,
+		'interest'   => $interest,
 	);
 }
 
@@ -318,8 +426,10 @@ function papelito_vendor_interests_admin_list( WP_REST_Request $request ): array
 	$offset   = ( $page - 1 ) * $per_page;
 	$table    = papelito_vendor_interests_table_name();
 	$caps_key = $wpdb->get_blog_prefix() . 'capabilities';
-	$where    = 'EXISTS (SELECT 1 FROM ' . $wpdb->usermeta . ' role_meta WHERE role_meta.user_id = customer_user_id AND role_meta.meta_key = %s AND role_meta.meta_value LIKE %s)';
-	$params   = array( $caps_key, '%s:8:"customer";b:1%' );
+
+	$customer_where = 'EXISTS (SELECT 1 FROM ' . $wpdb->usermeta . ' role_meta WHERE role_meta.user_id = customer_user_id AND role_meta.meta_key = %s AND role_meta.meta_value LIKE %s)';
+	$where          = "(visibility = %s OR ({$customer_where}))";
+	$params         = array( 'public', $caps_key, '%s:8:"customer";b:1%' );
 
 	if ( '' !== $search ) {
 		$like     = '%' . $wpdb->esc_like( $search ) . '%';
@@ -335,7 +445,8 @@ function papelito_vendor_interests_admin_list( WP_REST_Request $request ): array
 
 	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
 		$item = papelito_vendor_interests_normalize_row( $row );
-		if ( papelito_vendor_interests_is_customer( (int) $item['customerUserId'] ) ) {
+		$is_public = isset( $item['visibility'] ) && 'public' === $item['visibility'];
+		if ( $is_public || papelito_vendor_interests_is_customer( (int) $item['customerUserId'] ) ) {
 			$items[] = $item;
 		}
 	}
@@ -366,17 +477,19 @@ function papelito_vendor_interests_admin_detail( int $interest_id ) {
 	}
 
 	$interest = papelito_vendor_interests_normalize_row( $row );
-	$user     = get_userdata( (int) $interest['customerUserId'] );
+	$is_public = isset( $interest['visibility'] ) && 'public' === $interest['visibility'];
 
-	if ( ! $user instanceof WP_User || ! papelito_user_has_role( $user, 'customer' ) ) {
-		return new WP_Error( 'papelito_vendor_interest_customer_unavailable', 'Este customer nao esta mais disponivel para promocao.', array( 'status' => 409 ) );
+	if ( ! $is_public ) {
+		$user = get_userdata( (int) $interest['customerUserId'] );
+		if ( ! $user instanceof WP_User || ! papelito_user_has_role( $user, 'customer' ) ) {
+			return new WP_Error( 'papelito_vendor_interest_customer_unavailable', 'Este customer nao esta mais disponivel para promocao.', array( 'status' => 409 ) );
+		}
+		$interest['customer'] = array(
+			'id'          => (int) $user->ID,
+			'displayName' => (string) $user->display_name,
+			'email'       => (string) $user->user_email,
+		);
 	}
-
-	$interest['customer'] = array(
-		'id'          => (int) $user->ID,
-		'displayName' => (string) $user->display_name,
-		'email'       => (string) $user->user_email,
-	);
 
 	return $interest;
 }
@@ -403,14 +516,15 @@ add_action(
 			'/vendor-interests',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
-				'permission_callback' => 'papelito_vendor_interests_require_customer',
+				'permission_callback' => 'papelito_vendor_interests_require_visitor_or_customer',
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$payload = $request->get_json_params();
 					if ( ! is_array( $payload ) ) {
 						return new WP_Error( 'papelito_invalid_payload', 'Payload invalido.', array( 'status' => 400 ) );
 					}
 
-					$result = papelito_vendor_interests_create( get_current_user_id(), $payload );
+					$user_id  = get_current_user_id();
+					$result   = papelito_vendor_interests_create( $user_id, $payload );
 
 					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 201 );
 				},

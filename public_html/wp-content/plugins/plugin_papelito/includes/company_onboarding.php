@@ -26,7 +26,7 @@ function papelito_company_onboarding_get( int $user_id ): ?array {
 function papelito_company_onboarding_upsert( int $user_id, string $type, ?string $target_cnpj = null, string $status = 'pending_email' ) {
 	global $wpdb;
 	$tables = papelito_company_table_names();
-	$allowed = array( 'create_company', 'join_company', 'google_onboarding' );
+	$allowed = array( 'create_company', 'join_company', 'google_onboarding', 'legacy_migration' );
 	if ( ! in_array( $type, $allowed, true ) ) {
 		return new WP_Error( 'papelito_b2b_invalid_onboarding_type', 'Tipo de onboarding inválido.', array( 'status' => 422 ) );
 	}

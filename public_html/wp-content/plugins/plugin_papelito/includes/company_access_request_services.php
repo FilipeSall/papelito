@@ -46,8 +46,10 @@ function papelito_company_access_request_submit( int $user_id, string $raw_cnpj 
 		return new WP_Error( 'papelito_b2b_invalid_cnpj', 'CNPJ inválido.', array( 'status' => 422 ) );
 	}
 
-	// Entrar no mundo B2B marca o coorte, mesmo que a empresa não exista (evita burlar o gate).
-	papelito_b2b_mark_cohort( $user_id );
+	if ( ! function_exists( 'papelito_legacy_is_cohort' ) || ! papelito_legacy_is_cohort( $user_id ) ) {
+		// Entrar no mundo B2B marca o coorte, mesmo que a empresa não exista (evita burlar o gate).
+		papelito_b2b_mark_cohort( $user_id );
+	}
 
 	$company = papelito_company_find_by_cnpj( $raw_cnpj );
 
@@ -208,6 +210,9 @@ function papelito_company_access_request_approve( int $actor_user_id, int $compa
 	}
 
 	papelito_b2b_mark_cohort( $target_user_id );
+	if ( function_exists( 'papelito_legacy_complete_if_ready' ) ) {
+		papelito_legacy_complete_if_ready( $target_user_id, 'access_request_approved' );
+	}
 	papelito_company_audit(
 		$company_id,
 		$actor_user_id,

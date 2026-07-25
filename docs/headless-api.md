@@ -99,6 +99,51 @@ query Me {
 }
 ```
 
+## B2B / Migração de Legados (custom)
+
+Todos os campos de autoridade vêm do WordPress em `/papelito/v1/auth/me`, dentro de `b2b`:
+
+```jsonc
+{
+  "purchaseMode": "legacy | b2b | blocked",
+  "isLegacyCohort": true,
+  "legacyMigrationStatus": "eligible",
+  "legacyGraceEndsAt": "2026-08-31 23:59:59",
+  "legacyWarningLevel": "info | warning | urgent | none",
+  "legacyCanPurchaseDuringGrace": true
+}
+```
+
+Endpoints de usuário autenticado:
+
+| Método | URL | Descrição |
+|---|---|---|
+| `GET` | `/wp-json/papelito/v1/legacy-migration/status` | Retorna status calculado da migração legado. |
+| `POST` | `/wp-json/papelito/v1/legacy-migration/start` | Inicia criação de empresa ou solicitação de acesso assistida. |
+| `POST` | `/wp-json/papelito/v1/legacy-migration/warning-viewed` | Registra visualização de aviso sem alterar bloqueios. |
+| `POST` | `/wp-json/papelito/v1/legacy-migration/restart` | Reinicia onboarding expirado. |
+
+Endpoints administrativos exigem `papelito_manage_companies`:
+
+| Método | URL | Descrição |
+|---|---|---|
+| `GET` | `/wp-json/papelito/v1/admin/legacy-migration/summary` | Agregados do coorte sem PII. |
+| `GET` | `/wp-json/papelito/v1/admin/legacy-migration/users` | Lista segura por status. |
+| `POST` | `/wp-json/papelito/v1/admin/legacy-migration/{userId}/resend` | Reenvia campanha idempotente. |
+| `POST` | `/wp-json/papelito/v1/admin/legacy-migration/{userId}/exempt` | Marca isenção com motivo. |
+
+WP-CLI:
+
+```bash
+wp papelito b2b legacy audit --format=csv --output=/path/seguro/legacy-audit.csv
+wp papelito b2b legacy mark-cohort --cutoff="AAAA-MM-DD HH:MM:SS" --dry-run
+wp papelito b2b legacy mark-cohort --cutoff="AAAA-MM-DD HH:MM:SS" --apply
+wp papelito b2b legacy status
+wp papelito b2b legacy send-campaign --campaign=initial_notice --dry-run
+```
+
+Relatórios não devem expor CPF/CNPJ completo; documentos são mascarados ou hasheados.
+
 ## Estoque do Vendor (custom)
 
 Endpoints REST do painel de estoque (`/vendor/estoque` no front). Auth: JWT de vendor aprovado.

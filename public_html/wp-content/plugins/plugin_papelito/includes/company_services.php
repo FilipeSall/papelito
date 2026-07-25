@@ -129,7 +129,9 @@ function papelito_company_create_owner_candidate( int $user_id, array $input ): 
 		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		return new WP_Error( 'papelito_b2b_onboarding_transaction_failed', 'Não foi possível concluir o onboarding da empresa.', array( 'status' => 409 ) );
 	}
-	papelito_b2b_mark_cohort( $user_id );
+	if ( ! function_exists( 'papelito_legacy_is_cohort' ) || ! papelito_legacy_is_cohort( $user_id ) ) {
+		papelito_b2b_mark_cohort( $user_id );
+	}
 	return array( 'company_id' => $company_id, 'membership_id' => (int) $member, 'registry_status' => $lookup['status'], 'ownership_status' => 'pending_manual_review' );
 }
 
@@ -150,6 +152,9 @@ function papelito_company_context( int $user_id ): array {
 		'canPurchase'                => false,
 		'purchaseBlockReason'        => null,
 	);
+	if ( function_exists( 'papelito_legacy_context' ) ) {
+		$base = array_merge( $base, papelito_legacy_context( $user_id ) );
+	}
 
 	// Empresas onde o usuário pode operar (membership ativa) alimentam a máquina de empresa ativa;
 	// candidaturas pendentes (owner ou solicitação) alimentam o onboardingStatus quando não há ativa.

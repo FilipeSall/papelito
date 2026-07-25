@@ -40,6 +40,10 @@ if ( ! defined( 'PAPELITO_B2B_ONBOARDING_TABLE' ) ) {
 	define( 'PAPELITO_B2B_ONBOARDING_TABLE', 'papelito_b2b_onboarding' );
 }
 
+if ( ! defined( 'PAPELITO_B2B_LEGACY_EMAIL_LOG_TABLE' ) ) {
+	define( 'PAPELITO_B2B_LEGACY_EMAIL_LOG_TABLE', 'papelito_b2b_legacy_email_log' );
+}
+
 /**
  * Resolve os nomes completos (com prefixo) das tabelas do modelo B2B.
  *
@@ -56,6 +60,7 @@ function papelito_company_table_names(): array {
 		'audit'       => $wpdb->prefix . PAPELITO_COMPANY_AUDIT_LOG_TABLE,
 		'idempotency' => $wpdb->prefix . PAPELITO_COMPANY_IDEMPOTENCY_TABLE,
 		'onboarding' => $wpdb->prefix . PAPELITO_B2B_ONBOARDING_TABLE,
+		'legacy_email_log' => $wpdb->prefix . PAPELITO_B2B_LEGACY_EMAIL_LOG_TABLE,
 	);
 }
 
@@ -233,6 +238,24 @@ function papelito_company_install_tables(): void {
   KEY idx_onboarding_expires (expires_at)
 ) {$charset_collate};";
 
+	$legacy_email_log_sql = "CREATE TABLE {$tables['legacy_email_log']} (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id BIGINT UNSIGNED NOT NULL,
+  campaign VARCHAR(48) NOT NULL,
+  campaign_version VARCHAR(24) NOT NULL DEFAULT '1',
+  status VARCHAR(24) NOT NULL DEFAULT 'pending',
+  attempts INT UNSIGNED NOT NULL DEFAULT 0,
+  last_error_code VARCHAR(64) NULL DEFAULT NULL,
+  next_retry_at DATETIME NULL DEFAULT NULL,
+  sent_at DATETIME NULL DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY  (id),
+  UNIQUE KEY uniq_user_campaign_version (user_id, campaign, campaign_version),
+  KEY idx_status_retry (status, next_retry_at),
+  KEY idx_campaign_status (campaign, status)
+) {$charset_collate};";
+
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 	dbDelta( $profiles_sql );
 	dbDelta( $companies_sql );
@@ -241,4 +264,5 @@ function papelito_company_install_tables(): void {
 	dbDelta( $audit_sql );
 	dbDelta( $idempotency_sql );
 	dbDelta( $onboarding_sql );
+	dbDelta( $legacy_email_log_sql );
 }

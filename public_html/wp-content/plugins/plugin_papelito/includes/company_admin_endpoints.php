@@ -54,6 +54,9 @@ function papelito_company_admin_transition( int $company_id, int $actor, bool $a
 		papelito_company_audit( $company_id, $actor, 'owner_approved', array( 'provider' => $lookup['source'] ?? '' ) );
 		$wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 	} catch ( Throwable $error ) { $wpdb->query( 'ROLLBACK' ); return new WP_Error( 'papelito_b2b_approval_failed', 'Não foi possível aprovar a empresa.', array( 'status' => 409 ) ); }
+	if ( function_exists( 'papelito_legacy_complete_if_ready' ) ) {
+		papelito_legacy_complete_if_ready( (int) $company['created_by_user_id'], 'owner_approved' );
+	}
 	return true;
 }
 
