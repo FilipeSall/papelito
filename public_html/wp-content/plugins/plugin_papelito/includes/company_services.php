@@ -26,8 +26,21 @@ function papelito_company_profile_upsert( int $user_id, string $cpf, string $bir
 }
 
 function papelito_company_normalize_name( string $value ): string {
-	$value = remove_accents( strtoupper( trim( $value ) ) );
-	return preg_replace( '/\s+/', ' ', $value ) ?? '';
+	$value = trim( $value );
+
+	if ( class_exists( 'Normalizer' ) ) {
+		$normalized = Normalizer::normalize( $value, Normalizer::FORM_D );
+		if ( is_string( $normalized ) ) {
+			$value = $normalized;
+		}
+	}
+
+	$value = remove_accents( $value );
+	$value = preg_replace( '/\p{Mn}+/u', '', $value ) ?? $value;
+	$value = preg_replace( '/[^\p{L}\p{N}]+/u', ' ', $value ) ?? $value;
+	$value = trim( preg_replace( '/\s+/u', ' ', $value ) ?? $value );
+
+	return function_exists( 'mb_strtoupper' ) ? mb_strtoupper( $value, 'UTF-8' ) : strtoupper( $value );
 }
 
 function papelito_company_age_band( string $birth_date ): int {
