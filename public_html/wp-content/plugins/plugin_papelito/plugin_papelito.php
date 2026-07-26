@@ -38,6 +38,7 @@ require_once __DIR__ . '/includes/pagarme_webhook.php';
 require_once __DIR__ . '/includes/pagarme_simulator.php';
 require_once __DIR__ . '/includes/order_routing.php';
 require_once __DIR__ . '/includes/vendor_dashboard.php';
+require_once __DIR__ . '/includes/order_receipt.php';
 require_once __DIR__ . '/includes/vendor_messaging.php';
 require_once __DIR__ . '/includes/vendor_processing_alerts.php';
 require_once __DIR__ . '/includes/company_flags.php';
