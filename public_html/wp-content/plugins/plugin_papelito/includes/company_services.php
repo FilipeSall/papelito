@@ -43,6 +43,36 @@ function papelito_company_normalize_name( string $value ): string {
 	return function_exists( 'mb_strtoupper' ) ? mb_strtoupper( $value, 'UTF-8' ) : strtoupper( $value );
 }
 
+function papelito_company_name_tokens( string $value, bool $without_particles = false ): array {
+	$tokens = array_values( array_filter( explode( ' ', papelito_company_normalize_name( $value ) ) ) );
+	if ( ! $without_particles ) {
+		return $tokens;
+	}
+	return array_values( array_filter( $tokens, static fn( string $token ): bool => ! in_array( $token, array( 'DE', 'DA', 'DO', 'DAS', 'DOS', 'E' ), true ) ) );
+}
+
+function papelito_company_names_match( string $left, string $right ): bool {
+	$left_full  = papelito_company_name_tokens( $left );
+	$right_full = papelito_company_name_tokens( $right );
+	if ( empty( $left_full ) || empty( $right_full ) ) {
+		return false;
+	}
+	if ( $left_full === $right_full ) {
+		return true;
+	}
+
+	// A única tolerância permitida é a inserção/remoção das partículas brasileiras. Não há
+	// reordenação, prefixo, similaridade ou comparação parcial de nomes.
+	return papelito_company_name_tokens( $left, true ) === papelito_company_name_tokens( $right, true );
+}
+
+function papelito_company_mei_owner_name_matches( string $full_name, string $legal_name ): bool {
+	// TODO(b2b-kyc): esta exceção de MEI não prova a titularidade. Substituir por Consulta CPF
+	// (CPF+nascimento) do Serpro ou KYC contratado antes de ampliar o rollout para produção.
+	$owner_name = preg_replace( '/^[0-9.\/-]+\s+/', '', trim( $legal_name ) ) ?? '';
+	return '' !== $owner_name && papelito_company_names_match( $full_name, $owner_name );
+}
+
 function papelito_company_age_band( string $birth_date ): int {
 	$birth = DateTimeImmutable::createFromFormat( '!Y-m-d', $birth_date, new DateTimeZone( 'UTC' ) );
 	if ( ! $birth ) { return 0; }
@@ -58,23 +88,155 @@ function papelito_company_age_band( string $birth_date ): int {
 	return 9;
 }
 
-function papelito_company_owner_evidence( WP_User $user, string $cpf, string $birth_date, array $lookup ): array {
+/**
+ * Compara o CPF do responsável com a máscara do QSA da Receita.
+ *
+ * A Receita mascara o CPF como `***112108**`: esconde os 3 primeiros e os 2 últimos dígitos e
+ * expõe os dígitos 4 a 9. Comparar "últimos 4 contra últimos 4" nunca casa, porque os dígitos
+ * visíveis da máscara ficam no meio do CPF, não no fim.
+ */
+function papelito_company_cpf_mask_matches( string $cpf, string $raw_mask ): bool {
+	$cpf = preg_replace( '/\D+/', '', $cpf ) ?? '';
+	if ( 11 !== strlen( $cpf ) ) {
+		return false;
+	}
+
+	// Preserva as posições: só os '*' viram lacuna, os dígitos mantêm o índice original.
+	$mask = preg_replace( '/[^0-9*]+/', '', trim( $raw_mask ) ) ?? '';
+	if ( 11 !== strlen( $mask ) ) {
+		return false;
+	}
+
+	$visible_digits = 0;
+	for ( $i = 0; $i < 11; $i++ ) {
+		$char = $mask[ $i ];
+		if ( ! ctype_digit( $char ) ) {
+			continue;
+		}
+		++$visible_digits;
+		if ( $char !== $cpf[ $i ] ) {
+			return false;
+		}
+	}
+
+	return $visible_digits >= 6;
+}
+
+/**
+ * Lê a qualificação do sócio nos formatos dos provedores suportados.
+ *
+ * BrasilAPI e ReceitaWS entregam string (`"Presidente"`); CNPJ.ws entrega objeto
+ * (`{"descricao": "..."}`). Ler só o formato de objeto fazia toda qualificação virar "unknown".
+ */
+function papelito_company_qsa_qualification( array $entry ): string {
+	$raw = $entry['qualificacao_socio'] ?? $entry['qualificacao'] ?? $entry['qual'] ?? '';
+
+	if ( is_array( $raw ) ) {
+		$raw = $raw['descricao'] ?? $raw['nome'] ?? '';
+	}
+
+	// ReceitaWS prefixa o código: "16-Presidente". O código não interessa, só a descrição.
+	$raw = preg_replace( '/^\s*\d+\s*-\s*/', '', (string) $raw ) ?? (string) $raw;
+
+	return papelito_company_normalize_name( $raw );
+}
+
+/**
+ * Nome do sócio nos formatos dos provedores: BrasilAPI usa `nome_socio`, ReceitaWS usa `nome`,
+ * CNPJ.ws aninha em `socio.nome`.
+ */
+function papelito_company_qsa_partner_name( array $entry ): string {
+	$raw = $entry['nome_socio'] ?? $entry['nome'] ?? '';
+
+	if ( '' === $raw && isset( $entry['socio'] ) && is_array( $entry['socio'] ) ) {
+		$raw = $entry['socio']['nome'] ?? '';
+	}
+
+	return papelito_company_normalize_name( (string) $raw );
+}
+
+/**
+ * CPF mascarado do sócio. Nem todo provedor entrega — a ReceitaWS, por exemplo, omite.
+ */
+function papelito_company_qsa_partner_cpf_mask( array $entry ): string {
+	$raw = $entry['cnpj_cpf_do_socio'] ?? $entry['cpf_cnpj_socio'] ?? $entry['cpf'] ?? '';
+
+	if ( '' === $raw && isset( $entry['socio'] ) && is_array( $entry['socio'] ) ) {
+		$raw = $entry['socio']['cpf_cnpj_socio'] ?? $entry['socio']['cpf'] ?? '';
+	}
+
+	return (string) $raw;
+}
+
+function papelito_company_owner_evidence( ?WP_User $user, string $cpf, string $birth_date, array $lookup, ?string $registered_name = null ): array {
 	$evidence = array( 'qsa_available' => false, 'cpf_mask_match' => 'unknown', 'name_match' => 'unknown', 'age_band_match' => 'unknown', 'eligible_qualification' => 'unknown', 'provider' => (string) ( $lookup['source'] ?? '' ), 'checked_at' => (string) ( $lookup['checked_at'] ?? gmdate( 'c' ) ) );
-	$full_name = papelito_company_normalize_name( trim( (string) get_user_meta( $user->ID, 'first_name', true ) . ' ' . (string) get_user_meta( $user->ID, 'last_name', true ) ) );
-	$eligible = array( 'SOCIO', 'SOCIO ADMINISTRADOR', 'TITULAR', 'ADMINISTRADOR', 'PRESIDENTE', 'DIRETOR', 'REPRESENTANTE LEGAL' );
+	$full_name = null !== $registered_name ? $registered_name : ( $user instanceof WP_User ? trim( (string) get_user_meta( $user->ID, 'first_name', true ) . ' ' . (string) get_user_meta( $user->ID, 'last_name', true ) ) : '' );
+	if ( true === ( $lookup['is_mei'] ?? false ) && '2135' === preg_replace( '/\D+/', '', (string) ( $lookup['legal_nature_code'] ?? '' ) ) ) {
+		$evidence['mei_name_match'] = papelito_company_mei_owner_name_matches( $full_name, (string) ( $lookup['legal_name'] ?? '' ) );
+	}
 	foreach ( (array) ( $lookup['qsa'] ?? array() ) as $entry ) {
 		if ( ! is_array( $entry ) ) { continue; }
 		$evidence['qsa_available'] = true;
-		$name = papelito_company_normalize_name( (string) ( $entry['nome_socio'] ?? $entry['nome'] ?? '' ) );
-		$mask = preg_replace( '/\D+/', '', (string) ( $entry['cnpj_cpf_do_socio'] ?? $entry['cpf_cnpj_socio'] ?? '' ) ) ?? '';
-		$qualification = papelito_company_normalize_name( (string) ( $entry['qualificacao_socio']['descricao'] ?? $entry['qualificacao'] ?? '' ) );
-		if ( '' !== $name && $name === $full_name ) { $evidence['name_match'] = true; }
-		if ( '' !== $mask && substr( $cpf, -4 ) === substr( $mask, -4 ) ) { $evidence['cpf_mask_match'] = true; }
-		if ( isset( $entry['faixa_etaria'] ) || isset( $entry['codigo_faixa_etaria'] ) ) { $evidence['age_band_match'] = (string) papelito_company_age_band( $birth_date ) === (string) ( $entry['codigo_faixa_etaria'] ?? $entry['faixa_etaria'] ); }
-		if ( in_array( $qualification, $eligible, true ) ) { $evidence['eligible_qualification'] = true; }
+		$name = papelito_company_qsa_partner_name( $entry );
+		$mask = papelito_company_qsa_partner_cpf_mask( $entry );
+		$name_match = '' !== $name && papelito_company_names_match( $full_name, $name );
+		$cpf_match = '' !== $mask && papelito_company_cpf_mask_matches( $cpf, $mask );
+		$age_match = false;
+		if ( isset( $entry['codigo_faixa_etaria'] ) ) {
+			$age_match = (string) papelito_company_age_band( $birth_date ) === (string) $entry['codigo_faixa_etaria'];
+		}
+		$evidence['name_match'] = true === $evidence['name_match'] || $name_match;
+		$evidence['cpf_mask_match'] = true === $evidence['cpf_mask_match'] || $cpf_match;
+		$evidence['age_band_match'] = true === $evidence['age_band_match'] || $age_match;
+		if ( $name_match && $cpf_match && $age_match ) {
+			$evidence['partner_match'] = true;
+		}
 	}
 	$evidence['hash'] = hash( 'sha256', wp_json_encode( $evidence ) ?: '' );
 	return $evidence;
+}
+
+/**
+ * Decide se a titularidade pode ser aprovada automaticamente pela evidência do QSA.
+ *
+ * Critério: CNPJ ativo na Receita E o sócio encontrado bate nome E CPF mascarado. O CPF mascarado
+ * é a prova real de vínculo — sozinho o nome é homônimo em potencial. A qualificação eleva a
+ * confiança mas nem todo provedor a entrega de forma comparável, então ela não bloqueia quando
+ * nome e CPF já casaram.
+ */
+function papelito_company_should_auto_approve_owner( array $evidence, array $lookup ): bool {
+	if ( 'active' !== (string) ( $lookup['status'] ?? '' ) ) {
+		return false;
+	}
+	if ( true === ( $lookup['is_mei'] ?? false ) && '2135' === preg_replace( '/\D+/', '', (string) ( $lookup['legal_nature_code'] ?? '' ) ) ) {
+		return true === ( $evidence['mei_name_match'] ?? null );
+	}
+
+	if ( true !== ( $evidence['qsa_available'] ?? false ) ) {
+		return false;
+	}
+
+	return true === ( $evidence['partner_match'] ?? null );
+}
+
+function papelito_company_validate_owner_registry( string $cpf, string $birth_date, string $cnpj, string $full_name ): array|WP_Error {
+	$lookup = papelito_cnpj_adapter_brasilapi( $cnpj );
+	if ( 'active' !== (string) $lookup['status'] ) {
+		if ( 'unavailable' === (string) $lookup['status'] ) {
+			return new WP_Error( 'papelito_b2b_qsa_unavailable', 'Não foi possível consultar o CNPJ agora. Tente novamente.', array( 'status' => 503 ) );
+		}
+		return new WP_Error( 'papelito_b2b_registry_inactive', 'O CNPJ informado não está ativo.', array( 'status' => 422 ) );
+	}
+
+	$evidence = papelito_company_owner_evidence( null, $cpf, $birth_date, $lookup, $full_name );
+	if ( ! papelito_company_should_auto_approve_owner( $evidence, $lookup ) ) {
+		return new WP_Error( 'papelito_b2b_qsa_mismatch', 'Os dados informados não correspondem aos responsáveis cadastrados para este CNPJ. Confira seu nome, CPF e data de nascimento.', array( 'status' => 422 ) );
+	}
+
+	return array(
+		'lookup'   => $lookup,
+		'evidence' => $evidence,
+	);
 }
 
 function papelito_company_audit( int $company_id, ?int $actor_user_id, string $action, array $payload = array() ): void {
@@ -88,6 +250,27 @@ function papelito_company_audit( int $company_id, ?int $actor_user_id, string $a
 		}
 	}
 	$wpdb->insert( $tables['audit'], array( 'company_id' => $company_id, 'actor_user_id' => $actor_user_id, 'action' => sanitize_key( $action ), 'payload_json' => wp_json_encode( $safe ), 'created_at' => current_time( 'mysql', true ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+}
+
+/**
+ * Estado retomável do onboarding, para o formulário de conclusão do cadastro B2B.
+ *
+ * Expõe apenas dados não sensíveis: CPF e data de nascimento ficam cifrados em repouso e são
+ * redigitados pelo usuário (o upsert é idempotente por uniq_cpf_hmac). Devolver o CPF em claro
+ * alargaria a superfície de PII sem ganho de produto.
+ *
+ * @param array<string,mixed>      $onboarding Linha de wp_papelito_b2b_onboarding.
+ * @param array<string,mixed>|null $profile    Linha de wp_papelito_customer_profiles.
+ * @return array<string,mixed>
+ */
+function papelito_company_onboarding_resume_view( array $onboarding, ?array $profile ): array {
+	return array(
+		'type'         => (string) ( $onboarding['onboarding_type'] ?? '' ),
+		'targetCnpj'   => ! empty( $onboarding['target_cnpj'] ) ? (string) $onboarding['target_cnpj'] : null,
+		'cpfLast4'     => ! empty( $profile['cpf_last4'] ) ? (string) $profile['cpf_last4'] : null,
+		'hasBirthDate' => ! empty( $profile['birth_date_ciphertext'] ),
+		'expiresAt'    => ! empty( $onboarding['expires_at'] ) ? (string) $onboarding['expires_at'] : null,
+	);
 }
 
 function papelito_company_context_view( array $company, ?array $membership ): array {
@@ -117,26 +300,59 @@ function papelito_company_context_view( array $company, ?array $membership ): ar
 function papelito_company_create_owner_candidate( int $user_id, array $input ): array|WP_Error {
 	$user = get_userdata( $user_id );
 	if ( ! $user instanceof WP_User ) { return new WP_Error( 'papelito_b2b_user_not_found', 'Usuário inválido.', array( 'status' => 404 ) ); }
-	$profile = papelito_company_profile_upsert( $user_id, (string) $input['cpf'], (string) $input['birth_date'] );
-	if ( is_wp_error( $profile ) ) { return $profile; }
-	$lookup = papelito_cnpj_lookup( (string) $input['cnpj'], true );
-	$evidence = papelito_company_owner_evidence( $user, (string) $input['cpf'], (string) $input['birth_date'], $lookup );
+	$validated = papelito_company_validate_owner_registry( (string) $input['cpf'], (string) $input['birth_date'], (string) $input['cnpj'], isset( $input['full_name'] ) ? (string) $input['full_name'] : trim( $user->first_name . ' ' . $user->last_name ) );
+	if ( is_wp_error( $validated ) ) {
+		return $validated;
+	}
+	$lookup        = $validated['lookup'];
+	$evidence      = $validated['evidence'];
+	$auto_approved = true;
+	// A triagem automática só promove a titularidade; sem evidência suficiente segue para a fila
+	// manual em /admin/empresas, que é o comportamento anterior.
+	$ownership_status = $auto_approved ? 'verified' : 'pending_manual_review';
+	$company_status   = $auto_approved ? 'active' : 'onboarding';
+	$member_status    = $auto_approved ? 'active' : 'pending_company_approval';
+	$address          = is_array( $lookup['fiscal_address'] ?? null ) ? $lookup['fiscal_address'] : array();
+	foreach ( array( 'cep', 'state', 'city', 'neighborhood', 'street', 'number', 'complement' ) as $field ) {
+		if ( '' !== trim( (string) ( $input[ $field ] ?? '' ) ) ) {
+			$address[ $field ] = (string) $input[ $field ];
+		}
+	}
 	global $wpdb;
 	$tables = papelito_company_table_names();
 	$wpdb->query( 'START TRANSACTION' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 	try {
+		$profile = papelito_company_profile_upsert( $user_id, (string) $input['cpf'], (string) $input['birth_date'] );
+		if ( is_wp_error( $profile ) ) { throw new RuntimeException( $profile->get_error_code() ); }
+		if ( ! empty( $input['full_name'] ) ) {
+			$parts = preg_split( '/\s+/', trim( (string) $input['full_name'] ), 2 ) ?: array();
+			$updated_user = wp_update_user( array( 'ID' => $user_id, 'first_name' => $parts[0] ?? '', 'last_name' => $parts[1] ?? '', 'display_name' => trim( (string) $input['full_name'] ) ) );
+			if ( is_wp_error( $updated_user ) ) { throw new RuntimeException( $updated_user->get_error_code() ); }
+		}
 		$existing = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$tables['companies']} WHERE cnpj = %s FOR UPDATE", papelito_normalize_cnpj( (string) $input['cnpj'] ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL
 		if ( null !== $existing ) {
 			$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			return new WP_Error( 'papelito_company_cnpj_exists', 'Já existe uma empresa com este CNPJ.', array( 'status' => 409 ) );
 		}
-		$company_id = papelito_company_create( (string) $input['cnpj'], array( 'legal_name' => (string) ( $lookup['legal_name'] ?? '' ), 'trade_name' => (string) ( $lookup['trade_name'] ?? '' ), 'billing_email' => $user->user_email, 'phone' => (string) get_user_meta( $user_id, 'phone_number', true ), 'registry_status' => (string) $lookup['status'], 'ownership_status' => 'pending_manual_review', 'company_status' => 'onboarding', 'created_by_user_id' => $user_id ) );
+		$email_verified_at = 'verified' === (string) get_user_meta( $user_id, 'papelito_email_verification_status', true ) ? (string) get_user_meta( $user_id, 'papelito_email_verified_at', true ) : null;
+		$company_id = papelito_company_create( (string) $input['cnpj'], array( 'legal_name' => (string) ( $lookup['legal_name'] ?? '' ), 'trade_name' => (string) ( $lookup['trade_name'] ?? '' ), 'billing_email' => $user->user_email, 'billing_email_verified_at' => $email_verified_at, 'phone' => (string) ( $input['phone'] ?? get_user_meta( $user_id, 'phone_number', true ) ), 'registry_status' => (string) $lookup['status'], 'ownership_status' => $ownership_status, 'company_status' => $company_status, 'owner_user_id' => $auto_approved ? $user_id : null, 'created_by_user_id' => $user_id ) );
 		if ( is_wp_error( $company_id ) ) { throw new RuntimeException( $company_id->get_error_code() ); }
-		$member = papelito_company_member_upsert( $company_id, $user_id, array( 'member_role' => 'owner', 'member_status' => 'pending_company_approval', 'membership_origin' => 'owner_candidate', 'requested_at' => current_time( 'mysql', true ) ) );
+		$member = papelito_company_member_upsert( $company_id, $user_id, array( 'member_role' => 'owner', 'member_status' => $member_status, 'membership_origin' => 'owner_candidate', 'requested_at' => current_time( 'mysql', true ) ) );
 		if ( is_wp_error( $member ) ) { throw new RuntimeException( $member->get_error_code() ); }
-		$updated = papelito_company_update( $company_id, array( 'provider_source' => (string) $lookup['source'], 'provider_checked_at' => current_time( 'mysql', true ), 'provider_data_hash' => (string) $evidence['hash'] ) );
+		$company_fields = array( 'provider_source' => (string) $lookup['source'], 'provider_checked_at' => current_time( 'mysql', true ), 'provider_data_hash' => (string) $evidence['hash'] );
+		foreach ( array( 'cep' => 'fiscal_cep', 'state' => 'fiscal_state', 'city' => 'fiscal_city', 'neighborhood' => 'fiscal_neighborhood', 'street' => 'fiscal_street', 'number' => 'fiscal_number', 'complement' => 'fiscal_complement' ) as $source_key => $column ) {
+			if ( array_key_exists( $source_key, $input ) ) {
+				$company_fields[ $column ] = (string) $input[ $source_key ];
+				continue;
+			}
+			if ( ! empty( $address[ $source_key ] ) ) { $company_fields[ $column ] = (string) $address[ $source_key ]; }
+		}
+		$updated = papelito_company_update( $company_id, $company_fields );
 		if ( is_wp_error( $updated ) ) { throw new RuntimeException( $updated->get_error_code() ); }
 		papelito_company_audit( $company_id, $user_id, 'company_created', array( 'registry_status' => $lookup['status'], 'evidence' => $evidence ) );
+		if ( $auto_approved ) {
+			papelito_company_audit( $company_id, null, 'ownership_auto_approved', array( 'evidence' => $evidence, 'provider' => (string) $lookup['source'] ) );
+		}
 		$wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 	} catch ( Throwable $error ) {
 		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
@@ -145,7 +361,8 @@ function papelito_company_create_owner_candidate( int $user_id, array $input ): 
 	if ( ! function_exists( 'papelito_legacy_is_cohort' ) || ! papelito_legacy_is_cohort( $user_id ) ) {
 		papelito_b2b_mark_cohort( $user_id );
 	}
-	return array( 'company_id' => $company_id, 'membership_id' => (int) $member, 'registry_status' => $lookup['status'], 'ownership_status' => 'pending_manual_review' );
+	update_user_meta( $user_id, 'papelito_account_state', 'active' );
+	return array( 'company_id' => $company_id, 'membership_id' => (int) $member, 'registry_status' => $lookup['status'], 'ownership_status' => $ownership_status, 'auto_approved' => $auto_approved );
 }
 
 function papelito_company_context( int $user_id ): array {
@@ -195,6 +412,7 @@ function papelito_company_context( int $user_id ): array {
 	if ( 'none' === $resolution['status'] || null === $resolution['member'] ) {
 		if ( null !== $onboarding && in_array( (string) $onboarding['status'], array( 'pending_onboarding', 'pending_email' ), true ) ) {
 			$base['onboardingStatus'] = 'incomplete';
+			$base['onboarding']       = papelito_company_onboarding_resume_view( $onboarding, $profile );
 			return papelito_company_context_with_purchase_capability( $user_id, $base );
 		}
 		// Sem empresa ativa: reflete a candidatura pendente mais recente, se houver.

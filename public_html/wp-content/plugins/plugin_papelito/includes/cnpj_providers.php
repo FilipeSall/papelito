@@ -170,6 +170,8 @@ function papelito_cnpj_adapter_brasilapi( string $cnpj ): array {
 					'cnpj'           => isset( $body['cnpj'] ) ? (string) $body['cnpj'] : null,
 					'legal_name'     => isset( $body['razao_social'] ) ? (string) $body['razao_social'] : null,
 					'trade_name'     => isset( $body['nome_fantasia'] ) ? (string) $body['nome_fantasia'] : null,
+					'legal_nature_code' => isset( $body['codigo_natureza_juridica'] ) ? (string) $body['codigo_natureza_juridica'] : null,
+					'is_mei'         => true === ( $body['opcao_pelo_mei'] ?? false ),
 					'fiscal_address' => array(
 						'cep'    => isset( $body['cep'] ) ? (string) $body['cep'] : null,
 						'state'  => isset( $body['uf'] ) ? (string) $body['uf'] : null,

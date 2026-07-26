@@ -421,6 +421,31 @@ add_action(
 		/* --- Convites --- */
 		register_rest_route(
 			$ns,
+			'/companies/current/invitations/eligibility',
+			array(
+				'methods'             => 'GET',
+				'permission_callback' => 'papelito_company_mgmt_permission',
+				'callback'            => static function ( WP_REST_Request $r ) {
+					$user_id    = get_current_user_id();
+					$company_id = papelito_company_mgmt_active_company_id( $user_id );
+					if ( is_wp_error( $company_id ) ) {
+						return $company_id;
+					}
+					$loaded = papelito_company_authz_load( $user_id, $company_id );
+					if ( is_wp_error( $loaded ) || ! papelito_company_authz_can_manage( $loaded['membership'] ?? array() ) ) {
+						return is_wp_error( $loaded ) ? $loaded : new WP_Error( 'papelito_b2b_forbidden', 'Ação não permitida para seu papel.', array( 'status' => 403 ) );
+					}
+					$email = sanitize_email( (string) $r->get_param( 'email' ) );
+					if ( '' === $email || ! is_email( $email ) ) {
+						return new WP_Error( 'papelito_b2b_invitation_invalid_email', 'E-mail do convite inválido.', array( 'status' => 422 ) );
+					}
+					return new WP_REST_Response( array( 'invitable' => ! email_exists( $email ) ), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			$ns,
 			'/companies/current/invitations',
 			array(
 				array(

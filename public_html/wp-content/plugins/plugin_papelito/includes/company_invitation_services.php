@@ -39,6 +39,9 @@ function papelito_company_invitation_issue( int $actor_user_id, int $company_id,
 	if ( '' === $email || ! is_email( $email ) ) {
 		return new WP_Error( 'papelito_b2b_invitation_invalid_email', 'E-mail do convite inválido.', array( 'status' => 422 ) );
 	}
+	if ( email_exists( $email ) ) {
+		return new WP_Error( 'papelito_b2b_invitation_email_registered', 'Este e-mail já possui uma conta cadastrada.', array( 'status' => 422 ) );
+	}
 
 	$role = (string) ( $input['invited_role'] ?? 'buyer' );
 	if ( ! in_array( $role, papelito_company_assignable_roles(), true ) ) {
