@@ -36,6 +36,7 @@ if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_PROCESSING_OVERDUE', 'vendor_processing_overdue' );
 	define( 'PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING', 'vendor_registration_pending' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_POSTED', 'shipment_posted' );
+	define( 'PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED', 'shipment_tracking_updated' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_OUT_FOR_DELIVERY', 'shipment_out_for_delivery' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_DELIVERED', 'shipment_delivered' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_DELIVERY_FAILED', 'shipment_delivery_failed' );
@@ -122,6 +123,7 @@ function papelito_notification_allowed_types() {
 		PAPELITO_NOTIF_PROCESSING_OVERDUE,
 		PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING,
 		PAPELITO_NOTIF_SHIPMENT_POSTED,
+		PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED,
 		PAPELITO_NOTIF_SHIPMENT_OUT_FOR_DELIVERY,
 		PAPELITO_NOTIF_SHIPMENT_DELIVERED,
 		PAPELITO_NOTIF_SHIPMENT_DELIVERY_FAILED,
@@ -218,6 +220,26 @@ function papelito_dispatch_notification( $user_id, $type, $payload = array(), $d
 
 	return false === $inserted ? false : (int) $wpdb->insert_id;
 }
+
+/** Envia o e-mail de despacho manual uma unica vez por atualizacao de rastreio. */
+function papelito_send_manual_shipment_email( $order, string $type, string $tracking_code, int $shipment_id ): void {
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_billing_email' ) || ! in_array( $type, array( PAPELITO_NOTIF_SHIPMENT_POSTED, PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED ), true ) ) {
+		return;
+	}
+	$recipient = sanitize_email( (string) $order->get_billing_email() );
+	if ( '' === $recipient || ! is_email( $recipient ) || ! papelito_claim_notification_email_dispatch( absint( $order->get_customer_id() ), $type, 'shipment:' . $shipment_id . ':' . $type ) ) {
+		return;
+	}
+	$url = 'https://rastreamento.correios.com.br/app/index.php?objetos=' . rawurlencode( $tracking_code );
+	$subject = PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED === $type ? 'Atualizacao do rastreamento do seu pedido - Papelito' : 'Seu pedido foi enviado - Papelito';
+	$body = implode( PHP_EOL, array(
+		'Atualizamos o envio do seu pedido ' . $order->get_order_number() . '.',
+		'Codigo de rastreamento: ' . $tracking_code,
+		'Acompanhe nos Correios: ' . $url,
+	) );
+	wp_mail( $recipient, $subject, $body, array( 'Content-Type: text/plain; charset=UTF-8' ) );
+}
+add_action( 'papelito_manual_shipment_notified', 'papelito_send_manual_shipment_email', 10, 4 );
 
 /**
  * Normaliza chave de deduplicacao para uso em indices.

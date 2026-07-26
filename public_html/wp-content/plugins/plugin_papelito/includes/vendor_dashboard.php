@@ -268,8 +268,26 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
 	$logistics = function_exists( 'papelito_tracking_order_snapshot' )
 		? papelito_tracking_order_snapshot( (int) $order->get_id() )
 		: array( 'status' => 'not_started', 'all_packages_done' => false, 'packages_total' => 0, 'packages_delivered' => 0, 'last_event_at' => '', 'shipments' => array() );
-	$result['logistics'] = $logistics;
-	$result['shipments'] = $logistics['shipments'];
+	if ( null === $vendor_id ) {
+		$public_shipments = array_map(
+			static function ( array $shipment ): array {
+				return array_intersect_key( $shipment, array_flip( array( 'id', 'tracking_code', 'posted_at', 'status', 'last_event_at', 'last_event_description', 'last_event_location', 'delivered_at' ) ) );
+			},
+			$logistics['shipments']
+		);
+		$result['logistics'] = array(
+			'status' => $logistics['status'],
+			'all_packages_done' => $logistics['all_packages_done'],
+			'packages_total' => $logistics['packages_total'],
+			'packages_delivered' => $logistics['packages_delivered'],
+			'last_event_at' => $logistics['last_event_at'],
+			'shipments' => $public_shipments,
+		);
+		$result['shipments'] = $public_shipments;
+	} else {
+		$result['logistics'] = $logistics;
+		$result['shipments'] = $logistics['shipments'];
+	}
 	$result['tracking_code'] = ! empty( $logistics['shipments'][0]['tracking_code'] )
 		? $logistics['shipments'][0]['tracking_code']
 		: null;
@@ -1203,7 +1221,7 @@ add_action(
 						return new WP_REST_Response(
 							array(
 								'items'       => array_map(
-									static fn( $order ): array => papelito_vendor_dashboard_map_order( $order ),
+									static fn( $order ): array => papelito_vendor_dashboard_map_order( $order, null, true ),
 									$orders
 								),
 								'total'       => $total,

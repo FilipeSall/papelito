@@ -66,7 +66,8 @@ function papelito_correios_prepostage_is_production(): bool {
 
 /** Flag explicita para o fallback de cadastro manual pelo vendor. */
 function papelito_correios_manual_tracking_enabled(): bool {
-	$value = strtolower( papelito_correios_prepostage_config( 'PAPELITO_CORREIOS_MANUAL_TRACKING_ENABLED', 'false' ) );
+	$default = 'disabled' === papelito_correios_prepostage_mode() ? 'true' : 'false';
+	$value = strtolower( papelito_correios_prepostage_config( 'PAPELITO_CORREIOS_MANUAL_TRACKING_ENABLED', $default ) );
 	return in_array( $value, array( '1', 'true', 'yes', 'on' ), true );
 }
 

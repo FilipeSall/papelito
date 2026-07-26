@@ -58,6 +58,7 @@ function papelito_tracking_install_tables(): void {
   tracking_code VARCHAR(32) NULL DEFAULT NULL,
   prepost_id VARCHAR(64) NULL DEFAULT NULL,
   service_code VARCHAR(20) NULL DEFAULT NULL,
+  posted_at DATE NULL DEFAULT NULL,
   label_storage_key VARCHAR(191) NULL DEFAULT NULL,
   label_sha256 CHAR(64) NULL DEFAULT NULL,
   label_created_at DATETIME NULL DEFAULT NULL,
@@ -300,6 +301,7 @@ function papelito_tracking_public_shipment( array $shipment ): array {
 		'support_review_required' => ! empty( $shipment['support_review_required'] ),
 		'tracking_code'   => sanitize_text_field( (string) ( $shipment['tracking_code'] ?? '' ) ),
 		'service_code'    => sanitize_text_field( (string) ( $shipment['service_code'] ?? '' ) ),
+		'posted_at'       => (string) ( $shipment['posted_at'] ?? '' ),
 		'status'          => sanitize_key( (string) ( $shipment['status'] ?? 'tracking_pending' ) ),
 		'last_event_code' => sanitize_text_field( (string) ( $shipment['last_event_code'] ?? '' ) ),
 		'last_event_type' => sanitize_text_field( (string) ( $shipment['last_event_type'] ?? '' ) ),
@@ -409,6 +411,7 @@ function papelito_tracking_create_shipment( int $order_id, int $vendor_id, array
 	$is_test       = ! empty( $data['is_test'] );
 	$tracking_code = papelito_tracking_normalize_code( $data['tracking_code'] ?? '' );
 	$prepost_id    = sanitize_text_field( (string) ( $data['prepost_id'] ?? '' ) );
+	$posted_at     = sanitize_text_field( (string) ( $data['posted_at'] ?? '' ) );
 	if ( '' === $tracking_code ) {
 		return new WP_Error( 'papelito_tracking_invalid_code', 'Informe um codigo de rastreamento S10 valido.', array( 'status' => 422, 'category' => 'validation', 'retryable' => false ) );
 	}
@@ -420,7 +423,7 @@ function papelito_tracking_create_shipment( int $order_id, int $vendor_id, array
 			'vendor_id'      => $vendor_id,
 			'direction'      => 'outbound',
 			'provider'       => '' !== $provider ? $provider : 'correios',
-			'generation_status' => 'generated',
+			'generation_status' => sanitize_key( (string) ( $data['generation_status'] ?? 'generated' ) ),
 			'creation_outcome' => 'created',
 			'reconciliation_status' => 'none',
 			'reconciliation_attempts' => 0,
@@ -432,13 +435,14 @@ function papelito_tracking_create_shipment( int $order_id, int $vendor_id, array
 			'tracking_code'  => $tracking_code,
 			'prepost_id'     => '' !== $prepost_id ? $prepost_id : null,
 			'service_code'   => sanitize_text_field( (string) ( $data['service_code'] ?? '' ) ),
-			'status'         => 'preposted',
-			'status_rank'    => 10,
+			'posted_at'      => 1 === preg_match( '/^\d{4}-\d{2}-\d{2}$/', $posted_at ) ? $posted_at : null,
+			'status'         => sanitize_key( (string) ( $data['status'] ?? 'preposted' ) ),
+			'status_rank'    => absint( $data['status_rank'] ?? 10 ),
 			'next_poll_at'   => $is_test ? null : current_time( 'mysql', true ),
 			'created_at'     => current_time( 'mysql', true ),
 			'updated_at'     => current_time( 'mysql', true ),
 		),
-		array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s' )
+		array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s' )
 	);
 
 	if ( false === $inserted ) {
@@ -830,6 +834,9 @@ function papelito_tracking_generate_shipment( $order, int $vendor_id ) {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_id' ) ) {
 		return new WP_Error( 'papelito_tracking_order_invalid', 'Pedido invalido.', array( 'status' => 422 ) );
 	}
+	if ( function_exists( 'papelito_correios_prepostage_mode' ) && 'disabled' === papelito_correios_prepostage_mode() ) {
+		return new WP_Error( 'papelito_correios_prepostage_disabled', 'A geracao automatica de etiqueta esta desabilitada. Informe o rastreamento apos a postagem manual.', array( 'status' => 409 ) );
+	}
 	$status = function_exists( 'papelito_vendor_dashboard_order_status' )
 		? papelito_vendor_dashboard_order_status( $order )
 		: '';
@@ -976,7 +983,7 @@ function papelito_tracking_apply_test_fixture_status( int $shipment_id ): void {
 	}
 }
 
-/** Cadastra um S10 somente depois de uma falha automatica segura. */
+/** Registra a postagem manual depois que o vendor entregou o pacote aos Correios. */
 function papelito_tracking_register_manual_shipment( $order, int $vendor_id, string $tracking_code, array $manual_data = array() ) {
 	global $wpdb;
 	if ( ! function_exists( 'papelito_correios_manual_tracking_enabled' ) || ! papelito_correios_manual_tracking_enabled() ) {
@@ -1007,17 +1014,7 @@ function papelito_tracking_register_manual_shipment( $order, int $vendor_id, str
 	if ( 1 !== preg_match( '/^\d{4}-\d{2}-\d{2}$/', $posted_at ) ) {
 		return new WP_Error( 'papelito_manual_posted_at_required', 'Informe a data da postagem ou geracao manual.', array( 'status' => 422, 'category' => 'validation', 'retryable' => false ) );
 	}
-	$note = sanitize_textarea_field( (string) ( $manual_data['note'] ?? '' ) );
-	if ( strlen( $note ) < 10 ) {
-		return new WP_Error( 'papelito_manual_note_required', 'Informe uma observacao explicando o cadastro manual.', array( 'status' => 422, 'category' => 'validation', 'retryable' => false ) );
-	}
-	$label_url = sanitize_text_field( (string) ( $manual_data['label_url'] ?? '' ) );
-	if ( '' !== $label_url && false === filter_var( $label_url, FILTER_VALIDATE_URL ) ) {
-		return new WP_Error( 'papelito_manual_label_url_invalid', 'Informe uma URL de etiqueta valida ou deixe o campo vazio.', array( 'status' => 422, 'category' => 'validation', 'retryable' => false ) );
-	}
-
 	$wpdb->query( 'START TRANSACTION' );
-	$attempt = papelito_tracking_manual_fallback_attempt( $order_id, $vendor_id, true );
 	$active  = $wpdb->get_row(
 		$wpdb->prepare( "SELECT * FROM {$table} WHERE order_id = %d AND vendor_id = %d AND active = 1 ORDER BY id ASC LIMIT 1 FOR UPDATE", $order_id, $vendor_id ),
 		ARRAY_A
@@ -1029,12 +1026,7 @@ function papelito_tracking_register_manual_shipment( $order, int $vendor_id, str
 		}
 		return new WP_Error( 'papelito_tracking_shipment_exists', 'O pedido ja possui um envio ativo.', array( 'status' => 409, 'category' => 'duplicate', 'retryable' => false ) );
 	}
-	if ( ! is_array( $attempt ) ) {
-		$wpdb->query( 'ROLLBACK' );
-		return new WP_Error( 'papelito_manual_fallback_not_available', 'O cadastro manual so fica disponivel depois de uma falha automatica segura.', array( 'status' => 409, 'category' => 'fallback_unavailable', 'retryable' => false ) );
-	}
-
-	$is_test      = function_exists( 'papelito_correios_prepostage_is_test_environment' ) && papelito_correios_prepostage_is_test_environment();
+	$is_test      = false;
 	$key          = hash( 'sha256', implode( '|', array( 'manual-v1', $order_id, $vendor_id, $service_code ) ) );
 	$shipment_id = papelito_tracking_create_shipment(
 		$order_id,
@@ -1043,6 +1035,10 @@ function papelito_tracking_register_manual_shipment( $order, int $vendor_id, str
 			'provider'        => 'manual',
 			'tracking_code'   => $normalized,
 			'service_code'    => $service_code,
+			'posted_at'       => $posted_at,
+			'generation_status' => 'manual',
+			'status'          => 'posted',
+			'status_rank'     => 30,
 			'idempotency_key' => $key,
 			'is_test'         => $is_test,
 		)
@@ -1051,35 +1047,102 @@ function papelito_tracking_register_manual_shipment( $order, int $vendor_id, str
 		$wpdb->query( 'ROLLBACK' );
 		return $shipment_id;
 	}
-	$consumed = $wpdb->update(
-		$table,
-		array( 'manual_fallback_eligible' => 0, 'manual_fallback_consumed_at' => current_time( 'mysql', true ), 'updated_at' => current_time( 'mysql', true ) ),
-		array( 'id' => absint( $attempt['id'] ), 'manual_fallback_eligible' => 1 ),
-		array( '%d', '%s', '%s' ),
-		array( '%d', '%d' )
-	);
-	if ( 1 !== $consumed ) {
-		$wpdb->query( 'ROLLBACK' );
-		return new WP_Error( 'papelito_manual_fallback_conflict', 'Outra solicitacao consumiu o cadastro manual.', array( 'status' => 409, 'category' => 'duplicate', 'retryable' => false ) );
-	}
 	$wpdb->query( 'COMMIT' );
-	if ( $is_test ) {
-		papelito_tracking_apply_test_fixture_status( absint( $shipment_id ) );
-	}
 	if ( method_exists( $order, 'add_order_note' ) ) {
 		$order->add_order_note(
 			sprintf(
-				'Codigo de rastreamento associado manualmente pelo vendor ao envio #%d. Servico: %s. Data: %s. Observacao: %s%s',
+				'Postagem manual confirmada pelo vendor no envio #%d. Codigo: %s. Servico: %s. Data: %s.',
 				$shipment_id,
+				$normalized,
 				$service_code,
-				$posted_at,
-				$note,
-				'' !== $label_url ? '. Etiqueta: ' . $label_url : ''
+				$posted_at
 			)
 		);
+		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_VENDOR_STATUS_SHIPPED );
+		$order->update_meta_data( '_papelito_vendor_status_source', 'vendor_manual_tracking' );
 		$order->save();
 	}
+	papelito_tracking_notify_manual_shipment( $order_id, $vendor_id, absint( $shipment_id ), $normalized, false );
 
+	return papelito_tracking_order_snapshot( $order_id );
+}
+
+/** Corrige um codigo manual sem permitir regressao depois da entrega. */
+function papelito_tracking_update_manual_shipment( $order, int $vendor_id, int $shipment_id, string $tracking_code, array $data = array(), bool $is_admin = false ) {
+	global $wpdb;
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_id' ) ) {
+		return new WP_Error( 'papelito_tracking_order_invalid', 'Pedido invalido.', array( 'status' => 422 ) );
+	}
+	$normalized = papelito_tracking_normalize_code( $tracking_code );
+	if ( '' === $normalized ) {
+		return new WP_Error( 'papelito_tracking_invalid_code', 'Informe um codigo de rastreamento S10 valido.', array( 'status' => 422 ) );
+	}
+	$table = papelito_tracking_shipments_table_name();
+	$order_id = absint( $order->get_id() );
+	$wpdb->query( 'START TRANSACTION' );
+	$sql = "SELECT * FROM {$table} WHERE id = %d AND order_id = %d AND active = 1";
+	$args = array( $shipment_id, $order_id );
+	if ( ! $is_admin ) {
+		$sql .= ' AND vendor_id = %d';
+		$args[] = $vendor_id;
+	}
+	$sql .= ' FOR UPDATE';
+	$row = $wpdb->get_row( $wpdb->prepare( $sql, ...$args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	if ( ! is_array( $row ) || 'manual' !== sanitize_key( (string) $row['provider'] ) ) {
+		$wpdb->query( 'ROLLBACK' );
+		return new WP_Error( 'papelito_tracking_shipment_not_found', 'Envio manual nao encontrado.', array( 'status' => 404 ) );
+	}
+	if ( 'delivered' === sanitize_key( (string) $row['status'] ) && ! $is_admin ) {
+		$wpdb->query( 'ROLLBACK' );
+		return new WP_Error( 'papelito_tracking_delivered_locked', 'O rastreamento so pode ser corrigido pelo administrador depois da entrega.', array( 'status' => 409 ) );
+	}
+	if ( hash_equals( (string) $row['tracking_code'], $normalized ) ) {
+		$wpdb->query( 'ROLLBACK' );
+		return papelito_tracking_order_snapshot( $order_id );
+	}
+	$posted_at = sanitize_text_field( (string) ( $data['posted_at'] ?? $row['posted_at'] ?? '' ) );
+	if ( 1 !== preg_match( '/^\d{4}-\d{2}-\d{2}$/', $posted_at ) ) {
+		$wpdb->query( 'ROLLBACK' );
+		return new WP_Error( 'papelito_manual_posted_at_required', 'Informe a data da postagem.', array( 'status' => 422 ) );
+	}
+	// Um novo S10 invalida os eventos do codigo anterior; a regressao para posted e intencional.
+	$updated = $wpdb->update(
+		$table,
+		array(
+			'tracking_code'          => $normalized,
+			'posted_at'              => $posted_at,
+			'status'                 => 'posted',
+			'status_rank'            => 30,
+			'last_event_code'        => null,
+			'last_event_type'        => 'manual',
+			'last_event_at'          => current_time( 'mysql', true ),
+			'last_event_description' => 'Codigo de rastreamento corrigido pelo responsavel pelo envio.',
+			'last_event_location'    => null,
+			'next_poll_at'           => current_time( 'mysql', true ),
+			'last_error_code'        => null,
+			'updated_at'             => current_time( 'mysql', true ),
+		),
+		array( 'id' => $shipment_id )
+	);
+	if ( false === $updated ) {
+		$duplicate = false !== strpos( strtolower( (string) $wpdb->last_error ), 'duplicate' );
+		$wpdb->query( 'ROLLBACK' );
+		return new WP_Error( $duplicate ? 'papelito_tracking_code_already_used' : 'papelito_tracking_update_failed', $duplicate ? 'Este codigo de rastreamento ja pertence a outro envio.' : 'Nao foi possivel corrigir o rastreamento.', array( 'status' => $duplicate ? 409 : 500 ) );
+	}
+	if ( 0 === $updated ) {
+		$wpdb->query( 'ROLLBACK' );
+		return new WP_Error( 'papelito_tracking_update_conflict', 'O envio foi atualizado por outra solicitacao. Atualize a pagina e tente novamente.', array( 'status' => 409 ) );
+	}
+	$wpdb->query( 'COMMIT' );
+	$shipment_vendor_id = absint( $row['vendor_id'] );
+	if ( $shipment_vendor_id <= 0 ) {
+		$shipment_vendor_id = $vendor_id;
+	}
+	$order->add_order_note( sprintf( 'Codigo de rastreamento do envio #%d corrigido de %s para %s pelo %s.', $shipment_id, $row['tracking_code'], $normalized, $is_admin ? 'administrador' : 'vendor' ) );
+	$order->save();
+	if ( $shipment_vendor_id > 0 ) {
+		papelito_tracking_notify_manual_shipment( $order_id, $shipment_vendor_id, $shipment_id, $normalized, true );
+	}
 	return papelito_tracking_order_snapshot( $order_id );
 }
 
@@ -1222,11 +1285,49 @@ function papelito_tracking_notify_event( int $order_id, int $vendor_id, int $shi
 	if ( ! isset( $type_map[ $status ] ) ) {
 		return;
 	}
-	$dedupe  = 'tracking:' . $event_key;
+	$notification_meta = '_papelito_tracking_notification_' . $shipment_id . '_' . $type_map[ $status ];
+	if ( '1' === (string) $order->get_meta( $notification_meta, true ) ) {
+		return;
+	}
+	global $wpdb;
+	$legacy_exists = $wpdb->get_var(
+		$wpdb->prepare(
+			'SELECT id FROM ' . papelito_notifications_table_name() . ' WHERE type = %s AND payload LIKE %s LIMIT 1',
+			$type_map[ $status ],
+			'%"shipment_id":' . $shipment_id . '%'
+		)
+	); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+	if ( $legacy_exists ) {
+		$order->update_meta_data( $notification_meta, '1' );
+		$order->save();
+		return;
+	}
+	$dedupe  = 'shipment:' . $shipment_id . ':' . $type_map[ $status ];
 	$payload = array( 'order_id' => $order_id, 'shipment_id' => $shipment_id, 'status' => $status, 'recipient_role' => 'customer' );
 	papelito_dispatch_notification( absint( $order->get_customer_id() ), $type_map[ $status ], $payload, $dedupe );
 	$payload['recipient_role'] = 'seller';
 	papelito_dispatch_notification( $vendor_id, $type_map[ $status ], $payload, $dedupe );
+	$order->update_meta_data( $notification_meta, '1' );
+	$order->save();
+}
+
+/** Notifica a confirmacao manual sem alegar que ela veio da API Rastro. */
+function papelito_tracking_notify_manual_shipment( int $order_id, int $vendor_id, int $shipment_id, string $tracking_code, bool $corrected ): void {
+	if ( ! function_exists( 'wc_get_order' ) || ! function_exists( 'papelito_dispatch_notification' ) ) {
+		return;
+	}
+	$order = wc_get_order( $order_id );
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_customer_id' ) ) {
+		return;
+	}
+	$type = $corrected ? 'shipment_tracking_updated' : 'shipment_posted';
+	$payload = array( 'order_id' => $order_id, 'shipment_id' => $shipment_id, 'tracking_code' => $tracking_code, 'recipient_role' => 'customer' );
+	papelito_dispatch_notification( absint( $order->get_customer_id() ), $type, $payload, 'shipment:' . $shipment_id . ':' . $type );
+	$payload['recipient_role'] = 'seller';
+	papelito_dispatch_notification( $vendor_id, $type, $payload, 'shipment:' . $shipment_id . ':' . $type );
+	$order->update_meta_data( '_papelito_tracking_notification_' . $shipment_id . '_' . $type, '1' );
+	$order->save();
+	do_action( 'papelito_manual_shipment_notified', $order, $type, $tracking_code, $shipment_id );
 }
 
 /** Recalcula o status operacional sem permitir regressao ou entrega manual. */
@@ -1684,8 +1785,34 @@ add_action(
 					'tracking_code' => array( 'type' => 'string', 'required' => true ),
 					'service_code'  => array( 'type' => 'string', 'required' => false ),
 					'posted_at'     => array( 'type' => 'string', 'required' => true ),
-					'note'          => array( 'type' => 'string', 'required' => true ),
+					// A confirmacao manual nao exige observacao do vendor; o evento e auditado
+					// pelo codigo, data, usuario autenticado e nota automatica do pedido.
+					'note'          => array( 'type' => 'string', 'required' => false ),
 					'label_url'     => array( 'type' => 'string', 'required' => false ),
+				),
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/me/orders/(?P<id>\d+)/shipments/(?P<shipment_id>\d+)',
+			array(
+				'methods'             => 'PATCH',
+				'permission_callback' => static function () {
+					$check = function_exists( 'papelito_vendor_dashboard_require_seller' ) ? papelito_vendor_dashboard_require_seller() : new WP_Error( 'forbidden', 'Acesso negado.' );
+					return is_wp_error( $check ) ? $check : true;
+				},
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$order = papelito_vendor_dashboard_vendor_order( absint( $request->get_param( 'id' ) ), get_current_user_id() );
+					if ( is_wp_error( $order ) ) {
+						return $order;
+					}
+					$result = papelito_tracking_update_manual_shipment( $order, get_current_user_id(), absint( $request->get_param( 'shipment_id' ) ), (string) $request->get_param( 'tracking_code' ), array( 'posted_at' => $request->get_param( 'posted_at' ) ) );
+					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+				},
+				'args'                => array(
+					'tracking_code' => array( 'type' => 'string', 'required' => true ),
+					'posted_at' => array( 'type' => 'string', 'required' => true ),
 				),
 			)
 		);
@@ -1789,6 +1916,26 @@ add_action(
 				'args'                => array(
 					'reason'   => array( 'type' => 'string', 'required' => true ),
 					'evidence' => array( 'type' => 'string', 'required' => true ),
+				),
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/admin/orders/(?P<id>\d+)/shipments/(?P<shipment_id>\d+)',
+			array(
+				'methods'             => 'PATCH',
+				'permission_callback' => static fn(): bool => current_user_can( 'manage_woocommerce' ),
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$order = function_exists( 'wc_get_order' ) ? wc_get_order( absint( $request->get_param( 'id' ) ) ) : null;
+					if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
+						return new WP_Error( 'papelito_order_not_found', 'Pedido nao encontrado.', array( 'status' => 404 ) );
+					}
+					return papelito_tracking_update_manual_shipment( $order, 0, absint( $request->get_param( 'shipment_id' ) ), (string) $request->get_param( 'tracking_code' ), array( 'posted_at' => $request->get_param( 'posted_at' ) ), true );
+				},
+				'args'                => array(
+					'tracking_code' => array( 'type' => 'string', 'required' => true ),
+					'posted_at' => array( 'type' => 'string', 'required' => true ),
 				),
 			)
 		);
