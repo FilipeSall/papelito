@@ -109,7 +109,7 @@ function papelito_pagarme_recipient_error_response( WP_Error $error ): WP_Error 
 
 	return new WP_Error(
 		$error->get_error_code(),
-		'Nao foi possivel validar os dados do recebedor.',
+		'Não foi possível validar os dados do recebedor.',
 		array( 'status' => $status )
 	);
 }
@@ -331,7 +331,7 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 	if ( ! is_array( $draft ) ) {
 		return new WP_Error(
 			'papelito_pagarme_missing_draft',
-			'Os dados financeiros do vendor ainda nao foram preenchidos.',
+			'Os dados financeiros do vendor ainda não foram preenchidos.',
 			array( 'status' => 422 )
 		);
 	}
@@ -356,7 +356,7 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 	if ( '' === $cnpj ) {
 		return new WP_Error(
 			'papelito_pagarme_missing_document',
-			'O vendor precisa ter CNPJ valido para criar o recebedor.',
+			'O vendor precisa ter CNPJ válido para criar o recebedor.',
 			array( 'status' => 422 )
 		);
 	}
@@ -364,7 +364,7 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 	if ( empty( $partners ) || ! is_array( $partners[0] ) ) {
 		return new WP_Error(
 			'papelito_pagarme_missing_partner',
-			'Informe ao menos um administrador responsavel pelo recebedor.',
+			'Informe ao menos um administrador responsável pelo recebedor.',
 			array( 'status' => 422 )
 		);
 	}
@@ -375,7 +375,7 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 	if ( '' === $main_address['street'] || '' === $main_address['street_number'] || '' === $main_address['zip_code'] || '' === $main_address['city'] || '' === $main_address['state'] ) {
 		return new WP_Error(
 			'papelito_pagarme_missing_address',
-			'O vendor precisa ter endereco comercial completo para criar o recebedor.',
+			'O vendor precisa ter endereço comercial completo para criar o recebedor.',
 			array( 'status' => 422 )
 		);
 	}
@@ -441,7 +441,7 @@ function papelito_pagarme_build_recipient_bank_account_payload( int $user_id ) {
 	if ( ! is_array( $draft ) ) {
 		return new WP_Error(
 			'papelito_pagarme_missing_draft',
-			'Os dados financeiros do vendor ainda nao foram preenchidos.',
+			'Os dados financeiros do vendor ainda não foram preenchidos.',
 			array( 'status' => 422 )
 		);
 	}
@@ -486,7 +486,7 @@ function papelito_pagarme_sync_vendor_recipient( int $user_id ) {
 	if ( '' === $recipient_id ) {
 		return new WP_Error(
 			'papelito_pagarme_missing_recipient',
-			'O vendor ainda nao possui recebedor criado.',
+			'O vendor ainda não possui recebedor criado.',
 			array( 'status' => 404 )
 		);
 	}
@@ -512,7 +512,7 @@ function papelito_pagarme_refresh_vendor_kyc_link( int $user_id ) {
 	if ( '' === $recipient_id ) {
 		return new WP_Error(
 			'papelito_pagarme_missing_recipient',
-			'O vendor ainda nao possui recebedor criado.',
+			'O vendor ainda não possui recebedor criado.',
 			array( 'status' => 404 )
 		);
 	}

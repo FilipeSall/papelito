@@ -190,14 +190,14 @@ function papelito_home_assets_default_partner_banner(): array {
 	return array(
 		'tag'             => 'Seja um parceiro',
 		'description'     => 'Junte-se ao nosso PDV Perfeito com lojistas em todo o Brasil. '
-			. 'Receba brindes, premios e beneficios exclusivos',
+			. 'Receba brindes, prêmios e benefícios exclusivos',
 		'ctaLabel'        => 'Quero ser um parceiro',
 		'href'            => '/revendedor',
 		'desktopImageId'  => 0,
 		'desktopImageUrl' => '/images/CT1A3510%201.png',
 		'mobileImageId'   => 0,
 		'mobileImageUrl'  => '/images/pdv-mobile.jpg',
-		'alt'             => 'Parceiros no espaco PDV Perfeito Papelito.',
+		'alt'             => 'Parceiros no espaço PDV Perfeito Papelito.',
 		'isActive'        => true,
 	);
 }
@@ -217,12 +217,12 @@ function papelito_home_assets_default_site_images(): array {
 		'aboutHero'                     => array(
 			'imageId'  => 0,
 			'imageUrl' => '/images/sobre-page/sobre-banner.png',
-			'alt'      => 'Mulher sorrindo e segurando papeis Papelito diante de um fundo amarelo.',
+			'alt'      => 'Mulher sorrindo e segurando papéis Papelito diante de um fundo amarelo.',
 		),
 		'aboutStory'                    => array(
 			'imageId'  => 0,
 			'imageUrl' => '/images/sobre-page/fabrica-papelito.jpg',
-			'alt'      => 'Socios da Papelito em pe diante da linha de producao da fabrica.',
+			'alt'      => 'Sócios da Papelito em pé diante da linha de produção da fábrica.',
 		),
 		'revendedorBusinessMain'        => array(
 			'imageId'  => 0,
@@ -237,7 +237,7 @@ function papelito_home_assets_default_site_images(): array {
 		'revendedorBusinessIllustration' => array(
 			'imageId'  => 0,
 			'imageUrl' => '/images/revendedor/business-card-vector.svg',
-			'alt'      => 'Ilustracao de atendimento a negocios revendedores.',
+			'alt'      => 'Ilustração de atendimento a negócios revendedores.',
 		),
 	);
 }
@@ -425,7 +425,7 @@ function papelito_home_assets_collect_hero_issues( array $items ): array {
 		}
 
 		if ( ! papelito_home_assets_is_complete_hero_item( $item ) ) {
-			$issues[] = sprintf( 'Hero #%d esta ativo, mas ainda nao tem desktop, mobile e alt completos.', $index + 1 );
+			$issues[] = sprintf( 'Hero #%d esta ativo, mas ainda não tem desktop, mobile e alt completos.', $index + 1 );
 		}
 	}
 
@@ -447,7 +447,7 @@ function papelito_home_assets_collect_promo_issues( array $banner ): array {
 		return array();
 	}
 
-	return array( 'Promo banner esta ativo, mas ainda nao tem CTA e href completos.' );
+	return array( 'Promo banner esta ativo, mas ainda não tem CTA e href completos.' );
 }
 
 /**
@@ -465,7 +465,7 @@ function papelito_home_assets_collect_partner_issues( array $banner ): array {
 		return array();
 	}
 
-	return array( 'Partner banner esta ativo, mas ainda nao tem textos, href e imagens completos.' );
+	return array( 'Partner banner esta ativo, mas ainda não tem textos, href e imagens completos.' );
 }
 
 /**
@@ -620,7 +620,7 @@ function papelito_home_assets_validate_hero_payload( $input ) {
 	if ( ! is_array( $input ) || empty( $input ) ) {
 		return new WP_Error(
 			'papelito_home_assets_invalid_hero_payload',
-			'Hero Section precisa ter pelo menos uma opcao.',
+			'Hero Section precisa ter pelo menos uma opção.',
 			array( 'status' => 422 )
 		);
 	}
@@ -631,7 +631,7 @@ function papelito_home_assets_validate_hero_payload( $input ) {
 		if ( ! is_array( $item ) ) {
 			return new WP_Error(
 				'papelito_home_assets_invalid_hero_item',
-				sprintf( 'Hero #%d esta em formato invalido.', $index + 1 ),
+				sprintf( 'Hero #%d esta em formato inválido.', $index + 1 ),
 				array( 'status' => 422 )
 			);
 		}
@@ -672,7 +672,7 @@ function papelito_home_assets_validate_site_images_payload( $input ) {
 	if ( ! is_array( $input ) ) {
 		return new WP_Error(
 			'papelito_home_assets_invalid_site_images_payload',
-			'Payload de imagens invalido.',
+			'Payload de imagens inválido.',
 			array( 'status' => 422 )
 		);
 	}
@@ -701,7 +701,7 @@ function papelito_home_assets_validate_promo_payload( $input ) {
 	if ( ! is_array( $input ) ) {
 		return new WP_Error(
 			'papelito_home_assets_invalid_promo_payload',
-			'Payload do promo banner invalido.',
+			'Payload do promo banner inválido.',
 			array( 'status' => 422 )
 		);
 	}
@@ -741,7 +741,7 @@ function papelito_home_assets_validate_partner_payload( $input ) {
 	if ( ! is_array( $input ) ) {
 		return new WP_Error(
 			'papelito_home_assets_invalid_partner_payload',
-			'Payload do partner banner invalido.',
+			'Payload do partner banner inválido.',
 			array( 'status' => 422 )
 		);
 	}

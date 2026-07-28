@@ -284,7 +284,7 @@ function papelito_messaging_user_name( int $user_id ): string {
 
 	$user = get_userdata( $user_id );
 
-	return $user instanceof WP_User ? sanitize_text_field( (string) $user->display_name ) : 'Usuario';
+	return $user instanceof WP_User ? sanitize_text_field( (string) $user->display_name ) : 'Usuário';
 }
 
 /**

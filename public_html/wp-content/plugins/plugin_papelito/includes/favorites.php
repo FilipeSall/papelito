@@ -502,7 +502,7 @@ add_action(
 					),
 					'addedAt'   => array(
 						'type'        => 'String',
-						'description' => 'Data de inclusao do favorito em formato ISO 8601.',
+						'description' => 'Data de inclusão do favorito em formato ISO 8601.',
 						'resolve'     => static function ( $favorite ) {
 							return isset( $favorite['added_at'] ) ? (string) $favorite['added_at'] : (string) ( $favorite['addedAt'] ?? '' );
 						},
@@ -588,7 +588,7 @@ add_action(
 			'isFavorite',
 			array(
 				'type'        => 'Boolean',
-				'description' => 'Indica se o produto esta nos favoritos do usuario autenticado.',
+				'description' => 'Indica se o produto esta nos favoritos do usuário autenticado.',
 				'resolve'     => static function ( $product ) {
 					$user_id    = get_current_user_id();
 					$product_id = papelito_resolve_graphql_product_id( $product );
@@ -776,7 +776,7 @@ function papelito_render_favorites_account_content() {
 
 		<?php if ( empty( $favorites ) ) : ?>
 			<div class="papelito-favorites-empty">
-				<p>Quando voce salvar produtos, eles vao aparecer aqui para facilitar a recompra.</p>
+				<p>Quando você salvar produtos, eles vao aparecer aqui para facilitar a recompra.</p>
 				<a class="button" href="<?php echo esc_url( $shop_url ); ?>">Ir para a loja</a>
 			</div>
 		<?php else : ?>

@@ -166,19 +166,19 @@ function papelito_vendor_processing_overdue_send_email( WP_User $vendor, $order,
 	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : 'http://localhost:3000';
 	$order_link   = sprintf( '%s/vendor/pedidos/%d', $frontend_url, (int) $order->get_id() );
 
-	$subject    = sprintf( 'Prazo de separacao vencido - Papelito #%s', $order_number );
+	$subject    = sprintf( 'Prazo de separação vencido - Papelito #%s', $order_number );
 	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
 	$body_lines = array(
 		sprintf( 'Ola %s,', '' !== $greeting ? $greeting : $recipient ),
 		'',
 		sprintf(
-			'O pedido #%s passou do prazo de processamento de %d dia(s) e ainda nao entrou em separacao.',
+			'O pedido #%s passou do prazo de processamento de %d dia(s) e ainda não entrou em separação.',
 			$order_number,
 			$lead_time
 		),
 		sprintf( 'Atraso atual: %d dia(s).', $days_overdue ),
 		'',
-		'Separe e prepare o envio com urgencia para nao impactar o prazo do cliente.',
+		'Separe e prepare o envio com urgência para não impactar o prazo do cliente.',
 		'',
 		'Acesse o detalhe abaixo:',
 		$order_link,

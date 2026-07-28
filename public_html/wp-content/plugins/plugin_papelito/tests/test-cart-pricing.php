@@ -51,7 +51,7 @@ function wc_get_product( mixed $product_id ) {
 }
 
 function papelito_shipping_get_vendor( int $vendor_id ) {
-	return 101 === (int) $vendor_id ? array( 'id' => 101 ) : new WP_Error( 'vendor_invalid', 'Vendor invalido.' );
+	return 101 === (int) $vendor_id ? array( 'id' => 101 ) : new WP_Error( 'vendor_invalid', 'Vendor inválido.' );
 }
 
 function papelito_get_vendor_stock( $vendor_id, $product_id ) { return 20; }
@@ -80,7 +80,7 @@ function papelito_coupon_apply_resolve( string $code, array $items, int $user_id
 	if ( 'TEN' === $code ) $amount = 10;
 	elseif ( 'NINETY9' === $code ) $amount = 99;
 	elseif ( 'EXPIRED' === $code ) return new WP_Error( 'papelito_coupon_expired', 'Cupom expirado.', array( 'status' => 410 ) );
-	else return new WP_Error( 'papelito_coupon_not_found', 'Cupom nao encontrado.', array( 'status' => 404 ) );
+	else return new WP_Error( 'papelito_coupon_not_found', 'Cupom não encontrado.', array( 'status' => 404 ) );
 
 	return array(
 		'ok' => true,

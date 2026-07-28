@@ -302,7 +302,7 @@ function papelito_auth_prepare_email_verification_token( int $user_id ) {
 	if ( '' === $token ) {
 		return new WP_Error(
 			'papelito_email_verification_token_failed',
-			'Nao foi possivel preparar a confirmacao de e-mail.',
+			'Não foi possível preparar a confirmação de e-mail.',
 			array( 'status' => 500 )
 		);
 	}
@@ -378,7 +378,7 @@ function papelito_auth_send_verification_email( WP_User $user, string $token ): 
 		$link,
 		'',
 		'Este link expira em 24 horas.',
-		'Se voce nao fez esse cadastro, ignore esta mensagem.',
+		'Se você não fez esse cadastro, ignore esta mensagem.',
 		'',
 		'Time Papelito',
 	);
@@ -402,7 +402,7 @@ function papelito_auth_dispatch_verification_email( WP_User $user ) {
 	if ( ! papelito_auth_send_verification_email( $user, $token ) ) {
 		return new WP_Error(
 			'papelito_email_verification_send_failed',
-			'Nao foi possivel enviar o e-mail de confirmacao. Tente novamente em alguns instantes.',
+			'Não foi possível enviar o e-mail de confirmação. Tente novamente em alguns instantes.',
 			array( 'status' => 500 )
 		);
 	}
@@ -449,13 +449,13 @@ function papelito_auth_send_password_reset_email( WP_User $user, string $key ): 
 	$body_lines = array(
 		sprintf( 'Ola %s,', '' !== $first_name ? $first_name : $recipient ),
 		'',
-		'Recebemos uma solicitacao para redefinir a senha da sua conta na Papelito.',
+		'Recebemos uma solicitação para redefinir a senha da sua conta na Papelito.',
 		'',
 		'Abra o link abaixo para cadastrar uma nova senha:',
 		$link,
 		'',
-		'Este link expira em 24 horas e pode ser usado uma unica vez.',
-		'Se voce nao fez esta solicitacao, ignore esta mensagem.',
+		'Este link expira em 24 horas e pode ser usado uma única vez.',
+		'Se você não fez esta solicitação, ignore esta mensagem.',
 		'',
 		'Time Papelito',
 	);
@@ -479,7 +479,7 @@ function papelito_auth_dispatch_password_reset_email( WP_User $user ) {
 	if ( ! papelito_auth_send_password_reset_email( $user, $key ) ) {
 		return new WP_Error(
 			'papelito_password_reset_send_failed',
-			'Nao foi possivel enviar o e-mail de redefinicao. Tente novamente em alguns instantes.',
+			'Não foi possível enviar o e-mail de redefinicao. Tente novamente em alguns instantes.',
 			array( 'status' => 500 )
 		);
 	}
@@ -527,7 +527,7 @@ function papelito_auth_map_password_reset_key_error( WP_Error $error ) {
 
 	return new WP_Error(
 		'papelito_password_reset_invalid',
-		'Link de redefinicao invalido ou expirado.',
+		'Link de redefinicao inválido ou expirado.',
 		array( 'status' => 400 )
 	);
 }
@@ -842,7 +842,7 @@ add_action(
 					if ( ! $user instanceof WP_User || ! $user->exists() ) {
 						return new WP_Error(
 							'papelito_not_authenticated',
-							'Usuario nao autenticado.',
+							'Usuário não autenticado.',
 							array( 'status' => 401 )
 						);
 					}
@@ -985,7 +985,7 @@ add_action(
 					if ( '' === $email || '' === $token ) {
 						return new WP_Error(
 							'papelito_invalid_verification_request',
-							'Link de confirmacao invalido ou expirado.',
+							'Link de confirmação inválido ou expirado.',
 							array( 'status' => 400 )
 						);
 					}
@@ -996,7 +996,7 @@ add_action(
 					if ( ! $user instanceof WP_User || ! papelito_auth_requires_email_verification( $user->ID ) ) {
 						return new WP_Error(
 							'papelito_invalid_verification_token',
-							'Link de confirmacao invalido ou expirado.',
+							'Link de confirmação inválido ou expirado.',
 							array( 'status' => 400 )
 						);
 					}
@@ -1007,7 +1007,7 @@ add_action(
 					if ( '' === $stored_hash || '' === $stored_expiry ) {
 						return new WP_Error(
 							'papelito_invalid_verification_token',
-							'Link de confirmacao invalido ou expirado.',
+							'Link de confirmação inválido ou expirado.',
 							array( 'status' => 400 )
 						);
 					}
@@ -1017,7 +1017,7 @@ add_action(
 					if ( false === $expiry_ts || $expiry_ts < time() ) {
 						return new WP_Error(
 							'papelito_verification_token_expired',
-							'Link de confirmacao expirado. Solicite um novo e-mail para continuar.',
+							'Link de confirmação expirado. Solicite um novo e-mail para continuar.',
 							array( 'status' => 410 )
 						);
 					}
@@ -1025,7 +1025,7 @@ add_action(
 					if ( ! hash_equals( $stored_hash, hash( 'sha256', $token ) ) ) {
 						return new WP_Error(
 							'papelito_invalid_verification_token',
-							'Link de confirmacao invalido ou expirado.',
+							'Link de confirmação inválido ou expirado.',
 							array( 'status' => 400 )
 						);
 					}
@@ -1117,7 +1117,7 @@ add_action(
 					if ( '' === $email || ! is_email( $email ) ) {
 						return new WP_Error(
 							'papelito_invalid_email',
-							'Informe um e-mail valido.',
+							'Informe um e-mail válido.',
 							array( 'status' => 422 )
 						);
 					}
@@ -1175,7 +1175,7 @@ add_action(
 					if ( '' === $login || '' === $key ) {
 						return new WP_Error(
 							'papelito_password_reset_invalid_request',
-							'Link de redefinicao invalido ou expirado.',
+							'Link de redefinicao inválido ou expirado.',
 							array( 'status' => 400 )
 						);
 					}

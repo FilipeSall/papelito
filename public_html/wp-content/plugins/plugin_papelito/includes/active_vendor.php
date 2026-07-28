@@ -58,7 +58,7 @@ function papelito_validate_active_vendor( int $vendor_id, string $user_cep ) {
 	if ( $vendor_id <= 0 ) {
 		return new WP_Error(
 			'papelito_active_vendor_invalid',
-			'Vendor invalido.',
+			'Vendor inválido.',
 			array( 'status' => 400 )
 		);
 	}
@@ -68,7 +68,7 @@ function papelito_validate_active_vendor( int $vendor_id, string $user_cep ) {
 	if ( ! $user instanceof WP_User || ! in_array( 'seller', (array) $user->roles, true ) ) {
 		return new WP_Error(
 			'papelito_active_vendor_not_seller',
-			'Vendor inexistente ou nao e seller.',
+			'Vendor inexistente ou não e seller.',
 			array( 'status' => 404 )
 		);
 	}
@@ -76,7 +76,7 @@ function papelito_validate_active_vendor( int $vendor_id, string $user_cep ) {
 	if ( '' === $user_cep || strlen( $user_cep ) !== 8 ) {
 		return new WP_Error(
 			'papelito_account_cep_missing',
-			'CEP da conta ausente ou invalido.',
+			'CEP da conta ausente ou inválido.',
 			array( 'status' => 409 )
 		);
 	}
@@ -84,7 +84,7 @@ function papelito_validate_active_vendor( int $vendor_id, string $user_cep ) {
 	if ( ! function_exists( 'papelito_matching_vendor_ids' ) ) {
 		return new WP_Error(
 			'papelito_active_vendor_dependencies_missing',
-			'Dependencias indisponiveis para validar cobertura.',
+			'Dependencias indisponíveis para validar cobertura.',
 			array( 'status' => 500 )
 		);
 	}
@@ -94,7 +94,7 @@ function papelito_validate_active_vendor( int $vendor_id, string $user_cep ) {
 	if ( ! in_array( $vendor_id, $covering, true ) ) {
 		return new WP_Error(
 			'papelito_active_vendor_out_of_coverage',
-			'Vendor nao atende o CEP da sua conta.',
+			'Vendor não atende o CEP da sua conta.',
 			array( 'status' => 422 )
 		);
 	}
@@ -323,7 +323,7 @@ function papelito_available_vendors_for_user( int $user_id ) {
 	if ( '' === $user_cep ) {
 		return new WP_Error(
 			'papelito_account_cep_missing',
-			'CEP da conta ausente ou invalido.',
+			'CEP da conta ausente ou inválido.',
 			array( 'status' => 409 )
 		);
 	}
@@ -331,7 +331,7 @@ function papelito_available_vendors_for_user( int $user_id ) {
 	if ( ! function_exists( 'papelito_matching_vendor_ids' ) ) {
 		return new WP_Error(
 			'papelito_active_vendor_dependencies_missing',
-			'Dependencias indisponiveis.',
+			'Dependencias indisponíveis.',
 			array( 'status' => 500 )
 		);
 	}
@@ -410,7 +410,7 @@ function papelito_get_active_vendor_response( int $user_id ) {
 	if ( '' === $user_cep ) {
 		return new WP_Error(
 			'papelito_account_cep_missing',
-			'CEP da conta ausente ou invalido.',
+			'CEP da conta ausente ou inválido.',
 			array( 'status' => 409 )
 		);
 	}
@@ -434,7 +434,7 @@ function papelito_get_active_vendor_response( int $user_id ) {
 	if ( null === $active_id ) {
 		return new WP_Error(
 			'papelito_active_vendor_none_available',
-			'Nenhum vendor disponivel para o CEP da sua conta.',
+			'Nenhum vendor disponível para o CEP da sua conta.',
 			array( 'status' => 404 )
 		);
 	}
@@ -466,7 +466,7 @@ function papelito_require_active_vendor_auth() {
 
 	return new WP_Error(
 		'papelito_active_vendor_auth_required',
-		'Usuario nao autenticado.',
+		'Usuário não autenticado.',
 		array( 'status' => 401 )
 	);
 }

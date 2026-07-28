@@ -207,7 +207,7 @@ function papelito_pagarme_is_amount_error( array $body ): bool {
 	$needles  = array(
 		'amount',
 		'valor mínimo',
-		'valor minimo',
+		'valor mínimo',
 		'minimum amount',
 		'greater than or equal',
 	);
@@ -236,7 +236,7 @@ function papelito_pagarme_request( string $method, string $path, ?array $body = 
 	if ( '' === $secret_key ) {
 		return new WP_Error(
 			'papelito_pagarme_not_configured',
-			'Pagar.me nao configurado no ambiente.',
+			'Pagar.me não configurado no ambiente.',
 			array( 'status' => 500 )
 		);
 	}
@@ -244,7 +244,7 @@ function papelito_pagarme_request( string $method, string $path, ?array $body = 
 	if ( ! papelito_pagarme_validate_environment_key() ) {
 		return new WP_Error(
 			'papelito_pagarme_environment_mismatch',
-			'As credenciais Pagar.me nao correspondem ao ambiente atual.',
+			'As credenciais Pagar.me não correspondem ao ambiente atual.',
 			array( 'status' => 500 )
 		);
 	}

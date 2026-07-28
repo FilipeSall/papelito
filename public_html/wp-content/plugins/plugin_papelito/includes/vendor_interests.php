@@ -171,7 +171,7 @@ function papelito_vendor_interests_require_visitor_or_customer() {
 	if ( ! function_exists( 'papelito_auth_rate_limit' ) ) {
 		return new WP_Error(
 			'papelito_rate_limit_unavailable',
-			'Nao foi possivel validar o envio agora.',
+			'Não foi possível validar o envio agora.',
 			array( 'status' => 503 )
 		);
 	}
@@ -179,7 +179,7 @@ function papelito_vendor_interests_require_visitor_or_customer() {
 	if ( ! papelito_auth_rate_limit( 'vendor_interest_public', 5, 60 ) ) {
 		return new WP_Error(
 			'papelito_rate_limited',
-			'Voce excedeu o limite de envios. Tente novamente em alguns minutos.',
+			'Você excedeu o limite de envios. Tente novamente em alguns minutos.',
 			array( 'status' => 429 )
 		);
 	}
@@ -363,7 +363,7 @@ function papelito_vendor_interests_create( int $customer_user_id, array $input )
 	if ( null !== $existing ) {
 		return new WP_Error(
 			'papelito_vendor_interest_already_exists',
-			'O interesse desta loja ja foi registrado.',
+			'O interesse desta loja já foi registrado.',
 			array( 'status' => 409, 'interest' => $existing )
 		);
 	}
@@ -389,7 +389,7 @@ function papelito_vendor_interests_create( int $customer_user_id, array $input )
 		if ( null !== $existing ) {
 			return new WP_Error(
 				'papelito_vendor_interest_already_exists',
-				'O interesse desta loja ja foi registrado.',
+				'O interesse desta loja já foi registrado.',
 				array( 'status' => 409, 'interest' => $existing )
 			);
 		}

@@ -186,7 +186,7 @@ function papelito_order_routing_existing_order_response( object $order ) {
 	if ( '' === $pagarme_order_id ) {
 		return new WP_Error(
 			'papelito_checkout_attempt_in_progress',
-			'Este checkout ja esta sendo processado. Aguarde alguns instantes.',
+			'Este checkout já esta sendo processado. Aguarde alguns instantes.',
 			array( 'status' => 409 )
 		);
 	}
@@ -241,7 +241,7 @@ function papelito_order_routing_validate_existing_attempt( object $order, int $c
 function papelito_order_routing_payment_method_label( string $method ): string {
 	switch ( $method ) {
 		case 'credit_card':
-			return 'Cartao de credito';
+			return 'Cartao de crédito';
 		case 'pix':
 			return 'Pix';
 		case 'boleto':
@@ -262,7 +262,7 @@ function papelito_order_routing_normalize_payment( $payment, array $fallback_add
 	if ( ! is_array( $payment ) ) {
 		return new WP_Error(
 			'papelito_checkout_invalid_payment',
-			'Selecione uma forma de pagamento valida.',
+			'Selecione uma forma de pagamento válida.',
 			array( 'status' => 422 )
 		);
 	}
@@ -272,7 +272,7 @@ function papelito_order_routing_normalize_payment( $payment, array $fallback_add
 	if ( '' === $method ) {
 		return new WP_Error(
 			'papelito_checkout_invalid_payment',
-			'Selecione uma forma de pagamento valida.',
+			'Selecione uma forma de pagamento válida.',
 			array( 'status' => 422 )
 		);
 	}
@@ -298,7 +298,7 @@ function papelito_order_routing_normalize_payment( $payment, array $fallback_add
 	if ( 'credit_card' === $method && ( '' === $normalized['card_token_id'] || '' === $normalized['holder_name'] ) ) {
 		return new WP_Error(
 			'papelito_checkout_invalid_payment',
-			'Os dados do cartao nao estao completos.',
+			'Os dados do cartao não estão completos.',
 			array( 'status' => 422 )
 		);
 	}
@@ -351,7 +351,7 @@ function papelito_order_routing_normalize_address( $address ) {
 	if ( ! is_array( $address ) ) {
 		return new WP_Error(
 			'papelito_checkout_invalid_address',
-			'Endereco de entrega invalido.',
+			'Endereço de entrega inválido.',
 			array( 'status' => 422 )
 		);
 	}
@@ -376,7 +376,7 @@ function papelito_order_routing_normalize_address( $address ) {
 	) {
 		return new WP_Error(
 			'papelito_checkout_invalid_address',
-			'Preencha os campos obrigatorios do endereco.',
+			'Preencha os campos obrigatórios do endereço.',
 			array( 'status' => 422 )
 		);
 	}
@@ -452,7 +452,7 @@ function papelito_order_routing_validate_vendor_coverage( int $vendor_id, string
 
 	return new WP_Error(
 		'papelito_checkout_vendor_not_approved',
-		'O vendor selecionado nao atende o CEP do pedido.',
+		'O vendor selecionado não atende o CEP do pedido.',
 		array( 'status' => 422 )
 	);
 }
@@ -496,7 +496,7 @@ function papelito_order_routing_resolve_shipping( int $vendor_id, string $destin
 
 	return new WP_Error(
 		'papelito_checkout_shipping_stale',
-		'A cotacao de frete mudou. Selecione novamente a opcao de entrega.',
+		'A cotação de frete mudou. Selecione novamente a opção de entrega.',
 		array( 'status' => 409 )
 	);
 }
@@ -564,7 +564,7 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 	if ( ! function_exists( 'wc_create_order' ) || ! class_exists( 'WC_Order' ) || ! class_exists( 'WC_Order_Item_Shipping' ) || ! class_exists( 'WC_Order_Item_Product' ) ) {
 		return new WP_Error(
 			'papelito_checkout_woocommerce_unavailable',
-			'WooCommerce indisponivel para concluir o pedido.',
+			'WooCommerce indisponível para concluir o pedido.',
 			array( 'status' => 500 )
 		);
 	}
@@ -583,7 +583,7 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
 		return new WP_Error(
 			'papelito_checkout_invalid_order_instance',
-			'WooCommerce retornou um pedido invalido.',
+			'WooCommerce retornou um pedido inválido.',
 			array( 'status' => 500 )
 		);
 	}
@@ -591,7 +591,7 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 	if ( empty( $lines ) ) {
 		return new WP_Error(
 			'papelito_checkout_empty_resolved_lines',
-			'Nao foi possivel concluir o pedido sem itens validos.',
+			'Não foi possível concluir o pedido sem itens validos.',
 			array( 'status' => 422 )
 		);
 	}
@@ -693,7 +693,7 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 
 		return new WP_Error(
 			'papelito_checkout_order_creation_failed',
-			'Nao foi possivel concluir o pedido.',
+			'Não foi possível concluir o pedido.',
 			array( 'status' => 500 )
 		);
 	}
@@ -951,7 +951,7 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 	if ( ! function_exists( 'papelito_pagarme_is_configured' ) || ! papelito_pagarme_is_configured() ) {
 		return new WP_Error(
 			'papelito_checkout_payment_unavailable',
-			'Checkout indisponivel ate a configuracao do Pagar.me.',
+			'Checkout indisponível até a configuração do Pagar.me.',
 			array( 'status' => 501 )
 		);
 	}
@@ -1010,7 +1010,7 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 	if ( '' === $destination_cep || '' === $selected_code ) {
 		return new WP_Error(
 			'papelito_checkout_invalid_shipping',
-			'Selecione uma opcao de frete valida.',
+			'Selecione uma opção de frete válida.',
 			array( 'status' => 422 )
 		);
 	}
@@ -1076,7 +1076,7 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
 		return new WP_Error(
 			'papelito_checkout_invalid_order_instance',
-			'Nao foi possivel recuperar o pedido recem-criado.',
+			'Não foi possível recuperar o pedido recem-criado.',
 			array( 'status' => 500 )
 		);
 	}
@@ -1163,7 +1163,7 @@ add_action(
 					if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
 						return new WP_Error(
 							'papelito_order_not_found',
-							'Pedido nao encontrado.',
+							'Pedido não encontrado.',
 							array( 'status' => 404 )
 						);
 					}
@@ -1171,7 +1171,7 @@ add_action(
 					if ( ! is_user_logged_in() ) {
 						return new WP_Error(
 							'papelito_order_auth_required',
-							'Nao autenticado.',
+							'Não autenticado.',
 							array( 'status' => 401 )
 						);
 					}
@@ -1182,7 +1182,7 @@ add_action(
 
 					return new WP_Error(
 						'papelito_order_forbidden',
-						'Voce nao pode acessar o vendor deste pedido.',
+						'Você não pode acessar o vendor deste pedido.',
 						array( 'status' => 403 )
 					);
 				},
@@ -1192,7 +1192,7 @@ add_action(
 					if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
 						return new WP_Error(
 							'papelito_order_not_found',
-							'Pedido nao encontrado.',
+							'Pedido não encontrado.',
 							array( 'status' => 404 )
 						);
 					}

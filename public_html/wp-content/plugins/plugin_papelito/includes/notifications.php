@@ -234,7 +234,7 @@ function papelito_send_manual_shipment_email( $order, string $type, string $trac
 	$subject = PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED === $type ? 'Atualizacao do rastreamento do seu pedido - Papelito' : 'Seu pedido foi enviado - Papelito';
 	$body = implode( PHP_EOL, array(
 		'Atualizamos o envio do seu pedido ' . $order->get_order_number() . '.',
-		'Codigo de rastreamento: ' . $tracking_code,
+		'Código de rastreamento: ' . $tracking_code,
 		'Acompanhe nos Correios: ' . $url,
 	) );
 	wp_mail( $recipient, $subject, $body, array( 'Content-Type: text/plain; charset=UTF-8' ) );
@@ -628,7 +628,7 @@ function papelito_orders_send_new_purchase_email( WP_User $vendor, $order ): boo
 	$body_lines = array(
 		sprintf( 'Ola %s,', '' !== $greeting ? $greeting : $recipient ),
 		'',
-		'Voce recebeu uma nova compra na Papelito.',
+		'Você recebeu uma nova compra na Papelito.',
 		'',
 		sprintf( 'Pedido: #%s', $order_number ),
 	);
@@ -785,7 +785,7 @@ function papelito_vendor_pending_registration_field_labels(): array {
 	return array(
 		'companyName'                   => 'Razao social',
 		'tradingName'                   => 'Nome fantasia',
-		'corporationType'               => 'Natureza juridica',
+		'corporationType'               => 'Natureza jurídica',
 		'foundingDate'                  => 'Data de fundacao',
 		'annualRevenue'                 => 'Faturamento anual',
 		'partner.name'                  => 'Nome do socio administrador',
@@ -797,14 +797,14 @@ function papelito_vendor_pending_registration_field_labels(): array {
 		'partner.professionalOccupation' => 'Ocupacao profissional do socio administrador',
 		'partner.address.zipCode'       => 'CEP do socio administrador',
 		'partner.address.street'        => 'Logradouro do socio administrador',
-		'partner.address.streetNumber'  => 'Numero do endereco do socio administrador',
+		'partner.address.streetNumber'  => 'Número do endereço do socio administrador',
 		'partner.address.neighborhood'  => 'Bairro do socio administrador',
 		'partner.address.city'          => 'Cidade do socio administrador',
 		'partner.address.state'         => 'Estado do socio administrador',
 		'bankAccount.holderName'        => 'Titular da conta',
 		'bankAccount.holderDocument'    => 'Documento do titular',
-		'bankAccount.bankCode'          => 'Codigo do banco',
-		'bankAccount.branchNumber'      => 'Agencia',
+		'bankAccount.bankCode'          => 'Código do banco',
+		'bankAccount.branchNumber'      => 'Agência',
 		'bankAccount.accountNumber'     => 'Conta',
 		'bankAccount.accountCheckDigit' => 'Digito da conta',
 	);
@@ -842,7 +842,7 @@ function papelito_send_vendor_pending_registration_email( WP_User $user, array $
 	$body_lines = array(
 		sprintf( 'Ola %s,', $greeting ),
 		'',
-		'Seu cadastro foi criado pelo time Papelito, mas ainda faltam alguns dados obrigatorios para concluir a operacao financeira e a integracao.',
+		'Seu cadastro foi criado pelo time Papelito, mas ainda faltam alguns dados obrigatórios para concluir a operação financeira e a integração.',
 		'',
 		'Campos pendentes:',
 	);
@@ -853,7 +853,7 @@ function papelito_send_vendor_pending_registration_email( WP_User $user, array $
 		$body_lines,
 		array(
 			'',
-			'Acesse sua area de vendor para revisar e completar essas informacoes:',
+			'Acesse sua área de vendor para revisar e completar essas informações:',
 			$vendor_url,
 			'',
 			'Time Papelito',

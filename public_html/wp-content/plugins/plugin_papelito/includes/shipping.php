@@ -97,7 +97,7 @@ function papelito_correios_credentials() {
 	if ( '' === $credentials['username'] || '' === $credentials['access_code'] || '' === $credentials['posting_card'] ) {
 		return new WP_Error(
 			'papelito_correios_missing_credentials',
-			'Credenciais dos Correios nao configuradas.',
+			'Credenciais dos Correios não configuradas.',
 			array( 'status' => 500 )
 		);
 	}
@@ -105,7 +105,7 @@ function papelito_correios_credentials() {
 	if ( 1 !== preg_match( '/^00\d{8}$/', $credentials['posting_card'] ) ) {
 		return new WP_Error(
 			'papelito_correios_invalid_card',
-			'Cartao de postagem dos Correios invalido. Use 10 digitos iniciando com 00.',
+			'Cartao de postagem dos Correios inválido. Use 10 digitos iniciando com 00.',
 			array( 'status' => 500 )
 		);
 	}
@@ -246,7 +246,7 @@ function papelito_correios_request_json( string $method, string $url, array $arg
 	if ( is_wp_error( $response ) ) {
 		return new WP_Error(
 			'papelito_correios_unreachable',
-			'Nao foi possivel conectar aos Correios.',
+			'Não foi possível conectar aos Correios.',
 			array( 'status' => 502 )
 		);
 	}
@@ -264,7 +264,7 @@ function papelito_correios_request_json( string $method, string $url, array $arg
 
 		return new WP_Error(
 			'papelito_correios_bad_response',
-			'Correios respondeu com erro durante a cotacao.',
+			'Correios respondeu com erro durante a cotação.',
 			$error_data
 		);
 	}
@@ -310,7 +310,7 @@ function papelito_correios_get_token( array $credentials ) {
 	if ( empty( $data['token'] ) ) {
 		return new WP_Error(
 			'papelito_correios_missing_token',
-			'Correios nao retornou token de autenticacao.',
+			'Correios não retornou token de autenticação.',
 			array( 'status' => 502 )
 		);
 	}
@@ -534,7 +534,7 @@ function papelito_correios_get_services( array $credentials, array $token ) {
 	if ( empty( $token['cnpj'] ) || '' === $contract || '' === $card ) {
 		return new WP_Error(
 			'papelito_correios_contract_missing',
-			'Contrato ou cartao de postagem dos Correios indisponivel.',
+			'Contrato ou cartao de postagem dos Correios indisponível.',
 			array( 'status' => 502 )
 		);
 	}
@@ -605,7 +605,7 @@ function papelito_correios_get_services( array $credentials, array $token ) {
 	if ( empty( $services ) ) {
 		return new WP_Error(
 			'papelito_correios_services_missing',
-			'Nenhum servico PAC/SEDEX disponivel no contrato dos Correios.',
+			'Nenhum serviço PAC/SEDEX disponível no contrato dos Correios.',
 			array( 'status' => 502 )
 		);
 	}
@@ -627,7 +627,7 @@ function papelito_shipping_build_package( array $items ) {
 	if ( ! function_exists( 'wc_get_product' ) ) {
 		return new WP_Error(
 			'papelito_woocommerce_unavailable',
-			'WooCommerce nao esta disponivel para cotacao de frete.',
+			'WooCommerce não esta disponível para cotação de frete.',
 			array( 'status' => 500 )
 		);
 	}
@@ -646,7 +646,7 @@ function papelito_shipping_build_package( array $items ) {
 		if ( ! $product ) {
 			return new WP_Error(
 				'papelito_shipping_product_not_found',
-				'Produto do carrinho nao encontrado para cotacao de frete.',
+				'Produto do carrinho não encontrado para cotação de frete.',
 				array( 'status' => 422 )
 			);
 		}
@@ -659,7 +659,7 @@ function papelito_shipping_build_package( array $items ) {
 		if ( $weight <= 0 || $length <= 0 || $width <= 0 || $height <= 0 ) {
 			return new WP_Error(
 				'papelito_shipping_product_dimensions_missing',
-				sprintf( 'Produto "%s" precisa de peso e dimensoes para cotar frete.', $product->get_name() ),
+				sprintf( 'Produto "%s" precisa de peso e dimensões para cotar frete.', $product->get_name() ),
 				array( 'status' => 422 )
 			);
 		}
@@ -772,7 +772,7 @@ function papelito_correios_quote_service( array $credentials, array $token, arra
 	if ( null === $raw_price ) {
 		return new WP_Error(
 			'papelito_shipping_quote_missing_price',
-			'Correios nao retornou preco valido para o servico cotado.',
+			'Correios não retornou preço válido para o serviço cotado.',
 			array( 'status' => 502 )
 		);
 	}
@@ -866,7 +866,7 @@ function papelito_correios_quote( int $vendor_id, string $destination_cep, array
 
 		return new WP_Error(
 			'papelito_shipping_quote_failed',
-			'Nao foi possivel cotar PAC/SEDEX nos Correios.',
+			'Não foi possível cotar PAC/SEDEX nos Correios.',
 			$error_data
 		);
 	}

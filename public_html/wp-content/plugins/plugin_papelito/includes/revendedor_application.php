@@ -1035,10 +1035,10 @@ function papelito_validate_vendor_pagarme_step3( array $step3 ) {
 		$errors->add( 'tradingName', 'Informe o nome fantasia.' );
 	}
 	if ( '' === $corporation_type ) {
-		$errors->add( 'corporationType', 'Informe a natureza juridica.' );
+		$errors->add( 'corporationType', 'Informe a natureza jurídica.' );
 	}
 	if ( 1 !== preg_match( '/^\d{4}\-\d{2}\-\d{2}$/', $founding_date ) ) {
-		$errors->add( 'foundingDate', 'Informe uma data de fundacao valida.' );
+		$errors->add( 'foundingDate', 'Informe uma data de fundacao válida.' );
 	}
 	if ( ! is_numeric( $annual_revenue ) || (float) $annual_revenue <= 0 ) {
 		$errors->add( 'annualRevenue', 'Informe o faturamento anual.' );
@@ -1054,10 +1054,10 @@ function papelito_validate_vendor_pagarme_step3( array $step3 ) {
 			$errors->add( 'partnerName', 'Informe o nome do socio administrador.' );
 		}
 		if ( ! is_email( sanitize_email( (string) ( $partner['email'] ?? '' ) ) ) ) {
-			$errors->add( 'partnerEmail', 'Informe um e-mail valido para o socio.' );
+			$errors->add( 'partnerEmail', 'Informe um e-mail válido para o socio.' );
 		}
 if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' ) ) ) {
-			$errors->add( 'partnerDocument', 'Informe um CPF valido para o socio.' );
+			$errors->add( 'partnerDocument', 'Informe um CPF válido para o socio.' );
 		}
 		if ( '' === sanitize_text_field( (string) ( $partner['motherName'] ?? '' ) ) ) {
 			$errors->add( 'partnerMotherName', 'Informe o nome da mae do socio.' );
@@ -1078,13 +1078,13 @@ if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' )
 		$zip     = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $address['zipCode'] ?? '' ) ) : '';
 
 		if ( '' === $zip ) {
-			$errors->add( 'partnerZipCode', 'Informe um CEP valido para o socio.' );
+			$errors->add( 'partnerZipCode', 'Informe um CEP válido para o socio.' );
 		}
 		if ( '' === sanitize_text_field( (string) ( $address['street'] ?? '' ) ) ) {
 			$errors->add( 'partnerStreet', 'Informe o logradouro do socio.' );
 		}
 		if ( '' === sanitize_text_field( (string) ( $address['streetNumber'] ?? '' ) ) ) {
-			$errors->add( 'partnerStreetNumber', 'Informe o numero do endereco do socio.' );
+			$errors->add( 'partnerStreetNumber', 'Informe o número do endereço do socio.' );
 		}
 		if ( '' === sanitize_text_field( (string) ( $address['neighborhood'] ?? '' ) ) ) {
 			$errors->add( 'partnerNeighborhood', 'Informe o bairro do socio.' );
@@ -1095,7 +1095,7 @@ if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' )
 
 		$partner_state = sanitize_text_field( (string) ( $address['state'] ?? '' ) );
 		if ( '' === $partner_state || ! array_key_exists( $partner_state, papelito_brazilian_states() ) ) {
-			$errors->add( 'partnerState', 'Selecione um estado valido para o socio.' );
+			$errors->add( 'partnerState', 'Selecione um estado válido para o socio.' );
 		}
 	}
 
@@ -1109,20 +1109,20 @@ if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' )
 	$holder_document = (string) ( $bank_account['holderDocument'] ?? '' );
 	if ( 'individual' === $holder_type ) {
 if ( ! papelito_revendedor_validate_cpf( $holder_document ) ) {
-			$errors->add( 'bankHolderDocument', 'Informe um CPF valido para o titular.' );
+			$errors->add( 'bankHolderDocument', 'Informe um CPF válido para o titular.' );
 		}
 	} elseif ( 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $holder_document ) ) {
-		$errors->add( 'bankHolderDocument', 'Informe um CNPJ valido para o titular.' );
+		$errors->add( 'bankHolderDocument', 'Informe um CNPJ válido para o titular.' );
 	}
 
 	if ( 1 !== preg_match( '/^\d{3}$/', sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ) ) ) {
-		$errors->add( 'bankCode', 'Informe um codigo bancario com 3 digitos.' );
+		$errors->add( 'bankCode', 'Informe um código bancário com 3 digitos.' );
 	}
 	if ( 1 !== preg_match( '/^\d+$/', sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ) ) ) {
-		$errors->add( 'branchNumber', 'Informe uma agencia valida.' );
+		$errors->add( 'branchNumber', 'Informe uma agência válida.' );
 	}
 	if ( 1 !== preg_match( '/^\d+$/', sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ) ) ) {
-		$errors->add( 'accountNumber', 'Informe uma conta valida.' );
+		$errors->add( 'accountNumber', 'Informe uma conta válida.' );
 	}
 	if ( 1 !== preg_match( '/^[0-9A-Za-z]+$/', sanitize_text_field( (string) ( $bank_account['accountCheckDigit'] ?? '' ) ) ) ) {
 		$errors->add( 'accountCheckDigit', 'Informe o digito da conta.' );
@@ -1144,7 +1144,7 @@ function papelito_validate_vendor_address_step2( array $step2 ) {
 		$errors->add( 'street', 'Informe o logradouro.' );
 	}
 	if ( '' === sanitize_text_field( (string) ( $step2['number'] ?? '' ) ) ) {
-		$errors->add( 'number', 'Informe o numero.' );
+		$errors->add( 'number', 'Informe o número.' );
 	}
 	if ( '' === sanitize_text_field( (string) ( $step2['neighborhood'] ?? '' ) ) ) {
 		$errors->add( 'neighborhood', 'Informe o bairro.' );
@@ -1378,12 +1378,12 @@ function papelito_notify_seller_application_received( array $application ): void
 		'',
 		'Resumo enviado:',
 		sprintf( 'Loja: %s', $application['storeName'] ),
-		sprintf( 'Responsavel: %s %s', $application['firstName'], $application['lastName'] ),
+		sprintf( 'Responsável: %s %s', $application['firstName'], $application['lastName'] ),
 		sprintf( 'E-mail: %s', $application['email'] ),
 		sprintf( 'Telefone: %s', $application['phoneNumber'] ),
 		sprintf( 'CNPJ: %s', $application['cnpj'] ),
 		sprintf( 'Cidade/Estado: %s - %s', $application['city'], $application['state'] ),
-		sprintf( 'CEP de operacao: %s', $application['cep'] ?? '' ),
+		sprintf( 'CEP de operação: %s', $application['cep'] ?? '' ),
 		sprintf( 'Faixa atendida: %s - %s', $application['minCep'] ?? '', $application['maxCep'] ?? '' ),
 		sprintf( 'Enviado em: %s', $application['submittedAt'] ),
 		'',
@@ -1426,7 +1426,7 @@ function papelito_submit_seller_application( int $user_id, array $input ) {
 	if ( 'pending' === $status ) {
 		return new WP_Error(
 			'papelito_application_pending',
-			'Sua triagem ja foi enviada e esta em analise.',
+			'Sua triagem já foi enviada e esta em análise.',
 			array( 'status' => 409 )
 		);
 	}
@@ -1434,7 +1434,7 @@ function papelito_submit_seller_application( int $user_id, array $input ) {
 	if ( 'approved' === $status ) {
 		return new WP_Error(
 			'papelito_application_approved',
-			'Sua conta ja foi aprovada para o programa de revendedores.',
+			'Sua conta já foi aprovada para o programa de revendedores.',
 			array( 'status' => 409 )
 		);
 	}
@@ -1830,7 +1830,7 @@ function papelito_admin_vendors_query_rows( array $filters ): array {
 		}
 
 		if ( '' === $name ) {
-			$name = isset( $raw_row['user_email'] ) ? (string) $raw_row['user_email'] : 'Usuario sem nome';
+			$name = isset( $raw_row['user_email'] ) ? (string) $raw_row['user_email'] : 'Usuário sem nome';
 		}
 
 		$role = function_exists( 'papelito_admin_reports_detect_role' )
@@ -2066,7 +2066,7 @@ function papelito_admin_vendors_normalize_bank_account( $bank_account ) {
 	if ( ! is_array( $bank_account ) ) {
 		return new WP_Error(
 			'papelito_admin_vendor_missing_bank_account',
-			'Informe os dados bancarios.',
+			'Informe os dados bancários.',
 			array( 'status' => 422 )
 		);
 	}
@@ -2097,22 +2097,22 @@ function papelito_admin_vendors_normalize_bank_account( $bank_account ) {
 
 	if ( 'individual' === $holder_type ) {
 if ( ! papelito_revendedor_validate_cpf( $normalized['holderDocument'] ) ) {
-			$errors->add( 'bankHolderDocument', 'Informe um CPF valido para o titular.' );
+			$errors->add( 'bankHolderDocument', 'Informe um CPF válido para o titular.' );
 		}
 	} elseif ( 'company' === $holder_type && 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $normalized['holderDocument'] ) ) {
-		$errors->add( 'bankHolderDocument', 'Informe um CNPJ valido para o titular.' );
+		$errors->add( 'bankHolderDocument', 'Informe um CNPJ válido para o titular.' );
 	}
 
 	if ( 1 !== preg_match( '/^\d{3}$/', $normalized['bankCode'] ) ) {
-		$errors->add( 'bankCode', 'Informe um codigo bancario com 3 digitos.' );
+		$errors->add( 'bankCode', 'Informe um código bancário com 3 digitos.' );
 	}
 
 	if ( 1 !== preg_match( '/^\d+$/', $normalized['branchNumber'] ) ) {
-		$errors->add( 'branchNumber', 'Informe uma agencia valida.' );
+		$errors->add( 'branchNumber', 'Informe uma agência válida.' );
 	}
 
 	if ( 1 !== preg_match( '/^\d+$/', $normalized['accountNumber'] ) ) {
-		$errors->add( 'accountNumber', 'Informe uma conta valida.' );
+		$errors->add( 'accountNumber', 'Informe uma conta válida.' );
 	}
 
 	if ( 1 !== preg_match( '/^[0-9A-Za-z]+$/', $normalized['accountCheckDigit'] ) ) {
@@ -2120,7 +2120,7 @@ if ( ! papelito_revendedor_validate_cpf( $normalized['holderDocument'] ) ) {
 	}
 
 	if ( ! in_array( $type, array( 'checking', 'savings' ), true ) ) {
-		$errors->add( 'bankAccountType', 'Informe o tipo da conta bancaria.' );
+		$errors->add( 'bankAccountType', 'Informe o tipo da conta bancária.' );
 	}
 
 	if ( $errors->has_errors() ) {
@@ -2202,7 +2202,7 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 		if ( $email_owner instanceof WP_User ) {
 			return new WP_Error(
 				'papelito_admin_vendor_source_customer_required',
-				'Este e-mail ja pertence a uma conta. Selecione o customer pelo painel para promove-lo.',
+				'Este e-mail já pertence a uma conta. Selecione o customer pelo painel para promove-lo.',
 				array( 'status' => 409 )
 			);
 		}
@@ -2211,7 +2211,7 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 	if ( ! $existing_user instanceof WP_User && '' === trim( (string) ( $input['temporaryPassword'] ?? '' ) ) ) {
 		return new WP_Error(
 			'papelito_admin_vendor_missing_temporary_password',
-			'Informe uma senha temporaria para a nova conta vendor.',
+			'Informe uma senha temporária para a nova conta vendor.',
 			array( 'status' => 422 )
 		);
 	}
@@ -2252,7 +2252,7 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 	if ( '' === $street || '' === $number || '' === $neighborhood || '' === $city || '' === $state ) {
 		return new WP_Error(
 			'papelito_admin_vendor_incomplete_address',
-			'Informe o endereco comercial completo do vendor.',
+			'Informe o endereço comercial completo do vendor.',
 			array( 'status' => 422 )
 		);
 	}

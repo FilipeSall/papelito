@@ -322,7 +322,7 @@ function papelito_pagarme_customer_payload( int $user_id, array $address ) {
 	if ( ! in_array( strlen( $document ), array( 11, 14 ), true ) ) {
 		return new WP_Error(
 			'papelito_checkout_invalid_payment',
-			'Informe um CPF ou CNPJ valido no seu perfil para concluir o pagamento.',
+			'Informe um CPF ou CNPJ válido no seu perfil para concluir o pagamento.',
 			array( 'status' => 422 )
 		);
 	}
@@ -351,7 +351,7 @@ function papelito_pagarme_validate_vendor_recipient( int $vendor_id ) {
 	if ( '' === $recipient_id || ! papelito_pagarme_vendor_recipient_is_active( $vendor_id ) ) {
 		return new WP_Error(
 			'papelito_checkout_vendor_not_approved',
-			'O vendor selecionado nao esta apto para receber pagamentos.',
+			'O vendor selecionado não esta apto para receber pagamentos.',
 			array( 'status' => 422 )
 		);
 	}
@@ -721,7 +721,7 @@ function papelito_pagarme_mark_vendor_status_unpaid( object $order ): void {
 		$order->update_meta_data( '_papelito_vendor_status', $cancelled_status );
 
 		if ( method_exists( $order, 'add_order_note' ) ) {
-			$order->add_order_note( 'Pagamento nao concluido: pedido cancelado.' );
+			$order->add_order_note( 'Pagamento não concluido: pedido cancelado.' );
 		}
 	}
 }
@@ -804,7 +804,7 @@ function papelito_pagarme_create_order_payment( object $order, int $customer_id,
 		$payments[] = array(
 			'payment_method' => 'boleto',
 			'boleto'         => array(
-				'instructions'    => 'Pague ate o vencimento.',
+				'instructions'    => 'Pague até o vencimento.',
 				'document_number' => (string) $order->get_id(),
 				'due_at'          => gmdate( 'c', time() + DAY_IN_SECONDS ),
 				'type'            => 'DM',
@@ -813,7 +813,7 @@ function papelito_pagarme_create_order_payment( object $order, int $customer_id,
 	} else {
 		return new WP_Error(
 			'papelito_checkout_invalid_payment',
-			'Selecione uma forma de pagamento valida.',
+			'Selecione uma forma de pagamento válida.',
 			array( 'status' => 422 )
 		);
 	}
@@ -1051,7 +1051,7 @@ function papelito_pagarme_reconcile_pending_stock_reservations(): void {
 			$order->update_meta_data( PAPELITO_PAGARME_PAYMENT_STATE_META, 'expired' );
 			$order->update_status( 'failed' );
 			papelito_pagarme_mark_vendor_status_unpaid( $order );
-			$order->add_order_note( 'Reserva de estoque liberada apos expiracao do pagamento Pagar.me.' );
+			$order->add_order_note( 'Reserva de estoque liberada após expiracao do pagamento Pagar.me.' );
 			$order->save();
 		}
 	}

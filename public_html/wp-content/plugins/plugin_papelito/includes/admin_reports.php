@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 function papelito_admin_reports_users_definition(): array {
 	return array(
 		'key'     => 'users-registered-v1',
-		'label'   => 'Usuarios cadastrados v1',
+		'label'   => 'Usuários cadastrados v1',
 		'version' => 'v1',
 		'output'  => 'xlsx',
 	);
@@ -477,7 +477,7 @@ function papelito_admin_reports_query_user_rows( array $filters, bool $for_expor
 		}
 
 		if ( '' === $name ) {
-			$name = isset( $raw_row['user_email'] ) ? (string) $raw_row['user_email'] : 'Usuario sem nome';
+			$name = isset( $raw_row['user_email'] ) ? (string) $raw_row['user_email'] : 'Usuário sem nome';
 		}
 
 		$role = papelito_admin_reports_detect_role( isset( $raw_row['capabilities'] ) ? (string) $raw_row['capabilities'] : '' );
@@ -602,7 +602,7 @@ function papelito_admin_reports_require_spreadsheet() {
 	if ( '' === $autoload ) {
 		return new WP_Error(
 			'papelito_reports_xlsx_autoload_missing',
-			'Autoload do Composer nao encontrado para exportacao XLSX.',
+			'Autoload do Composer não encontrado para exportação XLSX.',
 			array(
 				'status'     => 500,
 				'candidates' => $candidates,
@@ -613,7 +613,7 @@ function papelito_admin_reports_require_spreadsheet() {
 	if ( ! class_exists( '\PhpOffice\PhpSpreadsheet\Spreadsheet' ) || ! class_exists( '\PhpOffice\PhpSpreadsheet\Writer\Xlsx' ) ) {
 		return new WP_Error(
 			'papelito_reports_xlsx_unavailable',
-			'Biblioteca PhpSpreadsheet indisponivel para exportacao XLSX.',
+			'Biblioteca PhpSpreadsheet indisponível para exportação XLSX.',
 			array(
 				'status'   => 500,
 				'autoload' => $autoload,
@@ -673,7 +673,7 @@ function papelito_admin_reports_generate_users_xlsx( array $rows ) {
 	try {
 		$spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
 		$sheet       = $spreadsheet->getActiveSheet();
-		$sheet->setTitle( 'Usuarios' );
+		$sheet->setTitle( 'Usuários' );
 		$sheet->fromArray(
 			array(
 				'ID',
@@ -730,7 +730,7 @@ function papelito_admin_reports_generate_users_xlsx( array $rows ) {
 	} catch ( Throwable $exception ) {
 		return new WP_Error(
 			'papelito_reports_xlsx_failed',
-			'Nao foi possivel gerar o arquivo XLSX: ' . $exception->getMessage(),
+			'Não foi possível gerar o arquivo XLSX: ' . $exception->getMessage(),
 			array( 'status' => 500 )
 		);
 	}
@@ -810,7 +810,7 @@ function papelito_admin_reports_generate_simple_users_xlsx( array $rows ) {
 	try {
 		$spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
 		$sheet       = $spreadsheet->getActiveSheet();
-		$sheet->setTitle( 'Usuarios' );
+		$sheet->setTitle( 'Usuários' );
 		$sheet->fromArray(
 			array( 'user_id', 'username', 'email', 'phone', 'postcode', 'city', 'state' ),
 			null,
@@ -850,7 +850,7 @@ function papelito_admin_reports_generate_simple_users_xlsx( array $rows ) {
 	} catch ( Throwable $exception ) {
 		return new WP_Error(
 			'papelito_reports_users_xlsx_failed',
-			'Nao foi possivel gerar o XLSX de usuarios: ' . $exception->getMessage(),
+			'Não foi possível gerar o XLSX de usuários: ' . $exception->getMessage(),
 			array( 'status' => 500 )
 		);
 	}
@@ -937,7 +937,7 @@ function papelito_admin_reports_query_simple_sales_rows( array $filters ): array
 			'order_number'    => $order->get_order_number(),
 			'created_at'      => $order->get_date_created() ? $order->get_date_created()->date_i18n( 'Y-m-d H:i:s' ) : '',
 			'status'          => wc_get_order_status_name( $order->get_status() ),
-			'customer_name'   => trim( $order->get_formatted_billing_full_name() ) ? trim( $order->get_formatted_billing_full_name() ) : 'Cliente nao identificado',
+			'customer_name'   => trim( $order->get_formatted_billing_full_name() ) ? trim( $order->get_formatted_billing_full_name() ) : 'Cliente não identificado',
 			'phone'           => (string) $order->get_billing_phone(),
 			'postcode'        => (string) $order->get_billing_postcode(),
 			'city'            => $city,
@@ -1022,7 +1022,7 @@ function papelito_admin_reports_generate_simple_sales_xlsx( array $rows ) {
 	} catch ( Throwable $exception ) {
 		return new WP_Error(
 			'papelito_reports_sales_xlsx_failed',
-			'Nao foi possivel gerar o XLSX de vendas: ' . $exception->getMessage(),
+			'Não foi possível gerar o XLSX de vendas: ' . $exception->getMessage(),
 			array( 'status' => 500 )
 		);
 	}

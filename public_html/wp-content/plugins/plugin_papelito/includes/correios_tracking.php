@@ -172,7 +172,7 @@ function papelito_tracking_manual_fallback_attempt( int $order_id, int $vendor_i
 function papelito_tracking_manual_fallback_error_from_row( array $row ): WP_Error {
 	$code    = sanitize_key( (string) ( $row['last_error_code'] ?? '' ) );
 	$catalog = papelito_tracking_manual_fallback_error_catalog();
-	$item    = $catalog[ $code ] ?? array( 'category' => 'unknown', 'message' => 'Nao foi possivel gerar a etiqueta automaticamente.' );
+	$item    = $catalog[ $code ] ?? array( 'category' => 'unknown', 'message' => 'Não foi possível gerar a etiqueta automaticamente.' );
 	return new WP_Error( $code ?: 'papelito_correios_generation_failed', $item['message'], array( 'status' => 409, 'category' => $item['category'], 'retryable' => false, 'creation_outcome' => 'not_created', 'manual_fallback_available' => true ) );
 }
 
@@ -651,8 +651,8 @@ function papelito_tracking_generation_uncertain_error( array $row ): WP_Error {
 	return new WP_Error(
 		'papelito_correios_generation_uncertain',
 		empty( $row['support_review_required'] )
-			? 'A solicitacao anterior foi enviada e ainda esta sendo verificada para evitar duplicidade.'
-			: 'A solicitacao anterior precisa de revisao do suporte antes de qualquer nova etiqueta.',
+			? 'A solicitação anterior foi enviada e ainda esta sendo verificada para evitar duplicidade.'
+			: 'A solicitação anterior precisa de revisão do suporte antes de qualquer nova etiqueta.',
 		array(
 			'status'                    => 409,
 			'category'                  => 'uncertain',
@@ -808,7 +808,7 @@ function papelito_tracking_reconcile_generation( $order, int $vendor_id, array $
 			? $result['error']
 			: new WP_Error(
 				sanitize_key( (string) ( $result['error_code'] ?? $row['last_error_code'] ?? 'papelito_correios_unavailable' ) ),
-				'Os Correios confirmaram que a pre-postagem anterior nao foi criada.',
+				'Os Correios confirmaram que a pre-postagem anterior não foi criada.',
 				array( 'status' => 409, 'category' => 'not_created', 'retryable' => true, 'creation_outcome' => 'not_created' )
 			);
 		papelito_tracking_fail_generation( $shipment_id, $error );
@@ -843,7 +843,7 @@ function papelito_tracking_generate_shipment( $order, int $vendor_id ) {
 	if ( 'em_separacao' !== $status ) {
 		return new WP_Error(
 			'papelito_tracking_order_not_ready',
-			'O pedido precisa estar pago e em separacao para gerar a etiqueta.',
+			'O pedido precisa estar pago e em separação para gerar a etiqueta.',
 			array( 'status' => 409 )
 		);
 	}
@@ -902,7 +902,7 @@ function papelito_tracking_generate_shipment( $order, int $vendor_id ) {
 	if ( ! is_array( $result ) ) {
 		$error = new WP_Error(
 			'papelito_correios_provider_not_implemented',
-			'A integracao de Pre-Postagem ainda nao foi conectada ao contrato dos Correios.',
+			'A integração de Pre-Postagem ainda não foi conectada ao contrato dos Correios.',
 			array( 'status' => 503, 'category' => 'not_configured', 'retryable' => false, 'creation_outcome' => 'not_created' )
 		);
 		papelito_tracking_fail_generation( $shipment_id, $error );
@@ -1051,7 +1051,7 @@ function papelito_tracking_register_manual_shipment( $order, int $vendor_id, str
 	if ( method_exists( $order, 'add_order_note' ) ) {
 		$order->add_order_note(
 			sprintf(
-				'Postagem manual confirmada pelo vendor no envio #%d. Codigo: %s. Servico: %s. Data: %s.',
+				'Postagem manual confirmada pelo vendor no envio #%d. Código: %s. Serviço: %s. Data: %s.',
 				$shipment_id,
 				$normalized,
 				$service_code,
@@ -1116,7 +1116,7 @@ function papelito_tracking_update_manual_shipment( $order, int $vendor_id, int $
 			'last_event_code'        => null,
 			'last_event_type'        => 'manual',
 			'last_event_at'          => current_time( 'mysql', true ),
-			'last_event_description' => 'Codigo de rastreamento corrigido pelo responsavel pelo envio.',
+			'last_event_description' => 'Código de rastreamento corrigido pelo responsável pelo envio.',
 			'last_event_location'    => null,
 			'next_poll_at'           => current_time( 'mysql', true ),
 			'last_error_code'        => null,
@@ -1138,7 +1138,7 @@ function papelito_tracking_update_manual_shipment( $order, int $vendor_id, int $
 	if ( $shipment_vendor_id <= 0 ) {
 		$shipment_vendor_id = $vendor_id;
 	}
-	$order->add_order_note( sprintf( 'Codigo de rastreamento do envio #%d corrigido de %s para %s pelo %s.', $shipment_id, $row['tracking_code'], $normalized, $is_admin ? 'administrador' : 'vendor' ) );
+	$order->add_order_note( sprintf( 'Código de rastreamento do envio #%d corrigido de %s para %s pelo %s.', $shipment_id, $row['tracking_code'], $normalized, $is_admin ? 'administrador' : 'vendor' ) );
 	$order->save();
 	if ( $shipment_vendor_id > 0 ) {
 		papelito_tracking_notify_manual_shipment( $order_id, $shipment_vendor_id, $shipment_id, $normalized, true );
@@ -1194,7 +1194,7 @@ function papelito_tracking_admin_release_manual_fallback( $order, int $admin_id,
 	}
 	$wpdb->query( 'COMMIT' );
 	if ( method_exists( $order, 'add_order_note' ) ) {
-		$order->add_order_note( sprintf( 'Fallback manual liberado pelo suporte (usuario #%d). Motivo: %s. Evidencia: %s', $admin_id, $reason, $evidence ) );
+		$order->add_order_note( sprintf( 'Fallback manual liberado pelo suporte (usuário #%d). Motivo: %s. Evidencia: %s', $admin_id, $reason, $evidence ) );
 		$order->save();
 	}
 	papelito_tracking_log( 'manual_fallback_released', array( 'order_id' => $order_id, 'shipment_id' => $row['id'], 'vendor_id' => $row['vendor_id'], 'origin' => 'support' ) );

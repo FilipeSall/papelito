@@ -718,7 +718,7 @@ do_action(
 	10,
 	array(
 		'promo_type'      => 'flash_sale',
-		'promo_label'     => 'Oferta Relampago',
+		'promo_label'     => 'Oferta Relâmpago',
 		'promo_event_key' => 'flash_sale:10:2026-06-12T14:00:00+00:00',
 		'discount_percent' => 30,
 		'regular_price'    => 20,
@@ -790,7 +790,7 @@ $campaign = array(
 	'ends_at'         => gmdate( DATE_ATOM, $real_now + 10800 ),
 	'productIds'      => array( 10 ),
 	'discountPercent' => 40,
-	'label'           => 'Oferta Relampago',
+	'label'           => 'Oferta Relâmpago',
 	'supportingText'  => '',
 );
 update_option( papelito_flash_sale_option_name(), $campaign, false );

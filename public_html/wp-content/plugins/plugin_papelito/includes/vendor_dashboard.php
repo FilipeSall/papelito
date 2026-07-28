@@ -568,7 +568,7 @@ function papelito_vendor_dashboard_update_order_status( int $order_id, int $vend
 	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $next && function_exists( 'papelito_tracking_order_shipments' ) && ! empty( papelito_tracking_order_shipments( $order_id ) ) ) {
 		return new WP_Error(
 			'papelito_vendor_shipment_cancel_requires_review',
-			'Este pedido ja possui uma pre-postagem. Solicite o cancelamento administrativo para cancelar tambem nos Correios.',
+			'Este pedido já possui uma pre-postagem. Solicite o cancelamento administrativo para cancelar também nos Correios.',
 			array( 'status' => 409 )
 		);
 	}
@@ -795,7 +795,7 @@ function papelito_vendor_dashboard_validate_coverage_overlap( array $ranges, arr
 		if ( $candidate_min <= $range_max && $candidate_max >= $range_min ) {
 			return new WP_Error(
 				'papelito_vendor_coverage_overlap',
-				'Esta faixa se sobrepoe a uma faixa ja cadastrada.',
+				'Esta faixa se sobrepoe a uma faixa já cadastrada.',
 				array( 'status' => 409 )
 			);
 		}

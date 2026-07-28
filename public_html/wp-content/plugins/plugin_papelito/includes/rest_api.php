@@ -62,7 +62,7 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 	if ( ! function_exists( 'wc_get_product' ) ) {
 		return new WP_Error(
 			'papelito_woocommerce_unavailable',
-			'WooCommerce nao esta disponivel para consulta de cobertura.',
+			'WooCommerce não esta disponível para consulta de cobertura.',
 			array( 'status' => 500 )
 		);
 	}
@@ -70,7 +70,7 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 	if ( ! wc_get_product( $product_id ) ) {
 		return new WP_Error(
 			'papelito_product_not_found',
-			'Produto nao encontrado.',
+			'Produto não encontrado.',
 			array( 'status' => 404 )
 		);
 	}
@@ -84,7 +84,7 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 	) {
 		return new WP_Error(
 			'papelito_coverage_dependencies_missing',
-			'Dependencias de cobertura indisponiveis.',
+			'Dependencias de cobertura indisponíveis.',
 			array( 'status' => 500 )
 		);
 	}
@@ -94,7 +94,7 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 	if ( '' === $cep_n ) {
 		return new WP_Error(
 			'papelito_coverage_cep_invalid',
-			'CEP informado invalido.',
+			'CEP informado inválido.',
 			array( 'status' => 422 )
 		);
 	}
@@ -408,7 +408,7 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty, 
 	) {
 		return new WP_Error(
 			'papelito_coverage_dependencies_missing',
-			'Dependencias de cobertura indisponiveis.',
+			'Dependencias de cobertura indisponíveis.',
 			array( 'status' => 500 )
 		);
 	}
@@ -431,7 +431,7 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty, 
 	if ( '' === $cep_n ) {
 		return new WP_Error(
 			'papelito_coverage_cep_invalid',
-			'CEP informado invalido.',
+			'CEP informado inválido.',
 			array( 'status' => 422 )
 		);
 	}
@@ -797,7 +797,7 @@ add_action(
 					if ( empty( $product_ids ) ) {
 						return new WP_Error(
 							'papelito_invalid_product_ids',
-							'Informe ao menos um produto valido.',
+							'Informe ao menos um produto válido.',
 							array( 'status' => 400 )
 						);
 					}

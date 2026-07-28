@@ -31,7 +31,7 @@ function papelito_pagarme_simulator_permission( WP_REST_Request $request ) {
 	if ( ! papelito_pagarme_simulator_enabled() ) {
 		return new WP_Error(
 			'papelito_pagarme_simulator_disabled',
-			'Simulador Pagar.me indisponivel neste ambiente.',
+			'Simulador Pagar.me indisponível neste ambiente.',
 			array( 'status' => 404 )
 		);
 	}
@@ -200,7 +200,7 @@ function papelito_pagarme_handle_simulate_webhook( WP_REST_Request $request ) {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
 		return new WP_Error(
 			'papelito_pagarme_simulator_order_not_found',
-			'Pedido nao encontrado.',
+			'Pedido não encontrado.',
 			array( 'status' => 404 )
 		);
 	}

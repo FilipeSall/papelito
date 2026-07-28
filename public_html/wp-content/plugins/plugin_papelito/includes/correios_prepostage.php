@@ -112,7 +112,7 @@ function papelito_correios_prepostage_readiness() {
 	if ( 'disabled' === $mode ) {
 		return papelito_correios_prepostage_error(
 			'papelito_correios_integration_not_configured',
-			'A geracao automatica de etiquetas ainda nao foi configurada. Use o fluxo manual ou fale com o suporte.',
+			'A geração automática de etiquetas ainda não foi configurada. Use o fluxo manual ou fale com o suporte.',
 			503,
 			'not_configured'
 		);
@@ -130,7 +130,7 @@ function papelito_correios_prepostage_readiness() {
 	if ( 'real' === $mode && function_exists( 'has_filter' ) && false === has_filter( 'papelito_correios_generate_prepostage' ) ) {
 		return papelito_correios_prepostage_error(
 			'papelito_correios_provider_not_implemented',
-			'A integracao de Pre-Postagem ainda nao foi conectada ao contrato dos Correios.',
+			'A integração de Pre-Postagem ainda não foi conectada ao contrato dos Correios.',
 			503,
 			'not_configured'
 		);
@@ -309,7 +309,7 @@ final class Papelito_Correios_Mock_Prepostage_Adapter implements Papelito_Correi
 			$unknown = 'unknown' === ( $health['status'] ?? '' );
 			return papelito_correios_prepostage_error(
 				$unknown ? 'papelito_correios_dev_health_unknown' : 'papelito_correios_dev_health_unhealthy',
-				$unknown ? 'Nao foi possivel confirmar a saude da integracao no teste local.' : 'A verificacao local indicou que a integracao nao esta disponivel.',
+				$unknown ? 'Não foi possível confirmar a saúde da integração no teste local.' : 'A verificacao local indicou que a integração não esta disponível.',
 				$unknown ? 503 : 424,
 				$unknown ? 'dev_health_unknown' : 'dev_health_unhealthy',
 				$unknown

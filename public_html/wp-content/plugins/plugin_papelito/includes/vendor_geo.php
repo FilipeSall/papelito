@@ -267,14 +267,14 @@ function papelito_admin_recompute_vendor_geo( WP_REST_Request $request ) {
 
 	if ( ! $user instanceof WP_User ) {
 		return new WP_REST_Response(
-			array( 'ok' => false, 'message' => 'Vendor nao encontrado.' ),
+			array( 'ok' => false, 'message' => 'Vendor não encontrado.' ),
 			404
 		);
 	}
 
 	if ( ! in_array( 'seller', (array) $user->roles, true ) ) {
 		return new WP_REST_Response(
-			array( 'ok' => false, 'message' => 'Usuario nao possui role de vendor.' ),
+			array( 'ok' => false, 'message' => 'Usuário não possui role de vendor.' ),
 			409
 		);
 	}
@@ -292,7 +292,7 @@ if ( '' === papelito_geo_normalize_cep( $cep_raw ) ) {
 		delete_user_meta( $user_id, 'cep_lat' );
 		delete_user_meta( $user_id, 'cep_lng' );
 		return new WP_REST_Response(
-			array( 'ok' => false, 'message' => 'Nao foi possivel geocodificar o CEP. Tente novamente.' ),
+			array( 'ok' => false, 'message' => 'Não foi possível geocodificar o CEP. Tente novamente.' ),
 			422
 		);
 	}
