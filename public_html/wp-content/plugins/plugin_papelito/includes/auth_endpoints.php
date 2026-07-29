@@ -3,7 +3,8 @@
  * Endpoints REST de autenticação headless.
  *
  * Expoe GET /wp-json/papelito/v1/auth/me e POST /auth/google, /auth/register,
- * /auth/verify-email e /auth/resend-verification. O login por credenciais e o
+ * /auth/verify-email, /auth/resend-verification e /auth/welcome-toast/claim.
+ * O login por credenciais e o
  * fluxo Google continuam compatíveis com o par {authToken, refreshToken}
  * usado pela mutation `login` do plugin wp-graphql-jwt-authentication.
  *
@@ -13,6 +14,12 @@
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
+
+/**
+ * Maquina de estados do toast de boas-vindas: ausente (legado) -> 'pending' (conta criada) ->
+ * 'shown' (reivindicado uma unica vez, para sempre).
+ */
+const PAPELITO_WELCOME_TOAST_META = 'papelito_welcome_toast_status';
 
 add_filter(
 	'graphql_jwt_auth_expire',
@@ -284,6 +291,98 @@ function papelito_auth_mark_email_verified( int $user_id ): void {
 function papelito_auth_mark_email_pending( int $user_id ): void {
 	update_user_meta( $user_id, 'papelito_email_verification_status', 'pending' );
 	delete_user_meta( $user_id, 'papelito_email_verified_at' );
+}
+
+/**
+ * Arma o toast de boas-vindas para uma conta recem-criada.
+ *
+ * add_user_meta com $unique = true e no-op quando a meta ja existe (em 'pending' ou 'shown'),
+ * entao rearmar e impossivel por construcao. So deve ser chamado nos pontos de criacao de conta:
+ * chamar em papelito_auth_mark_email_verified() rearmaria a base toda, porque o login Google de
+ * usuario existente passa por la a cada autenticacao.
+ *
+ * Contas anteriores a este fluxo ficam sem a meta e nunca sao elegiveis — nao ha backfill.
+ *
+ * @param int $user_id
+ * @return void
+ */
+function papelito_auth_welcome_toast_arm( int $user_id ): void {
+	add_user_meta( $user_id, PAPELITO_WELCOME_TOAST_META, 'pending', true );
+}
+
+/**
+ * Reivindica a exibicao unica do toast de boas-vindas.
+ *
+ * Elegibilidade: conta armada no cadastro + e-mail confirmado + conta aprovada (membership ativa
+ * numa empresa ativa, que e o onboardingStatus 'complete' do contexto B2B). As checagens vao da
+ * mais barata para a mais cara: a leitura da usermeta corta usuario legado e quem ja viu antes de
+ * tocar no contexto de empresa.
+ *
+ * A transicao 'pending' -> 'shown' usa update_user_meta com $prev_value, que vira
+ * UPDATE ... WHERE meta_value = 'pending'. Em concorrencia (duas abas, dois dispositivos) apenas
+ * um chamador recebe true.
+ *
+ * @param int $user_id
+ * @return array{shown:bool,firstName:string}
+ */
+function papelito_auth_welcome_toast_claim( int $user_id ): array {
+	$denied = array(
+		'shown'     => false,
+		'firstName' => '',
+	);
+
+	if ( 'pending' !== (string) get_user_meta( $user_id, PAPELITO_WELCOME_TOAST_META, true ) ) {
+		return $denied;
+	}
+
+	if ( papelito_auth_requires_email_verification( $user_id ) ) {
+		return $denied;
+	}
+
+	$context = function_exists( 'papelito_company_context' ) ? papelito_company_context( $user_id ) : array();
+
+	if ( 'complete' !== (string) ( $context['onboardingStatus'] ?? '' ) ) {
+		return $denied;
+	}
+
+	$user = get_userdata( $user_id );
+
+	if ( ! $user instanceof WP_User ) {
+		return $denied;
+	}
+
+	if ( ! update_user_meta( $user_id, PAPELITO_WELCOME_TOAST_META, 'shown', 'pending' ) ) {
+		return $denied;
+	}
+
+	update_user_meta( $user_id, 'papelito_welcome_toast_shown_at', papelito_auth_current_utc_mysql() );
+
+	return array(
+		'shown'     => true,
+		'firstName' => papelito_auth_welcome_toast_first_name( $user ),
+	);
+}
+
+/**
+ * Primeiro nome exibido no toast, com fallback para o display_name.
+ *
+ * @param WP_User $user
+ * @return string
+ */
+function papelito_auth_welcome_toast_first_name( WP_User $user ): string {
+	$first_name = trim( (string) get_user_meta( $user->ID, 'first_name', true ) );
+
+	if ( '' === $first_name ) {
+		$first_name = trim( (string) $user->display_name );
+	}
+
+	if ( '' === $first_name ) {
+		return '';
+	}
+
+	$parts = preg_split( '/\s+/', $first_name );
+
+	return is_array( $parts ) && isset( $parts[0] ) ? (string) $parts[0] : '';
 }
 
 /**
@@ -698,6 +797,7 @@ function papelito_auth_find_or_create_google_user( array $payload ) {
 	papelito_b2b_mark_cohort( $user_id );
 	papelito_company_onboarding_mark_google( $user_id );
 	papelito_auth_mark_email_verified( $user_id );
+	papelito_auth_welcome_toast_arm( $user_id );
 
 	$user = get_userdata( $user_id );
 
@@ -805,6 +905,7 @@ function papelito_auth_create_registered_user( array $data ) {
 
 	update_user_meta( $user_id, 'papelito_profile_complete', '0' );
 	papelito_auth_mark_email_pending( $user_id );
+	papelito_auth_welcome_toast_arm( $user_id );
 
 	$profile = papelito_company_profile_upsert( $user_id, (string) $data['cpf'], (string) ( $data['birth_date'] ?? '' ) );
 	if ( is_wp_error( $profile ) ) { wp_delete_user( $user_id ); return $profile; }
@@ -849,6 +950,33 @@ add_action(
 
 					return new WP_REST_Response(
 						papelito_auth_build_identity_response( $user ),
+						200
+					);
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/auth/welcome-toast/claim',
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => static function (): bool {
+					return is_user_logged_in();
+				},
+				'callback'            => static function () {
+					$user = wp_get_current_user();
+
+					if ( ! $user instanceof WP_User || ! $user->exists() ) {
+						return new WP_Error(
+							'papelito_not_authenticated',
+							'Usuário não autenticado.',
+							array( 'status' => 401 )
+						);
+					}
+
+					return new WP_REST_Response(
+						papelito_auth_welcome_toast_claim( $user->ID ),
 						200
 					);
 				},
