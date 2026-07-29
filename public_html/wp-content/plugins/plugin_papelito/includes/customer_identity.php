@@ -298,6 +298,30 @@ function papelito_customer_profile_upsert( int $user_id, string $raw_cpf, array 
 }
 
 /**
+ * Remove o perfil protegido de customer associado ao usuário.
+ */
+function papelito_customer_profile_delete( int $user_id ): bool {
+	global $wpdb;
+
+	return false !== $wpdb->delete(
+		papelito_customer_profiles_table_name(),
+		array( 'user_id' => $user_id ),
+		array( '%d' )
+	);
+}
+
+if ( function_exists( 'add_action' ) ) {
+	add_action(
+		'delete_user',
+		static function ( int $user_id ): void {
+			papelito_customer_profile_delete( $user_id );
+		},
+		10,
+		1
+	);
+}
+
+/**
  * Localiza o user_id de um perfil pelo CPF (via HMAC), sem expor o CPF.
  *
  * @return int|null|WP_Error

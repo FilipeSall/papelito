@@ -115,6 +115,67 @@ function papelito_company_get_owner_user_id( int $company_id ): ?int {
 }
 
 /**
+ * Remove dados de empresas criadas por um usuário excluído.
+ */
+function papelito_company_cleanup_deleted_user( int $user_id ): void {
+	global $wpdb;
+
+	$tables = papelito_company_table_names();
+	$owned_companies = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT id FROM {$tables['companies']} WHERE owner_user_id = %d OR created_by_user_id = %d",
+			$user_id,
+			$user_id
+		),
+		ARRAY_A
+	);
+
+	foreach ( (array) $owned_companies as $company ) {
+		$company_id = (int) ( $company['id'] ?? 0 );
+		if ( $company_id <= 0 ) {
+			continue;
+		}
+
+		$other_members = (int) $wpdb->get_var(
+			$wpdb->prepare(
+				"SELECT COUNT(*) FROM {$tables['members']} WHERE company_id = %d AND user_id <> %d",
+				$company_id,
+				$user_id
+			)
+		);
+
+		$wpdb->delete(
+			$tables['members'],
+			array( 'company_id' => $company_id, 'user_id' => $user_id ),
+			array( '%d', '%d' )
+		);
+
+		if ( $other_members > 0 ) {
+			$wpdb->update(
+				$tables['companies'],
+				array( 'owner_user_id' => null, 'ownership_status' => 'pending', 'company_status' => 'onboarding' ),
+				array( 'id' => $company_id ),
+				array( '%d', '%s', '%s' ),
+				array( '%d' )
+			);
+			continue;
+		}
+
+		$wpdb->delete( $tables['invitations'], array( 'company_id' => $company_id ), array( '%d' ) );
+		$wpdb->delete( $tables['audit'], array( 'company_id' => $company_id ), array( '%d' ) );
+		$wpdb->delete( $tables['members'], array( 'company_id' => $company_id ), array( '%d' ) );
+		$wpdb->delete( $tables['companies'], array( 'id' => $company_id ), array( '%d' ) );
+	}
+
+	$wpdb->delete( $tables['idempotency'], array( 'actor_user_id' => $user_id ), array( '%d' ) );
+	$wpdb->delete( $tables['onboarding'], array( 'user_id' => $user_id ), array( '%d' ) );
+}
+
+if ( function_exists( 'add_action' ) ) {
+	add_action( 'delete_user', 'papelito_company_cleanup_deleted_user', 20, 1 );
+}
+
+/**
  * Atualiza campos de uma empresa.
  *
  * @param array<string,mixed> $fields
