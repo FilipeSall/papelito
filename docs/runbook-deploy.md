@@ -13,6 +13,10 @@ Em produção, defina `PAPELITO_FRONTEND_URL=https://marketplace.papelito.com` e
 `https://marketplace.papelito.com` em `PAPELITO_ALLOWED_ORIGINS`. No Vercel, defina
 `NEXTAUTH_URL=https://marketplace.papelito.com` para o mesmo ambiente de produção.
 
+Durante a transição, `https://papelito-web.vercel.app` pode permanecer na allowlist de
+CORS como fallback. Não use esse domínio em `PAPELITO_FRONTEND_URL` ou `NEXTAUTH_URL`;
+ele deve redirecionar para o domínio canônico na Vercel.
+
 ## Deploy manual (workflow_dispatch)
 GitHub → Actions → Deploy → Run workflow → escolher target/artifact.
 
