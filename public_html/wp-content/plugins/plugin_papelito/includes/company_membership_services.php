@@ -46,6 +46,13 @@ function papelito_company_member_change_role( int $actor_user_id, int $company_i
 		)
 	);
 
+	if ( ! in_array( $new_role, array( 'owner', 'admin' ), true ) ) {
+		$revoked = papelito_company_invitations_revoke_by_inviter( $company_id, $target_user_id, $actor_user_id, 'inviter_lost_management_permission' );
+		if ( $revoked > 0 ) {
+			papelito_company_audit( $company_id, $actor_user_id, 'invitations_revoked_after_role_change', array( 'target_user_id' => $target_user_id, 'count' => $revoked ) );
+		}
+	}
+
 	return (array) papelito_company_member_get( $company_id, $target_user_id );
 }
 
@@ -94,6 +101,12 @@ function papelito_company_member_set_status( int $actor_user_id, int $company_id
 	}
 
 	papelito_company_audit( $company_id, $actor_user_id, 'member_' . $action, array( 'target_user_id' => $target_user_id ) );
+	if ( in_array( $action, array( 'suspend', 'revoke' ), true ) ) {
+		$revoked = papelito_company_invitations_revoke_by_inviter( $company_id, $target_user_id, $actor_user_id, 'inviter_membership_' . $action );
+		if ( $revoked > 0 ) {
+			papelito_company_audit( $company_id, $actor_user_id, 'invitations_revoked_after_member_' . $action, array( 'target_user_id' => $target_user_id, 'count' => $revoked ) );
+		}
+	}
 
 	return (array) papelito_company_member_get( $company_id, $target_user_id );
 }
@@ -162,6 +175,10 @@ function papelito_company_transfer_ownership( int $actor_user_id, int $company_i
 	if ( null === $target || 'active' !== $target['member_status'] ) {
 		return new WP_Error( 'papelito_b2b_transfer_target_invalid', 'O destinatário precisa ser um membro ativo.', array( 'status' => 422 ) );
 	}
+	$target_context = papelito_company_context( $target_user_id );
+	if ( 'verified' !== (string) ( $target_context['identityStatus'] ?? '' ) ) {
+		return new WP_Error( 'papelito_b2b_transfer_target_identity_required', 'O destinatário deve concluir a validação de responsável antes da transferência.', array( 'status' => 422 ) );
+	}
 
 	global $wpdb;
 	$tables = papelito_company_table_names();
@@ -193,6 +210,7 @@ function papelito_company_transfer_ownership( int $actor_user_id, int $company_i
 			array(
 				'member_role'             => 'owner',
 				'member_status'           => 'active',
+				'identity_requirement'    => 'required',
 				'role_changed_at'         => $now,
 				'role_changed_by_user_id' => $actor_user_id,
 				'updated_at'              => $now,

@@ -280,6 +280,7 @@ function papelito_auth_mark_email_verified( int $user_id ): void {
 	update_user_meta( $user_id, 'papelito_email_verified_at', papelito_auth_current_utc_mysql() );
 	delete_user_meta( $user_id, 'papelito_email_verification_token_hash' );
 	delete_user_meta( $user_id, 'papelito_email_verification_token_expires_at' );
+	delete_user_meta( $user_id, 'papelito_post_email_verification_path' );
 }
 
 /**
@@ -465,6 +466,10 @@ function papelito_auth_send_verification_email( WP_User $user, string $token ): 
 	}
 
 	$link       = papelito_auth_build_email_verification_link( $recipient, $token );
+	$return_path = (string) get_user_meta( $user->ID, 'papelito_post_email_verification_path', true );
+	if ( '/convite' === $return_path ) {
+		$link .= '&callbackUrl=' . rawurlencode( $return_path );
+	}
 	$subject    = 'Confirme seu e-mail - Papelito';
 	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
 	$body_lines = array(
@@ -926,6 +931,52 @@ function papelito_auth_create_registered_user( array $data ) {
 		: new WP_Error( 'papelito_user_lookup_failed', 'Falha ao carregar usuário recém-criado.', array( 'status' => 500 ) );
 }
 
+/** Validação mínima para uma conta criada exclusivamente a partir de convite empresarial. */
+function papelito_auth_validate_invitation_register_payload( array $data ) {
+	$errors = new WP_Error();
+	$email = strtolower( sanitize_email( trim( (string) ( $data['email'] ?? '' ) ) ) );
+	if ( '' === $email || ! is_email( $email ) ) {
+		$errors->add( 'email', 'E-mail inválido.' );
+	}
+	if ( strlen( (string) ( $data['password'] ?? '' ) ) < 8 ) {
+		$errors->add( 'password', 'Senha precisa ter pelo menos 8 caracteres.' );
+	}
+	foreach ( array( 'first_name', 'last_name', 'token' ) as $field ) {
+		if ( '' === trim( (string) ( $data[ $field ] ?? '' ) ) ) {
+			$errors->add( $field, 'Dados do convite incompletos.' );
+		}
+	}
+	return $errors->has_errors() ? $errors : null;
+}
+
+/** Cria uma conta sem perfil CPF; a autorização empresarial só é ativada no aceite posterior. */
+function papelito_auth_create_invited_user( array $data ): WP_User|WP_Error {
+	$email = strtolower( sanitize_email( trim( (string) $data['email'] ) ) );
+	if ( email_exists( $email ) ) {
+		return new WP_Error( 'papelito_invitation_registration_unavailable', 'Não foi possível criar uma conta para este convite.', array( 'status' => 409 ) );
+	}
+	$user_id = wp_insert_user(
+		array(
+			'user_login' => $email,
+			'user_email' => $email,
+			'user_pass' => (string) $data['password'],
+			'first_name' => sanitize_text_field( (string) $data['first_name'] ),
+			'last_name' => sanitize_text_field( (string) $data['last_name'] ),
+			'role' => 'customer',
+		)
+	);
+	if ( is_wp_error( $user_id ) ) {
+		return $user_id;
+	}
+	update_user_meta( $user_id, 'papelito_profile_complete', '0' );
+	papelito_auth_mark_email_pending( $user_id );
+	papelito_auth_welcome_toast_arm( $user_id );
+	papelito_b2b_mark_cohort( $user_id );
+	update_user_meta( $user_id, 'papelito_post_email_verification_path', '/convite' );
+	$user = get_userdata( $user_id );
+	return $user instanceof WP_User ? $user : new WP_Error( 'papelito_user_lookup_failed', 'Falha ao carregar usuário recém-criado.', array( 'status' => 500 ) );
+}
+
 add_action(
 	'rest_api_init',
 	static function (): void {
@@ -1061,6 +1112,9 @@ add_action(
 					}
 
 					$onboarding_type = (string) ( $data['onboarding_type'] ?? $data['intent'] ?? 'create_company' );
+					if ( 'join_company' === $onboarding_type ) {
+						return new WP_Error( 'papelito_b2b_invite_required', 'Para acessar uma empresa existente, solicite um convite por e-mail ao administrador.', array( 'status' => 422 ) );
+					}
 					if ( 'create_company' === $onboarding_type ) {
 						$owner_validation = papelito_company_validate_owner_registry(
 							(string) ( $data['cpf'] ?? '' ),
@@ -1087,6 +1141,48 @@ add_action(
 							'requiresEmailVerification' => true,
 							'email'                     => $user->user_email,
 							'emailSent'                 => ! is_wp_error( $dispatch ),
+						),
+						201
+					);
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/auth/register-invitation',
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => '__return_true',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					if ( ! papelito_b2b_company_model_enabled() || ! papelito_auth_rate_limit( 'register_invitation', 10, 60 ) ) {
+						return new WP_Error( 'papelito_rate_limited', 'Não foi possível processar este cadastro agora.', array( 'status' => 429 ) );
+					}
+					$data = $request->get_json_params();
+					if ( ! is_array( $data ) ) {
+						$data = $request->get_params();
+					}
+					$validation = papelito_auth_validate_invitation_register_payload( (array) $data );
+					if ( is_wp_error( $validation ) ) {
+						$validation->add_data( array( 'status' => 422 ) );
+						return $validation;
+					}
+					$invitation = papelito_company_invitation_find_pending_by_token( (string) $data['token'] );
+					$email = strtolower( sanitize_email( trim( (string) $data['email'] ) ) );
+					if ( null === $invitation || ! hash_equals( strtolower( (string) $invitation['invited_email'] ), $email ) ) {
+						return new WP_Error( 'papelito_invitation_registration_unavailable', 'Não foi possível criar uma conta para este convite.', array( 'status' => 409 ) );
+					}
+					$user = papelito_auth_create_invited_user( (array) $data );
+					if ( is_wp_error( $user ) ) {
+						return $user;
+					}
+					$dispatch = papelito_auth_dispatch_verification_email( $user );
+					return new WP_REST_Response(
+						array(
+							'ok' => true,
+							'requiresEmailVerification' => true,
+							'email' => $user->user_email,
+							'emailSent' => ! is_wp_error( $dispatch ),
 						),
 						201
 					);

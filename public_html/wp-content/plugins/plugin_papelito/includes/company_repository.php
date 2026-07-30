@@ -225,6 +225,7 @@ function papelito_company_member_upsert( int $company_id, int $user_id, array $d
 
 	$optional_fields = array(
 		'membership_origin',
+		'identity_requirement',
 		'invited_by_user_id',
 		'approved_by_user_id',
 		'requested_at',
@@ -408,13 +409,13 @@ function papelito_company_invitation_hash_token( string $token ): string {
 /**
  * Cria um convite. Retorna o token em claro (só neste retorno; persiste apenas o hash).
  *
- * @param array<string,mixed> $data invited_role, invited_cpf_hmac, expires_at
+ * @param array<string,mixed> $data invited_role, expires_at
  * @return array{id:int,token:string}|WP_Error
  */
 function papelito_company_invitation_create( int $company_id, string $invited_email, int $invited_by_user_id, array $data = array() ) {
 	global $wpdb;
 
-	$email = sanitize_email( $invited_email );
+	$email = strtolower( sanitize_email( trim( $invited_email ) ) );
 	if ( '' === $email || ! is_email( $email ) ) {
 		return new WP_Error( 'papelito_invitation_invalid_email', 'E-mail do convite inválido.' );
 	}
@@ -431,7 +432,8 @@ function papelito_company_invitation_create( int $company_id, string $invited_em
 	$row    = array(
 		'company_id'         => $company_id,
 		'invited_email'      => $email,
-		'invited_cpf_hmac'   => isset( $data['invited_cpf_hmac'] ) ? (string) $data['invited_cpf_hmac'] : null,
+		// CPF não participa de convites. A coluna legada é preservada somente para migração.
+		'invited_cpf_hmac'   => null,
 		'invited_role'       => isset( $data['invited_role'] ) ? (string) $data['invited_role'] : 'buyer',
 		'token_hash'         => $token_hash,
 		'invitation_status'  => 'pending',
@@ -476,10 +478,45 @@ function papelito_company_invitation_find_pending_by_token( string $token ): ?ar
 	}
 
 	if ( strtotime( (string) $row['expires_at'] ) < time() ) {
+		papelito_company_invitations_expire_due();
 		return null;
 	}
 
 	return $row;
+}
+
+/** Busca o único convite pendente para a combinação empresa + e-mail canônico. */
+function papelito_company_invitation_find_pending_by_email( int $company_id, string $email ): ?array {
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$row = $wpdb->get_row(
+		$wpdb->prepare(
+			"SELECT * FROM {$tables['invitations']} WHERE company_id = %d AND invited_email = %s AND invitation_status = %s AND expires_at > %s ORDER BY id DESC LIMIT 1",
+			$company_id,
+			strtolower( sanitize_email( trim( $email ) ) ),
+			'pending',
+			current_time( 'mysql', true )
+		),
+		ARRAY_A
+	);
+	return null === $row ? null : $row;
+}
+
+/** Revoga convites pendentes emitidos por quem deixou de poder gerir a empresa. */
+function papelito_company_invitations_revoke_by_inviter( int $company_id, int $inviter_user_id, int $actor_user_id, string $reason ): int {
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$result = $wpdb->update(
+		$tables['invitations'],
+		array(
+			'invitation_status' => 'revoked',
+			'revoked_at' => current_time( 'mysql', true ),
+			'revoked_by_user_id' => $actor_user_id,
+			'revoked_reason' => sanitize_text_field( $reason ),
+		),
+		array( 'company_id' => $company_id, 'invited_by_user_id' => $inviter_user_id, 'invitation_status' => 'pending' )
+	);
+	return false === $result ? 0 : (int) $result;
 }
 
 /**
@@ -509,6 +546,24 @@ function papelito_company_invitation_accept( int $invitation_id, int $accepted_b
 	}
 
 	return true;
+}
+
+/** Recusa um convite pendente; o token deixa de poder criar membership. */
+function papelito_company_invitation_decline( int $invitation_id, int $declined_by_user_id ) {
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$result = $wpdb->update(
+		$tables['invitations'],
+		array(
+			'invitation_status' => 'declined',
+			'declined_at' => current_time( 'mysql', true ),
+			'declined_by_user_id' => $declined_by_user_id,
+		),
+		array( 'id' => $invitation_id, 'invitation_status' => 'pending' )
+	);
+	return false === $result || 0 === $result
+		? new WP_Error( 'papelito_invitation_not_declinable', 'Convite não pode ser recusado.', array( 'status' => 409 ) )
+		: true;
 }
 
 /**
@@ -596,6 +651,15 @@ function papelito_company_invitations_expire_due(): int {
 	);
 
 	return (int) $result;
+}
+
+if ( function_exists( 'add_action' ) ) {
+	add_action( 'papelito_company_expire_invitations', 'papelito_company_invitations_expire_due' );
+	add_action( 'init', static function (): void {
+		if ( ! wp_next_scheduled( 'papelito_company_expire_invitations' ) ) {
+			wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', 'papelito_company_expire_invitations' );
+		}
+	} );
 }
 
 /* --- Audit log (sem PII) --- */

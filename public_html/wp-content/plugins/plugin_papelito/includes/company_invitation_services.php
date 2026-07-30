@@ -2,14 +2,14 @@
 /**
  * Convites de empresa (Fase 1B).
  *
- * Owner/admin convida por e-mail (com CPF HMAC opcional), papel e expiração de 7 dias. Só o hash
+ * Owner/admin convida por e-mail, papel e expiração de 7 dias. Só o hash
  * do token é persistido; o token em claro só sai no e-mail e no retorno da criação/reenvio.
  *
  * Aceite (transacional) exige:
  *   - usuário autenticado;
  *   - convite pendente e não expirado;
  *   - e-mail do usuário compatível com invited_email;
- *   - CPF compatível quando o convite estiver vinculado a CPF (invited_cpf_hmac);
+ *   - e-mail da conta já confirmado;
  *   - vínculo ainda não existente para (empresa, usuário);
  *   - invalidação single-use do token no mesmo passo.
  *
@@ -23,7 +23,7 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Cria um convite (owner/admin). Retorna dados públicos + token em claro (uma única vez).
  *
- * @param array<string,mixed> $input invited_email, invited_role, invited_cpf?, ttl_days?
+ * @param array<string,mixed> $input invited_email, invited_role, ttl_days?
  * @return array{id:int,token:string,invited_email:string,invited_role:string}|WP_Error
  */
 function papelito_company_invitation_issue( int $actor_user_id, int $company_id, array $input ) {
@@ -35,12 +35,9 @@ function papelito_company_invitation_issue( int $actor_user_id, int $company_id,
 		return new WP_Error( 'papelito_b2b_forbidden', 'Ação não permitida para seu papel.', array( 'status' => 403 ) );
 	}
 
-	$email = sanitize_email( (string) ( $input['invited_email'] ?? '' ) );
+	$email = strtolower( sanitize_email( trim( (string) ( $input['invited_email'] ?? '' ) ) ) );
 	if ( '' === $email || ! is_email( $email ) ) {
 		return new WP_Error( 'papelito_b2b_invitation_invalid_email', 'E-mail do convite inválido.', array( 'status' => 422 ) );
-	}
-	if ( email_exists( $email ) ) {
-		return new WP_Error( 'papelito_b2b_invitation_email_registered', 'Este e-mail já possui uma conta cadastrada.', array( 'status' => 422 ) );
 	}
 
 	$role = (string) ( $input['invited_role'] ?? 'buyer' );
@@ -54,15 +51,15 @@ function papelito_company_invitation_issue( int $actor_user_id, int $company_id,
 		$data['ttl_days'] = (int) $input['ttl_days'];
 	}
 
-	if ( ! empty( $input['invited_cpf'] ) ) {
-		if ( ! papelito_validate_cpf( (string) $input['invited_cpf'] ) ) {
-			return new WP_Error( 'papelito_b2b_invitation_invalid_cpf', 'CPF do convite inválido.', array( 'status' => 422 ) );
+	$existing = papelito_company_invitation_find_pending_by_email( $company_id, $email );
+	if ( null !== $existing ) {
+		$reissued = papelito_company_invitation_resend( (int) $existing['id'] );
+		if ( is_wp_error( $reissued ) ) {
+			return $reissued;
 		}
-		$hmac = papelito_cpf_hmac( (string) $input['invited_cpf'] );
-		if ( is_wp_error( $hmac ) ) {
-			return $hmac;
-		}
-		$data['invited_cpf_hmac'] = $hmac;
+		papelito_company_audit( $company_id, $actor_user_id, 'member_invitation_resent', array( 'invitation_id' => (int) $existing['id'] ) );
+		papelito_company_invitation_send_email( $company_id, $email, $reissued['token'] );
+		return array( 'id' => (int) $existing['id'], 'token' => $reissued['token'], 'invited_email' => $email, 'invited_role' => (string) $existing['invited_role'] );
 	}
 
 	$created = papelito_company_invitation_create( $company_id, $email, $actor_user_id, $data );
@@ -77,7 +74,6 @@ function papelito_company_invitation_issue( int $actor_user_id, int $company_id,
 		array(
 			'invitation_id' => $created['id'],
 			'invited_role'  => $role,
-			'cpf_locked'    => isset( $data['invited_cpf_hmac'] ),
 		)
 	);
 	papelito_company_invitation_send_email( $company_id, $email, $created['token'] );
@@ -161,7 +157,7 @@ function papelito_company_invitation_authorize_target( int $actor_user_id, int $
  * Retorna apenas o estritamente necessário para orientar o usuário; nunca CNPJ completo,
  * membros ou dados fiscais.
  *
- * @return array{invitationId:int,companyName:string,invitedRole:string,invitedEmail:string,cpfLocked:bool}|WP_Error
+ * @return array{invitationId:int,companyName:string,invitedRole:string,invitedEmail:string}|WP_Error
  */
 function papelito_company_invitation_preview( string $token ) {
 	$invitation = papelito_company_invitation_find_pending_by_token( $token );
@@ -177,7 +173,6 @@ function papelito_company_invitation_preview( string $token ) {
 		'companyName'  => $name,
 		'invitedRole'  => (string) $invitation['invited_role'],
 		'invitedEmail' => (string) $invitation['invited_email'],
-		'cpfLocked'    => ! empty( $invitation['invited_cpf_hmac'] ),
 	);
 }
 
@@ -202,24 +197,25 @@ function papelito_company_invitation_accept_token( int $user_id, string $token )
 		return new WP_Error( 'papelito_b2b_invitation_email_mismatch', 'Este convite foi enviado para outro e-mail.', array( 'status' => 403 ) );
 	}
 
-	// Quando o convite trava CPF, o CPF do perfil precisa corresponder ao HMAC.
-	if ( ! empty( $invitation['invited_cpf_hmac'] ) ) {
-		$cpf = papelito_customer_profile_get_cpf( $user_id );
-		if ( is_wp_error( $cpf ) || null === $cpf ) {
-			return new WP_Error( 'papelito_b2b_invitation_cpf_required', 'Complete seu perfil (CPF) para aceitar este convite.', array( 'status' => 422 ) );
-		}
-		$hmac = papelito_cpf_hmac( (string) $cpf );
-		if ( is_wp_error( $hmac ) || ! hash_equals( (string) $invitation['invited_cpf_hmac'], (string) $hmac ) ) {
-			return new WP_Error( 'papelito_b2b_invitation_cpf_mismatch', 'Este convite está vinculado a outro CPF.', array( 'status' => 403 ) );
-		}
+	if ( function_exists( 'papelito_auth_requires_email_verification' ) && papelito_auth_requires_email_verification( $user_id ) ) {
+		return new WP_Error( 'papelito_b2b_invitation_email_unverified', 'Confirme o e-mail destinatário antes de aceitar o convite.', array( 'status' => 422 ) );
 	}
 
 	$company_id = (int) $invitation['company_id'];
 
-	// Vínculo não pode já existir (evita "aceitar" o que já é membro ativo).
+	// Aceitar duas vezes para um membro ativo é idempotente: consome este token, sem duplicar o
+	// vínculo N:N. Isso também elimina um convite pendente que se tornou redundante.
 	$existing = papelito_company_member_get( $company_id, $user_id );
-	if ( null !== $existing && in_array( (string) $existing['member_status'], array( 'active', 'suspended' ), true ) ) {
-		return new WP_Error( 'papelito_b2b_membership_exists', 'Você já faz parte desta empresa.', array( 'status' => 409 ) );
+	if ( null !== $existing && 'active' === (string) $existing['member_status'] ) {
+		$accepted = papelito_company_invitation_accept( (int) $invitation['id'], $user_id );
+		if ( is_wp_error( $accepted ) ) {
+			return $accepted;
+		}
+		papelito_company_audit( $company_id, $user_id, 'invitation_accepted_existing_member', array( 'invitation_id' => (int) $invitation['id'] ) );
+		return papelito_company_context( $user_id );
+	}
+	if ( null !== $existing && 'suspended' === (string) $existing['member_status'] ) {
+		return new WP_Error( 'papelito_b2b_membership_suspended', 'Seu acesso a esta empresa está suspenso.', array( 'status' => 409 ) );
 	}
 
 	global $wpdb;
@@ -241,6 +237,7 @@ function papelito_company_invitation_accept_token( int $user_id, string $token )
 				'invited_by_user_id'  => (int) $invitation['invited_by_user_id'],
 				'approved_by_user_id' => (int) $invitation['invited_by_user_id'],
 				'approved_at'         => current_time( 'mysql', true ),
+				'identity_requirement' => 'not_required',
 			)
 		);
 		if ( is_wp_error( $member ) ) {
@@ -268,6 +265,21 @@ function papelito_company_invitation_accept_token( int $user_id, string $token )
 	);
 
 	return papelito_company_context( $user_id );
+}
+
+/** Recusa um convite autenticado para o e-mail destinatário, sem revelar nem alterar memberships. */
+function papelito_company_invitation_decline_token( int $user_id, string $token ) {
+	$user = get_userdata( $user_id );
+	$invitation = papelito_company_invitation_find_pending_by_token( $token );
+	if ( ! $user instanceof WP_User || null === $invitation || ! hash_equals( strtolower( (string) $invitation['invited_email'] ), strtolower( (string) $user->user_email ) ) ) {
+		return new WP_Error( 'papelito_b2b_invitation_invalid', 'Convite inválido ou expirado.', array( 'status' => 404 ) );
+	}
+	$declined = papelito_company_invitation_decline( (int) $invitation['id'], $user_id );
+	if ( is_wp_error( $declined ) ) {
+		return $declined;
+	}
+	papelito_company_audit( (int) $invitation['company_id'], $user_id, 'invitation_declined', array( 'invitation_id' => (int) $invitation['id'] ) );
+	return true;
 }
 
 /**

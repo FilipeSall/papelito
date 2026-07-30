@@ -73,6 +73,7 @@ $papelito_company = array(
 $papelito_members = array(
 	3 => array( 'id' => 30, 'member_role' => 'buyer', 'member_status' => 'active', 'expires_at' => null ),
 	5 => array( 'id' => 50, 'member_role' => 'viewer', 'member_status' => 'active', 'expires_at' => null ),
+	4 => array( 'id' => 40, 'member_role' => 'buyer', 'member_status' => 'active', 'identity_requirement' => 'not_required', 'expires_at' => null ),
 );
 
 function policy_context( ?int $company_id = 10 ): array {
@@ -103,6 +104,10 @@ policy_assert_same( 'hybrid buyer can purchase', true, $hybrid['canPurchase'] );
 $missing = papelito_company_purchase_capability( 4, policy_context( null ) );
 policy_assert_same( 'customer without company is blocked', 'blocked', $missing['purchaseMode'] );
 policy_assert_same( 'customer without company has stable reason', 'company_missing', $missing['purchaseBlockReason'] );
+$invited_context = policy_context();
+$invited_context['identityStatus'] = 'incomplete';
+$invited = papelito_company_purchase_capability( 4, $invited_context );
+policy_assert_same( 'invited buyer without CPF can purchase', true, $invited['canPurchase'] );
 $viewer = papelito_company_purchase_capability( 5, policy_context() );
 policy_assert_same( 'viewer is blocked', false, $viewer['canPurchase'] );
 policy_assert_same( 'viewer has stable reason', 'role_cannot_purchase', $viewer['purchaseBlockReason'] );

@@ -127,7 +127,6 @@ function papelito_company_mgmt_invitation_view( array $row ): array {
 		'email'        => (string) $row['invited_email'],
 		'role'         => (string) $row['invited_role'],
 		'status'       => (string) $row['invitation_status'],
-		'cpfLocked'    => ! empty( $row['invited_cpf_hmac'] ),
 		'expiresAt'    => $row['expires_at'] ?? null,
 		'resendCount'  => (int) ( $row['resend_count'] ?? 0 ),
 		'createdAt'    => $row['created_at'] ?? null,
@@ -192,16 +191,8 @@ add_action(
 			array(
 				'methods'             => 'POST',
 				'permission_callback' => 'papelito_company_mgmt_permission',
-				'callback'            => static function ( WP_REST_Request $r ) {
-					$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
-					if ( ! papelito_auth_rate_limit( 'company_request_access', 10, 60 ) ) {
-						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
-					}
-					$user_id = get_current_user_id();
-					$body    = (array) $r->get_json_params();
-					$cnpj    = isset( $body['cnpj'] ) ? (string) $body['cnpj'] : '';
-					$result  = papelito_company_access_request_submit( $user_id, $cnpj );
-					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 202 );
+				'callback'            => static function () {
+					return new WP_Error( 'papelito_b2b_invite_required', 'O acesso a uma empresa existente é concedido por convite por e-mail do administrador.', array( 'status' => 410 ) );
 				},
 			)
 		);
@@ -419,31 +410,6 @@ add_action(
 		);
 
 		/* --- Convites --- */
-		register_rest_route(
-			$ns,
-			'/companies/current/invitations/eligibility',
-			array(
-				'methods'             => 'GET',
-				'permission_callback' => 'papelito_company_mgmt_permission',
-				'callback'            => static function ( WP_REST_Request $r ) {
-					$user_id    = get_current_user_id();
-					$company_id = papelito_company_mgmt_active_company_id( $user_id );
-					if ( is_wp_error( $company_id ) ) {
-						return $company_id;
-					}
-					$loaded = papelito_company_authz_load( $user_id, $company_id );
-					if ( is_wp_error( $loaded ) || ! papelito_company_authz_can_manage( $loaded['membership'] ?? array() ) ) {
-						return is_wp_error( $loaded ) ? $loaded : new WP_Error( 'papelito_b2b_forbidden', 'Ação não permitida para seu papel.', array( 'status' => 403 ) );
-					}
-					$email = sanitize_email( (string) $r->get_param( 'email' ) );
-					if ( '' === $email || ! is_email( $email ) ) {
-						return new WP_Error( 'papelito_b2b_invitation_invalid_email', 'E-mail do convite inválido.', array( 'status' => 422 ) );
-					}
-					return new WP_REST_Response( array( 'invitable' => ! email_exists( $email ) ), 200 );
-				},
-			)
-		);
-
 		register_rest_route(
 			$ns,
 			'/companies/current/invitations',
@@ -734,6 +700,20 @@ add_action(
 					}
 					$result = papelito_company_invitation_preview( (string) $r['token'] );
 					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			$ns,
+			'/company-invitations/(?P<token>[A-Za-z0-9]+)/decline',
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => 'papelito_company_mgmt_permission',
+				'callback'            => static function ( WP_REST_Request $r ) {
+					$user_id = get_current_user_id();
+					$result = papelito_company_invitation_decline_token( $user_id, (string) $r['token'] );
+					return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'ok' => true ), 200 );
 				},
 			)
 		);

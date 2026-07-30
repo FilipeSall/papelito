@@ -693,13 +693,6 @@ function papelito_company_purchase_capability( int $user_id, ?array $context = n
 		return papelito_company_purchase_capability_result( $base, false, 'not_buyer', 'not_a_customer_buyer', null, null );
 	}
 	$context = $context ?? papelito_company_context( $user_id );
-	$identity_status = (string) ( $context['identityStatus'] ?? 'incomplete' );
-	if ( in_array( $identity_status, array( 'rejected', 'suspended' ), true ) ) {
-		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'identity_rejected', null, null );
-	}
-	if ( 'verified' !== $identity_status ) {
-		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'identity_incomplete', null, null );
-	}
 	if ( ! empty( $context['companySelectionRequired'] ) ) {
 		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'company_selection_required', null, null );
 	}
@@ -741,6 +734,17 @@ function papelito_company_purchase_capability( int $user_id, ?array $context = n
 	}
 	if ( 'active' !== $membership_status ) {
 		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'membership_pending', $company, $membership );
+	}
+	// CPF é exigido apenas em memberships que representam responsável/legado. Um membro
+	// aceito por convite possui autorização empresarial explícita e não recebe perfil CPF.
+	if ( 'not_required' !== (string) ( $membership['identity_requirement'] ?? 'required' ) ) {
+		$identity_status = (string) ( $context['identityStatus'] ?? 'incomplete' );
+		if ( in_array( $identity_status, array( 'rejected', 'suspended' ), true ) ) {
+			return papelito_company_purchase_capability_result( $base, false, 'blocked', 'identity_rejected', $company, $membership );
+		}
+		if ( 'verified' !== $identity_status ) {
+			return papelito_company_purchase_capability_result( $base, false, 'blocked', 'identity_incomplete', $company, $membership );
+		}
 	}
 	if ( ! in_array( (string) $membership['member_role'], papelito_company_purchasing_roles(), true ) ) {
 		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'role_cannot_purchase', $company, $membership );

@@ -149,6 +149,7 @@ function papelito_company_install_tables(): void {
   member_role VARCHAR(24) NOT NULL DEFAULT 'buyer',
   member_status VARCHAR(32) NOT NULL DEFAULT 'pending_company_approval',
   membership_origin VARCHAR(24) NOT NULL DEFAULT 'owner_candidate',
+  identity_requirement VARCHAR(24) NOT NULL DEFAULT 'required',
   requested_at DATETIME NULL DEFAULT NULL,
   request_count INT UNSIGNED NOT NULL DEFAULT 0,
   last_request_at DATETIME NULL DEFAULT NULL,
@@ -186,6 +187,8 @@ function papelito_company_install_tables(): void {
   expires_at DATETIME NOT NULL,
   accepted_at DATETIME NULL DEFAULT NULL,
   accepted_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  declined_at DATETIME NULL DEFAULT NULL,
+  declined_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
   revoked_at DATETIME NULL DEFAULT NULL,
   revoked_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
   revoked_reason VARCHAR(255) NULL DEFAULT NULL,
@@ -303,4 +306,16 @@ function papelito_company_install_tables(): void {
 	dbDelta( $onboarding_sql );
 	dbDelta( $legacy_email_log_sql );
 	dbDelta( $owner_applications_sql );
+
+	// Convites pendentes que foram presos a CPF não podem ser aceitos sob a nova política.
+	// Mantemos o histórico e exigimos um novo convite, sem CPF, em vez de apagar dados.
+	$wpdb->query(
+		$wpdb->prepare(
+			"UPDATE {$tables['invitations']} SET invitation_status = %s, revoked_at = %s, revoked_reason = %s WHERE invitation_status = %s AND invited_cpf_hmac IS NOT NULL",
+			'revoked',
+			current_time( 'mysql', true ),
+			'cpf_invitation_policy_retired',
+			'pending'
+		)
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 }
