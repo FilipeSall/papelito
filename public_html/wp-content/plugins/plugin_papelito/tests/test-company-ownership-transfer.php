@@ -75,6 +75,8 @@ function papelito_company_table_names(): array {
 }
 function papelito_company_active_get_selection( int $u ) { return (int) get_user_meta( $u, 'papelito_b2b_active_company_id', true ); }
 function papelito_company_active_clear_selection( int $u ) { delete_user_meta( $u, 'papelito_b2b_active_company_id' ); }
+function papelito_company_context( int $u ): array { return array( 'identityStatus' => 'verified' ); }
+function papelito_company_invitations_revoke_by_inviter(): int { return 0; }
 
 require __DIR__ . '/../includes/company_authz.php';
 require __DIR__ . '/../includes/company_membership_services.php';
