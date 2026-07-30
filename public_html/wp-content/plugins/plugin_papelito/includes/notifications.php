@@ -43,6 +43,9 @@ if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_SHIPMENT_PICKUP_AVAILABLE', 'shipment_pickup_available' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_RETURNED', 'shipment_returned' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_EXCEPTION', 'shipment_exception' );
+	define( 'PAPELITO_NOTIF_COMPANY_OWNER_REVIEW_PENDING', 'company_owner_review_pending' );
+	define( 'PAPELITO_NOTIF_COMPANY_OWNER_APPROVED', 'company_owner_approved' );
+	define( 'PAPELITO_NOTIF_COMPANY_OWNER_REJECTED', 'company_owner_rejected' );
 }
 
 /**
@@ -130,6 +133,9 @@ function papelito_notification_allowed_types() {
 		PAPELITO_NOTIF_SHIPMENT_PICKUP_AVAILABLE,
 		PAPELITO_NOTIF_SHIPMENT_RETURNED,
 		PAPELITO_NOTIF_SHIPMENT_EXCEPTION,
+		PAPELITO_NOTIF_COMPANY_OWNER_REVIEW_PENDING,
+		PAPELITO_NOTIF_COMPANY_OWNER_APPROVED,
+		PAPELITO_NOTIF_COMPANY_OWNER_REJECTED,
 	);
 }
 
@@ -222,7 +228,7 @@ function papelito_dispatch_notification( $user_id, $type, $payload = array(), $d
 }
 
 /** Envia o e-mail de despacho manual uma unica vez por atualizacao de rastreio. */
-function papelito_send_manual_shipment_email( $order, string $type, string $tracking_code, int $shipment_id ): void {
+function papelito_send_manual_shipment_email( WC_Order $order, string $type, string $tracking_code, int $shipment_id ): void {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_billing_email' ) || ! in_array( $type, array( PAPELITO_NOTIF_SHIPMENT_POSTED, PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED ), true ) ) {
 		return;
 	}
@@ -325,7 +331,7 @@ function papelito_notification_map_row( array $row ) {
 /**
  * Busca uma notificação do usuário corrente.
  */
-function papelito_get_user_notification( $user_id, $notification_id ) {
+function papelito_get_user_notification( int $user_id, int $notification_id ): ?array {
 	global $wpdb;
 
 	$table = papelito_notifications_table_name();
@@ -344,7 +350,7 @@ function papelito_get_user_notification( $user_id, $notification_id ) {
 /**
  * Conta notificações não lidas.
  */
-function papelito_get_unread_notifications_count( $user_id ) {
+function papelito_get_unread_notifications_count( int $user_id ): int {
 	global $wpdb;
 
 	$table = papelito_notifications_table_name();
@@ -360,7 +366,7 @@ function papelito_get_unread_notifications_count( $user_id ) {
 /**
  * Verifica dedup de produto para notificações não lidas.
  */
-function papelito_user_has_unread_product_notification( $user_id, $type, $product_id ) {
+function papelito_user_has_unread_product_notification( int $user_id, string $type, int $product_id ): bool {
 	global $wpdb;
 
 	$user_id    = absint( $user_id );
@@ -670,7 +676,7 @@ function papelito_require_notifications_auth() {
  *
  * @return array{product_id:int,product_name:string,product_slug:string}
  */
-function papelito_notification_product_payload( $product_id ) {
+function papelito_notification_product_payload( int $product_id ): array {
 	$product_id = absint( $product_id );
 	$product    = function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null;
 
@@ -686,7 +692,7 @@ function papelito_notification_product_payload( $product_id ) {
  *
  * @return array<int,int>
  */
-function papelito_notification_users_who_favorited_product( $product_id ) {
+function papelito_notification_users_who_favorited_product( int $product_id ): array {
 	$product_id = absint( $product_id );
 
 	if ( $product_id <= 0 || ! defined( 'PAPELITO_FAVORITES_META_KEY' ) ) {
@@ -757,7 +763,7 @@ add_action( 'papelito_vendor_interest_submitted', 'papelito_handle_vendor_intere
 /**
  * Notifica vendor aprovado.
  */
-function papelito_handle_vendor_approved_notification( $vendor_user_id ) {
+function papelito_handle_vendor_approved_notification( int $vendor_user_id ): void {
 	papelito_dispatch_notification( absint( $vendor_user_id ), PAPELITO_NOTIF_VENDOR_APPROVED, array() );
 }
 add_action( 'papelito_vendor_approved', 'papelito_handle_vendor_approved_notification', 10, 1 );
@@ -765,7 +771,7 @@ add_action( 'papelito_vendor_approved', 'papelito_handle_vendor_approved_notific
 /**
  * Notifica vendor rejeitado.
  */
-function papelito_handle_vendor_rejected_notification( $vendor_user_id, $reason = '' ) {
+function papelito_handle_vendor_rejected_notification( int $vendor_user_id, string $reason = '' ): void {
 	papelito_dispatch_notification(
 		absint( $vendor_user_id ),
 		PAPELITO_NOTIF_VENDOR_REJECTED,
@@ -913,7 +919,7 @@ add_action( 'papelito_vendor_pending_registration_created', 'papelito_handle_ven
 /**
  * Notifica vendor quando estoque zera.
  */
-function papelito_handle_stock_zeroed_notification( $vendor_id, $product_id ) {
+function papelito_handle_stock_zeroed_notification( int $vendor_id, int $product_id ): void {
 	$payload = papelito_notification_product_payload( $product_id );
 	papelito_dispatch_notification( absint( $vendor_id ), PAPELITO_NOTIF_STOCK_ZEROED, $payload );
 }

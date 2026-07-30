@@ -117,8 +117,34 @@ add_action( 'rest_api_init', static function (): void {
 		update_user_meta( $user_id, 'phone_number', (string) $input['phone'] );
 		$address = papelito_company_onboarding_save_address( $user_id, (string) $input['cep'], $input );
 		if ( is_wp_error( $address ) ) { return $address; }
-		papelito_company_onboarding_mark_completed( $user_id, (int) $result['company_id'], (int) ( $result['membership_id'] ?? 0 ) );
+		if ( ! empty( $result['auto_approved'] ) ) {
+			papelito_company_onboarding_mark_completed( $user_id, (int) $result['company_id'], (int) ( $result['membership_id'] ?? 0 ) );
+		} else {
+			papelito_company_onboarding_mark_owner_application( $user_id, (int) $result['company_id'], (int) $result['membership_id'], 'pending_document' );
+		}
 		return new WP_REST_Response( array_merge( $result, papelito_company_context( $user_id ) ), 201 );
+	} ) );
+
+	register_rest_route( 'papelito/v1', '/companies/current/owner-document', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
+		$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
+		$user_id = papelito_company_require_authenticated_user(); if ( is_wp_error( $user_id ) ) { return $user_id; }
+		$idempotency_key = sanitize_text_field( (string) $request->get_header( 'Idempotency-Key' ) );
+		if ( '' === $idempotency_key || strlen( $idempotency_key ) > 191 ) {
+			return new WP_Error( 'papelito_b2b_idempotency_key_required', 'Informe uma chave de idempotência válida.', array( 'status' => 422 ) );
+		}
+		$file = $_FILES['document'] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing
+		if ( ! is_array( $file ) ) {
+			return new WP_Error( 'papelito_company_document_missing', 'Selecione um documento.', array( 'status' => 422 ) );
+		}
+		$result = papelito_company_owner_application_upload( $user_id, $file, $idempotency_key );
+		return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'application' => $result, 'context' => papelito_company_context( $user_id ) ), 201 );
+	} ) );
+
+	register_rest_route( 'papelito/v1', '/companies/current/restart-onboarding', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function () {
+		$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
+		$user_id = papelito_company_require_authenticated_user(); if ( is_wp_error( $user_id ) ) { return $user_id; }
+		$result = papelito_company_onboarding_restart_after_rejection( $user_id );
+		return is_wp_error( $result ) ? $result : new WP_REST_Response( papelito_company_context( $user_id ), 200 );
 	} ) );
 
 	register_rest_route( 'papelito/v1', '/companies/current/resubmit-owner', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function () {

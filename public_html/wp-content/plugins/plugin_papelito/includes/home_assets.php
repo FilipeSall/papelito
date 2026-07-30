@@ -46,6 +46,15 @@ function papelito_home_assets_site_images_option_name(): string {
 }
 
 /**
+ * Nome da option das logos administraveis do site.
+ *
+ * @return string
+ */
+function papelito_home_assets_logos_option_name(): string {
+	return 'papelito_site_logos';
+}
+
+/**
  * Gera um ID para item de hero.
  *
  * @return string
@@ -243,6 +252,31 @@ function papelito_home_assets_default_site_images(): array {
 }
 
 /**
+ * Defaults das logos administraveis do site.
+ *
+ * @return array<string, array<string, mixed>>
+ */
+function papelito_home_assets_default_logos(): array {
+	return array(
+		'publicHeader'  => array(
+			'imageId'  => 0,
+			'imageUrl' => '/images/logo.svg',
+			'alt'      => 'Papelito',
+		),
+		'privateHeader' => array(
+			'imageId'  => 0,
+			'imageUrl' => '/images/marketplacelogo.svg',
+			'alt'      => 'Marketplace Papelito',
+		),
+		'footer'        => array(
+			'imageId'  => 0,
+			'imageUrl' => '/images/logo3.svg',
+			'alt'      => 'Papelito',
+		),
+	);
+}
+
+/**
  * Busca option hero.
  *
  * @return array<int, mixed>
@@ -283,6 +317,16 @@ function papelito_home_assets_get_raw_partner_banner(): array {
  */
 function papelito_home_assets_get_raw_site_images(): array {
 	$value = get_option( papelito_home_assets_site_images_option_name(), array() );
+	return is_array( $value ) ? $value : array();
+}
+
+/**
+ * Busca option das logos administraveis.
+ *
+ * @return array<string, mixed>
+ */
+function papelito_home_assets_get_raw_logos(): array {
+	$value = get_option( papelito_home_assets_logos_option_name(), array() );
 	return is_array( $value ) ? $value : array();
 }
 
@@ -592,6 +636,116 @@ function papelito_home_assets_get_admin_site_images_snapshot(): array {
 }
 
 /**
+ * Normaliza uma logo administravel.
+ *
+ * @param string               $key Chave da logo.
+ * @param array<string, mixed> $logo Logo salva.
+ * @return array<string, mixed>
+ */
+function papelito_home_assets_normalize_logo( string $key, array $logo ): array {
+	$defaults  = papelito_home_assets_default_logos();
+	$default   = $defaults[ $key ] ?? array(
+		'imageId'  => 0,
+		'imageUrl' => '',
+		'alt'      => '',
+	);
+	$image_id  = absint( $logo['imageId'] ?? 0 );
+	$image_url = papelito_home_assets_normalize_image_url( $logo['imageUrl'] ?? '' );
+	$alt       = papelito_home_assets_clean_text( $logo['alt'] ?? '' );
+
+	return array(
+		'imageId'  => $image_id,
+		'imageUrl' => papelito_home_assets_resolve_image_url(
+			$image_id,
+			'' !== $image_url ? $image_url : (string) $default['imageUrl']
+		),
+		'alt'      => '' !== $alt ? $alt : papelito_home_assets_clean_text( $default['alt'] ),
+	);
+}
+
+/**
+ * Normaliza todas as logos administraveis.
+ *
+ * @param array<string, mixed> $logos Logos salvas.
+ * @return array<string, array<string, mixed>>
+ */
+function papelito_home_assets_normalize_logos( array $logos ): array {
+	$defaults   = papelito_home_assets_default_logos();
+	$normalized = array();
+
+	foreach ( $defaults as $key => $default_logo ) {
+		$raw                = isset( $logos[ $key ] ) && is_array( $logos[ $key ] ) ? $logos[ $key ] : $default_logo;
+		$normalized[ $key ] = papelito_home_assets_normalize_logo( $key, $raw );
+	}
+
+	return $normalized;
+}
+
+/**
+ * Lista issues administrativas das logos.
+ *
+ * @param array<string, array<string, mixed>> $logos Logos normalizadas.
+ * @return array<int, string>
+ */
+function papelito_home_assets_collect_logos_issues( array $logos ): array {
+	$issues = array();
+
+	foreach ( $logos as $key => $logo ) {
+		if ( empty( $logo['imageUrl'] ) || '' === (string) $logo['alt'] ) {
+			$issues[] = sprintf( 'Logo %s precisa ter arquivo e alt preenchidos.', $key );
+		}
+	}
+
+	return $issues;
+}
+
+/**
+ * Snapshot admin das logos.
+ *
+ * @return array<string, mixed>
+ */
+function papelito_home_assets_get_admin_logos_snapshot(): array {
+	$logos = papelito_home_assets_normalize_logos( papelito_home_assets_get_raw_logos() );
+
+	return array(
+		'logos'  => $logos,
+		'issues' => papelito_home_assets_collect_logos_issues( $logos ),
+	);
+}
+
+/**
+ * Determina se a chave de logo e valida.
+ *
+ * @param mixed $key Chave recebida.
+ * @return bool
+ */
+function papelito_home_assets_is_valid_logo_key( $key ): bool {
+	return is_string( $key ) && array_key_exists( $key, papelito_home_assets_default_logos() );
+}
+
+/**
+ * Restaura a logo padrao de uma chave, removendo a personalizacao salva.
+ *
+ * @param string $key Chave da logo.
+ * @return array<string, mixed>|WP_Error
+ */
+function papelito_home_assets_restore_default_logo( string $key ) {
+	if ( ! papelito_home_assets_is_valid_logo_key( $key ) ) {
+		return new WP_Error(
+			'papelito_home_assets_invalid_logo_key',
+			'Logo informada não existe.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$stored = papelito_home_assets_get_raw_logos();
+	unset( $stored[ $key ] );
+	update_option( papelito_home_assets_logos_option_name(), $stored, false );
+
+	return papelito_home_assets_get_admin_logos_snapshot();
+}
+
+/**
  * Prepara resposta a partir de um WP_Error.
  *
  * @param WP_Error $error Erro.
@@ -683,6 +837,35 @@ function papelito_home_assets_validate_site_images_payload( $input ) {
 	if ( ! empty( $issues ) ) {
 		return new WP_Error(
 			'papelito_home_assets_incomplete_site_images',
+			implode( ' ', $issues ),
+			array( 'status' => 422 )
+		);
+	}
+
+	return $normalized;
+}
+
+/**
+ * Valida payload das logos administraveis.
+ *
+ * @param mixed $input Valor recebido.
+ * @return array<string, array<string, mixed>>|WP_Error
+ */
+function papelito_home_assets_validate_logos_payload( $input ) {
+	if ( ! is_array( $input ) ) {
+		return new WP_Error(
+			'papelito_home_assets_invalid_logos_payload',
+			'Payload de logos inválido.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$normalized = papelito_home_assets_normalize_logos( $input );
+	$issues     = papelito_home_assets_collect_logos_issues( $normalized );
+
+	if ( ! empty( $issues ) ) {
+		return new WP_Error(
+			'papelito_home_assets_incomplete_logos',
 			implode( ' ', $issues ),
 			array( 'status' => 422 )
 		);
@@ -893,6 +1076,25 @@ add_action(
 		);
 
 		register_rest_route(
+			'papelito/v1',
+			'/site/logos',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => '__return_true',
+				'callback'            => static function (): WP_REST_Response {
+					return new WP_REST_Response(
+						array(
+							'logos' => papelito_home_assets_normalize_logos(
+								papelito_home_assets_get_raw_logos()
+							),
+						),
+						200
+					);
+				},
+			)
+		);
+
+		register_rest_route(
 			'papelito/v1/admin',
 			'/assets/hero-banners',
 			array(
@@ -964,6 +1166,72 @@ add_action(
 					update_option( papelito_home_assets_site_images_option_name(), $validated, false );
 
 					return new WP_REST_Response( papelito_home_assets_get_admin_site_images_snapshot(), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/assets/logos',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => static function (): bool {
+					return current_user_can( 'manage_options' );
+				},
+				'callback'            => static function (): WP_REST_Response {
+					return new WP_REST_Response( papelito_home_assets_get_admin_logos_snapshot(), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/assets/logos',
+			array(
+				'methods'             => WP_REST_Server::EDITABLE,
+				'permission_callback' => static function (): bool {
+					return current_user_can( 'manage_options' );
+				},
+				'callback'            => static function ( WP_REST_Request $request ): WP_REST_Response {
+					$params    = $request->get_json_params();
+					$payload   = is_array( $params ) ? $params : array();
+					$validated = papelito_home_assets_validate_logos_payload( $payload['logos'] ?? $payload );
+
+					if ( is_wp_error( $validated ) ) {
+						return papelito_home_assets_rest_error_response( $validated );
+					}
+
+					update_option( papelito_home_assets_logos_option_name(), $validated, false );
+
+					return new WP_REST_Response( papelito_home_assets_get_admin_logos_snapshot(), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/assets/logos',
+			array(
+				'methods'             => WP_REST_Server::DELETABLE,
+				'permission_callback' => static function (): bool {
+					return current_user_can( 'manage_options' );
+				},
+				'args'                => array(
+					'key' => array(
+						'required'          => true,
+						'validate_callback' => static function ( $value ): bool {
+							return papelito_home_assets_is_valid_logo_key( $value );
+						},
+					),
+				),
+				'callback'            => static function ( WP_REST_Request $request ): WP_REST_Response {
+					$restored = papelito_home_assets_restore_default_logo( (string) $request->get_param( 'key' ) );
+
+					if ( is_wp_error( $restored ) ) {
+						return papelito_home_assets_rest_error_response( $restored );
+					}
+
+					return new WP_REST_Response( $restored, 200 );
 				},
 			)
 		);

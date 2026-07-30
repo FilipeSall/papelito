@@ -90,6 +90,76 @@ function papelito_company_onboarding_mark_completed( int $user_id, ?int $company
 	$wpdb->update( $tables['onboarding'], $fields, array( 'user_id' => $user_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 }
 
+function papelito_company_onboarding_mark_owner_application( int $user_id, int $company_id, int $membership_id, string $status ): void {
+	if ( ! in_array( $status, array( 'pending_document', 'pending_manual_review', 'rejected' ), true ) ) {
+		return;
+	}
+
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$wpdb->update(
+		$tables['onboarding'],
+		array(
+			'status'          => $status,
+			'company_id'      => $company_id,
+			'membership_id'   => $membership_id,
+			'completed_at'    => null,
+			'last_error_code' => null,
+			'updated_at'      => current_time( 'mysql', true ),
+		),
+		array( 'user_id' => $user_id )
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+}
+
+/**
+ * Reabre somente o fluxo de cadastro. A candidatura reprovada continua terminal e imutável.
+ *
+ * @return true|WP_Error
+ */
+function papelito_company_onboarding_restart_after_rejection( int $user_id ) {
+	$latest = papelito_company_owner_application_latest_for_user( $user_id );
+	$onboarding = papelito_company_onboarding_get( $user_id );
+	if ( ! $latest || 'rejected' !== (string) $latest['application_status'] || ! $onboarding || 'rejected' !== (string) $onboarding['status'] ) {
+		return new WP_Error( 'papelito_owner_application_restart_not_allowed', 'Não há uma solicitação encerrada para reiniciar.', array( 'status' => 409 ) );
+	}
+
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$now    = current_time( 'mysql', true );
+	$result = $wpdb->update(
+		$tables['onboarding'],
+		array(
+			'onboarding_type' => 'create_company',
+			'target_cnpj'     => null,
+			'status'          => 'pending_onboarding',
+			'company_id'      => null,
+			'membership_id'   => null,
+			'completed_at'    => null,
+			'last_error_code' => null,
+			'expires_at'      => gmdate( 'Y-m-d H:i:s', time() + ( PAPELITO_B2B_ONBOARDING_TTL_DAYS * DAY_IN_SECONDS ) ),
+			'updated_at'      => $now,
+		),
+		array( 'user_id' => $user_id, 'status' => 'rejected' )
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	if ( false === $result ) {
+		return new WP_Error( 'papelito_owner_application_restart_failed', 'Não foi possível reiniciar o cadastro empresarial.', array( 'status' => 500 ) );
+	}
+	if ( 0 === $result ) {
+		return new WP_Error( 'papelito_owner_application_restart_conflict', 'O cadastro empresarial já foi reiniciado.', array( 'status' => 409 ) );
+	}
+
+	update_user_meta( $user_id, 'papelito_account_state', 'pending_onboarding' );
+	papelito_company_audit(
+		(int) $latest['company_id'],
+		$user_id,
+		'owner_onboarding_restarted',
+		array( 'application_id' => (int) $latest['id'], 'attempt' => (int) $latest['attempt_number'] )
+	);
+
+	return true;
+}
+
 function papelito_company_onboarding_state( int $user_id ): string {
 	$row = papelito_company_onboarding_get( $user_id );
 	if ( null === $row ) { return 'onboarding_required'; }

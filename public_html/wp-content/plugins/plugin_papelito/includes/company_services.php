@@ -168,10 +168,16 @@ function papelito_company_qsa_partner_cpf_mask( array $entry ): string {
 	return (string) $raw;
 }
 
+function papelito_company_cpf_mask_is_comparable( string $raw_mask ): bool {
+	$mask = preg_replace( '/[^0-9*]+/', '', trim( $raw_mask ) ) ?? '';
+	return 11 === strlen( $mask ) && preg_match_all( '/\d/', $mask ) >= 6;
+}
+
 function papelito_company_owner_evidence( ?WP_User $user, string $cpf, string $birth_date, array $lookup, ?string $registered_name = null ): array {
-	$evidence = array( 'qsa_available' => false, 'cpf_mask_match' => 'unknown', 'name_match' => 'unknown', 'age_band_match' => 'unknown', 'eligible_qualification' => 'unknown', 'provider' => (string) ( $lookup['source'] ?? '' ), 'checked_at' => (string) ( $lookup['checked_at'] ?? gmdate( 'c' ) ) );
+	$mei_confirmed = true === ( $lookup['is_mei'] ?? false ) && '2135' === preg_replace( '/\D+/', '', (string) ( $lookup['legal_nature_code'] ?? '' ) );
+	$evidence = array( 'qsa_available' => false, 'qsa_sufficient' => false, 'cpf_mask_match' => 'unknown', 'name_match' => 'unknown', 'age_band_match' => 'unknown', 'eligible_qualification' => 'unknown', 'mei_confirmed' => $mei_confirmed, 'provider' => (string) ( $lookup['source'] ?? '' ), 'checked_at' => (string) ( $lookup['checked_at'] ?? gmdate( 'c' ) ) );
 	$full_name = null !== $registered_name ? $registered_name : ( $user instanceof WP_User ? trim( (string) get_user_meta( $user->ID, 'first_name', true ) . ' ' . (string) get_user_meta( $user->ID, 'last_name', true ) ) : '' );
-	if ( true === ( $lookup['is_mei'] ?? false ) && '2135' === preg_replace( '/\D+/', '', (string) ( $lookup['legal_nature_code'] ?? '' ) ) ) {
+	if ( $mei_confirmed ) {
 		$evidence['mei_name_match'] = papelito_company_mei_owner_name_matches( $full_name, (string) ( $lookup['legal_name'] ?? '' ) );
 	}
 	foreach ( (array) ( $lookup['qsa'] ?? array() ) as $entry ) {
@@ -179,10 +185,14 @@ function papelito_company_owner_evidence( ?WP_User $user, string $cpf, string $b
 		$evidence['qsa_available'] = true;
 		$name = papelito_company_qsa_partner_name( $entry );
 		$mask = papelito_company_qsa_partner_cpf_mask( $entry );
+		$has_age_band = isset( $entry['codigo_faixa_etaria'] ) && '' !== trim( (string) $entry['codigo_faixa_etaria'] );
+		if ( '' !== $name && papelito_company_cpf_mask_is_comparable( $mask ) && $has_age_band ) {
+			$evidence['qsa_sufficient'] = true;
+		}
 		$name_match = '' !== $name && papelito_company_names_match( $full_name, $name );
 		$cpf_match = '' !== $mask && papelito_company_cpf_mask_matches( $cpf, $mask );
 		$age_match = false;
-		if ( isset( $entry['codigo_faixa_etaria'] ) ) {
+		if ( $has_age_band ) {
 			$age_match = (string) papelito_company_age_band( $birth_date ) === (string) $entry['codigo_faixa_etaria'];
 		}
 		$evidence['name_match'] = true === $evidence['name_match'] || $name_match;
@@ -229,20 +239,23 @@ function papelito_company_validate_owner_registry( string $cpf, string $birth_da
 	}
 
 	$evidence = papelito_company_owner_evidence( null, $cpf, $birth_date, $lookup, $full_name );
-	if ( ! papelito_company_should_auto_approve_owner( $evidence, $lookup ) ) {
+	$auto_approved = papelito_company_should_auto_approve_owner( $evidence, $lookup );
+	$usable_mei    = true === ( $evidence['mei_confirmed'] ?? false ) && '' !== trim( (string) ( $lookup['legal_name'] ?? '' ) );
+	if ( ! $auto_approved && ( $usable_mei || true === ( $evidence['qsa_sufficient'] ?? false ) ) ) {
 		return new WP_Error( 'papelito_b2b_qsa_mismatch', 'Os dados informados não correspondem aos responsáveis cadastrados para este CNPJ. Confira seu nome, CPF e data de nascimento.', array( 'status' => 422 ) );
 	}
 
 	return array(
-		'lookup'   => $lookup,
-		'evidence' => $evidence,
+		'lookup'          => $lookup,
+		'evidence'        => $evidence,
+		'review_required' => ! $auto_approved,
 	);
 }
 
 function papelito_company_audit( int $company_id, ?int $actor_user_id, string $action, array $payload = array() ): void {
 	global $wpdb;
 	$tables = papelito_company_table_names();
-	$allowed = array( 'target_user_id', 'requester_user_id', 'invitation_id', 'attempt', 'role', 'invited_role', 'cpf_locked', 'has_expiration', 'registry_status', 'provider', 'source' );
+	$allowed = array( 'target_user_id', 'requester_user_id', 'invitation_id', 'application_id', 'attempt', 'role', 'invited_role', 'cpf_locked', 'has_expiration', 'registry_status', 'provider', 'source' );
 	$safe    = array();
 	foreach ( $allowed as $key ) {
 		if ( array_key_exists( $key, $payload ) && is_scalar( $payload[ $key ] ) ) {
@@ -306,10 +319,8 @@ function papelito_company_create_owner_candidate( int $user_id, array $input ): 
 	}
 	$lookup        = $validated['lookup'];
 	$evidence      = $validated['evidence'];
-	$auto_approved = true;
-	// A triagem automática só promove a titularidade; sem evidência suficiente segue para a fila
-	// manual em /admin/empresas, que é o comportamento anterior.
-	$ownership_status = $auto_approved ? 'verified' : 'pending_manual_review';
+	$auto_approved = empty( $validated['review_required'] );
+	$ownership_status = $auto_approved ? 'verified' : 'pending_evidence';
 	$company_status   = $auto_approved ? 'active' : 'onboarding';
 	$member_status    = $auto_approved ? 'active' : 'pending_company_approval';
 	$address          = is_array( $lookup['fiscal_address'] ?? null ) ? $lookup['fiscal_address'] : array();
@@ -329,17 +340,59 @@ function papelito_company_create_owner_candidate( int $user_id, array $input ): 
 			$updated_user = wp_update_user( array( 'ID' => $user_id, 'first_name' => $parts[0] ?? '', 'last_name' => $parts[1] ?? '', 'display_name' => trim( (string) $input['full_name'] ) ) );
 			if ( is_wp_error( $updated_user ) ) { throw new RuntimeException( $updated_user->get_error_code() ); }
 		}
-		$existing = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$tables['companies']} WHERE cnpj = %s FOR UPDATE", papelito_normalize_cnpj( (string) $input['cnpj'] ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL
-		if ( null !== $existing ) {
-			$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-			return new WP_Error( 'papelito_company_cnpj_exists', 'Já existe uma empresa com este CNPJ.', array( 'status' => 409 ) );
-		}
+		$existing = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tables['companies']} WHERE cnpj = %s FOR UPDATE", papelito_normalize_cnpj( (string) $input['cnpj'] ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
 		$email_verified_at = 'verified' === (string) get_user_meta( $user_id, 'papelito_email_verification_status', true ) ? (string) get_user_meta( $user_id, 'papelito_email_verified_at', true ) : null;
-		$company_id = papelito_company_create( (string) $input['cnpj'], array( 'legal_name' => (string) ( $lookup['legal_name'] ?? '' ), 'trade_name' => (string) ( $lookup['trade_name'] ?? '' ), 'billing_email' => $user->user_email, 'billing_email_verified_at' => $email_verified_at, 'phone' => (string) ( $input['phone'] ?? get_user_meta( $user_id, 'phone_number', true ) ), 'registry_status' => (string) $lookup['status'], 'ownership_status' => $ownership_status, 'company_status' => $company_status, 'owner_user_id' => $auto_approved ? $user_id : null, 'created_by_user_id' => $user_id ) );
-		if ( is_wp_error( $company_id ) ) { throw new RuntimeException( $company_id->get_error_code() ); }
-		$member = papelito_company_member_upsert( $company_id, $user_id, array( 'member_role' => 'owner', 'member_status' => $member_status, 'membership_origin' => 'owner_candidate', 'requested_at' => current_time( 'mysql', true ) ) );
+		if ( is_array( $existing ) ) {
+			$latest = $wpdb->get_row(
+				$wpdb->prepare(
+					"SELECT * FROM {$tables['owner_applications']} WHERE company_id = %d ORDER BY attempt_number DESC LIMIT 1 FOR UPDATE",
+					(int) $existing['id']
+				),
+				ARRAY_A
+			); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			if ( (int) $existing['created_by_user_id'] !== $user_id || ! is_array( $latest ) || 'rejected' !== (string) $latest['application_status'] || ! empty( $latest['is_open'] ) ) {
+				throw new DomainException( 'company_cnpj_exists' );
+			}
+			$company_id = (int) $existing['id'];
+		} else {
+			$company_id = papelito_company_create( (string) $input['cnpj'], array( 'legal_name' => (string) ( $lookup['legal_name'] ?? '' ), 'trade_name' => (string) ( $lookup['trade_name'] ?? '' ), 'billing_email' => $user->user_email, 'billing_email_verified_at' => $email_verified_at, 'phone' => (string) ( $input['phone'] ?? get_user_meta( $user_id, 'phone_number', true ) ), 'registry_status' => (string) $lookup['status'], 'ownership_status' => $ownership_status, 'company_status' => $company_status, 'owner_user_id' => $auto_approved ? $user_id : null, 'created_by_user_id' => $user_id ) );
+			if ( is_wp_error( $company_id ) ) { throw new RuntimeException( $company_id->get_error_code() ); }
+		}
+		$member = papelito_company_member_upsert(
+			$company_id,
+			$user_id,
+			array(
+				'member_role'        => 'owner',
+				'member_status'      => $member_status,
+				'membership_origin'  => 'owner_candidate',
+				'requested_at'       => current_time( 'mysql', true ),
+				'approved_by_user_id'=> $auto_approved ? 0 : null,
+				'approved_at'        => $auto_approved ? current_time( 'mysql', true ) : null,
+				'rejected_at'        => null,
+				'rejected_reason'    => null,
+				'rejected_by_user_id'=> null,
+			)
+		);
 		if ( is_wp_error( $member ) ) { throw new RuntimeException( $member->get_error_code() ); }
-		$company_fields = array( 'provider_source' => (string) $lookup['source'], 'provider_checked_at' => current_time( 'mysql', true ), 'provider_data_hash' => (string) $evidence['hash'] );
+		$company_fields = array(
+			'legal_name'                     => (string) ( $lookup['legal_name'] ?? '' ),
+			'trade_name'                     => (string) ( $lookup['trade_name'] ?? '' ),
+			'billing_email'                  => $user->user_email,
+			'billing_email_verified_at'      => $email_verified_at,
+			'phone'                          => (string) ( $input['phone'] ?? get_user_meta( $user_id, 'phone_number', true ) ),
+			'registry_status'                => (string) $lookup['status'],
+			'ownership_status'               => $ownership_status,
+			'company_status'                 => $company_status,
+			'owner_user_id'                  => $auto_approved ? $user_id : null,
+			'verified_by_user_id'            => $auto_approved ? 0 : null,
+			'verified_at'                    => $auto_approved ? current_time( 'mysql', true ) : null,
+			'ownership_rejection_reason'     => null,
+			'ownership_rejected_by_user_id'  => null,
+			'ownership_rejected_at'          => null,
+			'provider_source'                => (string) $lookup['source'],
+			'provider_checked_at'            => current_time( 'mysql', true ),
+			'provider_data_hash'             => (string) $evidence['hash'],
+		);
 		foreach ( array( 'cep' => 'fiscal_cep', 'state' => 'fiscal_state', 'city' => 'fiscal_city', 'neighborhood' => 'fiscal_neighborhood', 'street' => 'fiscal_street', 'number' => 'fiscal_number', 'complement' => 'fiscal_complement' ) as $source_key => $column ) {
 			if ( array_key_exists( $source_key, $input ) ) {
 				$company_fields[ $column ] = (string) $input[ $source_key ];
@@ -349,11 +402,21 @@ function papelito_company_create_owner_candidate( int $user_id, array $input ): 
 		}
 		$updated = papelito_company_update( $company_id, $company_fields );
 		if ( is_wp_error( $updated ) ) { throw new RuntimeException( $updated->get_error_code() ); }
-		papelito_company_audit( $company_id, $user_id, 'company_created', array( 'registry_status' => $lookup['status'], 'evidence' => $evidence ) );
+		$application_id = papelito_company_owner_application_create(
+			$company_id,
+			$user_id,
+			$auto_approved ? 'auto_approved' : 'document_required',
+			$evidence
+		);
+		if ( is_wp_error( $application_id ) ) { throw new RuntimeException( $application_id->get_error_code() ); }
+		papelito_company_audit( $company_id, $user_id, is_array( $existing ) ? 'owner_application_restarted' : 'company_created', array( 'application_id' => $application_id, 'registry_status' => $lookup['status'] ) );
 		if ( $auto_approved ) {
-			papelito_company_audit( $company_id, null, 'ownership_auto_approved', array( 'evidence' => $evidence, 'provider' => (string) $lookup['source'] ) );
+			papelito_company_audit( $company_id, null, 'ownership_auto_approved', array( 'application_id' => $application_id, 'provider' => (string) $lookup['source'] ) );
 		}
 		$wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	} catch ( DomainException $error ) {
+		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		return new WP_Error( 'papelito_company_cnpj_exists', 'Já existe uma empresa com este CNPJ.', array( 'status' => 409 ) );
 	} catch ( Throwable $error ) {
 		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		return new WP_Error( 'papelito_b2b_onboarding_transaction_failed', 'Não foi possível concluir o onboarding da empresa.', array( 'status' => 409 ) );
@@ -361,8 +424,18 @@ function papelito_company_create_owner_candidate( int $user_id, array $input ): 
 	if ( ! function_exists( 'papelito_legacy_is_cohort' ) || ! papelito_legacy_is_cohort( $user_id ) ) {
 		papelito_b2b_mark_cohort( $user_id );
 	}
-	update_user_meta( $user_id, 'papelito_account_state', 'active' );
-	return array( 'company_id' => $company_id, 'membership_id' => (int) $member, 'registry_status' => $lookup['status'], 'ownership_status' => $ownership_status, 'auto_approved' => $auto_approved );
+	update_user_meta( $user_id, 'papelito_account_state', $auto_approved ? 'active' : 'pending_review' );
+	$application = papelito_company_owner_application_get( (int) $application_id );
+	return array(
+		'company_id'      => $company_id,
+		'membership_id'   => (int) $member,
+		'application_id'  => (int) $application_id,
+		'application'     => $application ? papelito_company_owner_application_view( $application ) : null,
+		'registry_status' => $lookup['status'],
+		'ownership_status'=> $ownership_status,
+		'auto_approved'   => $auto_approved,
+		'next_step'       => $auto_approved ? 'complete' : 'manual_document',
+	);
 }
 
 function papelito_company_context( int $user_id ): array {
@@ -398,6 +471,14 @@ function papelito_company_context( int $user_id ): array {
 	$active_members  = array_values( $active_members );
 	$pending_members = papelito_company_members_pending_for_user( $user_id );
 	$onboarding      = papelito_company_onboarding_get( $user_id );
+	$application     = papelito_company_owner_application_latest_for_user( $user_id );
+	$fresh_restart   = $application
+		&& 'rejected' === (string) $application['application_status']
+		&& null !== $onboarding
+		&& 'pending_onboarding' === (string) $onboarding['status'];
+	if ( $application && ! $fresh_restart ) {
+		$base['ownerApplication'] = papelito_company_owner_application_view( $application );
+	}
 
 	$base['availableCompanies'] = papelito_company_context_available_list( $active_members );
 
@@ -410,9 +491,43 @@ function papelito_company_context( int $user_id ): array {
 	}
 
 	if ( 'none' === $resolution['status'] || null === $resolution['member'] ) {
-		if ( null !== $onboarding && in_array( (string) $onboarding['status'], array( 'pending_onboarding', 'pending_email' ), true ) ) {
+		if ( null !== $onboarding && in_array( (string) $onboarding['status'], array( 'pending_onboarding', 'pending_email', 'pending_document' ), true ) ) {
 			$base['onboardingStatus'] = 'incomplete';
 			$base['onboarding']       = papelito_company_onboarding_resume_view( $onboarding, $profile );
+			if ( $application && ! $fresh_restart && in_array( (string) $application['application_status'], array( 'document_required', 'pending_manual_review', 'rejected' ), true ) ) {
+				$application_company = papelito_company_get( (int) $application['company_id'] );
+				$application_member  = papelito_company_member_get( (int) $application['company_id'], $user_id );
+				$base['companyId']   = $application_company ? (int) $application_company['id'] : null;
+				$base['companyStatus']          = $application_company['company_status'] ?? null;
+				$base['companyRegistryStatus']  = $application_company['registry_status'] ?? null;
+				$base['companyOwnershipStatus'] = $application_company['ownership_status'] ?? null;
+				$base['membershipRole']         = $application_member['member_role'] ?? null;
+				$base['membershipStatus']       = $application_member['member_status'] ?? null;
+			}
+			return papelito_company_context_with_purchase_capability( $user_id, $base );
+		}
+		if ( $application && 'rejected' === (string) $application['application_status'] ) {
+			$application_company = papelito_company_get( (int) $application['company_id'] );
+			$application_member  = papelito_company_member_get( (int) $application['company_id'], $user_id );
+			$base['companyId']   = $application_company ? (int) $application_company['id'] : null;
+			$base['companyStatus']          = $application_company['company_status'] ?? null;
+			$base['companyRegistryStatus']  = $application_company['registry_status'] ?? null;
+			$base['companyOwnershipStatus'] = $application_company['ownership_status'] ?? null;
+			$base['membershipRole']         = $application_member['member_role'] ?? null;
+			$base['membershipStatus']       = $application_member['member_status'] ?? null;
+			$base['onboardingStatus']       = 'rejected';
+			return papelito_company_context_with_purchase_capability( $user_id, $base );
+		}
+		if ( $application && 'pending_manual_review' === (string) $application['application_status'] ) {
+			$application_company = papelito_company_get( (int) $application['company_id'] );
+			$application_member  = papelito_company_member_get( (int) $application['company_id'], $user_id );
+			$base['companyId']   = $application_company ? (int) $application_company['id'] : null;
+			$base['companyStatus']          = $application_company['company_status'] ?? null;
+			$base['companyRegistryStatus']  = $application_company['registry_status'] ?? null;
+			$base['companyOwnershipStatus'] = $application_company['ownership_status'] ?? null;
+			$base['membershipRole']         = $application_member['member_role'] ?? null;
+			$base['membershipStatus']       = $application_member['member_status'] ?? null;
+			$base['onboardingStatus']       = 'pending';
 			return papelito_company_context_with_purchase_capability( $user_id, $base );
 		}
 		// Sem empresa ativa: reflete a candidatura pendente mais recente, se houver.
@@ -505,20 +620,7 @@ function papelito_company_members_pending_for_user( int $user_id ): array {
 }
 
 function papelito_company_resubmit_owner_candidate( int $user_id ) {
-	$context = papelito_company_context( $user_id );
-	if ( empty( $context['companyId'] ) || 'rejected' !== $context['companyOwnershipStatus'] ) { return new WP_Error( 'papelito_b2b_invalid_resubmission', 'Não há candidatura rejeitada para reenviar.', array( 'status' => 409 ) ); }
-	$profile = papelito_company_profile_get( $user_id );
-	if ( ! $profile || empty( $profile['birth_date_ciphertext'] ) ) { return new WP_Error( 'papelito_b2b_profile_incomplete', 'Perfil B2B incompleto.', array( 'status' => 422 ) ); }
-	$cpf = papelito_pii_decrypt( (string) $profile['cpf_ciphertext'] ); $birth = papelito_pii_decrypt( (string) $profile['birth_date_ciphertext'] );
-	if ( is_wp_error( $cpf ) || is_wp_error( $birth ) ) { return new WP_Error( 'papelito_b2b_profile_unavailable', 'Não foi possível recuperar o perfil.', array( 'status' => 500 ) ); }
-	$company = papelito_company_get( (int) $context['companyId'] ); $user = get_userdata( $user_id );
-	if ( ! $company || ! $user instanceof WP_User ) { return new WP_Error( 'papelito_b2b_company_not_found', 'Empresa não encontrada.', array( 'status' => 404 ) ); }
-	$lookup = papelito_cnpj_lookup( (string) $company['cnpj'], true );
-	$evidence = papelito_company_owner_evidence( $user, $cpf, $birth, $lookup );
-	papelito_company_update( (int) $company['id'], array( 'registry_status' => (string) $lookup['status'], 'ownership_status' => 'pending_manual_review', 'ownership_rejection_reason' => null, 'ownership_rejected_by_user_id' => null, 'ownership_rejected_at' => null, 'provider_source' => (string) $lookup['source'], 'provider_checked_at' => current_time( 'mysql', true ), 'provider_data_hash' => (string) $evidence['hash'] ) );
-	papelito_company_member_upsert( (int) $company['id'], $user_id, array( 'member_role' => 'owner', 'member_status' => 'pending_company_approval', 'requested_at' => current_time( 'mysql', true ) ) );
-	papelito_company_audit( (int) $company['id'], $user_id, 'owner_resubmitted', array( 'registry_status' => $lookup['status'], 'evidence' => $evidence ) );
-	return papelito_company_context( $user_id );
+	return new WP_Error( 'papelito_b2b_resubmission_closed', 'Esta solicitação foi encerrada. Inicie novamente o cadastro empresarial.', array( 'status' => 410 ) );
 }
 
 function papelito_user_is_internal_admin( WP_User $user ): bool {

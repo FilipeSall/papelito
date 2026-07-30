@@ -44,6 +44,10 @@ if ( ! defined( 'PAPELITO_B2B_LEGACY_EMAIL_LOG_TABLE' ) ) {
 	define( 'PAPELITO_B2B_LEGACY_EMAIL_LOG_TABLE', 'papelito_b2b_legacy_email_log' );
 }
 
+if ( ! defined( 'PAPELITO_COMPANY_OWNER_APPLICATIONS_TABLE' ) ) {
+	define( 'PAPELITO_COMPANY_OWNER_APPLICATIONS_TABLE', 'papelito_company_owner_applications' );
+}
+
 /**
  * Resolve os nomes completos (com prefixo) das tabelas do modelo B2B.
  *
@@ -61,6 +65,7 @@ function papelito_company_table_names(): array {
 		'idempotency' => $wpdb->prefix . PAPELITO_COMPANY_IDEMPOTENCY_TABLE,
 		'onboarding' => $wpdb->prefix . PAPELITO_B2B_ONBOARDING_TABLE,
 		'legacy_email_log' => $wpdb->prefix . PAPELITO_B2B_LEGACY_EMAIL_LOG_TABLE,
+		'owner_applications' => $wpdb->prefix . PAPELITO_COMPANY_OWNER_APPLICATIONS_TABLE,
 	);
 }
 
@@ -256,6 +261,38 @@ function papelito_company_install_tables(): void {
   KEY idx_campaign_status (campaign, status)
 ) {$charset_collate};";
 
+	$owner_applications_sql = "CREATE TABLE {$tables['owner_applications']} (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  company_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  attempt_number INT UNSIGNED NOT NULL,
+  application_status VARCHAR(32) NOT NULL,
+  is_open TINYINT UNSIGNED NULL DEFAULT NULL,
+  evidence_json LONGTEXT NULL DEFAULT NULL,
+  provider_source VARCHAR(32) NULL DEFAULT NULL,
+  provider_checked_at DATETIME NULL DEFAULT NULL,
+  provider_data_hash CHAR(64) NULL DEFAULT NULL,
+  document_storage_key VARCHAR(80) NULL DEFAULT NULL,
+  document_original_name VARCHAR(191) NULL DEFAULT NULL,
+  document_mime VARCHAR(64) NULL DEFAULT NULL,
+  document_size BIGINT UNSIGNED NULL DEFAULT NULL,
+  document_sha256 CHAR(64) NULL DEFAULT NULL,
+  document_uploaded_at DATETIME NULL DEFAULT NULL,
+  document_purge_status VARCHAR(24) NOT NULL DEFAULT 'not_applicable',
+  document_purge_error_code VARCHAR(64) NULL DEFAULT NULL,
+  document_deleted_at DATETIME NULL DEFAULT NULL,
+  decided_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  decided_at DATETIME NULL DEFAULT NULL,
+  rejection_reason VARCHAR(500) NULL DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY  (id),
+  UNIQUE KEY uniq_company_attempt (company_id, attempt_number),
+  UNIQUE KEY uniq_company_open (company_id, is_open),
+  KEY idx_user_created (user_id, created_at),
+  KEY idx_status_created (application_status, created_at)
+) {$charset_collate};";
+
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 	dbDelta( $profiles_sql );
 	dbDelta( $companies_sql );
@@ -265,4 +302,5 @@ function papelito_company_install_tables(): void {
 	dbDelta( $idempotency_sql );
 	dbDelta( $onboarding_sql );
 	dbDelta( $legacy_email_log_sql );
+	dbDelta( $owner_applications_sql );
 }

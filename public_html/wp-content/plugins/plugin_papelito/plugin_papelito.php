@@ -20,6 +20,7 @@ require_once __DIR__ . '/includes/favorites.php';
 require_once __DIR__ . '/includes/catalog-pdf.php';
 require_once __DIR__ . '/includes/flash_sale.php';
 require_once __DIR__ . '/includes/home_assets.php';
+require_once __DIR__ . '/includes/media_uploads.php';
 require_once __DIR__ . '/includes/admin_reports.php';
 require_once __DIR__ . '/includes/admin_users.php';
 require_once __DIR__ . '/includes/shipping.php';
@@ -51,6 +52,7 @@ require_once __DIR__ . '/includes/cnpj_providers.php';
 require_once __DIR__ . '/includes/company_idempotency.php';
 require_once __DIR__ . '/includes/company_authz.php';
 require_once __DIR__ . '/includes/company_services.php';
+require_once __DIR__ . '/includes/company_owner_applications.php';
 require_once __DIR__ . '/includes/company_active_context.php';
 require_once __DIR__ . '/includes/legacy_migration.php';
 require_once __DIR__ . '/includes/company_membership_services.php';
@@ -62,7 +64,7 @@ require_once __DIR__ . '/includes/company_management_endpoints.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.17.0' );
+	define( 'PAPELITO_DB_VERSION', '1.18.0' );
 }
 
 /**
@@ -120,7 +122,7 @@ function papelito_profile_nonce_field() {
 /**
  * Retrieve a sanitized post value.
  */
-function papelito_posted_value( $key, $default = '' ) {
+function papelito_posted_value( string $key, string $default = '' ): string {
     if ( ! isset( $_POST[ $key ] ) ) {
         return $default;
     }
@@ -173,7 +175,7 @@ add_action(
 /**
  * Log plugin data outside the plugin directory.
  */
-function my_plugin_log_json($data)
+function my_plugin_log_json( array $data ): void
 {
     $upload_dir = wp_upload_dir();
 
@@ -199,7 +201,7 @@ function my_plugin_log_json($data)
 /**
  * Check whether a REST route should be logged for products debugging.
  */
-function papelito_should_log_products_rest_route( $route ) {
+function papelito_should_log_products_rest_route( string $route ): bool {
     if ( ! is_string( $route ) || '' === $route ) {
         return false;
     }
@@ -210,7 +212,7 @@ function papelito_should_log_products_rest_route( $route ) {
 /**
  * Normalize REST params for logs.
  */
-function papelito_rest_log_params( $params ) {
+function papelito_rest_log_params( array $params ): array {
     if ( ! is_array( $params ) ) {
         return array();
     }
@@ -315,7 +317,7 @@ add_filter(
 /**
  * Add custom fields to the user profile page for users with the "vendor" role.
  */
-function vendor_profile_fields($user)
+function vendor_profile_fields( WP_User $user ): void
 {
     if (in_array('seller', $user->roles)) {
         display_seller_CEP_form($user);
@@ -327,7 +329,7 @@ add_action('show_user_profile', 'vendor_profile_fields');
 add_action('edit_user_profile', 'vendor_profile_fields');
 
 // Add user meta fields to admin user edit page for customer role
-function add_user_meta_fields($user)
+function add_user_meta_fields( WP_User $user ): void
 {
     $store_name = get_user_meta($user->ID, 'store_name', true);
     $phone_number = get_user_meta($user->ID, 'phone_number', true);
@@ -402,7 +404,7 @@ function add_user_meta_fields($user)
     <?php
 }
 
-function display_seller_CEP_form($user)
+function display_seller_CEP_form( WP_User $user ): void
 {
     $store_name = get_user_meta($user->ID, 'store_name', true);
     $phone_number = get_user_meta($user->ID, 'phone_number', true);
@@ -533,7 +535,7 @@ function display_seller_CEP_form($user)
 /**
 Save custom fields when the user profile is updated.
 */
-function save_vendor_profile_fields($user_id)
+function save_vendor_profile_fields( int $user_id ): void
 {
     if (
         ! current_user_can( 'edit_user', $user_id ) ||
@@ -599,7 +601,7 @@ function save_vendor_profile_fields($user_id)
 add_action('personal_options_update', 'save_vendor_profile_fields');
 add_action('edit_user_profile_update', 'save_vendor_profile_fields');
 
-function my_elementor_form_submit_handler($record, $ajax_handler)
+function my_elementor_form_submit_handler( \ElementorPro\Modules\Forms\Classes\Form_Record $record, $ajax_handler )
 {
     // Check if this is the CEP form
     if ($record->get_form_settings('form_name') === 'CEP') {
