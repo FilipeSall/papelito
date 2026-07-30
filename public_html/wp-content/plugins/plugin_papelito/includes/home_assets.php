@@ -28,6 +28,24 @@ function papelito_home_assets_promo_option_name(): string {
 }
 
 /**
+ * Nome da option da faixa de avisos e promocoes.
+ *
+ * @return string
+ */
+function papelito_home_assets_promo_marquee_option_name(): string {
+	return 'papelito_home_promo_marquee';
+}
+
+/**
+ * Nome da option dos beneficios comerciais da Home.
+ *
+ * @return string
+ */
+function papelito_home_assets_features_option_name(): string {
+	return 'papelito_home_features';
+}
+
+/**
  * Nome da option do partner banner.
  *
  * @return string
@@ -212,6 +230,126 @@ function papelito_home_assets_default_partner_banner(): array {
 }
 
 /**
+ * Defaults da faixa de avisos e promocoes.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_home_assets_default_promo_marquee_items(): array {
+	return array(
+		array(
+			'id'       => 'default-marquee-1',
+			'text'     => '⚡ COMPRE 3 LEVE 4 em Sedas',
+			'order'    => 1,
+			'isActive' => true,
+		),
+		array(
+			'id'       => 'default-marquee-2',
+			'text'     => '🌿 Hemp King Size com 20% OFF',
+			'order'    => 2,
+			'isActive' => true,
+		),
+		array(
+			'id'       => 'default-marquee-3',
+			'text'     => '🎁 BRINDE em pedidos acima de R$500',
+			'order'    => 3,
+			'isActive' => true,
+		),
+		array(
+			'id'       => 'default-marquee-4',
+			'text'     => '💳 PARCELAMOS em 3x sem juros',
+			'order'    => 4,
+			'isActive' => true,
+		),
+		array(
+			'id'       => 'default-marquee-5',
+			'text'     => '🏆 A #1 DO BRASIL em papéis para enrolar',
+			'order'    => 5,
+			'isActive' => true,
+		),
+		array(
+			'id'       => 'default-marquee-6',
+			'text'     => '🔥 FRETE GRÁTIS acima de R$79',
+			'order'    => 6,
+			'isActive' => true,
+		),
+	);
+}
+
+/**
+ * Limite de caracteres por mensagem da faixa.
+ *
+ * @return int
+ */
+function papelito_home_assets_promo_marquee_max_length(): int {
+	return 120;
+}
+
+/**
+ * Quantidade minima de mensagens ativas na faixa.
+ *
+ * @return int
+ */
+function papelito_home_assets_promo_marquee_min_active_messages(): int {
+	return 3;
+}
+
+/**
+ * Defaults dos beneficios comerciais da Home.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_home_assets_default_features(): array {
+	return array(
+		array(
+			'id'       => 'frete-gratis',
+			'title'    => 'Frete Grátis',
+			'subtitle' => 'Acima de R$500',
+			'iconId'   => 0,
+			'iconUrl'  => '/images/icons/truck.svg',
+		),
+		array(
+			'id'       => 'troca-facil',
+			'title'    => 'Troca Fácil',
+			'subtitle' => '15 dias para troca',
+			'iconId'   => 0,
+			'iconUrl'  => '/images/icons/refresh.svg',
+		),
+		array(
+			'id'       => 'parcelamos',
+			'title'    => 'Parcelamos',
+			'subtitle' => 'Em 3x sem juros',
+			'iconId'   => 0,
+			'iconUrl'  => '/images/icons/price.svg',
+		),
+		array(
+			'id'       => 'envio-rapido',
+			'title'    => 'Envio Rápido',
+			'subtitle' => 'Sai no mesmo dia',
+			'iconId'   => 0,
+			'iconUrl'  => '/images/icons/thunder.svg',
+		),
+	);
+}
+
+/**
+ * Limite do titulo de beneficio.
+ *
+ * @return int
+ */
+function papelito_home_assets_feature_title_max_length(): int {
+	return 32;
+}
+
+/**
+ * Limite do texto auxiliar de beneficio.
+ *
+ * @return int
+ */
+function papelito_home_assets_feature_subtitle_max_length(): int {
+	return 44;
+}
+
+/**
  * Defaults das imagens administraveis das paginas.
  *
  * @return array<string, array<string, mixed>>
@@ -298,6 +436,74 @@ function papelito_home_assets_get_raw_hero_items(): array {
 function papelito_home_assets_get_raw_promo_banner(): array {
 	$value = get_option( papelito_home_assets_promo_option_name(), array() );
 	return is_array( $value ) ? $value : array();
+}
+
+/**
+ * Busca option da faixa de avisos e promocoes.
+ *
+ * @return array<int, mixed>
+ */
+function papelito_home_assets_get_raw_promo_marquee_items(): array {
+	$value = get_option( papelito_home_assets_promo_marquee_option_name(), null );
+
+	if ( ! is_array( $value ) ) {
+		return papelito_home_assets_default_promo_marquee_items();
+	}
+
+	return array_values( $value );
+}
+
+/**
+ * Cria a configuracao inicial da faixa sem sobrescrever edicoes existentes.
+ *
+ * @return void
+ */
+function papelito_home_assets_seed_promo_marquee(): void {
+	$value = get_option( papelito_home_assets_promo_marquee_option_name(), null );
+
+	if ( null !== $value ) {
+		return;
+	}
+
+	update_option(
+		papelito_home_assets_promo_marquee_option_name(),
+		papelito_home_assets_default_promo_marquee_items(),
+		false
+	);
+}
+
+/**
+ * Busca option dos beneficios comerciais.
+ *
+ * @return array<int, mixed>
+ */
+function papelito_home_assets_get_raw_features(): array {
+	$value = get_option( papelito_home_assets_features_option_name(), null );
+
+	if ( ! is_array( $value ) || 4 !== count( $value ) ) {
+		return papelito_home_assets_default_features();
+	}
+
+	return array_values( $value );
+}
+
+/**
+ * Cria a configuracao inicial dos beneficios sem sobrescrever edicoes existentes.
+ *
+ * @return void
+ */
+function papelito_home_assets_seed_features(): void {
+	$value = get_option( papelito_home_assets_features_option_name(), null );
+
+	if ( null !== $value ) {
+		return;
+	}
+
+	update_option(
+		papelito_home_assets_features_option_name(),
+		papelito_home_assets_default_features(),
+		false
+	);
 }
 
 /**
@@ -391,6 +597,456 @@ function papelito_home_assets_normalize_promo_banner( array $banner ): array {
 		'href'     => papelito_home_assets_normalize_href( $banner['href'] ?? '' ),
 		'isActive' => papelito_home_assets_to_bool( $banner['isActive'] ?? false ),
 	);
+}
+
+/**
+ * Gera um ID para item da faixa.
+ *
+ * @return string
+ */
+function papelito_home_assets_generate_promo_marquee_id(): string {
+	if ( function_exists( 'wp_generate_uuid4' ) ) {
+		return wp_generate_uuid4();
+	}
+
+	return uniqid( 'marquee_', true );
+}
+
+/**
+ * Normaliza item da faixa.
+ *
+ * @param array<string, mixed> $item Item armazenado.
+ * @param int                  $index Posicao de fallback.
+ * @return array<string, mixed>
+ */
+function papelito_home_assets_normalize_promo_marquee_item( array $item, int $index ): array {
+	$id = sanitize_key( (string) ( $item['id'] ?? '' ) );
+
+	if ( '' === $id ) {
+		$id = papelito_home_assets_generate_promo_marquee_id();
+	}
+
+	return array(
+		'id'       => $id,
+		'text'     => papelito_home_assets_clean_text( $item['text'] ?? '' ),
+		'order'    => max( 1, absint( $item['order'] ?? ( $index + 1 ) ) ),
+		'isActive' => papelito_home_assets_to_bool( $item['isActive'] ?? true ),
+	);
+}
+
+/**
+ * Normaliza e ordena todos os itens da faixa.
+ *
+ * @param array<int, mixed> $items Itens armazenados.
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_home_assets_normalize_promo_marquee_items( array $items ): array {
+	$normalized = array();
+
+	foreach ( array_values( $items ) as $index => $item ) {
+		if ( ! is_array( $item ) ) {
+			continue;
+		}
+
+		$normalized[] = papelito_home_assets_normalize_promo_marquee_item( $item, $index );
+	}
+
+	usort(
+		$normalized,
+		static function ( array $left, array $right ): int {
+			return (int) $left['order'] <=> (int) $right['order'];
+		}
+	);
+
+	foreach ( $normalized as $index => &$item ) {
+		$item['order'] = $index + 1;
+	}
+	unset( $item );
+
+	return $normalized;
+}
+
+/**
+ * Normaliza URL de SVG.
+ *
+ * @param mixed $value URL bruta.
+ * @return string
+ */
+function papelito_home_assets_normalize_svg_url( $value ): string {
+	$url  = papelito_home_assets_normalize_image_url( $value );
+	$path = wp_parse_url( $url, PHP_URL_PATH );
+
+	if ( '' === $url || ! is_string( $path ) || 'svg' !== strtolower( (string) pathinfo( $path, PATHINFO_EXTENSION ) ) ) {
+		return '';
+	}
+
+	return $url;
+}
+
+/**
+ * Resolve URL de um attachment SVG.
+ *
+ * @param int    $attachment_id ID do attachment.
+ * @param string $fallback_url URL fallback.
+ * @return string
+ */
+function papelito_home_assets_resolve_svg_url( int $attachment_id, string $fallback_url = '' ): string {
+	if ( $attachment_id > 0 && function_exists( 'get_post_mime_type' ) && 'image/svg+xml' === get_post_mime_type( $attachment_id ) ) {
+		$attachment_url = function_exists( 'wp_get_attachment_url' ) ? wp_get_attachment_url( $attachment_id ) : '';
+		$normalized_url  = papelito_home_assets_normalize_svg_url( $attachment_url );
+
+		if ( '' !== $normalized_url ) {
+			return $normalized_url;
+		}
+	}
+
+	return papelito_home_assets_normalize_svg_url( $fallback_url );
+}
+
+/**
+ * Normaliza um beneficio comercial.
+ *
+ * @param array<string, mixed> $item Item salvo.
+ * @param int                  $index Posicao.
+ * @return array<string, mixed>
+ */
+function papelito_home_assets_normalize_feature( array $item, int $index ): array {
+	$defaults = papelito_home_assets_default_features();
+	$default  = $defaults[ $index ] ?? $defaults[0];
+	$icon_id  = absint( $item['iconId'] ?? 0 );
+	$icon_url = papelito_home_assets_resolve_svg_url( $icon_id, $item['iconUrl'] ?? '' );
+
+	return array(
+		'id'       => sanitize_key( (string) ( $item['id'] ?? $default['id'] ) ) ?: $default['id'],
+		'title'    => papelito_home_assets_clean_text( $item['title'] ?? $default['title'] ),
+		'subtitle' => papelito_home_assets_clean_text( $item['subtitle'] ?? $default['subtitle'] ),
+		'iconId'   => $icon_id,
+		'iconUrl'  => '' !== $icon_url ? $icon_url : $default['iconUrl'],
+	);
+}
+
+/**
+ * Normaliza todos os beneficios comerciais.
+ *
+ * @param array<int, mixed> $items Itens salvos.
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_home_assets_normalize_features( array $items ): array {
+	$defaults   = papelito_home_assets_default_features();
+	$normalized = array();
+
+	foreach ( $defaults as $index => $default ) {
+		$raw          = isset( $items[ $index ] ) && is_array( $items[ $index ] ) ? $items[ $index ] : $default;
+		$normalized[] = papelito_home_assets_normalize_feature( $raw, $index );
+	}
+
+	return $normalized;
+}
+
+/**
+ * Lista issues administrativas dos beneficios.
+ *
+ * @param array<int, array<string, mixed>> $items Itens normalizados.
+ * @return array<int, string>
+ */
+function papelito_home_assets_collect_features_issues( array $items ): array {
+	$issues = array();
+
+	foreach ( $items as $index => $item ) {
+		$number = $index + 1;
+		$title  = (string) $item['title'];
+		$subtitle = (string) $item['subtitle'];
+
+		if ( '' === $title || '' === $subtitle || '' === (string) $item['iconUrl'] ) {
+			$issues[] = sprintf( 'Benefício #%d precisa ter título, texto auxiliar e SVG.', $number );
+		}
+
+		$title_length = function_exists( 'mb_strlen' ) ? mb_strlen( $title ) : strlen( $title );
+		$subtitle_length = function_exists( 'mb_strlen' ) ? mb_strlen( $subtitle ) : strlen( $subtitle );
+
+		if ( $title_length > papelito_home_assets_feature_title_max_length() ) {
+			$issues[] = sprintf( 'Título do benefício #%d excede o limite de %d caracteres.', $number, papelito_home_assets_feature_title_max_length() );
+		}
+
+		if ( $subtitle_length > papelito_home_assets_feature_subtitle_max_length() ) {
+			$issues[] = sprintf( 'Texto auxiliar do benefício #%d excede o limite de %d caracteres.', $number, papelito_home_assets_feature_subtitle_max_length() );
+		}
+	}
+
+	return $issues;
+}
+
+/**
+ * Snapshot admin dos beneficios.
+ *
+ * @return array<string, mixed>
+ */
+function papelito_home_assets_get_admin_features_snapshot(): array {
+	$items = papelito_home_assets_normalize_features( papelito_home_assets_get_raw_features() );
+
+	return array(
+		'items'  => $items,
+		'issues' => papelito_home_assets_collect_features_issues( $items ),
+	);
+}
+
+/**
+ * Valida payload dos beneficios para escrita.
+ *
+ * @param mixed $input Valor recebido.
+ * @return array<int, array<string, mixed>>|WP_Error
+ */
+function papelito_home_assets_validate_features_payload( $input ) {
+	if ( ! is_array( $input ) || 4 !== count( $input ) ) {
+		return new WP_Error(
+			'papelito_home_assets_invalid_features_payload',
+			'Os benefícios comerciais precisam conter exatamente quatro itens.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$validated = array();
+	$ids       = array();
+
+	foreach ( array_values( $input ) as $index => $item ) {
+		$number = $index + 1;
+
+		if ( ! is_array( $item ) ) {
+			return new WP_Error(
+				'papelito_home_assets_invalid_feature_item',
+				sprintf( 'Benefício #%d está em formato inválido.', $number ),
+				array( 'status' => 422 )
+			);
+		}
+
+		$raw_title    = trim( (string) ( $item['title'] ?? '' ) );
+		$raw_subtitle = trim( (string) ( $item['subtitle'] ?? '' ) );
+		$title        = papelito_home_assets_clean_text( $raw_title );
+		$subtitle     = papelito_home_assets_clean_text( $raw_subtitle );
+		$title_length = function_exists( 'mb_strlen' ) ? mb_strlen( $title ) : strlen( $title );
+		$subtitle_length = function_exists( 'mb_strlen' ) ? mb_strlen( $subtitle ) : strlen( $subtitle );
+
+		if ( wp_strip_all_tags( $raw_title ) !== $raw_title || wp_strip_all_tags( $raw_subtitle ) !== $raw_subtitle ) {
+			return new WP_Error(
+				'papelito_home_assets_html_feature_text',
+				sprintf( 'Benefício #%d aceita apenas texto simples.', $number ),
+				array( 'status' => 422 )
+			);
+		}
+
+		if ( '' === $title || '' === $subtitle ) {
+			return new WP_Error(
+				'papelito_home_assets_empty_feature_text',
+				sprintf( 'Benefício #%d precisa ter título e texto auxiliar.', $number ),
+				array( 'status' => 422 )
+			);
+		}
+
+		if ( $title_length > papelito_home_assets_feature_title_max_length() || $subtitle_length > papelito_home_assets_feature_subtitle_max_length() ) {
+			return new WP_Error(
+				'papelito_home_assets_long_feature_text',
+				sprintf( 'Benefício #%d excede o limite de texto permitido.', $number ),
+				array( 'status' => 422 )
+			);
+		}
+
+		$normalized = papelito_home_assets_normalize_feature( $item, $index );
+		$id         = $normalized['id'];
+		$icon_id    = absint( $item['iconId'] ?? 0 );
+		$icon_url   = papelito_home_assets_resolve_svg_url( $icon_id, $item['iconUrl'] ?? '' );
+
+		if ( isset( $ids[ $id ] ) ) {
+			return new WP_Error(
+				'papelito_home_assets_duplicate_feature_id',
+				sprintf( 'Benefício #%d possui ID duplicado.', $number ),
+				array( 'status' => 422 )
+			);
+		}
+
+		if ( '' === $icon_url ) {
+			return new WP_Error(
+				'papelito_home_assets_invalid_feature_icon',
+				sprintf( 'Benefício #%d precisa ter um ícone SVG válido.', $number ),
+				array( 'status' => 422 )
+			);
+		}
+
+		$ids[ $id ]  = true;
+		$validated[] = array(
+			'id'       => $id,
+			'title'    => $title,
+			'subtitle' => $subtitle,
+			'iconId'   => $icon_id,
+			'iconUrl'  => $icon_url,
+		);
+	}
+
+	return $validated;
+}
+
+/**
+ * Lista issues administrativas da faixa.
+ *
+ * @param array<int, array<string, mixed>> $items Itens normalizados.
+ * @return array<int, string>
+ */
+function papelito_home_assets_collect_promo_marquee_issues( array $items ): array {
+	$issues = array();
+	$ids    = array();
+	$active = 0;
+
+	foreach ( $items as $index => $item ) {
+		if ( '' === (string) $item['text'] ) {
+			$issues[] = sprintf( 'Mensagem #%d não pode ficar vazia.', $index + 1 );
+		}
+
+		if ( function_exists( 'mb_strlen' ) ) {
+			$length = mb_strlen( (string) $item['text'] );
+		} else {
+			$length = strlen( (string) $item['text'] );
+		}
+
+		if ( $length > papelito_home_assets_promo_marquee_max_length() ) {
+			$issues[] = sprintf(
+				'Mensagem #%d excede o limite de %d caracteres.',
+				$index + 1,
+				papelito_home_assets_promo_marquee_max_length()
+			);
+		}
+
+		if ( isset( $ids[ $item['id'] ] ) ) {
+			$issues[] = sprintf( 'Mensagem #%d possui ID duplicado.', $index + 1 );
+		}
+
+		if ( ! empty( $item['isActive'] ) ) {
+			$active++;
+		}
+
+		$ids[ $item['id'] ] = true;
+	}
+
+	if ( $active < papelito_home_assets_promo_marquee_min_active_messages() ) {
+		$missing = papelito_home_assets_promo_marquee_min_active_messages() - $active;
+		$issues[] = sprintf(
+			'Selecione pelo menos %d frases para manter a faixa de avisos ativa. Ative mais %d frase%s.',
+			papelito_home_assets_promo_marquee_min_active_messages(),
+			$missing,
+			1 === $missing ? '' : 's'
+		);
+	}
+
+	return $issues;
+}
+
+/**
+ * Snapshot admin da faixa.
+ *
+ * @return array<string, mixed>
+ */
+function papelito_home_assets_get_admin_promo_marquee_snapshot(): array {
+	$items = papelito_home_assets_normalize_promo_marquee_items(
+		papelito_home_assets_get_raw_promo_marquee_items()
+	);
+
+	return array(
+		'messages' => $items,
+		'issues'   => papelito_home_assets_collect_promo_marquee_issues( $items ),
+	);
+}
+
+/**
+ * Valida payload da faixa para escrita.
+ *
+ * @param mixed $input Valor recebido.
+ * @return array<int, array<string, mixed>>|WP_Error
+ */
+function papelito_home_assets_validate_promo_marquee_payload( $input ) {
+	if ( ! is_array( $input ) ) {
+		return new WP_Error(
+			'papelito_home_assets_invalid_promo_marquee_payload',
+			'Payload da faixa de avisos inválido.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$validated = array();
+	$ids       = array();
+
+	foreach ( array_values( $input ) as $index => $item ) {
+		if ( ! is_array( $item ) ) {
+			return new WP_Error(
+				'papelito_home_assets_invalid_promo_marquee_item',
+				sprintf( 'Mensagem #%d está em formato inválido.', $index + 1 ),
+				array( 'status' => 422 )
+			);
+		}
+
+		$normalized = papelito_home_assets_normalize_promo_marquee_item( $item, $index );
+		$text       = (string) $normalized['text'];
+		$length     = function_exists( 'mb_strlen' ) ? mb_strlen( $text ) : strlen( $text );
+
+		if ( '' === $text ) {
+			return new WP_Error(
+				'papelito_home_assets_empty_promo_marquee_text',
+				sprintf( 'Mensagem #%d não pode ficar vazia.', $index + 1 ),
+				array( 'status' => 422 )
+			);
+		}
+
+		if ( $length > papelito_home_assets_promo_marquee_max_length() ) {
+			return new WP_Error(
+				'papelito_home_assets_long_promo_marquee_text',
+				sprintf(
+					'Mensagem #%d excede o limite de %d caracteres.',
+					$index + 1,
+					papelito_home_assets_promo_marquee_max_length()
+				),
+				array( 'status' => 422 )
+			);
+		}
+
+		if ( isset( $ids[ $normalized['id'] ] ) ) {
+			return new WP_Error(
+				'papelito_home_assets_duplicate_promo_marquee_id',
+				sprintf( 'Mensagem #%d possui ID duplicado.', $index + 1 ),
+				array( 'status' => 422 )
+			);
+		}
+
+		$ids[ $normalized['id'] ] = true;
+		$validated[]             = array(
+			'id'       => $normalized['id'],
+			'text'     => $text,
+			'order'    => $index + 1,
+			'isActive' => $normalized['isActive'],
+		);
+	}
+
+	$active = count(
+		array_filter(
+			$validated,
+			static function ( array $item ): bool {
+				return ! empty( $item['isActive'] );
+			}
+		)
+	);
+
+	if ( $active < papelito_home_assets_promo_marquee_min_active_messages() ) {
+		$missing = papelito_home_assets_promo_marquee_min_active_messages() - $active;
+
+		return new WP_Error(
+			'papelito_home_assets_min_active_promo_marquee',
+			sprintf(
+				'Selecione pelo menos %d frases para manter a faixa de avisos ativa. Ative mais %d frase%s.',
+				papelito_home_assets_promo_marquee_min_active_messages(),
+				$missing,
+				1 === $missing ? '' : 's'
+			),
+			array( 'status' => 422 )
+		);
+	}
+
+	return $validated;
 }
 
 /**
@@ -1034,6 +1690,61 @@ add_action(
 
 		register_rest_route(
 			'papelito/v1',
+			'/home/promo-marquee',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => '__return_true',
+				'callback'            => static function (): WP_REST_Response {
+					$items = papelito_home_assets_normalize_promo_marquee_items(
+						papelito_home_assets_get_raw_promo_marquee_items()
+					);
+
+					$public_items = array_values(
+						array_filter(
+							$items,
+							static function ( array $item ): bool {
+								$length = function_exists( 'mb_strlen' )
+									? mb_strlen( (string) $item['text'] )
+									: strlen( (string) $item['text'] );
+
+								return ! empty( $item['isActive'] )
+									&& '' !== (string) $item['text']
+									&& $length <= papelito_home_assets_promo_marquee_max_length();
+							}
+						)
+					);
+
+					if ( count( $public_items ) < papelito_home_assets_promo_marquee_min_active_messages() ) {
+						$public_items = array();
+					}
+
+					return new WP_REST_Response( array( 'messages' => $public_items ), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/home/features',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => '__return_true',
+				'callback'            => static function (): WP_REST_Response {
+					$items = papelito_home_assets_normalize_features(
+						papelito_home_assets_get_raw_features()
+					);
+
+					if ( ! empty( papelito_home_assets_collect_features_issues( $items ) ) ) {
+						$items = papelito_home_assets_normalize_features( papelito_home_assets_default_features() );
+					}
+
+					return new WP_REST_Response( array( 'items' => $items ), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
 			'/home/partner-banner',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
@@ -1246,6 +1957,82 @@ add_action(
 				},
 				'callback'            => static function (): WP_REST_Response {
 					return new WP_REST_Response( papelito_home_assets_get_admin_promo_snapshot(), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/assets/promo-marquee',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => static function (): bool {
+					return current_user_can( 'manage_options' );
+				},
+				'callback'            => static function (): WP_REST_Response {
+					return new WP_REST_Response( papelito_home_assets_get_admin_promo_marquee_snapshot(), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/assets/features',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => static function (): bool {
+					return current_user_can( 'manage_options' );
+				},
+				'callback'            => static function (): WP_REST_Response {
+					return new WP_REST_Response( papelito_home_assets_get_admin_features_snapshot(), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/assets/features',
+			array(
+				'methods'             => WP_REST_Server::EDITABLE,
+				'permission_callback' => static function (): bool {
+					return current_user_can( 'manage_options' );
+				},
+				'callback'            => static function ( WP_REST_Request $request ): WP_REST_Response {
+					$params    = $request->get_json_params();
+					$payload   = is_array( $params ) ? $params : array();
+					$validated = papelito_home_assets_validate_features_payload( $payload['items'] ?? $payload );
+
+					if ( is_wp_error( $validated ) ) {
+						return papelito_home_assets_rest_error_response( $validated );
+					}
+
+					update_option( papelito_home_assets_features_option_name(), $validated, false );
+
+					return new WP_REST_Response( papelito_home_assets_get_admin_features_snapshot(), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/assets/promo-marquee',
+			array(
+				'methods'             => WP_REST_Server::EDITABLE,
+				'permission_callback' => static function (): bool {
+					return current_user_can( 'manage_options' );
+				},
+				'callback'            => static function ( WP_REST_Request $request ): WP_REST_Response {
+					$params    = $request->get_json_params();
+					$payload   = is_array( $params ) ? $params : array();
+					$validated = papelito_home_assets_validate_promo_marquee_payload( $payload['messages'] ?? $payload );
+
+					if ( is_wp_error( $validated ) ) {
+						return papelito_home_assets_rest_error_response( $validated );
+					}
+
+					update_option( papelito_home_assets_promo_marquee_option_name(), $validated, false );
+
+					return new WP_REST_Response( papelito_home_assets_get_admin_promo_marquee_snapshot(), 200 );
 				},
 			)
 		);

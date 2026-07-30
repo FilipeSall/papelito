@@ -64,7 +64,7 @@ require_once __DIR__ . '/includes/company_management_endpoints.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.19.0' );
+	define( 'PAPELITO_DB_VERSION', '1.21.0' );
 }
 
 /**
@@ -105,6 +105,14 @@ function papelito_maybe_migrate_db() {
 
 	if ( function_exists( 'papelito_company_install_tables' ) ) {
 		papelito_company_install_tables();
+	}
+
+	if ( function_exists( 'papelito_home_assets_seed_promo_marquee' ) ) {
+		papelito_home_assets_seed_promo_marquee();
+	}
+
+	if ( function_exists( 'papelito_home_assets_seed_features' ) ) {
+		papelito_home_assets_seed_features();
 	}
 
 	update_option( 'papelito_db_version', PAPELITO_DB_VERSION, true );
