@@ -7,6 +7,12 @@
 4. Backup remoto criado em `$REMOTE_BACKUP_DIR_PRODUCTION/<artifact>-<timestamp>.tgz`.
 5. Flush WP-CLI executado (`wp cache flush`, `wp rewrite flush`).
 
+## Domínio do frontend
+
+Em produção, defina `PAPELITO_FRONTEND_URL=https://marketplace.papelito.com` e inclua
+`https://marketplace.papelito.com` em `PAPELITO_ALLOWED_ORIGINS`. No Vercel, defina
+`NEXTAUTH_URL=https://marketplace.papelito.com` para o mesmo ambiente de produção.
+
 ## Deploy manual (workflow_dispatch)
 GitHub → Actions → Deploy → Run workflow → escolher target/artifact.
 

@@ -52,7 +52,7 @@ function papelito_should_redirect_legacy_public_request(): bool {
 add_filter(
 	'allowed_redirect_hosts',
 	static function ( array $hosts ): array {
-		$hosts[] = 'papelito.com';
+		$hosts[] = 'marketplace.papelito.com';
 		return array_values( array_unique( $hosts ) );
 	}
 );
@@ -61,7 +61,7 @@ add_action(
 	'init',
 	static function (): void {
 		if ( papelito_should_redirect_legacy_public_request() ) {
-			wp_safe_redirect( 'https://papelito.com/', 302 );
+			wp_safe_redirect( 'https://marketplace.papelito.com/', 302 );
 			exit;
 		}
 	},
