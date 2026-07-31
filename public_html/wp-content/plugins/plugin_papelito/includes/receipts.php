@@ -426,7 +426,7 @@ function papelito_receipt_claim_sequence( int $year ): int {
 	$sequence = max( 1, (int) $row['next_sequence'] );
 	$updated  = $wpdb->query(
 		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- nome de tabela com prefixo do $wpdb.
-		$wpdb->prepare( "UPDATE {$tables['sequences']} SET next_sequence = next_sequence + 1 WHERE sequence_year = %d", $year )
+		$wpdb->prepare( "UPDATE {$tables['sequences']} SET next_sequence = next_sequence + 1, updated_at = CURRENT_TIMESTAMP WHERE sequence_year = %d", $year )
 	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
 	if ( false === $updated ) {
