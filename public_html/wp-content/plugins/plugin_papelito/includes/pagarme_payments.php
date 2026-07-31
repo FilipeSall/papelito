@@ -662,6 +662,12 @@ function papelito_pagarme_apply_order_state( object $order, string $state, bool 
 	}
 
 	$order->save();
+
+	// Só depois de a persistência do estado pago concluir. Reentrante por desenho:
+	// webhook repetido reemite o evento e os consumidores precisam ser idempotentes.
+	if ( $paid && papelito_pagarme_payment_state_is_paid( $state ) ) {
+		do_action( 'papelito_order_payment_confirmed', $order, $state );
+	}
 }
 
 /**

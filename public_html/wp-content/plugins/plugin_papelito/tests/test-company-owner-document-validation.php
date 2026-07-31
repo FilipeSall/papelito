@@ -22,12 +22,16 @@ function wp_check_filetype_and_ext( string $path, string $name, array $allowed )
 		: array( 'ext' => false, 'type' => false );
 }
 
+require __DIR__ . '/../includes/private_files.php';
+
 $source = file_get_contents( __DIR__ . '/../includes/company_owner_applications.php' );
-if ( ! preg_match( '/function papelito_company_document_validate_upload\(.*?\n}/s', $source, $match ) ) {
-	echo "FAIL: could not isolate papelito_company_document_validate_upload\n";
-	exit( 1 );
+foreach ( array( 'papelito_company_document_spec', 'papelito_company_document_validate_upload' ) as $function ) {
+	if ( ! preg_match( '/function ' . $function . '\(.*?\n}/s', $source, $match ) ) {
+		echo "FAIL: could not isolate {$function}\n";
+		exit( 1 );
+	}
+	eval( $match[0] ); // phpcs:ignore Squiz.PHP.Eval.Discouraged
 }
-eval( $match[0] ); // phpcs:ignore Squiz.PHP.Eval.Discouraged
 
 $failures = 0;
 function assert_document( string $label, mixed $expected, mixed $actual ): void {

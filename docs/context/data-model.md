@@ -95,9 +95,21 @@ Uma thread por pedido.
 
 Registros anteriores à migração recebem `manual_fallback_eligible=0` — **nenhuma falha histórica se torna elegível por inferência**.
 
+### Recibo interno
+
+Três tabelas, criadas junto com a fundação do recibo numerado. **Nenhuma delas guarda nota fiscal** — o recibo é documento interno do marketplace.
+
+- **`wp_papelito_receipt_sequences`** — `sequence_year` (PK) + `next_sequence`. Uma linha por ano. A alocação é `SELECT ... FOR UPDATE` na linha do ano, **dentro da mesma transação** que grava o recibo. É o que garante numeração sem furo nem duplicata sob concorrência.
+- **`wp_papelito_receipts`** — um recibo por pedido (`UNIQUE order_id`), numerado `PPL-AAAA-NNNNNN` (`UNIQUE receipt_number`). Guarda comprador, empresa/CNPJ do snapshot B2B, método e estado do pagamento, os quatro valores em centavos e o `snapshot_json` completo. `origin` distingue `payment` de `backfill`.
+- **`wp_papelito_receipt_vendor_parts`** — parcela por vendor, `UNIQUE (receipt_id, vendor_id)`. Hoje sempre uma linha, porque o checkout recusa carrinho misto; o modelo já suporta N.
+
+**O recibo é imutável.** Alterar o `WC_Order` depois da emissão não muda `snapshot_json` nem nenhum campo `*_cents`. A soma das parcelas bate **exatamente** com o total do recibo — o frete é repartido por `papelito_receipt_allocate_cents()`, que dá o resto à última parcela.
+
+O CNPJ vem de `_papelito_company_cnpj` do pedido, **nunca de `wp_usermeta`**.
+
 ### Nunca criada
 
-`wp_papelito_invoices` foi projetada para armazenar NF-e por pedido/vendor e **nunca foi criada**. Emissão de nota fiscal não existe no sistema.
+`wp_papelito_invoices` foi projetada para armazenar NF-e por pedido/vendor e **nunca foi criada**. Emissão de nota fiscal não existe no sistema — a Papelito não emite, e o anexo da nota do vendor ainda não foi implementado.
 
 ## Tabelas B2B
 

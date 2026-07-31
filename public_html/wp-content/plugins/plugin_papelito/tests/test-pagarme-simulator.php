@@ -20,6 +20,7 @@ $papelito_test_stock_releases   = 0;
 
 function add_action( ...$args ) {}
 function add_filter( ...$args ) {}
+function do_action( ...$args ) {}
 function set_transient( ...$args ) {}
 function get_transient( ...$args ) { return false; }
 function wp_next_scheduled( ...$args ) { return false; }
@@ -116,11 +117,11 @@ class WC_Order {
 		return $this->id;
 	}
 
-	public function get_meta( $key, $single = true ) {
+	public function get_meta( string $key, bool $single = true ) {
 		return $this->meta[ $key ] ?? '';
 	}
 
-	public function update_meta_data( $key, $value ) {
+	public function update_meta_data( string $key, mixed $value ): void {
 		$this->meta[ $key ] = $value;
 	}
 
@@ -130,7 +131,7 @@ class WC_Order {
 		return $this->status;
 	}
 
-	public function update_status( $status ) {
+	public function update_status( string $status ): void {
 		$this->status = $status;
 	}
 

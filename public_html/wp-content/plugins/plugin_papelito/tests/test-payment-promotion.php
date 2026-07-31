@@ -23,7 +23,7 @@ define( 'PAPELITO_VENDOR_STATUS_SHIPPED', 'enviado' );
 define( 'PAPELITO_VENDOR_STATUS_DELIVERED', 'entregue' );
 define( 'PAPELITO_VENDOR_STATUS_CANCELLED', 'cancelado' );
 
-function sanitize_key( $key ) {
+function sanitize_key( mixed $key ) {
 	$key = strtolower( (string) $key );
 	return preg_replace( '/[^a-z0-9_\-]/', '', $key );
 }
@@ -34,10 +34,11 @@ function sanitize_text_field( mixed $value ) {
 
 function add_action( ...$args ) {}
 function add_filter( ...$args ) {}
+function do_action( ...$args ) {}
 
 class WC_Order_Stub {
 	public $meta = array();
-	public $status;
+	public string $status;
 	public $payment_completed = false;
 	public $notes = array();
 
@@ -50,23 +51,23 @@ class WC_Order_Stub {
 		$this->payment_completed = true;
 	}
 
-	public function update_status( $status ) {
+	public function update_status( string $status ): void {
 		$this->status = $status;
 	}
 
-	public function get_status() {
+	public function get_status(): string {
 		return $this->status;
 	}
 
-	public function get_meta( $key, $single = true ) {
+	public function get_meta( string $key, bool $single = true ) {
 		return $this->meta[ $key ] ?? '';
 	}
 
-	public function update_meta_data( $key, $value ) {
+	public function update_meta_data( string $key, mixed $value ): void {
 		$this->meta[ $key ] = $value;
 	}
 
-	public function add_order_note( $note ) {
+	public function add_order_note( string $note ): void {
 		$this->notes[] = $note;
 	}
 
@@ -76,7 +77,7 @@ class WC_Order_Stub {
 require __DIR__ . '/../includes/pagarme_payments.php';
 
 $failures = 0;
-function papelito_assert( string $label, $expected, $actual ): void {
+function papelito_assert( string $label, mixed $expected, mixed $actual ): void {
 	global $failures;
 	if ( $expected === $actual ) {
 		echo "  PASS: {$label}\n";

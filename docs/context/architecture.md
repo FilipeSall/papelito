@@ -44,7 +44,17 @@ composer.json  phpcs.xml.dist
 
 ## `plugin_papelito/includes/` por domínio
 
-52 arquivos. Agrupados pelo que fazem — a lista alfabética não ajuda ninguém.
+54 arquivos. Agrupados pelo que fazem — a lista alfabética não ajuda ninguém.
+
+### Infraestrutura compartilhada
+
+| Arquivo | Responsabilidade |
+|---|---|
+| `private_files.php` | validação e armazenamento de arquivo privado fora do webroot, parametrizado por spec |
+
+O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basename`) e recebe de volta os códigos de erro no seu próprio prefixo. A validação confere **conteúdo**, não extensão: `finfo`, cruzamento extensão↔MIME, magic bytes e `wp_check_filetype_and_ext`. O armazenamento usa nome de 64 hex aleatórios, `0700` no diretório e `0600` no arquivo, e **recusa qualquer diretório dentro do webroot** — não existe fallback para `uploads/`.
+
+**Retenção não é responsabilidade deste módulo.** Cada chamador decide: a candidatura de titularidade purga o documento após a decisão, em `company_owner_applications.php`.
 
 ### Autenticação e identidade
 
@@ -106,7 +116,12 @@ composer.json  phpcs.xml.dist
 | `shipping.php` | cotação nos Correios |
 | `correios_prepostage.php` | pré-postagem e etiqueta |
 | `correios_tracking.php` | polling do Rastro, projeção de estado, S10 manual |
+| `receipts.php` | recibo persistido: numeração anual, snapshot imutável em centavos, parcelas por vendor |
 | `order_receipt.php` | recibo interno em PDF |
+
+O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grava** o documento no momento em que o pagamento é confirmado, congelando valores e itens; `order_receipt.php` **renderiza** o PDF sob demanda. O PDF ainda lê o `WC_Order` ao vivo — passar a ler o snapshot é a etapa seguinte.
+
+`papelito_receipt_issue_for_order()` é idempotente por `order_id` e recusa pedido que `papelito_pagarme_payment_state_is_paid()` não aprove. A numeração `PPL-AAAA-NNNNNN` sai de `papelito_receipt_sequences`, com `SELECT ... FOR UPDATE` na linha do ano dentro da mesma transação que grava o recibo — **nunca `MAX(id)+1`, `get_option` ou contador em memória**. A soma das parcelas por vendor bate exatamente com o total do recibo: o frete é repartido por `papelito_receipt_allocate_cents()`, que dá o resto à última parcela.
 
 ### Vendor e operação
 
@@ -140,6 +155,9 @@ Eventos entre domínios usam `do_action()`. **Os listeners ficam centralizados e
 | `papelito_vendor_rejected` | rejeição | `$user_id, $reason` |
 | `papelito_product_on_promo` | publicação de cupom restrito e ativação de flash sale | `$product_id, $context` |
 | `papelito_active_vendor_changed` | troca de vendor ativo | `$user_id, $prev, $new` |
+| `papelito_order_payment_confirmed` | `papelito_pagarme_apply_order_state`, **depois** de `$order->save()` persistir o estado pago | `$order, $state` |
+
+> `papelito_order_payment_confirmed` é **reentrante por desenho**: webhook repetido reemite o evento. Todo consumidor precisa ser idempotente. É o gatilho da emissão do recibo (`receipts.php`), que é idempotente por `order_id`.
 
 Filtros de extensão:
 

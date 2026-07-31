@@ -4,7 +4,7 @@
 
 **Não existe harness PHPUnit no `plugin_papelito`.** Não há `phpunit.xml`, nem `require-dev`, nem `bin/install-wp-tests.sh`, nem PSR-4 de teste. Quem procurar por isso não vai achar.
 
-O que existe: **48 scripts PHP standalone** em `public_html/wp-content/plugins/plugin_papelito/tests/`, mais um na raiz do repositório (`tests/test-company-purchase-gate.php`). Cada script:
+O que existe: **52 scripts PHP standalone** em `public_html/wp-content/plugins/plugin_papelito/tests/`, mais um na raiz do repositório (`tests/test-company-purchase-gate.php`). Cada script:
 
 - declara `ABSPATH` por conta própria;
 - stuba inline as funções do WordPress que o código sob teste chama (`add_filter`, `register_rest_route`, `get_user_meta`, ...);
@@ -27,14 +27,39 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Área | Suítes |
 |---|---|
 | Documentos e cripto | `test-cnpj-validation.php`, `test-customer-identity-crypto.php`, `test-cnpj-providers.php` |
+| Arquivo privado | `test-private-files.php` (mecanismo genérico), `test-company-owner-document-validation.php` (spec da candidatura) |
 | Empresa / B2B | `test-company-authz-matrix.php`, `test-company-active-context.php`, `test-company-invitations.php`, `test-company-idempotency.php`, `test-company-ownership-transfer.php`, `test-company-onboarding.php`, `tests/test-company-purchase-gate.php` (raiz) |
 | Legados | `test-legacy-migration.php` |
 | Pagamento | `test-pagarme-*.php`, incluindo `test-pagarme-simulator.php` |
 | Correios | `test-correios-prepostage.php`, `test-correios-idempotency.php`, `test-correios-reconciliation.php`, `test-correios-tracking-map.php` |
-| Pedido | `test-order-receipt-pdf.php` |
+| Pedido | `test-order-receipt-pdf.php`, `test-receipts-snapshot.php` |
 | Administração | `test-admin-activate-email.php` |
 
 As invariantes que essas suítes protegem estão catalogadas em [context/business-rules.md](business-rules.md).
+
+### Testes que precisam de banco (WP-CLI)
+
+Onde o SQL **é** a regra de negócio, o script standalone não serve. `test-receipts-sequence-db.php` roda por WP-CLI, contra o banco local, e se limpa sozinho (cria pedido descartável, apaga o recibo e o pedido no fim). Ele fica no mesmo diretório dos demais, mas **não roda com `php` direto** — o guard de `ABSPATH` avisa.
+
+```bash
+docker compose exec web wp --allow-root eval-file \
+  wp-content/plugins/plugin_papelito/tests/test-receipts-sequence-db.php idempotency
+```
+
+Concorrência de verdade exige processos paralelos. O modo `claim` aloca um sequencial por invocação, no ano reservado `2999`; `report` confere quantos foram consumidos e `reset` limpa:
+
+```bash
+docker compose exec web sh -c '
+cd /var/www/html
+T=wp-content/plugins/plugin_papelito/tests/test-receipts-sequence-db.php
+wp --allow-root eval-file $T reset
+for i in $(seq 1 50); do ( wp --allow-root eval-file $T claim >> /tmp/claims.txt ) & done; wait
+sort -u /tmp/claims.txt | wc -l          # tem de ser 50
+wp --allow-root eval-file $T report 50
+'
+```
+
+> O ano `2999` é reservado para teste justamente para nunca colidir com a numeração real. **Não aponte esses modos para o ano corrente.**
 
 ## Ao escrever um teste novo
 

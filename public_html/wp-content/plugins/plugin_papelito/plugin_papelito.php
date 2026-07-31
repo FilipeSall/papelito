@@ -10,6 +10,7 @@
 defined( 'ABSPATH' ) || exit;
 
 require_once __DIR__ . '/includes/support.php';
+require_once __DIR__ . '/includes/private_files.php';
 require_once(plugin_dir_path(__FILE__) . 'includes/user_registration.php');
 require_once(plugin_dir_path(__FILE__) . 'includes/products_filter.php');
 require_once __DIR__ . '/includes/rest_api.php';
@@ -39,6 +40,7 @@ require_once __DIR__ . '/includes/pagarme_webhook.php';
 require_once __DIR__ . '/includes/pagarme_simulator.php';
 require_once __DIR__ . '/includes/order_routing.php';
 require_once __DIR__ . '/includes/vendor_dashboard.php';
+require_once __DIR__ . '/includes/receipts.php';
 require_once __DIR__ . '/includes/order_receipt.php';
 require_once __DIR__ . '/includes/vendor_messaging.php';
 require_once __DIR__ . '/includes/vendor_processing_alerts.php';
@@ -64,7 +66,7 @@ require_once __DIR__ . '/includes/company_management_endpoints.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.21.0' );
+	define( 'PAPELITO_DB_VERSION', '1.22.0' );
 }
 
 /**
@@ -105,6 +107,10 @@ function papelito_maybe_migrate_db() {
 
 	if ( function_exists( 'papelito_company_install_tables' ) ) {
 		papelito_company_install_tables();
+	}
+
+	if ( function_exists( 'papelito_receipts_install_tables' ) ) {
+		papelito_receipts_install_tables();
 	}
 
 	if ( function_exists( 'papelito_home_assets_seed_promo_marquee' ) ) {

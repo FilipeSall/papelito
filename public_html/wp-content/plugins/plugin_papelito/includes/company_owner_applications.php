@@ -186,18 +186,24 @@ function papelito_company_owner_application_view( array $application ): array {
 }
 
 /**
+ * Política de arquivo privado da candidatura de titularidade.
+ *
+ * @return array<string,mixed>
+ */
+function papelito_company_document_spec(): array {
+	return array(
+		'code_prefix'       => 'papelito_company_document',
+		'max_bytes'         => PAPELITO_COMPANY_DOCUMENT_MAX_BYTES,
+		'formats'           => array( 'jpg', 'png', 'pdf' ),
+		'fallback_basename' => 'documento',
+	);
+}
+
+/**
  * Diretório absoluto e fora do webroot.
  */
 function papelito_company_documents_dir(): string {
-	$configured = function_exists( 'papelito_env' )
-		? trim( (string) papelito_env( 'PAPELITO_PRIVATE_COMPANY_DOCUMENTS_DIR', '' ) )
-		: '';
-
-	if ( '' !== $configured ) {
-		return wp_normalize_path( $configured );
-	}
-
-	return wp_normalize_path( dirname( untrailingslashit( ABSPATH ) ) . '/papelito-private/company-documents' );
+	return papelito_private_files_dir( 'PAPELITO_PRIVATE_COMPANY_DOCUMENTS_DIR', 'company-documents' );
 }
 
 /**
@@ -206,127 +212,14 @@ function papelito_company_documents_dir(): string {
  * @return string|WP_Error
  */
 function papelito_company_documents_prepare_dir() {
-	$directory = papelito_company_documents_dir();
-	$webroot   = trailingslashit( wp_normalize_path( ABSPATH ) );
-
-	if ( '' === $directory || '/' !== substr( $directory, 0, 1 ) || 0 === strpos( trailingslashit( $directory ), $webroot ) ) {
-		return new WP_Error( 'papelito_company_document_storage_public', 'O armazenamento privado não está configurado corretamente.', array( 'status' => 500 ) );
-	}
-
-	if ( ! is_dir( $directory ) && ! wp_mkdir_p( $directory ) ) {
-		return new WP_Error( 'papelito_company_document_storage_unavailable', 'Não foi possível preparar o armazenamento privado.', array( 'status' => 500 ) );
-	}
-
-	if ( ! is_writable( $directory ) ) {
-		return new WP_Error( 'papelito_company_document_storage_unwritable', 'O armazenamento privado está indisponível.', array( 'status' => 500 ) );
-	}
-
-	$real_directory = realpath( $directory );
-	if ( false === $real_directory ) {
-		return new WP_Error( 'papelito_company_document_storage_unavailable', 'O armazenamento privado está indisponível.', array( 'status' => 500 ) );
-	}
-	$real_directory = wp_normalize_path( $real_directory );
-	if ( 0 === strpos( trailingslashit( $real_directory ), $webroot ) ) {
-		return new WP_Error( 'papelito_company_document_storage_public', 'O armazenamento privado não está configurado corretamente.', array( 'status' => 500 ) );
-	}
-
-	chmod( $real_directory, 0700 ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod
-	$permissions = fileperms( $real_directory );
-	if ( false === $permissions || 0 !== ( $permissions & 0077 ) ) {
-		return new WP_Error( 'papelito_company_document_storage_permissions', 'O armazenamento privado não possui permissões seguras.', array( 'status' => 500 ) );
-	}
-
-	return $real_directory;
+	return papelito_private_files_prepare_dir( papelito_company_documents_dir(), 'papelito_company_document' );
 }
 
 /**
  * @return array{extension:string,mime:string,size:int,sha256:string,original_name:string}|WP_Error
  */
 function papelito_company_document_validate_upload( array $file ) {
-	$error = (int) ( $file['error'] ?? UPLOAD_ERR_NO_FILE );
-	if ( UPLOAD_ERR_OK !== $error || empty( $file['tmp_name'] ) || ! is_string( $file['tmp_name'] ) ) {
-		return new WP_Error( 'papelito_company_document_upload_invalid', 'Envie um documento válido.', array( 'status' => 422 ) );
-	}
-
-	$tmp_name = (string) $file['tmp_name'];
-	if ( ! is_uploaded_file( $tmp_name ) && ! ( 'cli' === PHP_SAPI && is_file( $tmp_name ) ) ) {
-		return new WP_Error( 'papelito_company_document_upload_invalid', 'O upload recebido é inválido.', array( 'status' => 400 ) );
-	}
-
-	$actual_size = filesize( $tmp_name );
-	$size        = false === $actual_size ? 0 : (int) $actual_size;
-	if ( $size <= 0 || $size > PAPELITO_COMPANY_DOCUMENT_MAX_BYTES ) {
-		return new WP_Error( 'papelito_company_document_size_invalid', 'O documento deve ter no máximo 10 MB.', array( 'status' => 413 ) );
-	}
-
-	$original_name = sanitize_file_name( (string) ( $file['name'] ?? '' ) );
-	$extension     = strtolower( pathinfo( $original_name, PATHINFO_EXTENSION ) );
-	if ( ! in_array( $extension, array( 'jpg', 'jpeg', 'png', 'pdf' ), true ) ) {
-		return new WP_Error( 'papelito_company_document_extension_invalid', 'Envie um arquivo JPG, JPEG, PNG ou PDF.', array( 'status' => 415 ) );
-	}
-
-	$finfo = function_exists( 'finfo_open' ) ? finfo_open( FILEINFO_MIME_TYPE ) : false;
-	$mime  = $finfo ? (string) finfo_file( $finfo, $tmp_name ) : '';
-	if ( $finfo ) {
-		finfo_close( $finfo );
-	}
-
-	$allowed = array(
-		'image/jpeg'      => 'jpg',
-		'image/png'       => 'png',
-		'application/pdf' => 'pdf',
-		'application/x-pdf' => 'pdf',
-	);
-	if ( ! isset( $allowed[ $mime ] ) ) {
-		return new WP_Error( 'papelito_company_document_mime_invalid', 'O conteúdo do arquivo não corresponde a um formato permitido.', array( 'status' => 415 ) );
-	}
-
-	$canonical_extension = $allowed[ $mime ];
-	if ( 'jpg' === $canonical_extension && ! in_array( $extension, array( 'jpg', 'jpeg' ), true ) ) {
-		return new WP_Error( 'papelito_company_document_type_mismatch', 'A extensão não corresponde ao conteúdo do arquivo.', array( 'status' => 415 ) );
-	}
-	if ( 'jpg' !== $canonical_extension && $extension !== $canonical_extension ) {
-		return new WP_Error( 'papelito_company_document_type_mismatch', 'A extensão não corresponde ao conteúdo do arquivo.', array( 'status' => 415 ) );
-	}
-
-	if ( in_array( $mime, array( 'image/jpeg', 'image/png' ), true ) ) {
-		$image = getimagesize( $tmp_name );
-		if ( false === $image || (string) ( $image['mime'] ?? '' ) !== $mime ) {
-			return new WP_Error( 'papelito_company_document_image_invalid', 'A imagem enviada é inválida.', array( 'status' => 422 ) );
-		}
-	} else {
-		$handle    = fopen( $tmp_name, 'rb' );
-		$signature = $handle ? fread( $handle, 5 ) : '';
-		if ( $handle ) {
-			fclose( $handle );
-		}
-		if ( '%PDF-' !== $signature ) {
-			return new WP_Error( 'papelito_company_document_pdf_invalid', 'O PDF enviado é inválido.', array( 'status' => 422 ) );
-		}
-	}
-
-	if ( function_exists( 'wp_check_filetype_and_ext' ) ) {
-		$wp_type = wp_check_filetype_and_ext(
-			$tmp_name,
-			$original_name,
-			array(
-				'jpg|jpeg' => 'image/jpeg',
-				'png'      => 'image/png',
-				'pdf'      => 'application/pdf',
-			)
-		);
-		if ( empty( $wp_type['ext'] ) || empty( $wp_type['type'] ) ) {
-			return new WP_Error( 'papelito_company_document_wp_type_invalid', 'O WordPress não reconheceu o tipo do documento.', array( 'status' => 415 ) );
-		}
-	}
-
-	return array(
-		'extension'    => $canonical_extension,
-		'mime'         => 'application/x-pdf' === $mime ? 'application/pdf' : $mime,
-		'size'         => $size,
-		'sha256'       => hash_file( 'sha256', $tmp_name ),
-		'original_name'=> '' !== $original_name ? substr( $original_name, 0, 191 ) : 'documento.' . $canonical_extension,
-	);
+	return papelito_private_file_validate_upload( $file, papelito_company_document_spec() );
 }
 
 /**
@@ -339,36 +232,21 @@ function papelito_company_document_store( array $file, array $validated ) {
 		return $directory;
 	}
 
-	try {
-		$key = bin2hex( random_bytes( 32 ) ) . '.' . $validated['extension'];
-	} catch ( Throwable $error ) {
-		return new WP_Error( 'papelito_company_document_random_failed', 'Não foi possível preparar o documento.', array( 'status' => 500 ) );
-	}
-
-	$path  = trailingslashit( $directory ) . $key;
-	$moved = move_uploaded_file( (string) $file['tmp_name'], $path );
-	if ( ! $moved && 'cli' === PHP_SAPI ) {
-		$moved = copy( (string) $file['tmp_name'], $path );
-	}
-	if ( ! $moved || ! is_file( $path ) ) {
-		return new WP_Error( 'papelito_company_document_store_failed', 'Não foi possível armazenar o documento.', array( 'status' => 500 ) );
-	}
-
-	if ( ! chmod( $path, 0600 ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod
-		papelito_company_document_discard_path( $path );
-		return new WP_Error( 'papelito_company_document_permissions_failed', 'Não foi possível proteger o documento.', array( 'status' => 500 ) );
-	}
-
-	return array( 'key' => $key, 'path' => $path );
+	return papelito_private_file_store( $file, $validated, $directory, 'papelito_company_document' );
 }
 
 /**
  * Remove um arquivo recém-gravado em caso de rollback/conflito.
  */
 function papelito_company_document_discard_path( string $path ): void {
-	if ( is_file( $path ) ) {
-		unlink( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
-	}
+	papelito_private_file_discard_path( $path );
+}
+
+/**
+ * Valida a storage key antes de qualquer leitura ou exclusão em disco.
+ */
+function papelito_company_document_key_is_valid( string $key ): bool {
+	return papelito_private_file_key_is_valid( $key, papelito_company_document_spec()['formats'] );
 }
 
 /**
@@ -639,7 +517,7 @@ function papelito_company_owner_application_decide( int $application_id, int $ac
 			throw new DomainException( 'already_decided' );
 		}
 		$key = (string) ( $application['document_storage_key'] ?? '' );
-		if ( 1 !== preg_match( '/^[a-f0-9]{64}\.(?:jpg|png|pdf)$/', $key ) || ! is_file( trailingslashit( $document_directory ) . $key ) ) {
+		if ( ! papelito_company_document_key_is_valid( $key ) || ! is_file( trailingslashit( $document_directory ) . $key ) ) {
 			throw new RuntimeException( 'document_unavailable' );
 		}
 
@@ -768,7 +646,7 @@ function papelito_company_owner_application_purge_document( int $application_id 
 	$key     = (string) ( $application['document_storage_key'] ?? '' );
 	$deleted = true;
 	if ( '' !== $key ) {
-		if ( 1 !== preg_match( '/^[a-f0-9]{64}\.(?:jpg|png|pdf)$/', $key ) ) {
+		if ( ! papelito_company_document_key_is_valid( $key ) ) {
 			$deleted = false;
 		} else {
 			$directory = papelito_company_documents_prepare_dir();
@@ -822,7 +700,7 @@ function papelito_company_owner_applications_cleanup_deleted_user( int $user_id 
 	$tables = papelito_company_table_names();
 	foreach ( papelito_company_owner_applications_for_user( $user_id ) as $application ) {
 		$key = (string) ( $application['document_storage_key'] ?? '' );
-		if ( 1 === preg_match( '/^[a-f0-9]{64}\.(?:jpg|png|pdf)$/', $key ) ) {
+		if ( papelito_company_document_key_is_valid( $key ) ) {
 			papelito_company_document_discard_path( trailingslashit( papelito_company_documents_dir() ) . $key );
 		}
 	}

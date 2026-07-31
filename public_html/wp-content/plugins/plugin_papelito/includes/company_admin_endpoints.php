@@ -110,7 +110,7 @@ function papelito_company_admin_owner_application_document( int $application_id 
 	}
 
 	$key = (string) $application['document_storage_key'];
-	if ( 1 !== preg_match( '/^[a-f0-9]{64}\.(?:jpg|png|pdf)$/', $key ) ) {
+	if ( ! papelito_company_document_key_is_valid( $key ) ) {
 		return new WP_Error( 'papelito_owner_application_document_invalid', 'Documento inválido.', array( 'status' => 500 ) );
 	}
 	$directory = papelito_company_documents_prepare_dir();
