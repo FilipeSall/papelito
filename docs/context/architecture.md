@@ -119,7 +119,7 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `receipts.php` | recibo persistido: numeração anual, snapshot imutável em centavos, parcelas por vendor |
 | `order_receipt.php` | recibo interno em PDF |
 
-O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grava** o documento no momento em que o pagamento é confirmado, congelando valores e itens; `order_receipt.php` **renderiza** o PDF sob demanda. O PDF ainda lê o `WC_Order` ao vivo — passar a ler o snapshot é a etapa seguinte.
+O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grava** o documento no momento em que o pagamento é confirmado, congelando valores e itens; `order_receipt.php` **renderiza** o PDF sob demanda, lendo `papelito_receipts` + `papelito_receipt_vendor_parts`. **Nada financeiro, identificador de compra ou data vem do `WC_Order` ao vivo** — dele só sai a situação operacional, que é informativa. Pedido pago sem linha de recibo emite de forma idempotente durante a geração; sem recibo possível, a rota devolve `papelito_receipt_unavailable` (409), nunca um fatal.
 
 `papelito_receipt_issue_for_order()` é idempotente por `order_id` e recusa pedido que `papelito_pagarme_payment_state_is_paid()` não aprove. A numeração `PPL-AAAA-NNNNNN` sai de `papelito_receipt_sequences`, com `SELECT ... FOR UPDATE` na linha do ano dentro da mesma transação que grava o recibo — **nunca `MAX(id)+1`, `get_option` ou contador em memória**. A soma das parcelas por vendor bate exatamente com o total do recibo: o frete é repartido por `papelito_receipt_allocate_cents()`, que dá o resto à última parcela.
 

@@ -7,11 +7,6 @@
 
 defined( 'ABSPATH' ) || exit;
 
-/**
- * TODO: substituir ou complementar este recibo interno por documentos fiscais
- * autorizados quando a integracao fiscal da Papelito for implantada.
- */
-
 function papelito_receipt_order_for_current_user( int $order_id ) {
 	$order = papelito_vendor_dashboard_customer_order( $order_id, get_current_user_id() );
 
@@ -30,8 +25,177 @@ function papelito_receipt_order_for_current_user( int $order_id ) {
 	return $order;
 }
 
-function papelito_receipt_money( float $value ): string {
-	return 'R$ ' . number_format( $value, 2, ',', '.' );
+function papelito_receipt_money_cents( int $cents ): string {
+	return 'R$ ' . number_format( $cents / 100, 2, ',', '.' );
+}
+
+/**
+ * Data persistida em UTC, apresentada no fuso do site.
+ *
+ * @param mixed $value Data mysql em UTC.
+ */
+function papelito_receipt_datetime_label( $value ): string {
+	$value = is_string( $value ) ? trim( $value ) : '';
+
+	if ( '' === $value || 0 === strncmp( $value, '0000-00-00', 10 ) ) {
+		return '';
+	}
+
+	$timestamp = strtotime( $value . ' UTC' );
+
+	return false === $timestamp ? '' : wp_date( 'd/m/Y H:i', $timestamp );
+}
+
+function papelito_receipt_cnpj_label( string $cnpj ): string {
+	$cnpj = preg_replace( '/[^A-Za-z0-9]/', '', $cnpj ) ?? '';
+
+	if ( 14 !== strlen( $cnpj ) ) {
+		return $cnpj;
+	}
+
+	return substr( $cnpj, 0, 2 ) . '.' . substr( $cnpj, 2, 3 ) . '.' . substr( $cnpj, 5, 3 ) . '/' . substr( $cnpj, 8, 4 ) . '-' . substr( $cnpj, 12, 2 );
+}
+
+/**
+ * Situacao do pagamento congelada no recibo.
+ */
+function papelito_receipt_payment_state_label( string $state ): string {
+	$state  = sanitize_key( $state );
+	$labels = array(
+		'paid'               => 'Pago',
+		'captured'           => 'Pago',
+		'authorized'         => 'Autorizado',
+		'pending'            => 'Aguardando confirmação',
+		'processing'         => 'Aguardando confirmação',
+		'waiting_payment'    => 'Aguardando confirmação',
+		'refunded'           => 'Reembolsado',
+		'partially_refunded' => 'Reembolsado parcialmente',
+	);
+
+	if ( isset( $labels[ $state ] ) ) {
+		return $labels[ $state ];
+	}
+
+	if ( function_exists( 'papelito_pagarme_payment_state_releases_stock' ) && papelito_pagarme_payment_state_releases_stock( $state ) ) {
+		return 'Não confirmado';
+	}
+
+	return '' === $state ? 'Não informado' : 'Em processamento';
+}
+
+/**
+ * Situacao do pedido: informativa e lida no momento da geracao.
+ */
+function papelito_receipt_order_status_label( object $order ): string {
+	$vendor_status = method_exists( $order, 'get_meta' ) ? sanitize_key( (string) $order->get_meta( '_papelito_vendor_status', true ) ) : '';
+	$vendor_labels = array(
+		'aguardando_pagamento' => 'Aguardando pagamento',
+		'aguardando_envio'     => 'Aguardando envio',
+		'em_separacao'         => 'Em separação',
+		'enviado'              => 'Enviado',
+		'entregue'             => 'Entregue',
+		'cancelado'            => 'Cancelado',
+	);
+
+	if ( isset( $vendor_labels[ $vendor_status ] ) ) {
+		return $vendor_labels[ $vendor_status ];
+	}
+
+	$status    = method_exists( $order, 'get_status' ) ? sanitize_key( (string) $order->get_status() ) : '';
+	$wc_labels = array(
+		'pending'    => 'Aguardando pagamento',
+		'processing' => 'Em processamento',
+		'on-hold'    => 'Em espera',
+		'completed'  => 'Concluído',
+		'cancelled'  => 'Cancelado',
+		'refunded'   => 'Reembolsado',
+		'failed'     => 'Pagamento não concluído',
+	);
+
+	return $wc_labels[ $status ] ?? 'Em processamento';
+}
+
+/**
+ * Recupera o recibo persistido do pedido, emitindo de forma idempotente quando
+ * o pedido esta pago mas ainda nao tem linha (janela de deploy, atraso de
+ * evento ou historico anterior ao backfill).
+ *
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_receipt_record_for_order( object $order ) {
+	$order_id = (int) $order->get_id();
+	$receipt  = function_exists( 'papelito_receipt_get_by_order' ) ? papelito_receipt_get_by_order( $order_id ) : null;
+
+	if ( ! is_array( $receipt ) && function_exists( 'papelito_receipt_issue_for_order' ) ) {
+		$issued  = papelito_receipt_issue_for_order( $order_id );
+		$receipt = is_array( $issued ) ? $issued : null;
+	}
+
+	if ( ! is_array( $receipt ) || '' === (string) ( $receipt['receipt_number'] ?? '' ) ) {
+		return new WP_Error( 'papelito_receipt_unavailable', 'O recibo deste pedido ainda nao esta disponivel.', array( 'status' => 409 ) );
+	}
+
+	return $receipt;
+}
+
+/**
+ * Blocos de itens por vendor: identificacao e totais vem das parcelas, os itens
+ * vem do snapshot imutavel.
+ *
+ * @param array<string,mixed>             $receipt Linha do recibo.
+ * @param array<int,array<string,mixed>>  $parts   Parcelas por vendor.
+ * @return array<int,array{vendor_name:string,total_cents:int,items:array<int,array<string,mixed>>}>
+ */
+function papelito_receipt_pdf_vendor_blocks( array $receipt, array $parts ): array {
+	$snapshot = json_decode( (string) ( $receipt['snapshot_json'] ?? '' ), true );
+	$snapshot = is_array( $snapshot ) ? $snapshot : array();
+
+	$items_by_vendor = array();
+	foreach ( (array) ( $snapshot['items'] ?? array() ) as $item ) {
+		if ( is_array( $item ) ) {
+			$items_by_vendor[ (int) ( $item['vendor_id'] ?? 0 ) ][] = $item;
+		}
+	}
+
+	$blocks = array();
+
+	foreach ( $parts as $part ) {
+		$vendor_id = (int) ( $part['vendor_id'] ?? 0 );
+		$items     = $items_by_vendor[ $vendor_id ] ?? null;
+
+		if ( null === $items ) {
+			$decoded = json_decode( (string) ( $part['items_json'] ?? '' ), true );
+			$items   = is_array( $decoded ) ? $decoded : array();
+		}
+
+		$blocks[] = array(
+			'vendor_name' => sanitize_text_field( (string) ( $part['vendor_name'] ?? '' ) ),
+			'total_cents' => (int) ( $part['total_cents'] ?? 0 ),
+			'items'       => $items,
+		);
+	}
+
+	if ( empty( $blocks ) ) {
+		foreach ( (array) ( $snapshot['vendors'] ?? array() ) as $vendor ) {
+			if ( is_array( $vendor ) ) {
+				$blocks[] = array(
+					'vendor_name' => sanitize_text_field( (string) ( $vendor['vendor_name'] ?? '' ) ),
+					'total_cents' => (int) ( $vendor['total_cents'] ?? 0 ),
+					'items'       => is_array( $vendor['items'] ?? null ) ? $vendor['items'] : array(),
+				);
+			}
+		}
+	}
+
+	if ( empty( $blocks ) ) {
+		$blocks[] = array(
+			'vendor_name' => '',
+			'total_cents' => (int) ( $receipt['total_cents'] ?? 0 ),
+			'items'       => (array) ( $snapshot['items'] ?? array() ),
+		);
+	}
+
+	return $blocks;
 }
 
 function papelito_receipt_pdf_escape( string $value ): string {
@@ -44,54 +208,140 @@ function papelito_receipt_pdf_escape( string $value ): string {
 }
 
 /**
- * @return array<int,array{text:string,size:int,bold:bool}>
+ * Uma linha do PDF, com fonte e peso.
+ *
+ * @return array{text:string,size:int,bold:bool}
  */
-function papelito_receipt_pdf_lines( object $order ): array {
-	$vendor_name  = sanitize_text_field( (string) $order->get_meta( '_papelito_vendor_name', true ) );
-	$buyer_name   = sanitize_text_field( (string) $order->get_formatted_billing_full_name() );
-	$company_name = sanitize_text_field( (string) $order->get_billing_company() );
-	$paid_at      = method_exists( $order, 'get_date_paid' ) ? $order->get_date_paid() : null;
-	$lines        = array(
-		array( 'text' => 'Recibo de pedido', 'size' => 18, 'bold' => true ),
-		array( 'text' => 'Pedido #' . sanitize_text_field( (string) $order->get_order_number() ), 'size' => 11, 'bold' => true ),
-		array( 'text' => 'Data do pagamento: ' . ( $paid_at ? wp_date( 'd/m/Y H:i', $paid_at->getTimestamp() ) : '' ), 'size' => 10, 'bold' => false ),
-		array( 'text' => '', 'size' => 8, 'bold' => false ),
-		array( 'text' => 'Comprador: ' . ( '' !== $company_name ? $company_name : $buyer_name ), 'size' => 10, 'bold' => false ),
-		array( 'text' => 'Vendor: ' . ( '' !== $vendor_name ? $vendor_name : 'Papelito' ), 'size' => 10, 'bold' => false ),
-		array( 'text' => 'Pagamento: ' . sanitize_text_field( (string) $order->get_payment_method_title() ), 'size' => 10, 'bold' => false ),
-		array( 'text' => '', 'size' => 8, 'bold' => false ),
-		array( 'text' => 'Itens do pedido', 'size' => 12, 'bold' => true ),
+function papelito_receipt_pdf_line( string $text, int $size = 10, bool $bold = false ): array {
+	return array(
+		'text' => $text,
+		'size' => $size,
+		'bold' => $bold,
 	);
+}
 
-	foreach ( $order->get_items( 'line_item' ) as $item ) {
-		if ( ! is_object( $item ) || ! method_exists( $item, 'get_name' ) ) {
-			continue;
+/**
+ * Linhas do PDF. Os valores financeiros e os identificadores da compra saem do
+ * recibo persistido; do pedido ao vivo vem apenas a situacao operacional.
+ *
+ * @return array<int,array{text:string,size:int,bold:bool}>|WP_Error
+ */
+function papelito_receipt_pdf_lines( object $order ) {
+	$receipt = papelito_receipt_record_for_order( $order );
+
+	if ( is_wp_error( $receipt ) ) {
+		return $receipt;
+	}
+
+	$parts    = function_exists( 'papelito_receipt_vendor_parts' ) ? papelito_receipt_vendor_parts( (int) $receipt['id'] ) : array();
+	$blocks   = papelito_receipt_pdf_vendor_blocks( $receipt, $parts );
+	$snapshot = json_decode( (string) ( $receipt['snapshot_json'] ?? '' ), true );
+	$snapshot = is_array( $snapshot ) ? $snapshot : array();
+
+	$number       = sanitize_text_field( (string) $receipt['receipt_number'] );
+	$order_number = sanitize_text_field( (string) ( $snapshot['order']['number'] ?? $receipt['order_id'] ) );
+	$ordered_at   = papelito_receipt_datetime_label( $receipt['ordered_at'] ?? '' );
+	$paid_at      = papelito_receipt_datetime_label( $receipt['paid_at'] ?? '' );
+	$buyer_label  = sanitize_text_field( (string) $receipt['buyer_label'] );
+	$cnpj         = papelito_receipt_cnpj_label( (string) ( $receipt['company_cnpj'] ?? '' ) );
+	$method_title = sanitize_text_field( (string) $receipt['payment_method_title'] );
+
+	if ( '' === $method_title && function_exists( 'papelito_order_routing_payment_method_label' ) ) {
+		$method_title = papelito_order_routing_payment_method_label( (string) $receipt['payment_method'] );
+	}
+
+	$lines   = array();
+	$lines[] = papelito_receipt_pdf_line( 'Recibo de pedido', 18, true );
+	$lines[] = papelito_receipt_pdf_line( 'Recibo ' . $number, 12, true );
+	$lines[] = papelito_receipt_pdf_line( 'Pedido #' . $order_number, 11, true );
+
+	if ( '' !== $ordered_at ) {
+		$lines[] = papelito_receipt_pdf_line( 'Data da compra: ' . $ordered_at );
+	}
+	if ( '' !== $paid_at ) {
+		$lines[] = papelito_receipt_pdf_line( 'Data do pagamento: ' . $paid_at );
+	}
+
+	$lines[] = papelito_receipt_pdf_line( '', 8 );
+	$lines[] = papelito_receipt_pdf_line( 'Comprador: ' . ( '' !== $buyer_label ? $buyer_label : 'Nao informado' ) );
+
+	if ( '' !== $cnpj ) {
+		$lines[] = papelito_receipt_pdf_line( 'CNPJ: ' . $cnpj );
+	}
+
+	$company_legal_name = sanitize_text_field( (string) ( $receipt['company_legal_name'] ?? '' ) );
+	if ( '' !== $company_legal_name && $company_legal_name !== $buyer_label ) {
+		$lines[] = papelito_receipt_pdf_line( 'Razão social: ' . $company_legal_name );
+	}
+
+	if ( 1 === count( $blocks ) ) {
+		$lines[] = papelito_receipt_pdf_line( 'Vendor: ' . ( '' !== $blocks[0]['vendor_name'] ? $blocks[0]['vendor_name'] : 'Papelito' ) );
+	}
+
+	$lines[] = papelito_receipt_pdf_line( 'Pagamento: ' . ( '' !== $method_title ? $method_title : 'Nao informado' ) );
+	$lines[] = papelito_receipt_pdf_line( 'Situação do pagamento: ' . papelito_receipt_payment_state_label( (string) $receipt['payment_state'] ) );
+	$lines[] = papelito_receipt_pdf_line( 'Situação do pedido: ' . papelito_receipt_order_status_label( $order ) );
+	$lines[] = papelito_receipt_pdf_line( '', 8 );
+	$lines[] = papelito_receipt_pdf_line( 'Itens do pedido', 12, true );
+
+	$multivendor = count( $blocks ) > 1;
+
+	foreach ( $blocks as $block ) {
+		if ( $multivendor ) {
+			$lines[] = papelito_receipt_pdf_line( 'Vendor: ' . ( '' !== $block['vendor_name'] ? $block['vendor_name'] : 'Papelito' ), 10, true );
 		}
 
-		$item_text = sprintf(
-			'%dx %s — %s',
-			max( 1, (int) $item->get_quantity() ),
-			sanitize_text_field( (string) $item->get_name() ),
-			papelito_receipt_money( (float) $item->get_total() )
-		);
-		foreach ( explode( "\n", wordwrap( $item_text, 82, "\n", true ) ) as $item_line ) {
-			$lines[] = array( 'text' => $item_line, 'size' => 9, 'bold' => false );
+		foreach ( $block['items'] as $item ) {
+			if ( ! is_array( $item ) ) {
+				continue;
+			}
+
+			$item_text = sprintf(
+				'%dx %s — %s',
+				max( 1, (int) ( $item['quantity'] ?? 1 ) ),
+				sanitize_text_field( (string) ( $item['name'] ?? '' ) ),
+				papelito_receipt_money_cents( (int) ( $item['total_cents'] ?? 0 ) )
+			);
+
+			foreach ( explode( "\n", wordwrap( $item_text, 82, "\n", true ) ) as $item_line ) {
+				$lines[] = papelito_receipt_pdf_line( $item_line, 9 );
+			}
+		}
+
+		if ( $multivendor ) {
+			$lines[] = papelito_receipt_pdf_line( 'Total do vendor: ' . papelito_receipt_money_cents( $block['total_cents'] ), 9 );
+			$lines[] = papelito_receipt_pdf_line( '', 8 );
 		}
 	}
 
-	$lines[] = array( 'text' => '', 'size' => 8, 'bold' => false );
-	$lines[] = array( 'text' => 'Subtotal: ' . papelito_receipt_money( (float) $order->get_subtotal() ), 'size' => 10, 'bold' => false );
-	$lines[] = array( 'text' => 'Frete: ' . papelito_receipt_money( (float) $order->get_shipping_total() ), 'size' => 10, 'bold' => false );
-	if ( (float) $order->get_discount_total() > 0 ) {
-		$lines[] = array( 'text' => 'Descontos: -' . papelito_receipt_money( (float) $order->get_discount_total() ), 'size' => 10, 'bold' => false );
+	$lines[] = papelito_receipt_pdf_line( '', 8 );
+	$lines[] = papelito_receipt_pdf_line( 'Subtotal: ' . papelito_receipt_money_cents( (int) $receipt['subtotal_cents'] ) );
+
+	if ( (int) $receipt['discount_cents'] > 0 ) {
+		$lines[] = papelito_receipt_pdf_line( 'Descontos: -' . papelito_receipt_money_cents( (int) $receipt['discount_cents'] ) );
 	}
-	$lines[] = array( 'text' => 'Total pago: ' . papelito_receipt_money( (float) $order->get_total() ), 'size' => 12, 'bold' => true );
+
+	$lines[] = papelito_receipt_pdf_line( 'Frete: ' . papelito_receipt_money_cents( (int) $receipt['shipping_cents'] ) );
+	$lines[] = papelito_receipt_pdf_line( 'Total pago: ' . papelito_receipt_money_cents( (int) $receipt['total_cents'] ), 12, true );
+	$lines[] = papelito_receipt_pdf_line( '', 8 );
+	$lines[] = papelito_receipt_pdf_line( 'Emitido por Papelito', 10, true );
+	$lines[] = papelito_receipt_pdf_line( 'Recibo ' . $number . ' · PDF gerado em ' . wp_date( 'd/m/Y H:i', time() ), 8 );
 
 	return $lines;
 }
 
-function papelito_receipt_pdf( object $order ): string {
-	$lines         = papelito_receipt_pdf_lines( $order );
+/**
+ * Serializa as linhas do recibo em um PDF autocontido.
+ *
+ * @return string|WP_Error
+ */
+function papelito_receipt_pdf( object $order ) {
+	$lines = papelito_receipt_pdf_lines( $order );
+
+	if ( is_wp_error( $lines ) ) {
+		return $lines;
+	}
+
 	$pages         = array_chunk( $lines, 48 );
 	$objects       = array();
 	$page_references = array();
@@ -180,8 +430,18 @@ function papelito_receipt_claim_email_attempt( int $order_id, int $user_id ) {
 	return true;
 }
 
-function papelito_receipt_download_response( object $order ): WP_REST_Response {
-	$pdf      = papelito_receipt_pdf( $order );
+/**
+ * Resposta de download do recibo, com os headers de arquivo privado.
+ *
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_receipt_download_response( object $order ) {
+	$pdf = papelito_receipt_pdf( $order );
+
+	if ( is_wp_error( $pdf ) ) {
+		return $pdf;
+	}
+
 	$filename = 'recibo-pedido-' . absint( $order->get_id() ) . '.pdf';
 	$response = new WP_REST_Response( $pdf, 200 );
 	$response->header( 'Content-Type', 'application/pdf' );
@@ -199,13 +459,18 @@ function papelito_receipt_send_email( object $order ) {
 		return $recipient;
 	}
 
+	$pdf = papelito_receipt_pdf( $order );
+	if ( is_wp_error( $pdf ) ) {
+		return $pdf;
+	}
+
 	$rate_limit = papelito_receipt_claim_email_attempt( (int) $order->get_id(), get_current_user_id() );
 	if ( is_wp_error( $rate_limit ) ) {
 		return $rate_limit;
 	}
 
 	$temp_file = wp_tempnam( 'papelito-receipt-' . absint( $order->get_id() ) );
-	if ( ! is_string( $temp_file ) || '' === $temp_file || false === file_put_contents( $temp_file, papelito_receipt_pdf( $order ), LOCK_EX ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+	if ( ! is_string( $temp_file ) || '' === $temp_file || false === file_put_contents( $temp_file, $pdf, LOCK_EX ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
 		return new WP_Error( 'papelito_receipt_email_attachment_failed', 'Nao foi possivel preparar o recibo.', array( 'status' => 500 ) );
 	}
 
