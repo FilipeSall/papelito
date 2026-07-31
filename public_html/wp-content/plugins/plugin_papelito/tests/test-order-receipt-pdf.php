@@ -26,9 +26,19 @@ class WP_Error {
 	public function get_error_data() { return $this->data; }
 }
 
-$receipt_store = array();
-$vendor_parts  = array();
-$issued_orders = array();
+$receipt_store  = array();
+$vendor_parts   = array();
+$issued_orders  = array();
+$payment_states = array();
+
+function papelito_pagarme_order_payment_snapshot( object $order ): array {
+	global $payment_states;
+	return array( 'state' => $payment_states[ (int) $order->get_id() ] ?? 'paid' );
+}
+
+function papelito_pagarme_payment_state_is_paid( string $state ): bool {
+	return in_array( $state, array( 'paid', 'captured' ), true );
+}
 
 function papelito_receipt_get_by_order( int $order_id ): ?array {
 	global $receipt_store;
@@ -119,6 +129,7 @@ function receipt_fixture( int $order_id, string $number, array $items = array(),
 		'total_cents'          => $totals['total_cents'],
 		'ordered_at'           => '2026-07-01 12:00:00',
 		'paid_at'              => '2026-07-03 09:30:00',
+		'issued_at'            => '2026-07-03 09:31:00',
 		'snapshot_json'        => wp_json_encode(
 			array(
 				'version' => 1,
@@ -258,6 +269,24 @@ $vendor_parts[8888]                        = $vendor_parts[4242];
 $individual                                = receipt_lines_text( papelito_receipt_pdf_lines( new ReceiptTestOrder( 8888 ) ) );
 assert_receipt_pdf_true( 'compra individual nao exibe CNPJ', false === strpos( $individual, 'CNPJ:' ) );
 assert_receipt_pdf_true( 'compra individual exibe o comprador', false !== strpos( $individual, 'Comprador: Maria de Souza' ) );
+
+// Resumo para o payload de detalhe do pedido: informa, nao emite.
+$summary = papelito_receipt_public_summary( $paid_order );
+assert_receipt_pdf( 'resumo traz o numero do recibo', 'PPL-2026-000482', $summary['number'] );
+assert_receipt_pdf( 'resumo libera o download do pedido pago', true, $summary['available'] );
+assert_receipt_pdf( 'resumo traz a data de emissao', '03/07/2026 09:31', $summary['issued_at'] );
+
+$issue_calls_before_summary = count( $issued_orders );
+$pending_summary            = papelito_receipt_public_summary( new ReceiptTestOrder( 5556 ) );
+assert_receipt_pdf( 'resumo nao emite recibo', $issue_calls_before_summary, count( $issued_orders ) );
+assert_receipt_pdf( 'pedido sem recibo tem numero nulo', null, $pending_summary['number'] );
+assert_receipt_pdf( 'pedido sem recibo nao tem data de emissao', null, $pending_summary['issued_at'] );
+assert_receipt_pdf( 'pedido pago sem recibo continua com download liberado', true, $pending_summary['available'] );
+
+$payment_states[5557] = 'pending';
+$unpaid_summary       = papelito_receipt_public_summary( new ReceiptTestOrder( 5557 ) );
+assert_receipt_pdf( 'pedido nao pago nao libera download', false, $unpaid_summary['available'] );
+assert_receipt_pdf( 'pedido nao pago nao tem numero', null, $unpaid_summary['number'] );
 
 // PDF binario valido, com acentuacao preservada.
 $pdf = papelito_receipt_pdf( $paid_order );

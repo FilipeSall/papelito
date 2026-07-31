@@ -221,10 +221,14 @@ function papelito_vendor_dashboard_items( $order, ?int $vendor_id = null ): arra
 /**
  * Map order data shared by seller and customer UIs.
  *
+ * `$include_receipt` e opt-in porque a listagem do comprador usa o mesmo
+ * serializer em modo detalhe: ligar o recibo aqui custaria uma consulta por
+ * pedido da lista.
+ *
  * @param object $order Pedido WooCommerce.
  * @return array<string,mixed>
  */
-function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bool $detail = false ): array {
+function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bool $detail = false, bool $include_receipt = false ): array {
 	if ( ! papelito_vendor_dashboard_is_wc_instance( $order, 'WC_Order' ) ) {
 		return array();
 	}
@@ -298,6 +302,10 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
 			'state'  => '',
 		);
 
+	if ( $include_receipt && null === $vendor_id && function_exists( 'papelito_receipt_public_summary' ) ) {
+		$result['receipt'] = papelito_receipt_public_summary( $order );
+	}
+
 	return $result;
 }
 
@@ -332,7 +340,7 @@ function papelito_vendor_dashboard_orders_for_vendor( int $vendor_id ): array {
 /**
  * Parse a YYYY-MM-DD date, applying a fallback.
  */
-function papelito_vendor_dashboard_date_param( $value, string $fallback ): string {
+function papelito_vendor_dashboard_date_param( mixed $value, string $fallback ): string {
 	$value = sanitize_text_field( (string) $value );
 
 	return preg_match( '/^\d{4}-\d{2}-\d{2}$/', $value ) ? $value : $fallback;
@@ -537,7 +545,7 @@ function papelito_vendor_dashboard_vendor_order( int $order_id, int $vendor_id )
  *
  * @return array<string,mixed>|WP_Error
  */
-function papelito_vendor_dashboard_update_order_status( int $order_id, int $vendor_id, $next_status, $reason = '' ) {
+function papelito_vendor_dashboard_update_order_status( int $order_id, int $vendor_id, mixed $next_status, $reason = '' ) {
 	$order = papelito_vendor_dashboard_vendor_order( $order_id, $vendor_id );
 
 	if ( is_wp_error( $order ) ) {
@@ -1254,7 +1262,7 @@ add_action(
 						papelito_pagarme_maybe_reconcile_checkout_order( $order );
 					}
 
-					return new WP_REST_Response( papelito_vendor_dashboard_map_order( $order, null, true ), 200 );
+					return new WP_REST_Response( papelito_vendor_dashboard_map_order( $order, null, true, true ), 200 );
 				},
 			)
 		);

@@ -139,6 +139,37 @@ function papelito_receipt_record_for_order( object $order ) {
 }
 
 /**
+ * Resumo do recibo para o payload de detalhe do pedido do comprador.
+ *
+ * Nao emite nada: so informa o que ja existe e se o download esta liberado. O
+ * numero fica nulo enquanto o recibo nao foi emitido — a emissao acontece na
+ * confirmacao do pagamento, no backfill ou na propria geracao do PDF.
+ *
+ * @return array{number:string|null,available:bool,issued_at:string|null}
+ */
+function papelito_receipt_public_summary( object $order ): array {
+	$payment_state = function_exists( 'papelito_pagarme_order_payment_snapshot' )
+		? sanitize_key( (string) ( papelito_pagarme_order_payment_snapshot( $order )['state'] ?? '' ) )
+		: '';
+
+	$available = function_exists( 'papelito_pagarme_payment_state_is_paid' )
+		&& papelito_pagarme_payment_state_is_paid( $payment_state );
+
+	$receipt = function_exists( 'papelito_receipt_get_by_order' )
+		? papelito_receipt_get_by_order( (int) $order->get_id() )
+		: null;
+
+	$number    = is_array( $receipt ) ? sanitize_text_field( (string) ( $receipt['receipt_number'] ?? '' ) ) : '';
+	$issued_at = is_array( $receipt ) ? papelito_receipt_datetime_label( $receipt['issued_at'] ?? '' ) : '';
+
+	return array(
+		'number'    => '' !== $number ? $number : null,
+		'available' => $available,
+		'issued_at' => '' !== $issued_at ? $issued_at : null,
+	);
+}
+
+/**
  * Blocos de itens por vendor: identificacao e totais vem das parcelas, os itens
  * vem do snapshot imutavel.
  *
