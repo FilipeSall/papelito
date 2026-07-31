@@ -42,6 +42,8 @@ require_once __DIR__ . '/includes/order_routing.php';
 require_once __DIR__ . '/includes/vendor_dashboard.php';
 require_once __DIR__ . '/includes/receipts.php';
 require_once __DIR__ . '/includes/receipts_backfill.php';
+require_once __DIR__ . '/includes/fiscal_document_validation.php';
+require_once __DIR__ . '/includes/fiscal_documents.php';
 require_once __DIR__ . '/includes/order_receipt.php';
 require_once __DIR__ . '/includes/vendor_messaging.php';
 require_once __DIR__ . '/includes/vendor_processing_alerts.php';
@@ -67,7 +69,7 @@ require_once __DIR__ . '/includes/company_management_endpoints.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.22.0' );
+	define( 'PAPELITO_DB_VERSION', '1.23.0' );
 }
 
 /**
@@ -112,6 +114,10 @@ function papelito_maybe_migrate_db() {
 
 	if ( function_exists( 'papelito_receipts_install_tables' ) ) {
 		papelito_receipts_install_tables();
+	}
+
+	if ( function_exists( 'papelito_fiscal_documents_install_tables' ) ) {
+		papelito_fiscal_documents_install_tables();
 	}
 
 	if ( function_exists( 'papelito_home_assets_seed_promo_marquee' ) ) {

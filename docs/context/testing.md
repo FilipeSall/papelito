@@ -33,6 +33,7 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Pagamento | `test-pagarme-*.php`, incluindo `test-pagarme-simulator.php` |
 | Correios | `test-correios-prepostage.php`, `test-correios-idempotency.php`, `test-correios-reconciliation.php`, `test-correios-tracking-map.php` |
 | Pedido | `test-order-receipt-pdf.php`, `test-receipts-snapshot.php`, `test-receipts-backfill.php` |
+| Documento fiscal | `test-fiscal-documents.php`, `test-fiscal-xml.php` (exige SimpleXML) |
 | Administração | `test-admin-activate-email.php` |
 
 As invariantes que essas suítes protegem estão catalogadas em [context/business-rules.md](business-rules.md).
@@ -46,7 +47,19 @@ docker compose exec web wp --allow-root eval-file \
   wp-content/plugins/plugin_papelito/tests/test-receipts-backfill-db.php
 ```
 
-`test-receipts-backfill-db.php` cobre o que só o SQL garante: ordenação por data de pagamento (cria os pedidos fora de ordem de propósito), exclusão de pedido não pago e de quem já tem recibo, dois runs sem duplicar nem consumir número, e que o backfill não encosta em status nem total do pedido. Ele filtra os candidatos antes de emitir, portanto não altera pedidos que não sejam fixtures do teste.
+`test-receipts-backfill-db.php` cobre o que só o SQL garante: ordenação por data de pagamento (cria os pedidos fora de ordem de propósito), exclusão de pedido não pago e de quem já tem recibo, dois runs sem duplicar nem consumir número, e que o backfill não encosta em status nem total do pedido.
+
+`test-fiscal-documents-db.php` cobre a semântica de NULL nos índices únicos: uma corrente por `(pedido, vendor)` com N históricos, um arquivo ativo por papel, e chave de acesso duplicada aceita pelo banco.
+
+> **Armadilha do `wp eval-file`**: o arquivo roda **dentro de uma função**, então variável de topo **não é global**. Um `$failures = 0;` no topo com `global $failures;` dentro do assert cria duas variáveis diferentes — o teste imprime `FAIL` e mesmo assim sai com código 0. Os três testes de banco declaram `global $wpdb, $failures;` no topo por isso. Ao criar um teste novo nesse formato, verifique o exit code injetando uma falha proposital.
+
+### Testes que precisam de extensão XML
+
+`test-fiscal-xml.php` exige **SimpleXML**, que o PHP CLI do host normalmente não tem (o mesmo motivo pelo qual o PHPCS não roda no host). Ele falha explicitamente em vez de pular em silêncio:
+
+```bash
+docker compose exec web php wp-content/plugins/plugin_papelito/tests/test-fiscal-xml.php
+``` Ele filtra os candidatos antes de emitir, portanto não altera pedidos que não sejam fixtures do teste.
 
 ```bash
 docker compose exec web wp --allow-root eval-file \

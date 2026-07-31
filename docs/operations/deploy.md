@@ -97,4 +97,18 @@ SSH_PRIVATE_KEY_STAGING      SSH_PRIVATE_KEY_PRODUCTION
 
 Hostinger Business, hospedagem compartilhada **CloudLinux + CageFS**: sem root, sem `systemctl`, sem Docker, sem editar pool do FPM. PHP 8.3. O diretório home fora do `public_html` é gravável, o que permite guardar arquivo de segredos fora da webroot.
 
+### Diretórios privados fora do `public_html`
+
+`PAPELITO_PRIVATE_COMPANY_DOCUMENTS_DIR` e `PAPELITO_PRIVATE_FISCAL_DOCUMENTS_DIR` apontam para diretórios **fora do webroot**. Não há fallback público: diretório dentro de `public_html` falha com `*_storage_public` **antes de gravar** qualquer byte.
+
+Como o deploy não toca o `wp-config.php`, variável nova exige edição manual no servidor:
+
+```bash
+mkdir -p ~/papelito-private/fiscal-documents && chmod 700 ~/papelito-private/fiscal-documents
+# em wp-config.php, acima do "That's all":
+# putenv( 'PAPELITO_PRIVATE_FISCAL_DOCUMENTS_DIR=/home/<user>/papelito-private/fiscal-documents' );
+```
+
+Confira que o caminho **não** está sob `public_html` e que o diretório não é servido por HTTP antes de subir qualquer arquivo.
+
 **Não existe WordPress de staging.** Homologação de frontend é Vercel Preview; homologação de backend é local.

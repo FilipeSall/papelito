@@ -118,6 +118,8 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `correios_tracking.php` | polling do Rastro, projeção de estado, S10 manual |
 | `receipts.php` | recibo persistido: numeração anual, snapshot imutável em centavos, parcelas por vendor |
 | `receipts_backfill.php` | backfill em lotes dos pedidos pagos antes do recibo existir, com checkpoint e WP-CLI |
+| `fiscal_documents.php` | fundação de documentos fiscais: schema, armazenamento privado, domínio e auditoria |
+| `fiscal_document_validation.php` | validação **local** de nota: módulo 11 da chave, CNPJ, parse de XML e cruzamentos |
 | `order_receipt.php` | recibo interno em PDF |
 
 O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grava** o documento no momento em que o pagamento é confirmado, congelando valores e itens; `order_receipt.php` **renderiza** o PDF sob demanda, lendo `papelito_receipts` + `papelito_receipt_vendor_parts`. **Nada financeiro, identificador de compra ou data vem do `WC_Order` ao vivo** — dele só sai a situação operacional, que é informativa. Pedido pago sem linha de recibo emite de forma idempotente durante a geração; sem recibo possível, a rota devolve `papelito_receipt_unavailable` (409), nunca um fatal.
@@ -199,6 +201,7 @@ mu-plugins carregam automaticamente e **não podem ser desativados pela interfac
 | `PAPELITO_PII_LOOKUP_KEY`, `PAPELITO_PII_ENCRYPTION_KEY`, `PAPELITO_PII_KEY_VERSION` | B2B | ver [context/data-model.md](data-model.md#criptografia-de-pii) |
 | `PAPELITO_CNPJWS_TOKEN`, `PAPELITO_RECEITAWS_TOKEN` | opcional | provedores de CNPJ |
 | `PAPELITO_PRIVATE_COMPANY_DOCUMENTS_DIR` | análise documental | default fora do webroot |
+| `PAPELITO_PRIVATE_FISCAL_DOCUMENTS_DIR` | notas anexadas pelo vendor | default fora do webroot; **sem fallback público** |
 | `PAPELITO_B2B_*`, `PAPELITO_COMPANY_*`, `PAPELITO_QSA_*`, `PAPELITO_ALPHANUMERIC_CNPJ_*` | flags | ver [`../../../docs/architecture.md`](../../../docs/architecture.md#feature-flags) |
 
 > **Em produção o `wp-config.php` é mantido à mão no servidor** — o deploy faz rsync de `themes/` e `plugins/` e **não** toca nele. Uma variável nova exige edição manual lá, e o `wp-config.example.php` do repositório precisa ser atualizado no mesmo movimento (ver [operations/sync-from-prod.md](../operations/sync-from-prod.md)).

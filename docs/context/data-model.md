@@ -107,9 +107,21 @@ Três tabelas, criadas junto com a fundação do recibo numerado. **Nenhuma dela
 
 O CNPJ vem de `_papelito_company_cnpj` do pedido, **nunca de `wp_usermeta`**.
 
+### Documentos fiscais
+
+Três tabelas de fundação. **A Papelito não emite nota**: o vendor emite por fora e anexa. Nesta camada não há rota REST, UI nem leitura de `doc_status` por pagamento ou fulfillment.
+
+- **`wp_papelito_fiscal_documents`** — um documento **corrente** por `(order_id, vendor_id)`. A corrente tem `is_current = 1`; versões substituídas viram `is_current = NULL`, **nunca `0`**, e é isso que permite N históricos sob `UNIQUE (order_id, vendor_id, is_current)` — MySQL não compara NULLs em índice único. Guarda tipo, status, nível de validação, chave normalizada, emitente, emissão, valor em centavos, `flags_json` e as relações de substituição/cancelamento.
+- **`wp_papelito_fiscal_document_files`** — um arquivo **ativo** por papel (`danfe_pdf`, `xml`, `other`), pelo mesmo truque: `UNIQUE (fiscal_document_id, role, is_active)` com `is_active = NULL` no soft-delete. Guarda storage key, nome original, MIME, tamanho e SHA-256.
+- **`wp_papelito_fiscal_document_events`** — trilha imutável. Só insert. O detalhe passa por `papelito_fiscal_event_safe_detail()`, que **descarta PII, conteúdo e nome original** e reduz a chave de acesso aos quatro últimos dígitos.
+
+> **`access_key` tem índice não único de propósito.** Chave duplicada é sinalização administrativa, não erro de banco: um `UNIQUE` transformaria duplicidade esperada em 500. A busca é `papelito_fiscal_documents_by_access_key()`.
+
+Os arquivos vivem em `PAPELITO_PRIVATE_FISCAL_DOCUMENTS_DIR`, fora do webroot, 0600 em diretório 0700, com nome de 64 hex. Não há purga automática nem endpoint que apague: descarte é operação manual documentada.
+
 ### Nunca criada
 
-`wp_papelito_invoices` foi projetada para armazenar NF-e por pedido/vendor e **nunca foi criada**. Emissão de nota fiscal não existe no sistema — a Papelito não emite, e o anexo da nota do vendor ainda não foi implementado.
+`wp_papelito_invoices` foi projetada para armazenar NF-e por pedido/vendor e **nunca foi criada** — a fundação acima a substituiu, com nome e modelo diferentes.
 
 ## Tabelas B2B
 

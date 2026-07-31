@@ -27,7 +27,12 @@ const PAPELITO_RECEIPT_TEST_YEAR = 2999;
 
 $test_mode = isset( $args[0] ) ? (string) $args[0] : 'idempotency';
 
-global $wpdb;
+/**
+ * `wp eval-file` executa o arquivo dentro de uma função: variável de topo NÃO é
+ * global. Sem declarar $failures aqui, o `global $failures` do assert apontaria
+ * para outra variável e o teste sairia com código 0 mesmo falhando.
+ */
+global $wpdb, $failures;
 $tables = papelito_receipts_table_names();
 
 if ( 'claim' === $test_mode ) {

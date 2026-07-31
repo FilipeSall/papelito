@@ -40,6 +40,14 @@ function papelito_private_file_formats(): array {
 			'error'          => 'pdf_invalid',
 			'error_message'  => 'O PDF enviado é inválido.',
 		),
+		'xml' => array(
+			'extensions'     => array( 'xml' ),
+			'mimes'          => array( 'application/xml', 'text/xml' ),
+			'canonical_mime' => 'application/xml',
+			'verifier'       => 'papelito_private_file_verify_xml',
+			'error'          => 'xml_invalid',
+			'error_message'  => 'O XML enviado é inválido.',
+		),
 	);
 }
 
@@ -138,6 +146,39 @@ function papelito_private_file_verify_pdf( string $tmp_name, string $mime ): boo
 }
 
 /**
+ * Construções hostis de XML, checadas por varredura de bytes antes de qualquer
+ * parse. `<!DOCTYPE` habilita entidade externa; `<!ENTITY` é a expansão em si.
+ */
+function papelito_private_file_xml_is_hostile( string $contents ): bool {
+	$normalized = strtolower( $contents );
+
+	return false !== strpos( $normalized, '<!doctype' ) || false !== strpos( $normalized, '<!entity' );
+}
+
+/**
+ * Aceita apenas XML textual sem DOCTYPE/ENTITY. O parse real e a checagem de
+ * raiz ficam em fiscal_document_validation.php, depois do arquivo em disco.
+ */
+function papelito_private_file_verify_xml( string $tmp_name, string $mime ): bool {
+	unset( $mime );
+	$handle   = fopen( $tmp_name, 'rb' );
+	$contents = $handle ? fread( $handle, 1048576 ) : '';
+	if ( $handle ) {
+		fclose( $handle );
+	}
+
+	if ( ! is_string( $contents ) || '' === trim( $contents ) ) {
+		return false;
+	}
+
+	if ( papelito_private_file_xml_is_hostile( $contents ) ) {
+		return false;
+	}
+
+	return 1 === preg_match( '/^(?:\xEF\xBB\xBF)?\s*<(?:\?xml|[A-Za-z_])/', $contents );
+}
+
+/**
  * Mensagem de limite derivada do spec, para não divergir do valor aplicado.
  */
 function papelito_private_file_size_message( int $max_bytes ): string {
@@ -232,7 +273,7 @@ function papelito_private_file_validate_upload( array $file, array $spec ) {
 			$wp_allowed[ implode( '|', $candidate['extensions'] ) ] = $candidate['canonical_mime'];
 		}
 		$wp_type = wp_check_filetype_and_ext( $tmp_name, $original_name, $wp_allowed );
-		if ( empty( $wp_type['ext'] ) || empty( $wp_type['type'] ) ) {
+		if ( ( empty( $wp_type['ext'] ) || empty( $wp_type['type'] ) ) && 'xml' !== $format_key ) {
 			return papelito_private_file_error( $code_prefix, 'wp_type_invalid', 'O WordPress não reconheceu o tipo do documento.', 415 );
 		}
 	}
