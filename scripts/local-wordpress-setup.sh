@@ -43,9 +43,6 @@ replace_url() {
   wp_local search-replace "$from" "$to" --all-tables --precise --skip-columns=guid
 }
 
-chmod -R a+rwX "$WP_CONTENT_DIR/uploads" >/dev/null 2>&1 || true
-chmod a+rw "$WP_CONTENT_DIR/debug.log" >/dev/null 2>&1 || true
-
 if [[ ! -f "$SQL_DUMP" ]]; then
   echo "SQL dump not found: $SQL_DUMP" >&2
   exit 1

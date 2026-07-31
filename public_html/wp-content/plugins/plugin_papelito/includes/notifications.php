@@ -32,6 +32,7 @@ if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_SUPPORT_MESSAGE', 'support_message' );
 	define( 'PAPELITO_NOTIF_SUPPORT_ESCALATED', 'support_escalated' );
 	define( 'PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT', 'product_missing_weight' );
+	define( 'PAPELITO_NOTIF_PRODUCT_DATA_INCOMPLETE', 'product_data_incomplete' );
 	define( 'PAPELITO_NOTIF_NEW_PURCHASE', 'new_purchase' );
 	define( 'PAPELITO_NOTIF_PROCESSING_OVERDUE', 'vendor_processing_overdue' );
 	define( 'PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING', 'vendor_registration_pending' );
@@ -122,6 +123,7 @@ function papelito_notification_allowed_types() {
 		PAPELITO_NOTIF_SUPPORT_MESSAGE,
 		PAPELITO_NOTIF_SUPPORT_ESCALATED,
 		PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT,
+		PAPELITO_NOTIF_PRODUCT_DATA_INCOMPLETE,
 		PAPELITO_NOTIF_NEW_PURCHASE,
 		PAPELITO_NOTIF_PROCESSING_OVERDUE,
 		PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING,
@@ -157,6 +159,32 @@ function papelito_product_has_valid_weight( WC_Product $product ) {
 			$variation = wc_get_product( $variation_id );
 
 			if ( $variation instanceof WC_Product && (float) wc_format_decimal( $variation->get_weight( 'edit' ) ) > 0 ) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Verifica se o produto tem preço válido para venda.
+ *
+ * @param WC_Product $product Produto avaliado.
+ * @return bool
+ */
+function papelito_product_has_valid_price( WC_Product $product ) {
+	$price = (float) wc_format_decimal( $product->get_price( 'edit' ) );
+
+	if ( $price > 0 ) {
+		return true;
+	}
+
+	if ( $product->is_type( 'variable' ) ) {
+		foreach ( $product->get_children() as $variation_id ) {
+			$variation = wc_get_product( $variation_id );
+
+			if ( $variation instanceof WC_Product && (float) wc_format_decimal( $variation->get_price( 'edit' ) ) > 0 ) {
 				return true;
 			}
 		}
@@ -1322,61 +1350,179 @@ function papelito_handle_support_escalated_notification( $thread_id, $customer_i
 add_action( 'papelito_support_escalated', 'papelito_handle_support_escalated_notification', 10, 2 );
 
 /**
- * Notifica admins sobre produto publicado sem peso.
+ * Retorna as notificações de pendência de cadastro de um produto para um administrador.
  *
- * @param int     $post_id ID do post.
- * @param WP_Post $post    Post salvo.
+ * @param int $user_id ID do administrador.
+ * @param int $product_id ID do produto.
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_get_product_data_notification_rows( int $user_id, int $product_id ): array {
+	global $wpdb;
+
+	$rows  = array();
+	$table = papelito_notifications_table_name();
+	$types = array( PAPELITO_NOTIF_PRODUCT_DATA_INCOMPLETE, PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT );
+
+	foreach ( $types as $type ) {
+		$matches = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT id, type, dedupe_key, payload, read_at FROM {$table} WHERE user_id = %d AND type = %s",
+				$user_id,
+				$type
+			),
+			ARRAY_A
+		);
+
+		foreach ( is_array( $matches ) ? $matches : array() as $row ) {
+			$payload = json_decode( (string) ( $row['payload'] ?? '' ), true );
+			$row_product_id = absint( is_array( $payload ) ? $payload['product_id'] ?? 0 : 0 );
+
+			if ( $row_product_id === $product_id ) {
+				$rows[] = $row;
+			}
+		}
+	}
+
+	return $rows;
+}
+
+/**
+ * Resolve alertas abertos de pendência de cadastro de um produto.
+ *
+ * @param int $user_id ID do administrador.
+ * @param int $product_id ID do produto.
  * @return void
  */
-function papelito_handle_product_missing_weight_notification( $post_id, $post ) {
-	if ( ! $post instanceof WP_Post || 'product' !== $post->post_type ) {
-		return;
+function papelito_resolve_product_data_notifications( int $user_id, int $product_id ): void {
+	global $wpdb;
+
+	$table = papelito_notifications_table_name();
+
+	foreach ( papelito_get_product_data_notification_rows( $user_id, $product_id ) as $row ) {
+		if ( empty( $row['read_at'] ) ) {
+			$wpdb->update(
+				$table,
+				array( 'read_at' => current_time( 'mysql', true ) ),
+				array( 'id' => absint( $row['id'] ) ),
+				array( '%s' ),
+				array( '%d' )
+			);
+		}
 	}
+}
 
-	if ( wp_is_post_revision( $post_id ) || ( defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) ) {
-		return;
-	}
+/**
+ * Sincroniza a notificação consolidada de preço e peso de um produto.
+ *
+ * @param int $product_id ID do produto.
+ * @param WC_Product|null $product Produto já carregado, quando disponível.
+ * @return void
+ */
+function papelito_sync_product_data_notification( int $product_id, $product = null ): void {
+	global $wpdb;
 
-	$product = function_exists( 'wc_get_product' ) ? wc_get_product( $post_id ) : null;
-
-	if ( ! $product instanceof WC_Product || 'publish' !== $product->get_status() || papelito_product_has_valid_weight( $product ) ) {
-		return;
-	}
-
-	$payload = papelito_notification_product_payload( $post_id );
-	$admins  = get_users(
+	$product_id = absint( $product_id );
+	$product    = $product instanceof WC_Product ? $product : ( function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null );
+	$admins     = get_users(
 		array(
 			'role'   => 'administrator',
 			'fields' => 'ID',
 		)
 	);
 
+	if ( $product_id <= 0 || ! $product instanceof WC_Product ) {
+		return;
+	}
+
+	$missing_weight = ! papelito_product_has_valid_weight( $product );
+	$missing_price  = ! papelito_product_has_valid_price( $product );
+
 	foreach ( is_array( $admins ) ? $admins : array() as $admin_id ) {
 		$admin_id = absint( $admin_id );
 
-		if ( $admin_id <= 0 || papelito_user_has_unread_product_notification( $admin_id, PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT, $post_id ) ) {
+		if ( $admin_id <= 0 ) {
 			continue;
 		}
 
-		papelito_dispatch_notification( $admin_id, PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT, $payload );
+		if ( 'publish' !== $product->get_status() || ( ! $missing_weight && ! $missing_price ) ) {
+			papelito_resolve_product_data_notifications( $admin_id, $product_id );
+			continue;
+		}
+
+		$payload = array_merge(
+			papelito_notification_product_payload( $product_id ),
+			array(
+				'missing_price'  => $missing_price,
+				'missing_weight' => $missing_weight,
+			)
+		);
+		$rows       = papelito_get_product_data_notification_rows( $admin_id, $product_id );
+		$current_row = null;
+
+		foreach ( $rows as $row ) {
+			if ( PAPELITO_NOTIF_PRODUCT_DATA_INCOMPLETE === $row['type'] && 'product-data:' . $product_id === $row['dedupe_key'] ) {
+				$current_row = $row;
+				continue;
+			}
+
+			if ( empty( $row['read_at'] ) ) {
+				$wpdb->update(
+					papelito_notifications_table_name(),
+					array( 'read_at' => current_time( 'mysql', true ) ),
+					array( 'id' => absint( $row['id'] ) ),
+					array( '%s' ),
+					array( '%d' )
+				);
+			}
+		}
+
+		if ( is_array( $current_row ) ) {
+			$current_payload = json_decode( (string) $current_row['payload'], true );
+			$current_price   = ! empty( $current_payload['missing_price'] );
+			$current_weight  = ! empty( $current_payload['missing_weight'] );
+
+			if ( $current_price === $missing_price && $current_weight === $missing_weight ) {
+				continue;
+			}
+
+			$wpdb->update(
+				papelito_notifications_table_name(),
+				array(
+					'payload' => wp_json_encode( $payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ),
+					'read_at' => null,
+				),
+				array( 'id' => absint( $current_row['id'] ) ),
+				array( '%s', '%s' ),
+				array( '%d' )
+			);
+			continue;
+		}
+
+		papelito_dispatch_notification(
+			$admin_id,
+			PAPELITO_NOTIF_PRODUCT_DATA_INCOMPLETE,
+			$payload,
+			'product-data:' . $product_id
+		);
 	}
 }
-add_action( 'save_post_product', 'papelito_handle_product_missing_weight_notification', 20, 2 );
+add_action( 'woocommerce_new_product', 'papelito_sync_product_data_notification', 20, 2 );
+add_action( 'woocommerce_update_product', 'papelito_sync_product_data_notification', 20, 2 );
 
 /**
- * Faz um scan leve dos produtos publicados sem peso quando um admin consulta notificações.
+ * Faz um scan leve dos produtos publicados com preço ou peso ausente quando um admin consulta notificações.
  *
  * @param int $user_id Usuário autenticado.
  * @return void
  */
-function papelito_maybe_scan_missing_weight_products_for_admin( $user_id ) {
+function papelito_maybe_scan_incomplete_product_data_for_admin( $user_id ) {
 	$user_id = absint( $user_id );
 
 	if ( $user_id <= 0 || ! user_can( $user_id, 'manage_options' ) ) {
 		return;
 	}
 
-	$transient_key = 'papelito_missing_weight_scan_' . $user_id;
+	$transient_key = 'papelito_incomplete_product_data_scan_' . $user_id;
 
 	if ( get_transient( $transient_key ) ) {
 		return;
@@ -1399,11 +1545,7 @@ function papelito_maybe_scan_missing_weight_products_for_admin( $user_id ) {
 	);
 
 	foreach ( is_array( $product_ids ) ? $product_ids : array() as $product_id ) {
-		$post = get_post( $product_id );
-
-		if ( $post instanceof WP_Post ) {
-			papelito_handle_product_missing_weight_notification( (int) $product_id, $post );
-		}
+		papelito_sync_product_data_notification( (int) $product_id );
 	}
 }
 
@@ -1429,7 +1571,7 @@ add_action(
 					global $wpdb;
 
 					$user_id     = get_current_user_id();
-					papelito_maybe_scan_missing_weight_products_for_admin( $user_id );
+					papelito_maybe_scan_incomplete_product_data_for_admin( $user_id );
 					$page        = max( 1, (int) $request->get_param( 'page' ) );
 					$per_page    = min( 50, max( 1, (int) $request->get_param( 'per_page' ) ) );
 					$unread_only = (bool) $request->get_param( 'unread_only' );
@@ -1492,7 +1634,7 @@ add_action(
 				'permission_callback' => 'papelito_require_notifications_auth',
 				'callback'            => static function () {
 					$user_id = get_current_user_id();
-					papelito_maybe_scan_missing_weight_products_for_admin( $user_id );
+					papelito_maybe_scan_incomplete_product_data_for_admin( $user_id );
 
 					return new WP_REST_Response(
 						array( 'count' => papelito_get_unread_notifications_count( $user_id ) ),

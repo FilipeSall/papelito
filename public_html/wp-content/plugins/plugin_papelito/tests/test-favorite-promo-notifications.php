@@ -109,6 +109,7 @@ class WC_Product {
 	private $status;
 	private $regular_price;
 	private $sale_price;
+	private $weight;
 	private $starts_at;
 	private $ends_at;
 
@@ -119,6 +120,7 @@ class WC_Product {
 		$this->status        = (string) ( $args['status'] ?? 'publish' );
 		$this->regular_price = (string) ( $args['regular_price'] ?? '' );
 		$this->sale_price    = (string) ( $args['sale_price'] ?? '' );
+		$this->weight        = (string) ( $args['weight'] ?? '1' );
 		$this->starts_at     = isset( $args['starts_at'] ) ? (int) $args['starts_at'] : 0;
 		$this->ends_at       = isset( $args['ends_at'] ) ? (int) $args['ends_at'] : 0;
 	}
@@ -205,7 +207,7 @@ class WC_Product {
 	}
 
 	public function get_weight( $context = 'view' ) {
-		return '1';
+		return $this->weight;
 	}
 }
 
@@ -271,6 +273,39 @@ class Papelito_Test_WPDB {
 
 	public function get_charset_collate() {
 		return '';
+	}
+
+	public function prepare( $query, ...$args ) {
+		return array(
+			'query' => $query,
+			'args'  => $args,
+		);
+	}
+
+	public function get_results( $prepared, $output = ARRAY_A ) {
+		$args    = is_array( $prepared ) ? $prepared['args'] : array();
+		$user_id = (int) ( $args[0] ?? 0 );
+		$type    = (string) ( $args[1] ?? '' );
+
+		return array_values(
+			array_filter(
+				$this->notification_rows,
+				static function ( array $row ) use ( $user_id, $type ) {
+					return $row['user_id'] === $user_id && $row['type'] === $type;
+				}
+			)
+		);
+	}
+
+	public function update( $table, $data, $where, $formats = array(), $where_formats = array() ) {
+		foreach ( $this->notification_rows as $index => $row ) {
+			if ( (int) $row['id'] === (int) ( $where['id'] ?? 0 ) ) {
+				$this->notification_rows[ $index ] = array_merge( $row, $data );
+				return 1;
+			}
+		}
+
+		return 0;
 	}
 
 	public function insert( $table, $data, $formats ) {
@@ -848,6 +883,69 @@ do_action(
 	)
 );
 papelito_assert( 'no notifications for unpublished product', 0, count( $wpdb->notification_rows ) );
+
+echo "Scenario 8: product price and weight use one consolidated notification\n";
+papelito_reset_notification_state();
+$GLOBALS['papelito_users'][99] = new WP_User( 99, 'admin@papelito.test', 'Admin', array( 'administrator' ) );
+$GLOBALS['papelito_products'][20] = papelito_seed_product(
+	array(
+		'id'            => 20,
+		'name'          => 'Produto pendente',
+		'status'        => 'publish',
+		'regular_price' => '',
+		'weight'        => '1',
+	)
+);
+papelito_sync_product_data_notification( 20 );
+papelito_assert( 'only missing price creates one notification', 1, count( $wpdb->notification_rows ) );
+papelito_assert( 'price-only type is consolidated', PAPELITO_NOTIF_PRODUCT_DATA_INCOMPLETE, $wpdb->notification_rows[0]['type'] );
+$payload = json_decode( $wpdb->notification_rows[0]['payload'], true );
+papelito_assert( 'price-only payload marks price', true, $payload['missing_price'] );
+papelito_assert( 'price-only payload keeps weight valid', false, $payload['missing_weight'] );
+papelito_sync_product_data_notification( 20 );
+papelito_assert( 'repeat scan does not duplicate notification', 1, count( $wpdb->notification_rows ) );
+
+$GLOBALS['papelito_products'][20] = papelito_seed_product(
+	array(
+		'id'            => 20,
+		'name'          => 'Produto pendente',
+		'status'        => 'publish',
+		'regular_price' => '10.00',
+		'weight'        => '',
+	)
+);
+papelito_sync_product_data_notification( 20 );
+$payload = json_decode( $wpdb->notification_rows[0]['payload'], true );
+papelito_assert( 'weight-only keeps one notification', 1, count( $wpdb->notification_rows ) );
+papelito_assert( 'weight-only payload clears price issue', false, $payload['missing_price'] );
+papelito_assert( 'weight-only payload marks weight', true, $payload['missing_weight'] );
+
+$GLOBALS['papelito_products'][20] = papelito_seed_product(
+	array(
+		'id'            => 20,
+		'name'          => 'Produto pendente',
+		'status'        => 'publish',
+		'regular_price' => '',
+		'weight'        => '',
+	)
+);
+papelito_sync_product_data_notification( 20 );
+$payload = json_decode( $wpdb->notification_rows[0]['payload'], true );
+papelito_assert( 'both issues remain in one notification', 1, count( $wpdb->notification_rows ) );
+papelito_assert( 'both payload marks price', true, $payload['missing_price'] );
+papelito_assert( 'both payload marks weight', true, $payload['missing_weight'] );
+
+$GLOBALS['papelito_products'][20] = papelito_seed_product(
+	array(
+		'id'            => 20,
+		'name'          => 'Produto pendente',
+		'status'        => 'publish',
+		'regular_price' => '10.00',
+		'weight'        => '1',
+	)
+);
+papelito_sync_product_data_notification( 20 );
+papelito_assert( 'correction resolves the existing notification', true, ! empty( $wpdb->notification_rows[0]['read_at'] ) );
 
 echo "\n";
 if ( $failures > 0 ) {

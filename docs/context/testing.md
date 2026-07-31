@@ -113,6 +113,16 @@ Elas são aceitas porque são **as mesmas categorias já presentes nos arquivos 
 
 Se o seu PR introduzir violação de outra categoria, corrija — não amplie o baseline.
 
+### SonarLint no editor
+
+O SonarLint usa regras genéricas de PHP que colidem de frente com o WordPress coding standard exigido pelo `phpcs.xml.dist`. As três desligadas em `.vscode/settings.json` (chave `sonarlint.rules`; quem abre o workspace pai precisa do mesmo bloco em `../.vscode/settings.json`, que não é versionado) são:
+
+- `php:S105` (tabs) — o WP padroniza indentação com tab, e o PHPCS reprova espaços;
+- `php:S100` (nome de função em camelCase) — o plugin usa `snake_case` com prefixo `papelito_`, e os nomes são contrato de hooks/testes;
+- `php:S1172` (parâmetro não usado) — callback de filtro recebe argumentos por posição (`rest_pre_dispatch`, `wp_check_filetype_and_ext`), então parâmetros no meio da assinatura não podem ser removidos.
+
+As demais regras ficam ligadas e devem ser corrigidas no código — inclusive `php:S1192` (literal repetido → constante `PAPELITO_*`) e `php:S1142` (mais de 3 `return` → extrair helper ou consolidar o retorno).
+
 ## Verificação de uma mudança
 
 ```bash

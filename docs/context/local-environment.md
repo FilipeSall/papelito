@@ -97,7 +97,7 @@ O `wp-config.php` local lê variáveis de ambiente pelos helpers `papelito_env()
 | Sintoma | Causa e solução |
 |---|---|
 | Todos os fetches do Next falhando com `status: 0` + `AccessDenied` no Google ao mesmo tempo | o container do WordPress perdeu a rede do Docker. `docker compose up -d` resolve. **Não** é campanha inativa nem CORS. |
-| Plugin não consegue escrever log | `chmod -R a+rwX public_html/wp-content/uploads` e `chmod a+rw public_html/wp-content/debug.log` |
+| Upload de mídia retorna erro de diretório | recrie o serviço (`docker compose up -d --force-recreate web`). O entrypoint alinha o UID/GID do Apache ao volume e normaliza somente os diretórios de `uploads`; não use `chmod 777`. |
 | Site mostrando links de produção | rodar `scripts/local-wordpress-setup.sh` de novo |
 | E-mail não aparece no Mailpit | plugin com SMTP próprio |
 | Variável de ambiente vazia no PHP | falta no bloco `environment:` do serviço `web` |
