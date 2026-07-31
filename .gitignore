@@ -2,10 +2,11 @@
 
 !/.gitignore
 !/.env.example
-!/AUDITORIA_MARKETPLACE_WP_2026-03-16.md
+!/README.md
+!/CLAUDE.md
+!/AGENTS.md
 !/composer.json
 !/docker-compose.yml
-!/manual.md
 !/phpcs.xml.dist
 !/docker/
 !/docker/**

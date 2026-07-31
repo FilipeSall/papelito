@@ -1,6 +1,8 @@
 # Catalog import scripts
 
-Wipe + reimport do catálogo Papelito a partir da planilha `Catálogo de Produtos - E-commerce.xlsx`. Aplicado em **02/05/2026** para sair do modelo marketplace (Dokan) para single-vendor com 49 produtos.
+Wipe + reimport do catálogo Papelito a partir da planilha `Catálogo de Produtos - E-commerce.xlsx`. Aplicado em **02/05/2026**, quando o catálogo passou a ser **centralizado** (49 produtos cadastrados só pela Papelito, saindo do modelo Dokan de produto por vendedor).
+
+> Isso **não** significa que o sistema virou single-vendor. A arquitetura atual é multi-vendor: o catálogo é único e centralizado, e cada vendor tem estoque próprio e faixas de CEP. Ver [`../../../docs/system-overview.md`](../../../docs/system-overview.md).
 
 ## Quando usar
 - Reimport completo após nova versão da planilha
@@ -56,8 +58,10 @@ SET FOREIGN_KEY_CHECKS=1;
 SQL
 
 # Criar usuário autor dos produtos
-wp user create marketing marketing@papelito.com --role=administrator --user_pass=papelito
+wp user create marketing marketing@papelito.com --role=administrator --user_pass='<senha forte>'
 ```
+
+> A senha usada na execução original de 02/05/2026 era fraca e ficou documentada em texto claro neste arquivo. **Ela deve ser rotacionada** — a conta é administrador de produção. Use uma senha forte e guarde-a no cofre, nunca aqui.
 
 ### 3. Subir imagens + JSON
 Copiar o conteúdo de `papelito-web/public/images/products/{sedas,piteiras,filtros}/` para o servidor remoto em `wp-content/uploads/papelito-import/` (mesma estrutura). E subir o `catalog.json` para um local acessível.
@@ -111,3 +115,9 @@ curl -s -X POST https://papelitobrasil.com.br/graphql \
 
 ## Estado atual
 Ver `_papelito_import_todo` postmeta para ver pendências por produto.
+
+## Relação com o resto do sistema
+
+Este pipeline tem um acoplamento cruzado que não é óbvio: as imagens de produto vêm de `papelito-web/public/images/products/` — **o repositório do frontend é entrada de build deste script do backend**. Mover ou renomear essas pastas quebra os passos 1 e 3.
+
+Produto importado sem peso e dimensões faz a cotação de frete falhar no checkout (`422`). Ao concluir um reimport, confira os itens marcados com `_papelito_import_todo` antes de considerar o catálogo utilizável — ver [`../../docs/context/business-rules.md`](../../docs/context/business-rules.md).
