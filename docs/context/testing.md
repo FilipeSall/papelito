@@ -32,14 +32,21 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Legados | `test-legacy-migration.php` |
 | Pagamento | `test-pagarme-*.php`, incluindo `test-pagarme-simulator.php` |
 | Correios | `test-correios-prepostage.php`, `test-correios-idempotency.php`, `test-correios-reconciliation.php`, `test-correios-tracking-map.php` |
-| Pedido | `test-order-receipt-pdf.php`, `test-receipts-snapshot.php` |
+| Pedido | `test-order-receipt-pdf.php`, `test-receipts-snapshot.php`, `test-receipts-backfill.php` |
 | Administração | `test-admin-activate-email.php` |
 
 As invariantes que essas suítes protegem estão catalogadas em [context/business-rules.md](business-rules.md).
 
 ### Testes que precisam de banco (WP-CLI)
 
-Onde o SQL **é** a regra de negócio, o script standalone não serve. `test-receipts-sequence-db.php` roda por WP-CLI, contra o banco local, e se limpa sozinho (cria pedido descartável, apaga o recibo e o pedido no fim). Ele fica no mesmo diretório dos demais, mas **não roda com `php` direto** — o guard de `ABSPATH` avisa.
+Onde o SQL **é** a regra de negócio, o script standalone não serve. `test-receipts-sequence-db.php` e `test-receipts-backfill-db.php` rodam por WP-CLI, contra o banco local, e se limpam sozinhos (criam pedidos descartáveis, apagam recibos e pedidos no fim). Eles ficam no mesmo diretório dos demais, mas **não rodam com `php` direto** — o guard de `ABSPATH` avisa.
+
+```bash
+docker compose exec web wp --allow-root eval-file \
+  wp-content/plugins/plugin_papelito/tests/test-receipts-backfill-db.php
+```
+
+`test-receipts-backfill-db.php` cobre o que só o SQL garante: ordenação por data de pagamento (cria os pedidos fora de ordem de propósito), exclusão de pedido não pago e de quem já tem recibo, dois runs sem duplicar nem consumir número, e que o backfill não encosta em status nem total do pedido. Ele filtra os candidatos antes de emitir, portanto não altera pedidos que não sejam fixtures do teste.
 
 ```bash
 docker compose exec web wp --allow-root eval-file \

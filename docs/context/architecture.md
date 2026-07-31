@@ -117,6 +117,7 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `correios_prepostage.php` | pré-postagem e etiqueta |
 | `correios_tracking.php` | polling do Rastro, projeção de estado, S10 manual |
 | `receipts.php` | recibo persistido: numeração anual, snapshot imutável em centavos, parcelas por vendor |
+| `receipts_backfill.php` | backfill em lotes dos pedidos pagos antes do recibo existir, com checkpoint e WP-CLI |
 | `order_receipt.php` | recibo interno em PDF |
 
 O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grava** o documento no momento em que o pagamento é confirmado, congelando valores e itens; `order_receipt.php` **renderiza** o PDF sob demanda, lendo `papelito_receipts` + `papelito_receipt_vendor_parts`. **Nada financeiro, identificador de compra ou data vem do `WC_Order` ao vivo** — dele só sai a situação operacional, que é informativa. Pedido pago sem linha de recibo emite de forma idempotente durante a geração; sem recibo possível, a rota devolve `papelito_receipt_unavailable` (409), nunca um fatal.

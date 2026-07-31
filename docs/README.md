@@ -27,6 +27,7 @@ Contexto **específico do backend**. Tudo que é compartilhado com o frontend (m
 | [operations/incident.md](operations/incident.md) | suspeita de comprometimento |
 | [operations/pagarme-environment.md](operations/pagarme-environment.md) | configurar credenciais da Pagar.me por ambiente e simular webhook localmente |
 | [operations/correios-diagnostics.md](operations/correios-diagnostics.md) | verificar uma chave CWS com segurança, e o estado da investigação de pré-postagem |
+| [operations/receipts-backfill.md](operations/receipts-backfill.md) | emitir recibo para pedidos pagos antes de `receipts.php` — lotes, checkpoint e por que não há rollback |
 
 ## Documentação colocada junto ao código
 
