@@ -58,6 +58,9 @@ RewriteRule ^wp-content/litespeed/debug/.*\.log$ - [F,L,NC]
 RewriteRule ^wp-content/uploads/(?:wc-logs|wp-rollback|papelito/logs)/ - [F,L,NC]
 RewriteRule ^wp-content/plugins/.+\.zip$ - [F,L,NC]
 </IfModule>
+<Files xmlrpc.php>
+  Require all denied
+</Files>
 # END Papelito Hardening
 
 # BEGIN WordPress
