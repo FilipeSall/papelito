@@ -7,16 +7,21 @@ RUN apt-get update \
         curl \
         default-mysql-client \
         git \
+        libavif-dev \
         libfreetype6-dev \
         libjpeg62-turbo-dev \
+        libmagickwand-dev \
         libpng-dev \
+        libwebp-dev \
         libzip-dev \
         less \
         msmtp \
         unzip \
         zip \
-    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp --with-avif \
     && docker-php-ext-install -j"$(nproc)" exif gd mysqli opcache zip \
+    && pecl install imagick \
+    && docker-php-ext-enable imagick \
     && a2enmod rewrite headers expires \
     && printf "ServerName papelitobrasil.local\n" > /etc/apache2/conf-available/servername.conf \
     && a2enconf servername \
