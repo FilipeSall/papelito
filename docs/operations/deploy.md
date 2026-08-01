@@ -45,7 +45,7 @@ ssh ... 'wp cache flush'
 Isto **não** é só desligar flags — tem regras de irreversibilidade:
 
 1. Desligar `PAPELITO_B2B_LEGACY_WARNING_ENABLED`, `PAPELITO_B2B_LEGACY_EMAIL_ENABLED` e `PAPELITO_B2B_LEGACY_MIGRATION_ENABLED`.
-2. Manter `PAPELITO_B2B_PURCHASE_ENFORCED=false` enquanto o enforce não estiver aprovado.
+2. `PAPELITO_B2B_PURCHASE_ENFORCED` **não desliga o enforce de compra** — o checkout consulta `canPurchase` incondicionalmente. A flag só decide o aviso da coorte legada. Rollback do enforce é por build, não por flag. Ver [architecture.md](../../../docs/architecture.md#o-enforce-de-compra-é-incondicional).
 3. **Não remover** `papelito_b2b_legacy_cohort`, logs de campanha, empresas, memberships nem onboardings.
 4. **Não reverter usuários já migrados** (`papelito_b2b_required=1`) para o checkout legado — eles não têm caminho de volta e ficariam sem nenhum fluxo válido.
 

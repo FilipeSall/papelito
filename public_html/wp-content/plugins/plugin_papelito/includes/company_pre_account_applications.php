@@ -10,6 +10,14 @@ if ( ! defined( 'PAPELITO_PRE_ACCOUNT_APPLICATION_UNAVAILABLE_MESSAGE' ) ) {
 	define( 'PAPELITO_PRE_ACCOUNT_APPLICATION_UNAVAILABLE_MESSAGE', 'Não foi possível concluir esta candidatura.' );
 }
 
+if ( ! defined( 'PAPELITO_PRE_ACCOUNT_DOCUMENT_PURGE_HOOK' ) ) {
+	define( 'PAPELITO_PRE_ACCOUNT_DOCUMENT_PURGE_HOOK', 'papelito_pre_account_application_purge_document' );
+}
+
+if ( ! defined( 'PAPELITO_PRE_ACCOUNT_SWEEP_HOOK' ) ) {
+	define( 'PAPELITO_PRE_ACCOUNT_SWEEP_HOOK', 'papelito_pre_account_applications_sweep' );
+}
+
 function papelito_pre_account_application_external_id( int $application_id ): string {
 	return 'pre:' . $application_id;
 }
@@ -138,7 +146,9 @@ function papelito_pre_account_application_prepare( array $input ): array|WP_Erro
 	if ( is_wp_error( $identity ) ) {
 		return $identity;
 	}
-	if ( papelito_company_find_by_cnpj( $identity['cnpj'] ) ) {
+	// Mensagem deliberadamente neutra e idêntica nos três casos: distinguir "CNPJ já cadastrado"
+	// de "e-mail já cadastrado" permitiria enumerar empresas e usuários.
+	if ( papelito_company_find_by_cnpj( $identity['cnpj'] ) || email_exists( $identity['email'] ) || username_exists( $identity['email'] ) ) {
 		return new WP_Error( 'papelito_pre_account_unavailable', PAPELITO_PRE_ACCOUNT_APPLICATION_UNAVAILABLE_MESSAGE, array( 'status' => 409 ) );
 	}
 	$address = papelito_pre_account_application_address( $input );
@@ -245,6 +255,139 @@ function papelito_pre_account_application_upload( string $token, array $file ): 
 	return $updated_application ? papelito_pre_account_application_view( $updated_application ) : new WP_Error( 'papelito_pre_account_application_not_found', 'Candidatura não encontrada.', array( 'status' => 404 ) );
 }
 
+/**
+ * Apaga o arquivo privado de uma candidatura já decidida ou expirada.
+ *
+ * Espelha papelito_company_owner_application_purge_document(): em falha de unlink reagenda,
+ * porque deixar o binário em disco é justamente o que a retenção precisa evitar.
+ */
+function papelito_pre_account_application_purge_document( int $application_id ): bool {
+	$application = papelito_pre_account_application_get( $application_id );
+	if ( ! $application || ! in_array( (string) $application['application_status'], array( 'approved', 'rejected', 'expired' ), true ) ) {
+		return false;
+	}
+
+	$key = (string) ( $application['document_storage_key'] ?? '' );
+	if ( '' === $key ) {
+		return true;
+	}
+
+	$deleted = false;
+	if ( papelito_company_document_key_is_valid( $key ) ) {
+		$directory = papelito_company_documents_prepare_dir();
+		if ( ! is_wp_error( $directory ) ) {
+			$path    = trailingslashit( $directory ) . $key;
+			$deleted = ! is_file( $path ) || unlink( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
+		}
+	}
+
+	if ( ! $deleted ) {
+		if ( function_exists( 'wp_schedule_single_event' ) && ! wp_next_scheduled( PAPELITO_PRE_ACCOUNT_DOCUMENT_PURGE_HOOK, array( $application_id ) ) ) {
+			wp_schedule_single_event( time() + ( 5 * MINUTE_IN_SECONDS ), PAPELITO_PRE_ACCOUNT_DOCUMENT_PURGE_HOOK, array( $application_id ) );
+		}
+
+		return false;
+	}
+
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$wpdb->update(
+		$tables['pre_account_applications'],
+		array(
+			'document_storage_key'   => null,
+			'document_original_name' => null,
+			'document_sha256'        => null,
+			'document_deleted_at'    => current_time( 'mysql', true ),
+			'updated_at'             => current_time( 'mysql', true ),
+		),
+		array( 'id' => $application_id )
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	return true;
+}
+add_action( PAPELITO_PRE_ACCOUNT_DOCUMENT_PURGE_HOOK, 'papelito_pre_account_application_purge_document', 10, 1 );
+
+/**
+ * Zera os dados pessoais de uma candidatura vencida, preservando o rastro auditável.
+ *
+ * Sobra o que não é reversível nem identificável isoladamente (hashes, CNPJ, decisão,
+ * IDs criados). As colunas cifradas são NOT NULL, então recebem string vazia, não NULL;
+ * `password_hash = NULL` é o sentinela de "já purgada".
+ */
+function papelito_pre_account_application_purge_pii( int $application_id ): bool {
+	papelito_pre_account_application_purge_document( $application_id );
+
+	global $wpdb;
+	$tables  = papelito_company_table_names();
+	$updated = $wpdb->update(
+		$tables['pre_account_applications'],
+		array(
+			'contact_email_ciphertext' => '',
+			'full_name_ciphertext'     => '',
+			'phone_ciphertext'         => '',
+			'cpf_ciphertext'           => '',
+			'birth_date_ciphertext'    => '',
+			'address_ciphertext'       => '',
+			'legal_name_ciphertext'    => null,
+			'password_hash'            => null,
+			'resume_token_hash'        => '',
+			'evidence_json'            => null,
+			'updated_at'               => current_time( 'mysql', true ),
+		),
+		array( 'id' => $application_id )
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	return 1 === $updated;
+}
+
+/**
+ * Fecha candidaturas abertas vencidas e purga os dados pessoais das que passaram do TTL.
+ *
+ * @return array{expired:int,purged:int}
+ */
+function papelito_pre_account_applications_sweep(): array {
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$now    = current_time( 'mysql', true );
+
+	$expired = (int) $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->prepare(
+			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			"UPDATE {$tables['pre_account_applications']} SET application_status = %s, is_open = NULL, updated_at = %s WHERE is_open = 1 AND expires_at < %s",
+			'expired',
+			$now,
+			$now
+		)
+	);
+
+	$due = $wpdb->get_col( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->prepare(
+			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			"SELECT id FROM {$tables['pre_account_applications']} WHERE password_hash IS NOT NULL AND expires_at < %s LIMIT 200",
+			$now
+		)
+	);
+
+	$purged = 0;
+	foreach ( is_array( $due ) ? $due : array() as $id ) {
+		$purged += papelito_pre_account_application_purge_pii( (int) $id ) ? 1 : 0;
+	}
+
+	return array(
+		'expired' => $expired,
+		'purged'  => $purged,
+	);
+}
+add_action( PAPELITO_PRE_ACCOUNT_SWEEP_HOOK, 'papelito_pre_account_applications_sweep' );
+
+if ( function_exists( 'add_action' ) ) {
+	add_action( 'init', static function (): void {
+		if ( ! wp_next_scheduled( PAPELITO_PRE_ACCOUNT_SWEEP_HOOK ) ) {
+			wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', PAPELITO_PRE_ACCOUNT_SWEEP_HOOK );
+		}
+	} );
+}
+
 function papelito_pre_account_application_admin_list( string $status = 'pending_manual_review' ): array {
 	global $wpdb;
 	$tables = papelito_company_table_names();
@@ -254,45 +397,220 @@ function papelito_pre_account_application_admin_list( string $status = 'pending_
 	}, is_array( $rows ) ? $rows : array() );
 }
 
-function papelito_pre_account_application_decide( int $application_id, int $actor_user_id, bool $approve, string $reason = '' ): array|WP_Error {
-	$reason = trim( sanitize_textarea_field( $reason ) );
-	if ( ! $approve && '' === $reason ) return new WP_Error( 'papelito_pre_account_rejection_reason_required', 'Informe o motivo interno da reprovação.', array( 'status' => 422 ) );
-	$application = papelito_pre_account_application_get( $application_id );
-	if ( ! $application || 'pending_manual_review' !== (string) $application['application_status'] || empty( $application['is_open'] ) ) return new WP_Error( 'papelito_pre_account_decision_conflict', 'Esta candidatura não está pendente.', array( 'status' => 409 ) );
-	if ( ! $approve ) {
-		global $wpdb;
-		$tables = papelito_company_table_names();
-		$wpdb->update( $tables['pre_account_applications'], array( 'application_status' => 'rejected', 'is_open' => null, 'decided_by_user_id' => $actor_user_id, 'decided_at' => current_time( 'mysql', true ), 'rejection_reason' => $reason, 'updated_at' => current_time( 'mysql', true ) ), array( 'id' => $application_id, 'application_status' => 'pending_manual_review' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-		return papelito_pre_account_application_view( papelito_pre_account_application_get( $application_id ) ?: $application );
-	}
+/**
+ * Decifra os campos necessários para provisionar a conta.
+ *
+ * @return array<string,string>|WP_Error
+ */
+function papelito_pre_account_application_decrypt_values( array $application ): array|WP_Error {
+	$columns = array(
+		'email'   => 'contact_email_ciphertext',
+		'name'    => 'full_name_ciphertext',
+		'phone'   => 'phone_ciphertext',
+		'cpf'     => 'cpf_ciphertext',
+		'birth'   => 'birth_date_ciphertext',
+		'address' => 'address_ciphertext',
+	);
+
 	$values = array();
-	foreach ( array( 'email' => 'contact_email_ciphertext', 'name' => 'full_name_ciphertext', 'phone' => 'phone_ciphertext', 'cpf' => 'cpf_ciphertext', 'birth' => 'birth_date_ciphertext', 'address' => 'address_ciphertext' ) as $key => $column ) {
+	foreach ( $columns as $key => $column ) {
 		$value = papelito_pii_decrypt( (string) $application[ $column ] );
-		if ( ! is_string( $value ) || '' === $value ) return new WP_Error( 'papelito_pre_account_decrypt_failed', 'Não foi possível concluir a candidatura.', array( 'status' => 500 ) );
+		if ( ! is_string( $value ) || '' === $value ) {
+			return new WP_Error( 'papelito_pre_account_decrypt_failed', 'Não foi possível concluir a candidatura.', array( 'status' => 500 ) );
+		}
 		$values[ $key ] = $value;
 	}
-	$registry = papelito_company_validate_owner_registry( $values['cpf'], $values['birth'], (string) $application['canonical_cnpj'], $values['name'] );
-	if ( is_wp_error( $registry ) ) return $registry;
-	if ( 'document_required' === (string) $registry['review_path'] && empty( $application['document_storage_key'] ) ) return new WP_Error( 'papelito_pre_account_document_required', 'A nova consulta exige documento antes da aprovação.', array( 'status' => 409 ) );
-	if ( email_exists( $values['email'] ) || username_exists( $values['email'] ) || papelito_company_find_by_cnpj( (string) $application['canonical_cnpj'] ) ) return new WP_Error( 'papelito_pre_account_unavailable', 'Não foi possível concluir esta candidatura.', array( 'status' => 409 ) );
-	$parts = preg_split( '/\\s+/', trim( $values['name'] ), 2 ) ?: array();
-	$user_id = wp_insert_user( array( 'user_login' => $values['email'], 'user_email' => $values['email'], 'user_pass' => wp_generate_password( 32, true, true ), 'first_name' => $parts[0] ?? '', 'last_name' => $parts[1] ?? '', 'display_name' => $values['name'], 'role' => 'customer' ) );
-	if ( is_wp_error( $user_id ) ) return $user_id;
+
+	return $values;
+}
+
+function papelito_pre_account_application_reject( array $application, int $actor_user_id, string $reason ): array {
 	global $wpdb;
-	$wpdb->update( $wpdb->users, array( 'user_pass' => (string) $application['password_hash'] ), array( 'ID' => $user_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-	clean_user_cache( $user_id );
-	$profile = papelito_company_profile_upsert( $user_id, $values['cpf'], $values['birth'] );
-	if ( is_wp_error( $profile ) ) { wp_delete_user( $user_id ); return $profile; }
+	$tables = papelito_company_table_names();
+	$now    = current_time( 'mysql', true );
+	$wpdb->update(
+		$tables['pre_account_applications'],
+		array(
+			'application_status' => 'rejected',
+			'is_open'            => null,
+			'decided_by_user_id' => $actor_user_id,
+			'decided_at'         => $now,
+			'rejection_reason'   => $reason,
+			'updated_at'         => $now,
+		),
+		array(
+			'id'                 => (int) $application['id'],
+			'application_status' => 'pending_manual_review',
+		)
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	papelito_pre_account_application_purge_document( (int) $application['id'] );
+
+	return papelito_pre_account_application_view( papelito_pre_account_application_get( (int) $application['id'] ) ?: $application );
+}
+
+/**
+ * Cria conta, perfil, empresa e membership a partir de uma candidatura aprovada.
+ *
+ * O `wp_user` nasce FORA da transação de propósito: `wp_insert_user` dispara `user_register`,
+ * que terceiros (WooCommerce) escutam e podem gravar por fora do nosso controle transacional.
+ * As tabelas próprias ficam dentro da transação; se ela falhar, o usuário é removido em
+ * seguida. Sem isso, uma falha depois de `papelito_company_create` deixava empresa órfã e o
+ * CNPJ travado para sempre em papelito_pre_account_application_prepare().
+ *
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_pre_account_application_approve( array $application, int $actor_user_id ): array|WP_Error {
+	$application_id = (int) $application['id'];
+	$values         = papelito_pre_account_application_decrypt_values( $application );
+	if ( is_wp_error( $values ) ) {
+		return $values;
+	}
+
+	$registry = papelito_company_validate_owner_registry( $values['cpf'], $values['birth'], (string) $application['canonical_cnpj'], $values['name'] );
+	if ( is_wp_error( $registry ) ) {
+		return $registry;
+	}
+	if ( 'document_required' === (string) $registry['review_path'] && empty( $application['document_storage_key'] ) ) {
+		return new WP_Error( 'papelito_pre_account_document_required', 'A nova consulta exige documento antes da aprovação.', array( 'status' => 409 ) );
+	}
+	if ( email_exists( $values['email'] ) || username_exists( $values['email'] ) || papelito_company_find_by_cnpj( (string) $application['canonical_cnpj'] ) ) {
+		return new WP_Error( 'papelito_pre_account_unavailable', PAPELITO_PRE_ACCOUNT_APPLICATION_UNAVAILABLE_MESSAGE, array( 'status' => 409 ) );
+	}
+
+	$parts   = preg_split( '/\s+/', trim( $values['name'] ), 2 ) ?: array();
+	$user_id = wp_insert_user(
+		array(
+			'user_login'   => $values['email'],
+			'user_email'   => $values['email'],
+			'user_pass'    => wp_generate_password( 32, true, true ),
+			'first_name'   => $parts[0] ?? '',
+			'last_name'    => $parts[1] ?? '',
+			'display_name' => $values['name'],
+			'role'         => 'customer',
+		)
+	);
+	if ( is_wp_error( $user_id ) ) {
+		return $user_id;
+	}
+
+	global $wpdb;
+	$now     = current_time( 'mysql', true );
 	$address = json_decode( $values['address'], true );
-	$company_id = papelito_company_create( (string) $application['canonical_cnpj'], array( 'legal_name' => (string) ( $registry['lookup']['legal_name'] ?? '' ), 'trade_name' => (string) ( $registry['lookup']['trade_name'] ?? '' ), 'billing_email' => $values['email'], 'phone' => $values['phone'], 'registry_status' => 'active', 'ownership_status' => 'verified', 'company_status' => 'active', 'owner_user_id' => $user_id, 'created_by_user_id' => $user_id ) );
-	if ( is_wp_error( $company_id ) ) { wp_delete_user( $user_id ); return $company_id; }
-	$member_id = papelito_company_member_upsert( $company_id, $user_id, array( 'member_role' => 'owner', 'member_status' => 'active', 'membership_origin' => 'owner_candidate', 'approved_by_user_id' => $actor_user_id, 'approved_at' => current_time( 'mysql', true ) ) );
-	if ( is_wp_error( $member_id ) ) { wp_delete_user( $user_id ); return $member_id; }
+
+	$wpdb->query( 'START TRANSACTION' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	// A senha foi escolhida na candidatura e guardada já com hash; wp_insert_user acabou de
+	// gravar uma aleatória e é ela que precisa ser substituída.
+	$wpdb->update( $wpdb->users, array( 'user_pass' => (string) $application['password_hash'] ), array( 'ID' => $user_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	$profile = papelito_company_profile_upsert( $user_id, $values['cpf'], $values['birth'] );
+	if ( is_wp_error( $profile ) ) {
+		return papelito_pre_account_application_abort_approval( $user_id, $profile );
+	}
+
+	$company_id = papelito_company_create(
+		(string) $application['canonical_cnpj'],
+		array(
+			'legal_name'         => (string) ( $registry['lookup']['legal_name'] ?? '' ),
+			'trade_name'         => (string) ( $registry['lookup']['trade_name'] ?? '' ),
+			'billing_email'      => $values['email'],
+			'phone'              => $values['phone'],
+			'registry_status'    => 'active',
+			'ownership_status'   => 'verified',
+			'company_status'     => 'active',
+			'owner_user_id'      => $user_id,
+			'created_by_user_id' => $user_id,
+		)
+	);
+	if ( is_wp_error( $company_id ) ) {
+		return papelito_pre_account_application_abort_approval( $user_id, $company_id );
+	}
+
+	$member_id = papelito_company_member_upsert(
+		$company_id,
+		$user_id,
+		array(
+			'member_role'         => 'owner',
+			'member_status'       => 'active',
+			'membership_origin'   => 'owner_candidate',
+			'approved_by_user_id' => $actor_user_id,
+			'approved_at'         => $now,
+		)
+	);
+	if ( is_wp_error( $member_id ) ) {
+		return papelito_pre_account_application_abort_approval( $user_id, $member_id );
+	}
+
 	papelito_company_onboarding_upsert( $user_id, 'create_company', (string) $application['canonical_cnpj'], 'pending_onboarding' );
 	papelito_company_onboarding_save_address( $user_id, (string) ( $address['cep'] ?? '' ), is_array( $address ) ? $address : array() );
 	papelito_company_onboarding_mark_completed( $user_id, $company_id, $member_id );
+
+	$tables  = papelito_company_table_names();
+	$decided = $wpdb->update(
+		$tables['pre_account_applications'],
+		array(
+			'application_status'    => 'approved',
+			'is_open'               => null,
+			'decided_by_user_id'    => $actor_user_id,
+			'decided_at'            => $now,
+			'created_user_id'       => $user_id,
+			'created_company_id'    => $company_id,
+			'created_membership_id' => $member_id,
+			'updated_at'            => $now,
+		),
+		array(
+			'id'                 => $application_id,
+			'application_status' => 'pending_manual_review',
+		)
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	// Guarda de concorrência: outro administrador decidiu esta candidatura enquanto
+	// provisionávamos. Desfaz tudo em vez de deixar duas contas para o mesmo CNPJ.
+	if ( 1 !== $decided ) {
+		return papelito_pre_account_application_abort_approval(
+			$user_id,
+			new WP_Error( 'papelito_pre_account_decision_conflict', 'Esta candidatura não está pendente.', array( 'status' => 409 ) )
+		);
+	}
+
+	$wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	clean_user_cache( $user_id );
 	update_user_meta( $user_id, 'papelito_account_state', 'active' );
-	$tables = papelito_company_table_names();
-	$wpdb->update( $tables['pre_account_applications'], array( 'application_status' => 'approved', 'is_open' => null, 'decided_by_user_id' => $actor_user_id, 'decided_at' => current_time( 'mysql', true ), 'created_user_id' => $user_id, 'created_company_id' => $company_id, 'created_membership_id' => $member_id, 'updated_at' => current_time( 'mysql', true ) ), array( 'id' => $application_id, 'application_status' => 'pending_manual_review' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	papelito_pre_account_application_purge_document( $application_id );
+
 	return papelito_pre_account_application_view( papelito_pre_account_application_get( $application_id ) ?: $application );
+}
+
+/**
+ * Desfaz um provisionamento parcial: rollback das tabelas próprias e remoção do wp_user.
+ */
+function papelito_pre_account_application_abort_approval( int $user_id, WP_Error $error ): WP_Error {
+	global $wpdb;
+	$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	if ( ! function_exists( 'wp_delete_user' ) ) {
+		require_once ABSPATH . 'wp-admin/includes/user.php';
+	}
+	wp_delete_user( $user_id );
+	clean_user_cache( $user_id );
+
+	return $error;
+}
+
+function papelito_pre_account_application_decide( int $application_id, int $actor_user_id, bool $approve, string $reason = '' ): array|WP_Error {
+	$reason = trim( sanitize_textarea_field( $reason ) );
+	if ( ! $approve && '' === $reason ) {
+		return new WP_Error( 'papelito_pre_account_rejection_reason_required', 'Informe o motivo interno da reprovação.', array( 'status' => 422 ) );
+	}
+
+	$application = papelito_pre_account_application_get( $application_id );
+	if ( ! $application || 'pending_manual_review' !== (string) $application['application_status'] || empty( $application['is_open'] ) ) {
+		return new WP_Error( 'papelito_pre_account_decision_conflict', 'Esta candidatura não está pendente.', array( 'status' => 409 ) );
+	}
+
+	return $approve
+		? papelito_pre_account_application_approve( $application, $actor_user_id )
+		: papelito_pre_account_application_reject( $application, $actor_user_id, $reason );
 }

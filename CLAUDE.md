@@ -16,7 +16,7 @@ WordPress + WooCommerce servindo como API para o frontend Next.js (`../papelito-
 | Testes standalone e baseline de PHPCS | [docs/context/testing.md](docs/context/testing.md) |
 | Correios: adapter, modos, polling | [docs/context/correios-integration.md](docs/context/correios-integration.md) |
 | Deploy, rollback, incidente, sync, credenciais | [docs/README.md#operações](docs/README.md#operações) |
-| Inventário das 132 rotas REST e operações GraphQL | [`../docs/integration-contracts.md`](../docs/integration-contracts.md) |
+| Inventário das rotas REST e operações GraphQL | [`../docs/integration-contracts.md`](../docs/integration-contracts.md) |
 | Regras de negócio do produto | [`../docs/business-rules.md`](../docs/business-rules.md) |
 | Fluxos funcionais | [`../docs/README.md#fluxos`](../docs/README.md#fluxos) |
 

@@ -154,7 +154,7 @@ papelito_companies
 | `identity_checked_at` | DATETIME NULL | |
 | `created_at`/`updated_at` | DATETIME | |
 
-**Não há `birth_date_ciphertext`.** A data de nascimento é sinal de verificação de responsável, não dado persistido — a coluna só será criada quando houver necessidade de negócio confirmada.
+**Não há `birth_date_ciphertext` nesta tabela.** A data de nascimento é sinal de verificação de responsável, não dado cadastral do perfil. A única tabela que a persiste é `papelito_company_pre_account_applications`, e só enquanto a candidatura estiver viva — ver [Candidatura empresarial pré-conta](#candidatura-empresarial-pré-conta).
 
 ### `papelito_companies`
 
@@ -218,11 +218,34 @@ papelito_companies
 
 ### Candidatura empresarial pré-conta
 
-A regra vigente exige uma candidatura separada de `wp_users`, empresas e memberships. Ela guarda um identificador temporário opaco, os dados de contato verificados e os dados pessoais cifrados necessários para a análise, a evidência mínima do provedor (**sem QSA bruto**), os metadados temporários do arquivo privado e a decisão administrativa.
+`papelito_company_pre_account_applications` é a tabela do cadastro empresarial vigente. Ela existe porque **a candidatura não pode criar conta**: antes da aprovação administrativa não há `wp_user`, empresa, membership nem sessão para o candidato.
 
-`wp_user_id`, `company_id`, `membership_id` e `owner_user_id` só podem ser preenchidos na transação de aprovação que cria esses recursos. Uma candidatura `document_required` ou `pending_manual_review` não pode referenciar qualquer um deles.
+Guarda os dados pessoais cifrados necessários à análise (contato, nome, telefone, CPF, **data de nascimento**, endereço, razão social), os HMAC determinísticos de e-mail e CPF, o hash da senha escolhida no cadastro, a evidência mínima do provedor (**sem QSA bruto**), os metadados do arquivo privado e a decisão administrativa.
 
-O armazenamento atual `papelito_company_owner_applications`, que exige IDs de empresa e usuário antes do upload, **não atende a esta regra** e deve ser substituído ou migrado antes do rollout. A unicidade da candidatura aberta deve ser garantida pelo CNPJ canônico + contato verificado, não por `company_id`.
+`created_user_id`, `created_company_id` e `created_membership_id` só são preenchidos na aprovação, que é quem cria esses recursos. Candidatura `document_required` ou `pending_manual_review` nunca referencia nenhum deles.
+
+**Estados**: `document_required` → `pending_manual_review` → `approved` | `rejected`, mais `expired` pela varredura de retenção.
+
+**Restrições que carregam a lógica:**
+
+- `uniq_open_cnpj (canonical_cnpj, is_open)` garante **uma candidatura aberta por CNPJ**. O truque é `is_open` ser `1` enquanto aberta e **`NULL` quando fechada**: em MySQL, valores `NULL` não colidem em índice único, então candidaturas encerradas não impedem uma recandidatura para o mesmo CNPJ. Não troque `NULL` por `0`.
+- `idx_resume_token (resume_token_hash)` — a retomada é por token opaco de 32 bytes guardado em cookie `__Host-`, nunca por sessão.
+- `idx_status_expires (application_status, expires_at)` serve à varredura de retenção.
+
+**Retenção.** `papelito_pre_account_applications_sweep()` roda de hora em hora: fecha as abertas vencidas (`expired`) e, passado o TTL de `PAPELITO_PRE_ACCOUNT_APPLICATION_TTL_DAYS`, apaga o documento e zera toda a PII reversível — colunas cifradas, `password_hash`, `resume_token_hash` e `evidence_json`. Sobra um registro auditável sem dado pessoal: CNPJ, decisão, administrador e IDs criados. O documento também é apagado **na decisão**, sem esperar o TTL. Colunas cifradas são `NOT NULL`: o purge grava string vazia, não `NULL`, e usa `password_hash IS NULL` como sentinela de "já purgada".
+
+#### Relação com `papelito_company_owner_applications`
+
+A tabela antiga **continua existindo e em uso** para o caminho em que o usuário **já tem conta** e envia documento de responsável por `POST /companies/current/owner-document`. As duas convivem de propósito, com filas administrativas separadas:
+
+| | `pre_account_applications` | `owner_applications` |
+|---|---|---|
+| Pré-requisito | nenhum — candidato sem conta | `wp_user` existente |
+| Entrada | `POST /company-applications` | `POST /companies/current/owner-document` |
+| Fila admin | `GET /admin/pre-account-applications` | `GET /admin/owner-applications` |
+| `applicationId` | `pre:<id>` | numérico |
+
+Ao aprovar, confira em qual fila a candidatura está: os IDs não são intercambiáveis.
 
 ### Outras tabelas B2B
 

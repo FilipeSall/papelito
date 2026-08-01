@@ -2,6 +2,18 @@
 
 defined( 'ABSPATH' ) || exit;
 
+if ( ! defined( 'PAPELITO_COMPANY_REST_NAMESPACE' ) ) {
+	define( 'PAPELITO_COMPANY_REST_NAMESPACE', 'papelito/v1' );
+}
+
+if ( ! defined( 'PAPELITO_COMPANY_DIGITS_REGEX' ) ) {
+	define( 'PAPELITO_COMPANY_DIGITS_REGEX', '/\\D+/' );
+}
+
+if ( ! defined( 'PAPELITO_COMPANY_RATE_LIMIT_MESSAGE' ) ) {
+	define( 'PAPELITO_COMPANY_RATE_LIMIT_MESSAGE', 'Muitas tentativas. Tente novamente em alguns instantes.' );
+}
+
 function papelito_company_require_authenticated_user() {
 	$user_id = get_current_user_id();
 	return $user_id > 0 ? $user_id : new WP_Error( 'papelito_b2b_not_authenticated', 'Autenticação necessária.', array( 'status' => 401 ) );
@@ -17,7 +29,7 @@ function papelito_company_require_authenticated_user() {
  * @param array<string,mixed> $data Payload do onboarding.
  * @return true|WP_Error
  */
-function papelito_company_onboarding_save_address( int $user_id, string $cep, array $data ) {
+function papelito_company_onboarding_save_address( int $user_id, string $cep, array $data ) { // NOSONAR -- manter os dois espelhos de endereço explícitos evita divergência entre usermeta e WooCommerce.
 	if ( '' === $cep ) {
 		return true;
 	}
@@ -75,32 +87,40 @@ function papelito_company_validate_owner_input( array $data ): array|WP_Error {
 	$required = array( 'cpf', 'birth_date', 'cnpj', 'full_name', 'phone', 'cep', 'street', 'number', 'neighborhood', 'city', 'state' );
 	foreach ( $required as $field ) { if ( empty( $data[ $field ] ) ) { return new WP_Error( 'papelito_b2b_missing_' . $field, 'Dados cadastrais incompletos.', array( 'status' => 422 ) ); } }
 	if ( ! papelito_validate_cpf( (string) $data['cpf'] ) || ! papelito_validate_cnpj( (string) $data['cnpj'] ) ) { return new WP_Error( 'papelito_b2b_invalid_document', 'Documento inválido.', array( 'status' => 422 ) ); }
-	$cep = preg_replace( '/\D+/', '', (string) $data['cep'] ) ?? '';
+	$cep = preg_replace( PAPELITO_COMPANY_DIGITS_REGEX, '', (string) $data['cep'] ) ?? '';
 	if ( ! papelito_validate_cep_format( $cep ) || ! array_key_exists( strtoupper( (string) $data['state'] ), papelito_brazilian_states() ) ) { return new WP_Error( 'papelito_b2b_invalid_address', 'Endereço inválido.', array( 'status' => 422 ) ); }
 	$phone = function_exists( 'papelito_auth_normalize_phone' ) ? papelito_auth_normalize_phone( (string) $data['phone'] ) : preg_replace( '/\D+/', '', (string) $data['phone'] );
 	if ( ! is_string( $phone ) || ! in_array( strlen( $phone ), array( 10, 11 ), true ) ) { return new WP_Error( 'papelito_b2b_invalid_phone', 'Telefone inválido.', array( 'status' => 422 ) ); }
 	return array( 'cpf' => papelito_normalize_cpf( (string) $data['cpf'] ), 'birth_date' => sanitize_text_field( (string) $data['birth_date'] ), 'cnpj' => papelito_normalize_cnpj( (string) $data['cnpj'] ), 'full_name' => sanitize_text_field( (string) $data['full_name'] ), 'phone' => $phone, 'cep' => $cep, 'street' => sanitize_text_field( (string) $data['street'] ), 'number' => sanitize_text_field( (string) $data['number'] ), 'complement' => sanitize_text_field( (string) ( $data['complement'] ?? '' ) ), 'neighborhood' => sanitize_text_field( (string) $data['neighborhood'] ), 'city' => sanitize_text_field( (string) $data['city'] ), 'state' => strtoupper( sanitize_text_field( (string) $data['state'] ) ) );
 }
 
-add_action( 'rest_api_init', static function (): void {
-	register_rest_route( 'papelito/v1', '/company-applications', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+add_action( 'rest_api_init', static function (): void { // NOSONAR -- bloco declarativo de rotas; callbacks preservam contratos REST independentes.
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/company-applications', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
 		$writes = papelito_b2b_require_company_writes();
 		if ( is_wp_error( $writes ) ) {
 			return $writes;
 		}
 		if ( ! papelito_auth_rate_limit( 'pre_account_application', 5, 60 ) ) {
-			return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
+			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 		}
 		$result = papelito_pre_account_application_create( (array) $request->get_json_params() );
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 201 );
 	} ) );
 
-	register_rest_route( 'papelito/v1', '/company-applications/current', array( 'methods' => 'GET', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/company-applications/current', array( 'methods' => 'GET', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+		if ( ! papelito_auth_rate_limit( 'pre_account_application_read', 60, 60 ) ) {
+			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+		}
 		$application = papelito_pre_account_application_authorize( sanitize_text_field( (string) $request->get_header( 'X-Papelito-Application-Token' ) ) );
 		return is_wp_error( $application ) ? $application : new WP_REST_Response( papelito_pre_account_application_view( $application ), 200 );
 	} ) );
 
-	register_rest_route( 'papelito/v1', '/company-applications/current/document', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/company-applications/current/document', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+		// Upload não autenticado: sem limite por IP, validar imagem e calcular SHA-256 vira
+		// vetor de abuso de disco e CPU. O limite é menor que o de leitura de propósito.
+		if ( ! papelito_auth_rate_limit( 'pre_account_application_document', 10, 60 ) ) {
+			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+		}
 		$file = $_FILES['document'] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing
 		if ( ! is_array( $file ) ) {
 			return new WP_Error( 'papelito_company_document_missing', 'Selecione um documento.', array( 'status' => 422 ) );
@@ -109,7 +129,7 @@ add_action( 'rest_api_init', static function (): void {
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 201 );
 	} ) );
 
-	register_rest_route( 'papelito/v1', '/companies/validate-cnpj', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/companies/validate-cnpj', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
 		$data = (array) $request->get_json_params();
 		$cnpj = isset( $data['cnpj'] ) ? (string) $data['cnpj'] : '';
 		if ( ! papelito_validate_cnpj( $cnpj ) ) { return new WP_Error( 'papelito_b2b_invalid_cnpj', 'CNPJ inválido.', array( 'status' => 422 ) ); }
@@ -117,11 +137,11 @@ add_action( 'rest_api_init', static function (): void {
 		return new WP_REST_Response( array( 'status' => $lookup['status'], 'legalName' => $lookup['legal_name'] ?? null, 'tradeName' => $lookup['trade_name'] ?? null ), 200 );
 	} ) );
 
-	register_rest_route( 'papelito/v1', '/onboarding/customer-profile', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/onboarding/customer-profile', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
 		$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
 		$user_id = papelito_company_require_authenticated_user(); if ( is_wp_error( $user_id ) ) { return $user_id; }
 		$data = (array) $request->get_json_params();
-		$cep  = preg_replace( '/\D+/', '', (string) ( $data['cep'] ?? '' ) ) ?? '';
+		$cep  = preg_replace( PAPELITO_COMPANY_DIGITS_REGEX, '', (string) ( $data['cep'] ?? '' ) ) ?? '';
 		if ( '' !== $cep && ! papelito_validate_cep_format( $cep ) ) { return new WP_Error( 'papelito_b2b_invalid_cep', 'CEP inválido.', array( 'status' => 422 ) ); }
 		$result = papelito_company_profile_upsert( $user_id, (string) ( $data['cpf'] ?? '' ), (string) ( $data['birth_date'] ?? '' ) );
 		if ( is_wp_error( $result ) ) { return $result; }
@@ -132,7 +152,7 @@ add_action( 'rest_api_init', static function (): void {
 		return new WP_REST_Response( papelito_company_context( $user_id ), 200 );
 	} ) );
 
-	register_rest_route( 'papelito/v1', '/companies', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/companies', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
 		if ( ! papelito_b2b_company_model_enabled() ) { return new WP_Error( 'papelito_b2b_company_rollout_disabled', 'Cadastro empresarial temporariamente indisponível.', array( 'status' => 503 ) ); }
 		$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
 		$user_id = papelito_company_require_authenticated_user(); if ( is_wp_error( $user_id ) ) { return $user_id; }
@@ -151,7 +171,7 @@ add_action( 'rest_api_init', static function (): void {
 		return new WP_REST_Response( array_merge( $result, papelito_company_context( $user_id ) ), 201 );
 	} ) );
 
-	register_rest_route( 'papelito/v1', '/companies/current/owner-document', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/companies/current/owner-document', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
 		$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
 		$user_id = papelito_company_require_authenticated_user(); if ( is_wp_error( $user_id ) ) { return $user_id; }
 		$idempotency_key = sanitize_text_field( (string) $request->get_header( 'Idempotency-Key' ) );
@@ -166,14 +186,14 @@ add_action( 'rest_api_init', static function (): void {
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'application' => $result, 'context' => papelito_company_context( $user_id ) ), 201 );
 	} ) );
 
-	register_rest_route( 'papelito/v1', '/companies/current/restart-onboarding', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function () {
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/companies/current/restart-onboarding', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function () {
 		$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }
 		$user_id = papelito_company_require_authenticated_user(); if ( is_wp_error( $user_id ) ) { return $user_id; }
 		$result = papelito_company_onboarding_restart_after_rejection( $user_id );
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( papelito_company_context( $user_id ), 200 );
 	} ) );
 
-	register_rest_route( 'papelito/v1', '/companies/current/resubmit-owner', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function () {
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/companies/current/resubmit-owner', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function () {
 		$user_id = papelito_company_require_authenticated_user(); if ( is_wp_error( $user_id ) ) { return $user_id; }
 		$result = papelito_company_resubmit_owner_candidate( $user_id ); return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
 	} ) );
