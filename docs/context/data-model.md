@@ -216,11 +216,13 @@ papelito_companies
 
 Índice `idx_company_created (company_id, created_at)`. Append-only.
 
-### `papelito_company_owner_applications`
+### Candidatura empresarial pré-conta
 
-Uma linha por candidatura de responsável. Colunas: IDs de candidatura/empresa/usuário; `attempt_number` sequencial; `status` (`document_required`/`pending_manual_review`/`auto_approved`/`approved`/`rejected`); evidência mínima do provedor e hash (**sem QSA bruto nem CPF**); metadados temporários do arquivo (chave privada, nome original sanitizado, MIME, tamanho, SHA-256); envio, decisão, administrador, motivo interno e estado/data de exclusão.
+A regra vigente exige uma candidatura separada de `wp_users`, empresas e memberships. Ela guarda um identificador temporário opaco, os dados de contato verificados e os dados pessoais cifrados necessários para a análise, a evidência mínima do provedor (**sem QSA bruto**), os metadados temporários do arquivo privado e a decisão administrativa.
 
-Restrições que carregam a lógica: **`is_open=1` apenas em `document_required`/`pending_manual_review`, com unicidade por empresa** — é esse índice que impede candidatura duplicada sob concorrência —, e unicidade em `(company_id, attempt_number)`.
+`wp_user_id`, `company_id`, `membership_id` e `owner_user_id` só podem ser preenchidos na transação de aprovação que cria esses recursos. Uma candidatura `document_required` ou `pending_manual_review` não pode referenciar qualquer um deles.
+
+O armazenamento atual `papelito_company_owner_applications`, que exige IDs de empresa e usuário antes do upload, **não atende a esta regra** e deve ser substituído ou migrado antes do rollout. A unicidade da candidatura aberta deve ser garantida pelo CNPJ canônico + contato verificado, não por `company_id`.
 
 ### Outras tabelas B2B
 

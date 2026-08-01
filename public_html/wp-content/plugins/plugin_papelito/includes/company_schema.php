@@ -48,6 +48,10 @@ if ( ! defined( 'PAPELITO_COMPANY_OWNER_APPLICATIONS_TABLE' ) ) {
 	define( 'PAPELITO_COMPANY_OWNER_APPLICATIONS_TABLE', 'papelito_company_owner_applications' );
 }
 
+if ( ! defined( 'PAPELITO_COMPANY_PRE_ACCOUNT_APPLICATIONS_TABLE' ) ) {
+	define( 'PAPELITO_COMPANY_PRE_ACCOUNT_APPLICATIONS_TABLE', 'papelito_company_pre_account_applications' );
+}
+
 /**
  * Resolve os nomes completos (com prefixo) das tabelas do modelo B2B.
  *
@@ -66,6 +70,7 @@ function papelito_company_table_names(): array {
 		'onboarding' => $wpdb->prefix . PAPELITO_B2B_ONBOARDING_TABLE,
 		'legacy_email_log' => $wpdb->prefix . PAPELITO_B2B_LEGACY_EMAIL_LOG_TABLE,
 		'owner_applications' => $wpdb->prefix . PAPELITO_COMPANY_OWNER_APPLICATIONS_TABLE,
+		'pre_account_applications' => $wpdb->prefix . PAPELITO_COMPANY_PRE_ACCOUNT_APPLICATIONS_TABLE,
 	);
 }
 
@@ -296,6 +301,50 @@ function papelito_company_install_tables(): void {
   KEY idx_status_created (application_status, created_at)
 ) {$charset_collate};";
 
+	$pre_account_applications_sql = "CREATE TABLE {$tables['pre_account_applications']} (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  contact_email_hmac CHAR(64) NOT NULL,
+  contact_email_ciphertext LONGTEXT NOT NULL,
+  full_name_ciphertext LONGTEXT NOT NULL,
+  phone_ciphertext LONGTEXT NOT NULL,
+  cpf_hmac CHAR(64) NOT NULL,
+  cpf_ciphertext LONGTEXT NOT NULL,
+  birth_date_ciphertext LONGTEXT NOT NULL,
+  password_hash VARCHAR(255) NULL DEFAULT NULL,
+  canonical_cnpj CHAR(14) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL,
+  legal_name_ciphertext LONGTEXT NULL DEFAULT NULL,
+  review_path VARCHAR(24) NULL DEFAULT NULL,
+  application_status VARCHAR(32) NOT NULL DEFAULT 'draft',
+  is_open TINYINT UNSIGNED NULL DEFAULT NULL,
+  resume_token_hash CHAR(64) NOT NULL,
+  resume_token_expires_at DATETIME NOT NULL,
+  evidence_json LONGTEXT NULL DEFAULT NULL,
+  provider_source VARCHAR(32) NULL DEFAULT NULL,
+  provider_checked_at DATETIME NULL DEFAULT NULL,
+  provider_data_hash CHAR(64) NULL DEFAULT NULL,
+  document_storage_key VARCHAR(80) NULL DEFAULT NULL,
+  document_original_name VARCHAR(191) NULL DEFAULT NULL,
+  document_mime VARCHAR(64) NULL DEFAULT NULL,
+  document_size BIGINT UNSIGNED NULL DEFAULT NULL,
+  document_sha256 CHAR(64) NULL DEFAULT NULL,
+  document_uploaded_at DATETIME NULL DEFAULT NULL,
+  document_deleted_at DATETIME NULL DEFAULT NULL,
+  decided_by_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  decided_at DATETIME NULL DEFAULT NULL,
+  rejection_reason VARCHAR(500) NULL DEFAULT NULL,
+  created_user_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  created_company_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  created_membership_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY  (id),
+  UNIQUE KEY uniq_open_cnpj (canonical_cnpj, is_open),
+  KEY idx_contact_status (contact_email_hmac, application_status),
+  KEY idx_resume_token (resume_token_hash),
+  KEY idx_status_expires (application_status, expires_at)
+) {$charset_collate};";
+
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 	dbDelta( $profiles_sql );
 	dbDelta( $companies_sql );
@@ -306,6 +355,7 @@ function papelito_company_install_tables(): void {
 	dbDelta( $onboarding_sql );
 	dbDelta( $legacy_email_log_sql );
 	dbDelta( $owner_applications_sql );
+	dbDelta( $pre_account_applications_sql );
 
 	// Convites pendentes que foram presos a CPF não podem ser aceitos sob a nova política.
 	// Mantemos o histórico e exigimos um novo convite, sem CPF, em vez de apagar dados.

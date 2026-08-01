@@ -13,12 +13,14 @@ class WP_Error {
 	public function get_error_data(): array { return $this->data; }
 }
 
+function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
+
 $lookup_fixture   = array();
 $evidence_fixture = array();
-$auto_fixture     = false;
 
-function papelito_cnpj_adapter_brasilapi( string $cnpj ): array {
+function papelito_cnpj_lookup( string $cnpj, bool $include_evidence = false ): array {
 	global $lookup_fixture;
+	unset( $cnpj, $include_evidence );
 	return $lookup_fixture;
 }
 
@@ -27,9 +29,13 @@ function papelito_company_owner_evidence(): array {
 	return $evidence_fixture;
 }
 
-function papelito_company_should_auto_approve_owner(): bool {
-	global $auto_fixture;
-	return $auto_fixture;
+function papelito_company_owner_review_path( array $evidence ): string|WP_Error {
+	if ( true !== ( $evidence['qsa_sufficient'] ?? false ) ) {
+		return 'document_required';
+	}
+	return true === ( $evidence['partner_match'] ?? false )
+		? 'qsa_review'
+		: new WP_Error( 'papelito_b2b_qsa_mismatch', 'mismatch', array( 'status' => 422 ) );
 }
 
 $source = file_get_contents( __DIR__ . '/../includes/company_services.php' );
@@ -52,7 +58,6 @@ function assert_review( string $label, mixed $expected, mixed $actual ): void {
 
 $lookup_fixture = array( 'status' => 'active', 'legal_name' => 'EMPRESA TESTE', 'is_mei' => false );
 $evidence_fixture = array( 'qsa_available' => false, 'qsa_sufficient' => false );
-$auto_fixture = false;
 $manual = papelito_company_validate_owner_registry( '52998224725', '1990-01-01', '11222333000181', 'Pessoa Teste' );
 assert_review( 'QSA ausente abre etapa documental', true, is_array( $manual ) && true === $manual['review_required'] );
 
@@ -64,11 +69,10 @@ $evidence_fixture = array( 'qsa_available' => true, 'qsa_sufficient' => true );
 $mismatch = papelito_company_validate_owner_registry( '52998224725', '1990-01-01', '11222333000181', 'Pessoa Teste' );
 assert_review( 'QSA suficiente divergente bloqueia correcao antes da candidatura', 'papelito_b2b_qsa_mismatch', $mismatch instanceof WP_Error ? $mismatch->get_error_code() : null );
 
-$auto_fixture = true;
+$evidence_fixture = array( 'qsa_available' => true, 'qsa_sufficient' => true, 'partner_match' => true );
 $approved = papelito_company_validate_owner_registry( '52998224725', '1990-01-01', '11222333000181', 'Pessoa Teste' );
-assert_review( 'QSA compativel preserva aprovacao automatica', false, is_array( $approved ) ? $approved['review_required'] : null );
+assert_review( 'QSA compativel segue para revisao sem documento', 'qsa_review', is_array( $approved ) ? $approved['review_path'] : null );
 
-$auto_fixture = false;
 $lookup_fixture = array( 'status' => 'unavailable' );
 $unavailable = papelito_company_validate_owner_registry( '52998224725', '1990-01-01', '11222333000181', 'Pessoa Teste' );
 assert_review( 'indisponibilidade permanece erro tecnico', 'papelito_b2b_qsa_unavailable', $unavailable instanceof WP_Error ? $unavailable->get_error_code() : null );

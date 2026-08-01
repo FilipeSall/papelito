@@ -229,8 +229,20 @@ function papelito_company_should_auto_approve_owner( array $evidence, array $loo
 	return true === ( $evidence['partner_match'] ?? null );
 }
 
+function papelito_company_owner_review_path( array $evidence ): string|WP_Error {
+	if ( true !== ( $evidence['qsa_sufficient'] ?? false ) ) {
+		return 'document_required';
+	}
+
+	if ( true === ( $evidence['partner_match'] ?? false ) ) {
+		return 'qsa_review';
+	}
+
+	return new WP_Error( 'papelito_b2b_qsa_mismatch', 'Os dados informados não correspondem aos responsáveis cadastrados para este CNPJ. Confira seu nome, CPF e data de nascimento.', array( 'status' => 422 ) );
+}
+
 function papelito_company_validate_owner_registry( string $cpf, string $birth_date, string $cnpj, string $full_name ): array|WP_Error {
-	$lookup = papelito_cnpj_adapter_brasilapi( $cnpj );
+	$lookup = papelito_cnpj_lookup( $cnpj, true );
 	if ( 'active' !== (string) $lookup['status'] ) {
 		if ( 'unavailable' === (string) $lookup['status'] ) {
 			return new WP_Error( 'papelito_b2b_qsa_unavailable', 'Não foi possível consultar o CNPJ agora. Tente novamente.', array( 'status' => 503 ) );
@@ -239,16 +251,16 @@ function papelito_company_validate_owner_registry( string $cpf, string $birth_da
 	}
 
 	$evidence = papelito_company_owner_evidence( null, $cpf, $birth_date, $lookup, $full_name );
-	$auto_approved = papelito_company_should_auto_approve_owner( $evidence, $lookup );
-	$usable_mei    = true === ( $evidence['mei_confirmed'] ?? false ) && '' !== trim( (string) ( $lookup['legal_name'] ?? '' ) );
-	if ( ! $auto_approved && ( $usable_mei || true === ( $evidence['qsa_sufficient'] ?? false ) ) ) {
-		return new WP_Error( 'papelito_b2b_qsa_mismatch', 'Os dados informados não correspondem aos responsáveis cadastrados para este CNPJ. Confira seu nome, CPF e data de nascimento.', array( 'status' => 422 ) );
+	$review_path = papelito_company_owner_review_path( $evidence );
+	if ( is_wp_error( $review_path ) ) {
+		return $review_path;
 	}
 
 	return array(
 		'lookup'          => $lookup,
 		'evidence'        => $evidence,
-		'review_required' => ! $auto_approved,
+		'review_required' => true,
+		'review_path'     => $review_path,
 	);
 }
 

@@ -83,6 +83,15 @@ function papelito_company_validate_owner_input( array $data ): array|WP_Error {
 }
 
 add_action( 'rest_api_init', static function (): void {
+	register_rest_route( 'papelito/v1', '/company-applications', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+		$writes = papelito_b2b_require_company_writes();
+		if ( is_wp_error( $writes ) ) {
+			return $writes;
+		}
+		$result = papelito_pre_account_application_create( (array) $request->get_json_params() );
+		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 201 );
+	} ) );
+
 	register_rest_route( 'papelito/v1', '/companies/validate-cnpj', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
 		$data = (array) $request->get_json_params();
 		$cnpj = isset( $data['cnpj'] ) ? (string) $data['cnpj'] : '';
