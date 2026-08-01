@@ -88,7 +88,24 @@ add_action( 'rest_api_init', static function (): void {
 		if ( is_wp_error( $writes ) ) {
 			return $writes;
 		}
+		if ( ! papelito_auth_rate_limit( 'pre_account_application', 5, 60 ) ) {
+			return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
+		}
 		$result = papelito_pre_account_application_create( (array) $request->get_json_params() );
+		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 201 );
+	} ) );
+
+	register_rest_route( 'papelito/v1', '/company-applications/current', array( 'methods' => 'GET', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+		$application = papelito_pre_account_application_authorize( sanitize_text_field( (string) $request->get_header( 'X-Papelito-Application-Token' ) ) );
+		return is_wp_error( $application ) ? $application : new WP_REST_Response( papelito_pre_account_application_view( $application ), 200 );
+	} ) );
+
+	register_rest_route( 'papelito/v1', '/company-applications/current/document', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+		$file = $_FILES['document'] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing
+		if ( ! is_array( $file ) ) {
+			return new WP_Error( 'papelito_company_document_missing', 'Selecione um documento.', array( 'status' => 422 ) );
+		}
+		$result = papelito_pre_account_application_upload( sanitize_text_field( (string) $request->get_header( 'X-Papelito-Application-Token' ) ), $file );
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 201 );
 	} ) );
 

@@ -310,6 +310,7 @@ function papelito_company_install_tables(): void {
   cpf_hmac CHAR(64) NOT NULL,
   cpf_ciphertext LONGTEXT NOT NULL,
   birth_date_ciphertext LONGTEXT NOT NULL,
+  address_ciphertext LONGTEXT NOT NULL,
   password_hash VARCHAR(255) NULL DEFAULT NULL,
   canonical_cnpj CHAR(14) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL,
   legal_name_ciphertext LONGTEXT NULL DEFAULT NULL,

@@ -773,9 +773,7 @@ function papelito_auth_find_or_create_google_user( array $payload ) {
 		return $user;
 	}
 
-	if ( ! papelito_b2b_company_model_enabled() ) {
-		return new WP_Error( 'papelito_b2b_company_rollout_disabled', 'Cadastro empresarial temporariamente indisponível.', array( 'status' => 503 ) );
-	}
+	return new WP_Error( 'papelito_pre_account_required', 'Conclua a candidatura empresarial antes de criar uma conta.', array( 'status' => 422 ) );
 
 	$user_id = wp_insert_user(
 		array(
@@ -1103,6 +1101,8 @@ add_action(
 					if ( ! is_array( $data ) ) {
 						$data = $request->get_params();
 					}
+
+					return new WP_Error( 'papelito_pre_account_required', 'Use o fluxo de candidatura empresarial para criar uma conta após aprovação.', array( 'status' => 422 ) );
 
 					$validation = papelito_auth_validate_register_payload( (array) $data );
 

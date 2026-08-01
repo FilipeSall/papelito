@@ -132,6 +132,13 @@ function papelito_company_admin_owner_application_document( int $application_id 
 }
 
 add_action( 'rest_api_init', static function (): void {
+	register_rest_route( 'papelito/v1', '/admin/pre-account-applications', array( 'methods' => 'GET', 'permission_callback' => 'papelito_company_admin_require_capability', 'callback' => static function ( WP_REST_Request $request ) {
+		$status = sanitize_key( (string) $request->get_param( 'status' ) ?: 'pending_manual_review' );
+		return new WP_REST_Response( array( 'items' => papelito_pre_account_application_admin_list( $status ) ), 200 );
+	} ) );
+	foreach ( array( 'approve' => true, 'reject' => false ) as $action => $approve ) {
+		register_rest_route( 'papelito/v1', '/admin/pre-account-applications/(?P<id>\\d+)/' . $action, array( 'methods' => 'POST', 'permission_callback' => 'papelito_company_admin_require_capability', 'callback' => static function ( WP_REST_Request $request ) use ( $approve ) { $body = (array) $request->get_json_params(); $result = papelito_pre_account_application_decide( (int) $request['id'], get_current_user_id(), $approve, (string) ( $body['reason'] ?? '' ) ); return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 ); } ) );
+	}
 	register_rest_route( 'papelito/v1', '/admin/owner-applications', array( 'methods' => 'GET', 'permission_callback' => 'papelito_company_admin_require_capability', 'callback' => static fn( WP_REST_Request $r ) => new WP_REST_Response( papelito_company_admin_owner_applications_list( $r ), 200 ) ) );
 	register_rest_route( 'papelito/v1', '/admin/owner-applications/(?P<id>\d+)', array( 'methods' => 'GET', 'permission_callback' => 'papelito_company_admin_require_capability', 'callback' => static function ( WP_REST_Request $r ) {
 		$detail = papelito_company_owner_application_admin_detail( (int) $r['id'] );
