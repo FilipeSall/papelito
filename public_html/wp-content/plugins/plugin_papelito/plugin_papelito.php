@@ -71,7 +71,7 @@ require_once __DIR__ . '/includes/company_management_endpoints.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.25.0' );
+	define( 'PAPELITO_DB_VERSION', '1.26.0' );
 }
 
 /**
@@ -112,6 +112,10 @@ function papelito_maybe_migrate_db() {
 
 	if ( function_exists( 'papelito_company_install_tables' ) ) {
 		papelito_company_install_tables();
+	}
+
+	if ( function_exists( 'papelito_pre_account_application_backfill_pending_notifications' ) ) {
+		papelito_pre_account_application_backfill_pending_notifications();
 	}
 
 	if ( function_exists( 'papelito_receipts_install_tables' ) ) {

@@ -72,6 +72,80 @@ function papelito_pre_account_application_view( array $application ): array {
 	);
 }
 
+function papelito_pre_account_application_admin_recipients(): array {
+	$recipients = array();
+	foreach ( get_users( array( 'fields' => 'ID' ) ) as $user_id ) {
+		$user_id = (int) $user_id;
+		if ( $user_id > 0 && user_can( $user_id, 'papelito_manage_companies' ) ) {
+			$recipients[] = $user_id;
+		}
+	}
+
+	return $recipients;
+}
+
+function papelito_pre_account_application_notification_exists( int $recipient_id, int $application_id ): bool {
+	if ( ! function_exists( 'papelito_notifications_table_name' ) ) {
+		return false;
+	}
+
+	global $wpdb;
+	$notification_id = $wpdb->get_var(
+		$wpdb->prepare(
+			'SELECT id FROM ' . papelito_notifications_table_name() . ' WHERE user_id = %d AND type = %s AND dedupe_key = %s LIMIT 1',
+			$recipient_id,
+			PAPELITO_NOTIF_COMPANY_OWNER_REVIEW_PENDING,
+			'pre-account-application:' . $application_id
+		)
+	); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+	return (int) $notification_id > 0;
+}
+
+function papelito_pre_account_application_notify_pending( array $application ): bool {
+	if ( ! function_exists( 'papelito_dispatch_notification' ) || ! defined( 'PAPELITO_NOTIF_COMPANY_OWNER_REVIEW_PENDING' ) ) {
+		return false;
+	}
+
+	$application_id = (int) $application['id'];
+	$company_name   = papelito_pii_decrypt( (string) ( $application['legal_name_ciphertext'] ?? '' ) );
+	$payload        = array(
+		'applicationId' => papelito_pre_account_application_external_id( $application_id ),
+		'source'        => 'pre_account',
+		'companyName'   => is_string( $company_name ) && '' !== $company_name ? $company_name : 'Cadastro empresarial',
+		'href'          => '/admin/users?preAccountApplication=' . rawurlencode( papelito_pre_account_application_external_id( $application_id ) ),
+	);
+
+	$recipients = papelito_pre_account_application_admin_recipients();
+	if ( empty( $recipients ) ) {
+		return false;
+	}
+
+	foreach ( $recipients as $recipient_id ) {
+		if ( false === papelito_dispatch_notification( $recipient_id, PAPELITO_NOTIF_COMPANY_OWNER_REVIEW_PENDING, $payload, 'pre-account-application:' . $application_id ) && ! papelito_pre_account_application_notification_exists( $recipient_id, $application_id ) ) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+function papelito_pre_account_application_backfill_pending_notifications(): int {
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$applications = $wpdb->get_results(
+		"SELECT id, legal_name_ciphertext FROM {$tables['pre_account_applications']} WHERE application_status = 'pending_manual_review' AND is_open = 1",
+		ARRAY_A
+	); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+	$backfilled = 0;
+	foreach ( is_array( $applications ) ? $applications : array() as $application ) {
+		$backfilled += papelito_pre_account_application_notify_pending( $application ) ? 1 : 0;
+	}
+
+	return $backfilled;
+}
+
 function papelito_pre_account_application_identity( array $input ): array|WP_Error {
 	$identity = array(
 		'email'    => sanitize_email( (string) ( $input['email'] ?? '' ) ),
@@ -179,6 +253,7 @@ function papelito_pre_account_application_persist( array $prepared ): array|WP_E
 
 	global $wpdb;
 	$tables   = papelito_company_table_names();
+	$wpdb->query( 'START TRANSACTION' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 	$inserted = $wpdb->insert(
 		$tables['pre_account_applications'],
 		array(
@@ -208,12 +283,19 @@ function papelito_pre_account_application_persist( array $prepared ): array|WP_E
 		)
 	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 	if ( false === $inserted ) {
+		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		return new WP_Error( 'papelito_pre_account_unavailable', PAPELITO_PRE_ACCOUNT_APPLICATION_UNAVAILABLE_MESSAGE, array( 'status' => 409 ) );
 	}
 	$application = papelito_pre_account_application_get( (int) $wpdb->insert_id );
 	if ( ! $application ) {
+		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		return new WP_Error( 'papelito_pre_account_persist_failed', PAPELITO_PRE_ACCOUNT_APPLICATION_UNAVAILABLE_MESSAGE, array( 'status' => 500 ) );
 	}
+	if ( 'pending_manual_review' === (string) $application['application_status'] && ! papelito_pre_account_application_notify_pending( $application ) ) {
+		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		return new WP_Error( 'papelito_pre_account_notification_failed', 'Não foi possível encaminhar a candidatura para análise.', array( 'status' => 500 ) );
+	}
+	$wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
 	return array(
 		'application'  => papelito_pre_account_application_view( $application ),
@@ -245,11 +327,35 @@ function papelito_pre_account_application_upload( string $token, array $file ): 
 	}
 	global $wpdb;
 	$tables = papelito_company_table_names();
-	$now = current_time( 'mysql', true );
-	$updated = $wpdb->update( $tables['pre_account_applications'], array( 'application_status' => 'pending_manual_review', 'document_storage_key' => $stored['key'], 'document_original_name' => $validated['original_name'], 'document_mime' => $validated['mime'], 'document_size' => $validated['size'], 'document_sha256' => $validated['sha256'], 'document_uploaded_at' => $now, 'updated_at' => $now ), array( 'id' => (int) $application['id'], 'application_status' => 'document_required' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-	if ( 1 !== $updated ) {
+	$wpdb->query( 'START TRANSACTION' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	try {
+		$locked = $wpdb->get_row(
+			$wpdb->prepare( "SELECT * FROM {$tables['pre_account_applications']} WHERE id = %d FOR UPDATE", (int) $application['id'] ),
+			ARRAY_A
+		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( ! is_array( $locked ) || 'document_required' !== (string) $locked['application_status'] || empty( $locked['is_open'] ) || ! empty( $locked['document_storage_key'] ) ) {
+			throw new DomainException( 'application_not_uploadable' );
+		}
+
+		$now     = current_time( 'mysql', true );
+		$updated = $wpdb->update( $tables['pre_account_applications'], array( 'application_status' => 'pending_manual_review', 'document_storage_key' => $stored['key'], 'document_original_name' => $validated['original_name'], 'document_mime' => $validated['mime'], 'document_size' => $validated['size'], 'document_sha256' => $validated['sha256'], 'document_uploaded_at' => $now, 'updated_at' => $now ), array( 'id' => (int) $locked['id'], 'application_status' => 'document_required' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		if ( 1 !== $updated ) {
+			throw new RuntimeException( 'application_update_failed' );
+		}
+		$locked['id']                 = (int) $locked['id'];
+		$locked['application_status'] = 'pending_manual_review';
+		if ( ! papelito_pre_account_application_notify_pending( $locked ) ) {
+			throw new RuntimeException( 'notification_failed' );
+		}
+		$wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	} catch ( DomainException $error ) {
+		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		papelito_company_document_discard_path( $stored['path'] );
 		return new WP_Error( 'papelito_pre_account_upload_conflict', 'A candidatura foi atualizada. Atualize a página.', array( 'status' => 409 ) );
+	} catch ( Throwable $error ) {
+		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		papelito_company_document_discard_path( $stored['path'] );
+		return new WP_Error( 'papelito_pre_account_upload_failed', 'Não foi possível encaminhar o documento para análise. Tente novamente.', array( 'status' => 500 ) );
 	}
 	$updated_application = papelito_pre_account_application_get( (int) $application['id'] );
 	return $updated_application ? papelito_pre_account_application_view( $updated_application ) : new WP_Error( 'papelito_pre_account_application_not_found', 'Candidatura não encontrada.', array( 'status' => 404 ) );
@@ -391,10 +497,99 @@ if ( function_exists( 'add_action' ) ) {
 function papelito_pre_account_application_admin_list( string $status = 'pending_manual_review' ): array {
 	global $wpdb;
 	$tables = papelito_company_table_names();
-	$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id, contact_email_ciphertext, full_name_ciphertext, canonical_cnpj, application_status, review_path, document_uploaded_at, created_at FROM {$tables['pre_account_applications']} WHERE application_status = %s ORDER BY COALESCE(document_uploaded_at, created_at) ASC", $status ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$allowed_statuses = array( 'document_required', 'pending_manual_review', 'approved', 'rejected' );
+	if ( ! in_array( $status, $allowed_statuses, true ) ) {
+		$status = 'pending_manual_review';
+	}
+	$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id, contact_email_ciphertext, full_name_ciphertext, legal_name_ciphertext, canonical_cnpj, application_status, review_path, document_uploaded_at, created_at FROM {$tables['pre_account_applications']} WHERE application_status = %s ORDER BY COALESCE(document_uploaded_at, created_at) ASC", $status ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	return array_map( static function ( array $row ): array {
-		return array( 'applicationId' => papelito_pre_account_application_external_id( (int) $row['id'] ), 'email' => papelito_pii_decrypt( (string) $row['contact_email_ciphertext'] ) ?: null, 'fullName' => papelito_pii_decrypt( (string) $row['full_name_ciphertext'] ) ?: null, 'cnpj' => (string) $row['canonical_cnpj'], 'status' => (string) $row['application_status'], 'reviewPath' => $row['review_path'] ?? null, 'submittedAt' => $row['document_uploaded_at'] ?? null, 'createdAt' => (string) $row['created_at'] );
+		return array( 'applicationId' => papelito_pre_account_application_external_id( (int) $row['id'] ), 'email' => papelito_pii_decrypt( (string) $row['contact_email_ciphertext'] ) ?: null, 'fullName' => papelito_pii_decrypt( (string) $row['full_name_ciphertext'] ) ?: null, 'companyName' => papelito_pii_decrypt( (string) $row['legal_name_ciphertext'] ) ?: null, 'cnpj' => (string) $row['canonical_cnpj'], 'status' => (string) $row['application_status'], 'reviewPath' => $row['review_path'] ?? null, 'submittedAt' => $row['document_uploaded_at'] ?? null, 'createdAt' => (string) $row['created_at'] );
 	}, is_array( $rows ) ? $rows : array() );
+}
+
+function papelito_pre_account_application_admin_detail( int $application_id ): array|WP_Error {
+	$application = papelito_pre_account_application_get( $application_id );
+	if ( ! $application ) {
+		return new WP_Error( 'papelito_pre_account_application_not_found', 'Candidatura não encontrada.', array( 'status' => 404 ) );
+	}
+
+	$values  = papelito_pre_account_application_decrypt_values( $application );
+	$address = is_wp_error( $values ) ? array() : json_decode( (string) $values['address'], true );
+	$evidence = json_decode( (string) ( $application['evidence_json'] ?? '' ), true );
+	$legal_name = papelito_pii_decrypt( (string) ( $application['legal_name_ciphertext'] ?? '' ) );
+
+	return array(
+		'application' => array(
+			'applicationId'      => papelito_pre_account_application_external_id( $application_id ),
+			'companyId'          => null,
+			'attemptNumber'      => 1,
+			'status'             => (string) $application['application_status'],
+			'fileName'           => in_array( (string) $application['application_status'], array( 'document_required', 'pending_manual_review' ), true ) ? ( $application['document_original_name'] ?? null ) : null,
+			'submittedAt'        => $application['document_uploaded_at'] ?? null,
+			'decidedAt'          => $application['decided_at'] ?? null,
+			'canUpload'          => 'document_required' === (string) $application['application_status'] && empty( $application['document_storage_key'] ),
+			'canRestart'         => 'rejected' === (string) $application['application_status'],
+			'documentMime'       => $application['document_mime'] ?? null,
+			'documentSize'       => isset( $application['document_size'] ) ? (int) $application['document_size'] : null,
+			'documentAvailable'  => 'pending_manual_review' === (string) $application['application_status'] && ! empty( $application['document_storage_key'] ),
+			'documentPurgeStatus'=> empty( $application['document_storage_key'] ) && ! empty( $application['document_deleted_at'] ) ? 'deleted' : 'retained',
+			'rejectionReason'    => $application['rejection_reason'] ?? null,
+			'decidedByUserId'    => ! empty( $application['decided_by_user_id'] ) ? (int) $application['decided_by_user_id'] : null,
+		),
+		'person'      => array(
+			'userId'    => null,
+			'fullName'  => is_wp_error( $values ) ? null : $values['name'],
+			'email'     => is_wp_error( $values ) ? null : $values['email'],
+			'cpf'       => is_wp_error( $values ) ? null : $values['cpf'],
+			'birthDate' => is_wp_error( $values ) ? null : $values['birth'],
+			'phone'     => is_wp_error( $values ) ? null : $values['phone'],
+		),
+		'company'     => array(
+			'id'               => null,
+			'cnpj'             => (string) $application['canonical_cnpj'],
+			'legalName'        => is_string( $legal_name ) ? $legal_name : null,
+			'tradeName'        => null,
+			'registryStatus'   => null,
+			'ownershipStatus'  => null,
+			'companyStatus'    => null,
+			'providerSource'   => $application['provider_source'] ?? null,
+			'providerCheckedAt'=> $application['provider_checked_at'] ?? null,
+			'fiscalAddress'    => is_array( $address ) ? $address : array(),
+		),
+		'membership'  => null,
+		'evidence'    => is_array( $evidence ) ? $evidence : array(),
+	);
+}
+
+function papelito_pre_account_application_admin_document( int $application_id ) {
+	$application = papelito_pre_account_application_get( $application_id );
+	if ( ! $application ) {
+		return new WP_Error( 'papelito_pre_account_application_not_found', 'Candidatura não encontrada.', array( 'status' => 404 ) );
+	}
+	if ( 'pending_manual_review' !== (string) $application['application_status'] || empty( $application['document_storage_key'] ) ) {
+		return new WP_Error( 'papelito_pre_account_document_unavailable', 'O documento não está mais disponível.', array( 'status' => 410 ) );
+	}
+
+	$key = (string) $application['document_storage_key'];
+	if ( ! papelito_company_document_key_is_valid( $key ) ) {
+		return new WP_Error( 'papelito_pre_account_document_invalid', 'Documento inválido.', array( 'status' => 500 ) );
+	}
+	$directory = papelito_company_documents_prepare_dir();
+	if ( is_wp_error( $directory ) ) {
+		return $directory;
+	}
+	$path = trailingslashit( $directory ) . $key;
+	if ( ! is_file( $path ) || ! is_readable( $path ) ) {
+		return new WP_Error( 'papelito_pre_account_document_missing', 'Documento não encontrado.', array( 'status' => 410 ) );
+	}
+
+	nocache_headers();
+	header( 'Content-Type: ' . (string) $application['document_mime'] );
+	header( 'Content-Length: ' . (string) filesize( $path ) );
+	header( 'Content-Disposition: inline; filename="' . str_replace( array( '"', "\r", "\n" ), '', (string) $application['document_original_name'] ) . '"' );
+	header( 'X-Content-Type-Options: nosniff' );
+	readfile( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_readfile
+	exit;
 }
 
 /**
@@ -424,11 +619,11 @@ function papelito_pre_account_application_decrypt_values( array $application ): 
 	return $values;
 }
 
-function papelito_pre_account_application_reject( array $application, int $actor_user_id, string $reason ): array {
+function papelito_pre_account_application_reject( array $application, int $actor_user_id, string $reason ): array|WP_Error {
 	global $wpdb;
 	$tables = papelito_company_table_names();
 	$now    = current_time( 'mysql', true );
-	$wpdb->update(
+	$updated = $wpdb->update(
 		$tables['pre_account_applications'],
 		array(
 			'application_status' => 'rejected',
@@ -443,10 +638,35 @@ function papelito_pre_account_application_reject( array $application, int $actor
 			'application_status' => 'pending_manual_review',
 		)
 	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	if ( 1 !== $updated ) {
+		return new WP_Error( 'papelito_pre_account_decision_conflict', 'Esta candidatura não está pendente.', array( 'status' => 409 ) );
+	}
 
 	papelito_pre_account_application_purge_document( (int) $application['id'] );
 
 	return papelito_pre_account_application_view( papelito_pre_account_application_get( (int) $application['id'] ) ?: $application );
+}
+
+function papelito_pre_account_application_send_decision_email( array $application ): void {
+	$status = (string) $application['application_status'];
+	if ( ! in_array( $status, array( 'approved', 'rejected' ), true ) ) {
+		return;
+	}
+
+	$recipient = papelito_pii_decrypt( (string) ( $application['contact_email_ciphertext'] ?? '' ) );
+	if ( ! is_string( $recipient ) || ! is_email( $recipient ) ) {
+		return;
+	}
+
+	if ( 'approved' === $status ) {
+		$subject = 'Cadastro empresarial aprovado - Papelito';
+		$body    = "Seu cadastro empresarial foi aprovado.\n\nSua conta já foi criada. Você já pode entrar e realizar compras na Papelito.";
+	} else {
+		$subject = 'Cadastro empresarial não aprovado - Papelito';
+		$body    = "Não foi possível aprovar seu cadastro empresarial porque encontramos divergências nos dados analisados.\n\nEsta solicitação foi encerrada. Para realizar uma nova tentativa, será necessário iniciar novamente o processo de cadastro empresarial.";
+	}
+
+	wp_mail( $recipient, $subject, $body, array( 'Content-Type: text/plain; charset=UTF-8' ) );
 }
 
 /**
@@ -610,7 +830,17 @@ function papelito_pre_account_application_decide( int $application_id, int $acto
 		return new WP_Error( 'papelito_pre_account_decision_conflict', 'Esta candidatura não está pendente.', array( 'status' => 409 ) );
 	}
 
-	return $approve
+	$result = $approve
 		? papelito_pre_account_application_approve( $application, $actor_user_id )
 		: papelito_pre_account_application_reject( $application, $actor_user_id, $reason );
+	if ( is_wp_error( $result ) ) {
+		return $result;
+	}
+
+	$decided = papelito_pre_account_application_get( $application_id );
+	if ( $decided ) {
+		papelito_pre_account_application_send_decision_email( $decided );
+	}
+
+	return $result;
 }

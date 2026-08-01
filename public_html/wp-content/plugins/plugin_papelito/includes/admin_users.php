@@ -569,16 +569,21 @@ function papelito_admin_users_map_row( array $row ): array {
  * @param array<string, int|string> $filters Filtros.
  * @return array<int, array<string, mixed>>
  */
-function papelito_admin_users_query_rows( array $filters ): array {
+function papelito_admin_users_query_rows( array $filters, ?int $limit = null, ?int $offset = null ): array {
 	global $wpdb;
 
 	$args            = array();
 	$base_sql        = papelito_admin_users_base_sql();
 	$where_sql       = papelito_admin_users_where_sql( $filters, $args );
 	$coverage_exists = papelito_admin_users_coverage_exists_sql();
-	$offset          = ( (int) $filters['page'] - 1 ) * (int) $filters['perPage'];
+	$limit           = null === $limit ? (int) $filters['perPage'] : max( 0, $limit );
+	$offset          = null === $offset ? ( (int) $filters['page'] - 1 ) * (int) $filters['perPage'] : max( 0, $offset );
 
-	$args[] = (int) $filters['perPage'];
+	if ( 0 === $limit ) {
+		return array();
+	}
+
+	$args[] = $limit;
 	$args[] = $offset;
 
 	$select = "
@@ -613,6 +618,73 @@ function papelito_admin_users_query_rows( array $filters ): array {
 		if ( ! empty( $mapped ) ) {
 			$rows[] = $mapped;
 		}
+	}
+
+	return $rows;
+}
+
+/**
+ * Monta linhas de candidaturas que ainda não possuem conta WordPress.
+ *
+ * @param array<string, int|string> $filters Filtros da listagem.
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_admin_users_pending_pre_account_rows( array $filters ): array {
+	if ( 'all' !== $filters['role'] || ! function_exists( 'papelito_pre_account_application_admin_list' ) ) {
+		return array();
+	}
+
+	$search       = trim( (string) $filters['search'] );
+	$applications = papelito_pre_account_application_admin_list( 'pending_manual_review' );
+	$rows         = array();
+
+	foreach ( $applications as $application ) {
+		if ( ! is_array( $application ) ) {
+			continue;
+		}
+
+		$searchable = implode(
+			' ',
+			array(
+				(string) ( $application['fullName'] ?? '' ),
+				(string) ( $application['email'] ?? '' ),
+				(string) ( $application['companyName'] ?? '' ),
+				(string) ( $application['cnpj'] ?? '' ),
+			)
+		);
+		$normalized_search     = preg_replace( '/\D+/', '', $search ) ?: $search;
+		$normalized_searchable = preg_replace( '/\D+/', '', $searchable ) ?: $searchable;
+
+		if (
+			'' !== $search &&
+			false === stripos( $searchable, $search ) &&
+			false === stripos( $normalized_searchable, $normalized_search )
+		) {
+			continue;
+		}
+
+		$application_id = (string) ( $application['applicationId'] ?? '' );
+		if ( ! preg_match( '/^pre:\d+$/', $application_id ) ) {
+			continue;
+		}
+
+		$rows[] = array(
+			'id'                  => $application_id,
+			'recordType'          => 'pre_account_application',
+			'name'                => (string) ( $application['fullName'] ?? '' ),
+			'email'               => (string) ( $application['email'] ?? '' ),
+			'role'                => 'pre_account_application',
+			'roleLabel'           => 'Candidatura pré-conta',
+			'accountStatus'       => 'pending_manual_review',
+			'accountStatusLabel'  => 'Sob análise',
+			'registeredAt'        => (string) ( $application['submittedAt'] ?? $application['createdAt'] ?? '' ),
+			'isVendor'            => false,
+			'ordersCount'         => 0,
+			'purchasesCount'      => 0,
+			'salesCount'          => 0,
+			'favoritesCount'      => 0,
+			'supportTicketsCount' => 0,
+		);
 	}
 
 	return $rows;
@@ -670,8 +742,10 @@ function papelito_admin_users_query_summary( array $filters ): array {
  * @return array<string, mixed>
  */
 function papelito_admin_users_get_snapshot( array $filters ): array {
-	$summary     = papelito_admin_users_query_summary( $filters );
-	$total_rows  = $summary['totalUsers'];
+	$summary          = papelito_admin_users_query_summary( $filters );
+	$pre_account_rows = papelito_admin_users_pending_pre_account_rows( $filters );
+	$pre_account_total = count( $pre_account_rows );
+	$total_rows       = $summary['totalUsers'] + $pre_account_total;
 	$total_pages = max( 1, (int) ceil( $total_rows / max( 1, (int) $filters['perPage'] ) ) );
 	$safe_page   = min( max( 1, (int) $filters['page'] ), $total_pages );
 
@@ -679,8 +753,14 @@ function papelito_admin_users_get_snapshot( array $filters ): array {
 		$filters['page'] = $safe_page;
 	}
 
+	$offset          = ( $safe_page - 1 ) * (int) $filters['perPage'];
+	$pre_account_page = array_slice( $pre_account_rows, $offset, (int) $filters['perPage'] );
+	$remaining        = (int) $filters['perPage'] - count( $pre_account_page );
+	$user_offset      = max( 0, $offset - $pre_account_total );
+	$user_rows        = papelito_admin_users_query_rows( $filters, $remaining, $user_offset );
+
 	return array(
-		'rows'        => papelito_admin_users_query_rows( $filters ),
+		'rows'        => array_merge( $pre_account_page, $user_rows ),
 		'summary'     => $summary,
 		'currentPage' => $safe_page,
 		'perPage'     => (int) $filters['perPage'],

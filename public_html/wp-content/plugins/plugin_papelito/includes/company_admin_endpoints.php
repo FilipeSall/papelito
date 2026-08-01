@@ -136,8 +136,38 @@ add_action( 'rest_api_init', static function (): void {
 		$status = sanitize_key( (string) $request->get_param( 'status' ) ?: 'pending_manual_review' );
 		return new WP_REST_Response( array( 'items' => papelito_pre_account_application_admin_list( $status ) ), 200 );
 	} ) );
+	register_rest_route( 'papelito/v1', '/admin/pre-account-applications/(?P<id>\d+)', array( 'methods' => 'GET', 'permission_callback' => 'papelito_company_admin_require_capability', 'callback' => static function ( WP_REST_Request $request ) {
+		$detail = papelito_pre_account_application_admin_detail( (int) $request['id'] );
+		return is_wp_error( $detail ) ? $detail : new WP_REST_Response( $detail, 200 );
+	} ) );
+	register_rest_route( 'papelito/v1', '/admin/pre-account-applications/(?P<id>\d+)/document', array( 'methods' => 'GET', 'permission_callback' => 'papelito_company_admin_require_capability', 'callback' => static fn( WP_REST_Request $request ) => papelito_pre_account_application_admin_document( (int) $request['id'] ) ) );
 	foreach ( array( 'approve' => true, 'reject' => false ) as $action => $approve ) {
-		register_rest_route( 'papelito/v1', '/admin/pre-account-applications/(?P<id>\\d+)/' . $action, array( 'methods' => 'POST', 'permission_callback' => 'papelito_company_admin_require_capability', 'callback' => static function ( WP_REST_Request $request ) use ( $approve ) { $body = (array) $request->get_json_params(); $result = papelito_pre_account_application_decide( (int) $request['id'], get_current_user_id(), $approve, (string) ( $body['reason'] ?? '' ) ); return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 ); } ) );
+		register_rest_route( 'papelito/v1', '/admin/pre-account-applications/(?P<id>\d+)/' . $action, array( 'methods' => 'POST', 'permission_callback' => 'papelito_company_admin_require_capability', 'callback' => static function ( WP_REST_Request $request ) use ( $approve ) {
+			$actor = get_current_user_id();
+			$key   = sanitize_text_field( (string) $request->get_header( 'Idempotency-Key' ) );
+			if ( '' === $key || strlen( $key ) > 191 ) {
+				return new WP_Error( 'papelito_b2b_idempotency_key_required', 'Informe uma chave de idempotência válida.', array( 'status' => 422 ) );
+			}
+			$body   = (array) $request->get_json_params();
+			$reason = sanitize_textarea_field( (string) ( $body['reason'] ?? '' ) );
+			$operation = $approve ? 'pre_account_application_approve' : 'pre_account_application_reject';
+			$hash = papelito_company_idempotency_request_hash( array( 'application_id' => (int) $request['id'], 'reason' => $reason ) );
+			$previous = papelito_company_idempotency_check( $actor, $operation, $key, $hash );
+			if ( isset( $previous['error'] ) ) {
+				return $previous['error'];
+			}
+			if ( $previous ) {
+				$detail = papelito_pre_account_application_admin_detail( (int) $previous['resource_id'] );
+				return is_wp_error( $detail ) ? $detail : new WP_REST_Response( $detail, (int) $previous['response_code'] );
+			}
+			$result = papelito_pre_account_application_decide( (int) $request['id'], $actor, $approve, $reason );
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+			papelito_company_idempotency_store( $actor, $operation, $key, $hash, (int) $request['id'], 200 );
+			$detail = papelito_pre_account_application_admin_detail( (int) $request['id'] );
+			return is_wp_error( $detail ) ? $detail : new WP_REST_Response( $detail, 200 );
+		} ) );
 	}
 	register_rest_route( 'papelito/v1', '/admin/owner-applications', array( 'methods' => 'GET', 'permission_callback' => 'papelito_company_admin_require_capability', 'callback' => static fn( WP_REST_Request $r ) => new WP_REST_Response( papelito_company_admin_owner_applications_list( $r ), 200 ) ) );
 	register_rest_route( 'papelito/v1', '/admin/owner-applications/(?P<id>\d+)', array( 'methods' => 'GET', 'permission_callback' => 'papelito_company_admin_require_capability', 'callback' => static function ( WP_REST_Request $r ) {
