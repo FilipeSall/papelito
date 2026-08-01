@@ -15,6 +15,12 @@ if ( ! defined( 'PAPELITO_COMPANY_DOCUMENT_PURGE_HOOK' ) ) {
 	define( 'PAPELITO_COMPANY_DOCUMENT_PURGE_HOOK', 'papelito_company_document_purge_retry' );
 }
 
+if ( ! defined( 'PAPELITO_OWNER_APPLICATION_NOT_FOUND_MESSAGE' ) ) {
+	define( 'PAPELITO_OWNER_APPLICATION_NOT_FOUND_MESSAGE', 'Candidatura não encontrada.' );
+}
+
+class PapelitoOwnerApplicationTransactionException extends RuntimeException {}
+
 /**
  * Limita a evidência persistida a indicadores sem PII.
  *
@@ -279,7 +285,7 @@ function papelito_company_owner_application_upload( int $user_id, array $file, s
 	}
 	if ( $previous ) {
 		$replayed = papelito_company_owner_application_get( (int) $previous['resource_id'] );
-		return $replayed ? papelito_company_owner_application_view( $replayed ) : new WP_Error( 'papelito_owner_application_not_found', 'Candidatura não encontrada.', array( 'status' => 404 ) );
+		return $replayed ? papelito_company_owner_application_view( $replayed ) : new WP_Error( 'papelito_owner_application_not_found', PAPELITO_OWNER_APPLICATION_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
 	$stored = papelito_company_document_store( $file, $validated );
@@ -300,7 +306,7 @@ function papelito_company_owner_application_upload( int $user_id, array $file, s
 			ARRAY_A
 		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		if ( ! is_array( $locked ) || 'document_required' !== (string) $locked['application_status'] || empty( $locked['is_open'] ) || ! empty( $locked['document_storage_key'] ) ) {
-			throw new RuntimeException( 'application_not_uploadable' );
+			throw new PapelitoOwnerApplicationTransactionException( 'application_not_uploadable' );
 		}
 
 		$now = current_time( 'mysql', true );
@@ -321,7 +327,7 @@ function papelito_company_owner_application_upload( int $user_id, array $file, s
 			array( 'id' => (int) $locked['id'] )
 		); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		if ( false === $updated ) {
-			throw new RuntimeException( 'application_update_failed' );
+			throw new PapelitoOwnerApplicationTransactionException( 'application_update_failed' );
 		}
 
 		$company_updated = papelito_company_update(
@@ -329,7 +335,7 @@ function papelito_company_owner_application_upload( int $user_id, array $file, s
 			array( 'ownership_status' => 'pending_manual_review', 'company_status' => 'onboarding' )
 		);
 		if ( is_wp_error( $company_updated ) ) {
-			throw new RuntimeException( 'company_update_failed' );
+			throw new PapelitoOwnerApplicationTransactionException( 'company_update_failed' );
 		}
 
 		$wpdb->update(
@@ -356,7 +362,7 @@ function papelito_company_owner_application_upload( int $user_id, array $file, s
 	}
 
 	$updated_application = papelito_company_owner_application_get( (int) $application['id'] );
-	return $updated_application ? papelito_company_owner_application_view( $updated_application ) : new WP_Error( 'papelito_owner_application_not_found', 'Candidatura não encontrada.', array( 'status' => 404 ) );
+	return $updated_application ? papelito_company_owner_application_view( $updated_application ) : new WP_Error( 'papelito_owner_application_not_found', PAPELITO_OWNER_APPLICATION_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 }
 
 function papelito_company_notify_owner_application_pending( int $application_id ): void {
@@ -421,7 +427,7 @@ function papelito_company_owner_application_send_decision_email( array $applicat
 function papelito_company_owner_application_admin_detail( int $application_id ) {
 	$application = papelito_company_owner_application_get( $application_id );
 	if ( ! $application ) {
-		return new WP_Error( 'papelito_owner_application_not_found', 'Candidatura não encontrada.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_owner_application_not_found', PAPELITO_OWNER_APPLICATION_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
 	$company = papelito_company_get( (int) $application['company_id'] );
@@ -486,7 +492,7 @@ function papelito_company_owner_application_admin_detail( int $application_id ) 
  *
  * @return array<string,mixed>|WP_Error
  */
-function papelito_company_owner_application_decide( int $application_id, int $actor_user_id, bool $approve, string $reason = '' ) {
+function papelito_company_owner_application_decide( int $application_id, int $actor_user_id, bool $approve, string $reason = '' ) { // NOSONAR -- sequência explícita mantém o rollback atômico da decisão.
 	$reason = trim( sanitize_textarea_field( $reason ) );
 	if ( ! $approve && '' === $reason ) {
 		return new WP_Error( 'papelito_owner_application_rejection_reason_required', 'Informe o motivo interno da reprovação.', array( 'status' => 422 ) );
@@ -518,7 +524,7 @@ function papelito_company_owner_application_decide( int $application_id, int $ac
 		}
 		$key = (string) ( $application['document_storage_key'] ?? '' );
 		if ( ! papelito_company_document_key_is_valid( $key ) || ! is_file( trailingslashit( $document_directory ) . $key ) ) {
-			throw new RuntimeException( 'document_unavailable' );
+			throw new PapelitoOwnerApplicationTransactionException( 'document_unavailable' );
 		}
 
 		$company = $wpdb->get_row(
@@ -547,7 +553,7 @@ function papelito_company_owner_application_decide( int $application_id, int $ac
 			array( 'id' => $application_id )
 		); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		if ( false === $updated ) {
-			throw new RuntimeException( 'application_update_failed' );
+			throw new PapelitoOwnerApplicationTransactionException( 'application_update_failed' );
 		}
 
 		$company_fields = $approve
@@ -571,7 +577,7 @@ function papelito_company_owner_application_decide( int $application_id, int $ac
 			);
 		$company_updated = papelito_company_update( (int) $application['company_id'], $company_fields );
 		if ( is_wp_error( $company_updated ) ) {
-			throw new RuntimeException( 'company_update_failed' );
+			throw new PapelitoOwnerApplicationTransactionException( 'company_update_failed' );
 		}
 
 		$member = papelito_company_member_upsert(
@@ -598,7 +604,7 @@ function papelito_company_owner_application_decide( int $application_id, int $ac
 				)
 		);
 		if ( is_wp_error( $member ) ) {
-			throw new RuntimeException( 'member_update_failed' );
+			throw new PapelitoOwnerApplicationTransactionException( 'member_update_failed' );
 		}
 
 		if ( $approve ) {
@@ -615,7 +621,7 @@ function papelito_company_owner_application_decide( int $application_id, int $ac
 		$wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 	} catch ( OutOfBoundsException $error ) {
 		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-		return new WP_Error( 'papelito_owner_application_not_found', 'Candidatura não encontrada.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_owner_application_not_found', PAPELITO_OWNER_APPLICATION_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	} catch ( DomainException $error ) {
 		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		return new WP_Error( 'papelito_owner_application_decision_conflict', 'Esta candidatura já foi decidida ou não está mais pendente.', array( 'status' => 409 ) );
@@ -631,7 +637,7 @@ function papelito_company_owner_application_decide( int $application_id, int $ac
 		papelito_company_owner_application_send_decision_email( $decided );
 	}
 
-	return $decided ? papelito_company_owner_application_admin_detail( $application_id ) : new WP_Error( 'papelito_owner_application_not_found', 'Candidatura não encontrada.', array( 'status' => 404 ) );
+	return $decided ? papelito_company_owner_application_admin_detail( $application_id ) : new WP_Error( 'papelito_owner_application_not_found', PAPELITO_OWNER_APPLICATION_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 }
 
 /**
