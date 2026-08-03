@@ -146,33 +146,24 @@ function papelito_pricing_resolve_items( array $items ) {
 		}
 
 		$normal_unit_cents = papelito_pricing_to_cents( $product->get_price( 'edit' ) );
-		$promotion         = null;
-		$context           = (string) ( $item['promotion_context'] ?? '' );
+		$promotion = null;
+		$campaign  = function_exists( 'papelito_flash_sale_get_active_campaign_for_product' )
+			? papelito_flash_sale_get_active_campaign_for_product( (int) $item['product_id'] )
+			: null;
+		$context   = is_array( $campaign ) && function_exists( 'papelito_flash_sale_create_promotion_context' )
+			? papelito_flash_sale_create_promotion_context( $campaign, (int) $item['product_id'] )
+			: '';
 
-		if ( '' !== $context ) {
-			$campaign = function_exists( 'papelito_flash_sale_resolve_promotion_context' )
-				? papelito_flash_sale_resolve_promotion_context( $context, (int) $item['product_id'] )
-				: new WP_Error( 'papelito_promotion_context_invalid', 'A oferta deste item não pôde ser validada.' );
-
-			if ( is_wp_error( $campaign ) ) {
-				$adjustments[] = array(
-					'type'      => 'promotion_removed',
-					'productId' => (int) $item['product_id'],
-					'code'      => $campaign->get_error_code(),
-					'message'   => 'A oferta de ' . $product->get_name() . ' expirou ou foi alterada; o preço normal foi restaurado.',
-				);
-				$context = '';
-			} else {
-				$reference_unit_cents = papelito_pricing_to_cents( $product->get_regular_price( 'edit' ) );
-				if ( $reference_unit_cents <= 0 ) {
-					$reference_unit_cents = $normal_unit_cents;
-				}
-				$discount_percent = min( 99, max( 0, (int) ( $campaign['discountPercent'] ?? 0 ) ) );
-				$promotion        = array(
-					'reference_unit_cents' => $reference_unit_cents,
-					'total_cents'          => ( (int) round( $reference_unit_cents * ( 100 - $discount_percent ) / 100 ) ) * (int) $item['qty'],
-				);
+		if ( is_array( $campaign ) ) {
+			$reference_unit_cents = papelito_pricing_to_cents( $product->get_regular_price( 'edit' ) );
+			if ( $reference_unit_cents <= 0 ) {
+				$reference_unit_cents = $normal_unit_cents;
 			}
+			$discount_percent = min( 99, max( 0, (int) ( $campaign['discountPercent'] ?? 0 ) ) );
+			$promotion        = array(
+				'reference_unit_cents' => $reference_unit_cents,
+				'total_cents'          => ( (int) round( $reference_unit_cents * ( 100 - $discount_percent ) / 100 ) ) * (int) $item['qty'],
+			);
 		}
 
 		$lines[] = array(
@@ -246,6 +237,10 @@ function papelito_pricing_apply_discounts( array $resolved, string $coupon_code,
 			return new WP_Error( 'papelito_coupon_auth_required', 'Faca login para aplicar cupons.', array( 'status' => 401 ) );
 		}
 
+		$coupon_lines = array_filter(
+			$lines,
+			static fn( array $line ): bool => ! is_array( $line['promotion'] ?? null )
+		);
 		$cart_items = array_map(
 			static fn( array $line ): array => array(
 				'product_id' => (int) $line['product_id'],
@@ -259,9 +254,18 @@ function papelito_pricing_apply_discounts( array $resolved, string $coupon_code,
 		if ( is_wp_error( $coupon ) ) {
 			return $coupon;
 		}
+		$eligible_product_ids = array_map(
+			static fn( array $line ): int => (int) $line['product_id'],
+			$coupon_lines
+		);
 		$allocation = papelito_pricing_allocate_discount(
 			$lines,
-			array_map( 'intval', (array) ( $coupon['applied_product_ids'] ?? array() ) ),
+			array_values(
+				array_intersect(
+					array_map( 'intval', (array) ( $coupon['applied_product_ids'] ?? array() ) ),
+					$eligible_product_ids
+				)
+			),
 			papelito_pricing_to_cents( $coupon['discount_value'] ?? 0 )
 		);
 	}
@@ -283,7 +287,7 @@ function papelito_pricing_apply_discounts( array $resolved, string $coupon_code,
 		$line_total    = $coupon_total;
 		$line_discount = $coupon_discount;
 
-		if ( null !== $promotion && (int) $promotion['total_cents'] <= $coupon_total ) {
+		if ( null !== $promotion ) {
 			$source        = 'flash_sale';
 			$line_subtotal = (int) $promotion['reference_unit_cents'] * (int) $line['qty'];
 			$line_total    = (int) $promotion['total_cents'];

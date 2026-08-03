@@ -268,6 +268,24 @@ function papelito_flash_sale_create_promotion_context( ?array $campaign, int $pr
 }
 
 /**
+ * Resolve a campanha ativa para um produto sem confiar no navegador.
+ *
+ * @param int $product_id Produto consultado.
+ * @return array<string,mixed>|null
+ */
+function papelito_flash_sale_get_active_campaign_for_product( int $product_id ): ?array {
+	$campaign = papelito_flash_sale_normalize_campaign( papelito_flash_sale_get_raw_campaign() );
+
+	if ( null === $campaign || 'active' !== ( $campaign['status'] ?? '' ) ) {
+		return null;
+	}
+
+	return in_array( $product_id, papelito_flash_sale_normalize_product_ids( $campaign['productIds'] ?? array() ), true )
+		? $campaign
+		: null;
+}
+
+/**
  * Valida a prova assinada contra a campanha ativa atual.
  *
  * @param string $context Contexto enviado pela linha do carrinho.
@@ -301,13 +319,9 @@ function papelito_flash_sale_resolve_promotion_context( string $context, int $pr
 		return new WP_Error( 'papelito_promotion_context_expired', 'A oferta deste item expirou.', array( 'status' => 409 ) );
 	}
 
-	$campaign = papelito_flash_sale_normalize_campaign( papelito_flash_sale_get_raw_campaign() );
-	if ( null === $campaign || 'active' !== ( $campaign['status'] ?? '' ) ) {
+	$campaign = papelito_flash_sale_get_active_campaign_for_product( $product_id );
+	if ( null === $campaign ) {
 		return new WP_Error( 'papelito_promotion_context_expired', 'A oferta deste item expirou.', array( 'status' => 409 ) );
-	}
-
-	if ( ! in_array( $product_id, papelito_flash_sale_normalize_product_ids( $campaign['productIds'] ?? array() ), true ) ) {
-		return new WP_Error( 'papelito_promotion_context_stale', 'A campanha deste item foi alterada.', array( 'status' => 409 ) );
 	}
 
 	if ( ! hash_equals( papelito_flash_sale_campaign_fingerprint( $campaign ), (string) ( $payload['fp'] ?? '' ) ) ) {

@@ -39,15 +39,17 @@ class WP_Error {
 function is_wp_error( mixed $value ) { return $value instanceof WP_Error; }
 
 class WC_Product {
-	public function get_id() { return 11776; }
-	public function get_name() { return 'Seda Slim King Size'; }
+	private int $id;
+	public function __construct( int $id ) { $this->id = $id; }
+	public function get_id() { return $this->id; }
+	public function get_name() { return 11776 === $this->id ? 'Seda Slim King Size' : 'Piteira Tradicional'; }
 	public function get_status() { return 'publish'; }
-	public function get_price( $context = 'view' ) { return '99.90'; }
-	public function get_regular_price( $context = 'view' ) { return '121.00'; }
+	public function get_price( $context = 'view' ) { return 11776 === $this->id ? '99.90' : '50.00'; }
+	public function get_regular_price( $context = 'view' ) { return 11776 === $this->id ? '121.00' : '50.00'; }
 }
 
 function wc_get_product( mixed $product_id ) {
-	return 11776 === (int) $product_id ? new WC_Product() : false;
+	return in_array( (int) $product_id, array( 11776, 11777 ), true ) ? new WC_Product( (int) $product_id ) : false;
 }
 
 function papelito_shipping_get_vendor( int $vendor_id ) {
@@ -65,17 +67,22 @@ function papelito_order_routing_resolve_shipping( int $vendor_id, string $destin
 	return array( 'price' => 10.36 );
 }
 
-function papelito_flash_sale_resolve_promotion_context( string $context, int $product_id ) {
-	if ( 'valid-promo' === $context && 11776 === $product_id ) {
+function papelito_flash_sale_get_active_campaign_for_product( int $product_id ) {
+	if ( 11776 === $product_id ) {
 		return array( 'discountPercent' => 99 );
 	}
-	return new WP_Error( 'papelito_promotion_context_invalid', 'Oferta invalida.', array( 'status' => 409 ) );
+	return null;
 }
 
 function papelito_coupon_apply_resolve( string $code, array $items, int $user_id ) {
 	$subtotal = 0.0;
+	$eligible_product_ids = array();
 	foreach ( $items as $item ) {
+		if ( 11776 === (int) $item['product_id'] ) {
+			continue;
+		}
 		$subtotal += (float) $item['price'] * (int) $item['qty'];
+		$eligible_product_ids[] = (int) $item['product_id'];
 	}
 	if ( 'TEN' === $code ) $amount = 10;
 	elseif ( 'NINETY9' === $code ) $amount = 99;
@@ -87,7 +94,8 @@ function papelito_coupon_apply_resolve( string $code, array $items, int $user_id
 		'code' => $code,
 		'discount_type' => 'percent',
 		'discount_value' => round( $subtotal * $amount / 100, 2 ),
-		'applied_product_ids' => array( 11776 ),
+		'applied_product_ids' => $eligible_product_ids,
+		'applied' => ! empty( $eligible_product_ids ),
 	);
 }
 
@@ -104,9 +112,9 @@ function papelito_assert_same( string $label, mixed $expected, mixed $actual ): 
 	echo "  FAIL: {$label} -> expected " . var_export( $expected, true ) . ', got ' . var_export( $actual, true ) . "\n";
 }
 
-function papelito_test_item( ?string $context = null, int $qty = 1 ): array {
+function papelito_test_item( ?string $context = null, int $qty = 1, int $product_id = 11776 ): array {
 	return array(
-		'product_id' => 11776,
+		'product_id' => $product_id,
 		'qty' => $qty,
 		'vendor_id' => 101,
 		'vendor_name' => 'Vendor Centro',
@@ -115,34 +123,38 @@ function papelito_test_item( ?string $context = null, int $qty = 1 ): array {
 	);
 }
 
-echo "Scenario 1: campaign context is authoritative and browser price is ignored\n";
-$quote = papelito_pricing_quote( array( papelito_test_item( 'valid-promo' ) ), '', 10, 0 );
+echo "Scenario 1: active campaign is authoritative and browser price is ignored\n";
+$quote = papelito_pricing_quote( array( papelito_test_item() ), '', 10, 0 );
 papelito_assert_same( 'regular campaign reference', 12100, $quote['totals']['subtotalCents'] ?? null );
 papelito_assert_same( '99 percent discount', 11979, $quote['totals']['discountCents'] ?? null );
 papelito_assert_same( 'campaign total R$ 1.21', 121, $quote['totals']['totalCents'] ?? null );
 papelito_assert_same( 'campaign source', 'flash_sale', $quote['lines'][0]['discountSource'] ?? null );
 
-echo "Scenario 2: catalog item has normal Woo price and invalid tokens are removed\n";
-$catalog = papelito_pricing_quote( array( papelito_test_item() ), '', 10, 0 );
+echo "Scenario 2: active campaign does not depend on browser context\n";
 $invalid = papelito_pricing_quote( array( papelito_test_item( 'tampered' ) ), '', 10, 0 );
-papelito_assert_same( 'catalog total', 9990, $catalog['totals']['totalCents'] ?? null );
-papelito_assert_same( 'invalid promotion reverts to normal', 9990, $invalid['totals']['totalCents'] ?? null );
-papelito_assert_same( 'invalid context adjustment', 'promotion_removed', $invalid['adjustments'][0]['type'] ?? null );
+papelito_assert_same( 'tampered context still receives active campaign', 121, $invalid['totals']['totalCents'] ?? null );
+papelito_assert_same( 'active campaign source', 'flash_sale', $invalid['lines'][0]['discountSource'] ?? null );
 
-echo "Scenario 3: campaign and coupon choose the lower line total without stacking\n";
-$ten = papelito_pricing_quote( array( papelito_test_item( 'valid-promo' ) ), 'TEN', 10, 0 );
-$ninety_nine = papelito_pricing_quote( array( papelito_test_item( 'valid-promo' ) ), 'NINETY9', 10, 0 );
+echo "Scenario 3: campaign wins over a more advantageous coupon\n";
+$ten = papelito_pricing_quote( array( papelito_test_item() ), 'TEN', 10, 0 );
+$ninety_nine = papelito_pricing_quote( array( papelito_test_item() ), 'NINETY9', 10, 0 );
 papelito_assert_same( '10 percent coupon does not stack', 121, $ten['totals']['totalCents'] ?? null );
 papelito_assert_same( 'coupon reports no additional discount', false, $ten['coupon']['applied'] ?? null );
-papelito_assert_same( '99 percent coupon wins with R$ 1.00', 100, $ninety_nine['totals']['totalCents'] ?? null );
-papelito_assert_same( 'winning coupon source', 'coupon', $ninety_nine['lines'][0]['discountSource'] ?? null );
-papelito_assert_same( 'effective coupon discount', 9890, $ninety_nine['coupon']['discountValueCents'] ?? null );
+papelito_assert_same( '99 percent coupon cannot replace campaign', 121, $ninety_nine['totals']['totalCents'] ?? null );
+papelito_assert_same( 'campaign source still wins', 'flash_sale', $ninety_nine['lines'][0]['discountSource'] ?? null );
+papelito_assert_same( 'campaign line receives no coupon discount', 0, $ninety_nine['coupon']['discountValueCents'] ?? null );
 
-echo "Scenario 4: invalid coupons remain validation errors\n";
+echo "Scenario 4: coupon is fully allocated to non-campaign lines\n";
+$mixed = papelito_pricing_quote( array( papelito_test_item(), papelito_test_item( null, 1, 11777 ) ), 'NINETY9', 10, 0 );
+papelito_assert_same( 'campaign line remains at campaign price', 121, $mixed['lines'][0]['totalCents'] ?? null );
+papelito_assert_same( 'coupon line receives full coupon', 50, $mixed['lines'][1]['totalCents'] ?? null );
+papelito_assert_same( 'coupon discount excludes campaign line', 4950, $mixed['coupon']['discountValueCents'] ?? null );
+
+echo "Scenario 5: invalid coupons remain validation errors\n";
 $expired = papelito_pricing_quote( array( papelito_test_item() ), 'EXPIRED', 10, 0 );
 papelito_assert_same( 'expired coupon error', 'papelito_coupon_expired', $expired->get_error_code() );
 
-echo "Scenario 5: payment minimums and installment floor are enforced\n";
+echo "Scenario 6: payment minimums and installment floor are enforced\n";
 $card_too_small = papelito_pricing_validate_payment_amount( 'credit_card', 99, 1 );
 $pix_minimum = papelito_pricing_validate_payment_amount( 'pix', 1, 1 );
 $installment_too_small = papelito_pricing_validate_payment_amount( 'credit_card', 121, 2 );
@@ -152,9 +164,9 @@ papelito_assert_same( 'Pix R$0.01 accepted', true, $pix_minimum );
 papelito_assert_same( 'installment below R$1 rejected', 'papelito_checkout_installment_below_minimum', $installment_too_small->get_error_code() );
 papelito_assert_same( 'more than six installments rejected', 'papelito_checkout_installments_exceeded', $installments_exceeded->get_error_code() );
 
-echo "Scenario 6: selected shipping is recalculated instead of accepting browser cents\n";
+echo "Scenario 7: selected shipping is recalculated instead of accepting browser cents\n";
 $with_shipping = papelito_pricing_quote(
-	array( papelito_test_item( 'valid-promo' ) ),
+	array( papelito_test_item() ),
 	'',
 	10,
 	999999,
@@ -163,13 +175,13 @@ $with_shipping = papelito_pricing_quote(
 papelito_assert_same( 'authoritative shipping', 1036, $with_shipping['totals']['shippingCents'] ?? null );
 papelito_assert_same( 'authoritative total with shipping', 1157, $with_shipping['totals']['totalCents'] ?? null );
 
-echo "Scenario 7: abusive pricing payloads are rejected\n";
+echo "Scenario 8: abusive pricing payloads are rejected\n";
 $too_many_items = papelito_pricing_normalize_items( array_fill( 0, 121, papelito_test_item() ) );
 $duplicate_items = papelito_pricing_normalize_items( array( papelito_test_item(), papelito_test_item() ) );
 papelito_assert_same( 'more than 120 items rejected', 'papelito_checkout_too_many_items', $too_many_items->get_error_code() );
 papelito_assert_same( 'duplicate product rejected', 'papelito_checkout_duplicate_item', $duplicate_items->get_error_code() );
 
-echo "Scenario 8: public pricing rate limit fails closed\n";
+echo "Scenario 9: public pricing rate limit fails closed\n";
 $papelito_test_rate_limit_allowed = false;
 $rate_limited = papelito_pricing_check_rate_limit();
 papelito_assert_same( 'rate limit error', 'papelito_rate_limited', $rate_limited->get_error_code() );

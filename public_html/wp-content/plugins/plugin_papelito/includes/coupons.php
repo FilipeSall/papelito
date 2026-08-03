@@ -380,6 +380,7 @@ function papelito_coupon_apply_resolve( string $code, array $cart_items, int $us
 	$qualifying_product_ids = array();
 	$qualifying_subtotal    = 0.0;
 	$valid_cart_items       = 0;
+	$campaign_items         = 0;
 
 	foreach ( $cart_items as $item ) {
 		if ( ! is_array( $item ) ) {
@@ -396,6 +397,13 @@ function papelito_coupon_apply_resolve( string $code, array $cart_items, int $us
 		}
 
 		++$valid_cart_items;
+
+		$is_flash_sale_product = function_exists( 'papelito_flash_sale_get_active_campaign_for_product' )
+			&& is_array( papelito_flash_sale_get_active_campaign_for_product( $product_id ) );
+		if ( $is_flash_sale_product ) {
+			++$campaign_items;
+			continue;
+		}
 
 		if ( ! empty( $vendor_filter ) && ! in_array( $vendor_id, $vendor_filter, true ) ) {
 			return new WP_Error(
@@ -417,7 +425,27 @@ function papelito_coupon_apply_resolve( string $code, array $cart_items, int $us
 		$qualifying_subtotal     += $price * $qty;
 	}
 
-	if ( 0 === $valid_cart_items || empty( $qualifying_product_ids ) ) {
+	if ( 0 === $valid_cart_items ) {
+		return new WP_Error(
+			'papelito_coupon_no_eligible_items',
+			'Nenhum item do seu carrinho é elegível para este cupom.',
+			array( 'status' => 422 )
+		);
+	}
+
+	if ( empty( $qualifying_product_ids ) && $campaign_items > 0 ) {
+		return array(
+			'ok'                  => true,
+			'code'                => $code,
+			'discount_type'       => (string) $coupon->get_discount_type(),
+			'discount_value'      => 0.0,
+			'applied_product_ids' => array(),
+			'applied'             => false,
+			'message'             => 'A oferta relâmpago prevalece sobre este cupom.',
+		);
+	}
+
+	if ( empty( $qualifying_product_ids ) ) {
 		return new WP_Error(
 			'papelito_coupon_no_eligible_items',
 			'Nenhum item do seu carrinho é elegível para este cupom.',
