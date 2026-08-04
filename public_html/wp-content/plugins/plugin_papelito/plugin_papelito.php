@@ -9,11 +9,14 @@
 
 defined( 'ABSPATH' ) || exit;
 
+const PAPELITO_DIGITS_REGEX = '/\\D+/';
+
 require_once __DIR__ . '/includes/support.php';
 require_once __DIR__ . '/includes/private_files.php';
-require_once(plugin_dir_path(__FILE__) . 'includes/user_registration.php');
-require_once(plugin_dir_path(__FILE__) . 'includes/products_filter.php');
+require_once plugin_dir_path( __FILE__ ) . 'includes/user_registration.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/products_filter.php';
 require_once __DIR__ . '/includes/rest_api.php';
+require_once __DIR__ . '/includes/frontend_links.php';
 require_once __DIR__ . '/includes/auth_endpoints.php';
 require_once __DIR__ . '/includes/catalog_search.php';
 require_once __DIR__ . '/includes/revendedor_application.php';
@@ -23,6 +26,8 @@ require_once __DIR__ . '/includes/catalog-pdf.php';
 require_once __DIR__ . '/includes/flash_sale.php';
 require_once __DIR__ . '/includes/home_assets.php';
 require_once __DIR__ . '/includes/media_uploads.php';
+require_once __DIR__ . '/includes/image_validation.php';
+require_once __DIR__ . '/includes/direct_uploads.php';
 require_once __DIR__ . '/includes/admin_reports.php';
 require_once __DIR__ . '/includes/admin_users.php';
 require_once __DIR__ . '/includes/shipping.php';
@@ -68,6 +73,7 @@ require_once __DIR__ . '/includes/company_access_request_services.php';
 require_once __DIR__ . '/includes/company_endpoints.php';
 require_once __DIR__ . '/includes/company_admin_endpoints.php';
 require_once __DIR__ . '/includes/company_management_endpoints.php';
+require_once __DIR__ . '/includes/billing_email_sync.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
@@ -348,7 +354,7 @@ function vendor_profile_fields( WP_User $user ): void
 {
     if (in_array('seller', $user->roles)) {
         display_seller_CEP_form($user);
-    } else if (in_array('customer', $user->roles)) {
+    } elseif (in_array('customer', $user->roles)) {
         add_user_meta_fields($user);
     }
 }
@@ -406,15 +412,14 @@ function add_user_meta_fields( WP_User $user ): void
             <td>
                 <select name="state" id="state">
                     <?php foreach ( papelito_brazilian_states() as $value => $text ) : ?>
-                        <?php if (empty($value))
-                            continue; ?>
+                        <?php if ( empty( $value ) ) { continue; } ?>
                         <option value="<?php echo esc_attr($value); ?>" <?php selected($value, $state); ?>><?php echo esc_html($text); ?></option>
                     <?php endforeach; ?>
                 </select>
             </td>
         </tr>
         <tr>
-            <th><label for="city">
+            <th><label for="seller_city">
                     <?php esc_html_e('Cidade', 'text-domain'); ?>
                 </label></th>
             <td><input type="text" name="city" id="city" value="<?php echo esc_attr($city); ?>" class="regular-text" />
@@ -453,42 +458,41 @@ function display_seller_CEP_form( WP_User $user ): void
 
     <table class="form-table">
         <tr>
-            <th><label for="store_name">
+            <th><label for="seller_store_name">
                     <?php esc_html_e('Nome da loja', 'vendor-profile-fields'); ?>
                 </label></th>
-            <td><input type="text" name="store_name" id="store_name" value="<?php echo esc_attr($store_name); ?>"
+            <td><input type="text" name="store_name" id="seller_store_name" value="<?php echo esc_attr($store_name); ?>"
                     class="regular-text" /></td>
         </tr>
         <tr>
-            <th><label for="phone_number">
+            <th><label for="seller_phone_number">
                     <?php esc_html_e('Telefone', 'vendor-profile-fields'); ?>
                 </label></th>
-            <td><input type="text" name="phone_number" id="phone_number" value="<?php echo esc_attr($phone_number); ?>"
+            <td><input type="text" name="phone_number" id="seller_phone_number" value="<?php echo esc_attr($phone_number); ?>"
                     class="regular-text" /></td>
         </tr>
         <tr>
-            <th><label for="cnpj">
+            <th><label for="seller_cnpj">
                     <?php esc_html_e('CNPJ', 'vendor-profile-fields'); ?>
                 </label></th>
-            <td><input type="text" name="cnpj" id="cnpj" value="<?php echo esc_attr($cnpj); ?>"
+            <td><input type="text" name="cnpj" id="seller_cnpj" value="<?php echo esc_attr($cnpj); ?>"
                     class="regular-text" /></td>
         </tr>
         <tr>
-            <th><label for="instagram">
+            <th><label for="seller_instagram">
                     <?php esc_html_e('Instagram', 'vendor-profile-fields'); ?>
                 </label></th>
-            <td><input type="text" name="instagram" id="instagram" value="<?php echo esc_attr($instagram); ?>"
+            <td><input type="text" name="instagram" id="seller_instagram" value="<?php echo esc_attr($instagram); ?>"
                     class="regular-text" /></td>
         </tr>
         <tr>
-            <th><label for="state">
+            <th><label for="seller_state">
                     <?php esc_html_e('Estado', 'vendor-profile-fields'); ?>
                 </label></th>
             <td>
-                <select name="state" id="state">
+                <select name="state" id="seller_state">
                     <?php foreach ( papelito_brazilian_states() as $value => $text ) : ?>
-                        <?php if (empty($value))
-                            continue; ?>
+                        <?php if ( empty( $value ) ) { continue; } ?>
                         <option value="<?php echo esc_attr($value); ?>" <?php selected($value, $state); ?>><?php echo esc_html($text); ?></option>
                     <?php endforeach; ?>
                 </select>
@@ -498,14 +502,14 @@ function display_seller_CEP_form( WP_User $user ): void
             <th><label for="city">
                     <?php esc_html_e('Cidade', 'vendor-profile-fields'); ?>
                 </label></th>
-            <td><input type="text" name="city" id="city" value="<?php echo esc_attr($city); ?>"
+            <td><input type="text" name="city" id="seller_city" value="<?php echo esc_attr($city); ?>"
                     class="regular-text" /></td>
         </tr>
         <tr>
-            <th><label for="cep">
+            <th><label for="seller_cep">
                     <?php esc_html_e('CEP da loja', 'vendor-profile-fields'); ?>
                 </label></th>
-            <td><input type="text" name="cep" id="cep" value="<?php echo esc_attr($cep); ?>"
+            <td><input type="text" name="cep" id="seller_cep" value="<?php echo esc_attr($cep); ?>"
                     class="regular-text" /></td>
         </tr>
         <tr>
@@ -530,9 +534,11 @@ function display_seller_CEP_form( WP_User $user ): void
                 <?php if ($min_cep && is_array($min_cep) && $max_cep && is_array($max_cep)): ?>
                     <?php for ($i = 0; $i < $count; $i++): ?>
                         <div>
-                            <input placeholder="CEP mínimo" type="text" name="vendor_min_ceps[]"
+                            <label class="screen-reader-text" for="vendor_min_<?= esc_attr( $i ); ?>">CEP mínimo</label>
+                            <input id="vendor_min_<?= esc_attr( $i ); ?>" placeholder="CEP mínimo" type="text" name="vendor_min_ceps[]"
                                 value="<?php echo esc_attr($min_cep[$i]); ?>" class="regular-text" />
-                            <input placeholder="CEP máximo" type="text" name="vendor_max_ceps[]"
+                            <label class="screen-reader-text" for="vendor_max_<?= esc_attr( $i ); ?>">CEP máximo</label>
+                            <input id="vendor_max_<?= esc_attr( $i ); ?>" placeholder="CEP máximo" type="text" name="vendor_max_ceps[]"
                                 value="<?php echo esc_attr($max_cep[$i]); ?>" class="regular-text" />
                             <?php if ($i > 0): ?>
                                 <button type="button" class="button remove-cep">
@@ -544,8 +550,10 @@ function display_seller_CEP_form( WP_User $user ): void
                     <?php endfor; ?>
                 <?php else: ?>
                     <div>
-                        <input placeholder="CEP mínimo" type="text" name="vendor_min_ceps[]" class="regular-text" />
-                        <input placeholder="CEP máximo" type="text" name="vendor_max_ceps[]" class="regular-text" />
+                        <label class="screen-reader-text" for="vendor_min_new">CEP mínimo</label>
+                        <input id="vendor_min_new" placeholder="CEP mínimo" type="text" name="vendor_min_ceps[]" class="regular-text" />
+                        <label class="screen-reader-text" for="vendor_max_new">CEP máximo</label>
+                        <input id="vendor_max_new" placeholder="CEP máximo" type="text" name="vendor_max_ceps[]" class="regular-text" />
                         <br />
                     </div>
                 <?php endif; ?>
@@ -588,42 +596,57 @@ function save_vendor_profile_fields( int $user_id ): void
     }
 
     if ( in_array( 'seller', $user->roles, true ) ) {
-        if ( isset( $_POST['discovery_channel'] ) ) {
-            update_user_meta( $user_id, 'discovery_channel', papelito_posted_value( 'discovery_channel' ) );
-        }
+        papelito_save_seller_profile_fields( $user_id );
+    }
+}
 
-        if ( isset( $_POST['has_sold_papelito'] ) ) {
-            update_user_meta( $user_id, 'has_sold_papelito', papelito_posted_value( 'has_sold_papelito' ) );
-        }
-
-        if ( isset( $_POST['vendor_min_ceps'], $_POST['vendor_max_ceps'] ) ) {
-            delete_user_meta($user_id, "min_cep");
-            delete_user_meta($user_id, "max_cep");
-
-            $min_ceps = array_map(
-                static function ( $value ) {
-                    return preg_replace( '/\D+/', '', sanitize_text_field( wp_unslash( $value ) ) );
-                },
-                (array) wp_unslash( $_POST['vendor_min_ceps'] )
-            );
-            $max_ceps = array_map(
-                static function ( $value ) {
-                    return preg_replace( '/\D+/', '', sanitize_text_field( wp_unslash( $value ) ) );
-                },
-                (array) wp_unslash( $_POST['vendor_max_ceps'] )
-            );
-            $count = min( count( $min_ceps ), count( $max_ceps ) );
-
-            for ($i = 0; $i < $count; $i++) {
-                if ( '' === $min_ceps[ $i ] || '' === $max_ceps[ $i ] ) {
-                    continue;
-                }
-
-                add_user_meta($user_id, 'min_cep', $min_ceps[$i], false);
-                add_user_meta($user_id, 'max_cep', $max_ceps[$i], false);
-            }
+function papelito_save_seller_profile_fields( int $user_id ): void {
+    foreach ( array( 'discovery_channel', 'has_sold_papelito' ) as $meta_key ) {
+        if ( isset( $_POST[ $meta_key ] ) ) {
+            update_user_meta( $user_id, $meta_key, papelito_posted_value( $meta_key ) );
         }
     }
+
+    if ( isset( $_POST['vendor_min_ceps'], $_POST['vendor_max_ceps'] ) ) {
+        papelito_save_seller_cep_ranges( $user_id );
+    }
+}
+
+function papelito_save_seller_cep_ranges( int $user_id ): void {
+    delete_user_meta( $user_id, 'min_cep' );
+    delete_user_meta( $user_id, 'max_cep' );
+
+    $min_ceps = array_map( 'papelito_sanitize_cep_digits', (array) wp_unslash( $_POST['vendor_min_ceps'] ) );
+    $max_ceps = array_map( 'papelito_sanitize_cep_digits', (array) wp_unslash( $_POST['vendor_max_ceps'] ) );
+
+    $count = min( count( $min_ceps ), count( $max_ceps ) );
+    for ( $index = 0; $index < $count; $index++ ) {
+        if ( '' === $min_ceps[ $index ] || '' === $max_ceps[ $index ] ) {
+            continue;
+        }
+
+        add_user_meta( $user_id, 'min_cep', $min_ceps[ $index ], false );
+        add_user_meta( $user_id, 'max_cep', $max_ceps[ $index ], false );
+    }
+}
+
+/**
+ * Reduz um CEP postado a digitos.
+ *
+ * Aceita `mixed` de proposito: o valor vem de `$_POST['vendor_min_ceps'][]`, e um payload com
+ * `vendor_min_ceps[0][]=x` entrega array. Com typehint `string` isso vira TypeError fatal no
+ * salvamento do perfil; aqui degrada para string vazia, que o chamador ja sabe descartar.
+ * O `wp_unslash()` fica so no chamador — aplicar de novo aqui desfaz barra a mais.
+ *
+ * @param mixed $value Valor cru do POST.
+ * @return string Apenas digitos.
+ */
+function papelito_sanitize_cep_digits( $value ): string {
+    if ( ! is_scalar( $value ) ) {
+        return '';
+    }
+
+    return (string) preg_replace( PAPELITO_DIGITS_REGEX, '', sanitize_text_field( (string) $value ) );
 }
 add_action('personal_options_update', 'save_vendor_profile_fields');
 add_action('edit_user_profile_update', 'save_vendor_profile_fields');

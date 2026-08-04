@@ -20,6 +20,12 @@ if ( ! defined( 'ABSPATH' ) ) {
  * 'shown' (reivindicado uma unica vez, para sempre).
  */
 const PAPELITO_WELCOME_TOAST_META = 'papelito_welcome_toast_status';
+const PAPELITO_AUTH_API_NAMESPACE = 'papelito/v1';
+const PAPELITO_AUTH_INVALID_EMAIL_MESSAGE = 'E-mail inválido.';
+const PAPELITO_AUTH_NEW_USER_LOOKUP_MESSAGE = 'Falha ao carregar usuário recém-criado.';
+const PAPELITO_AUTH_ONBOARDING_RESUME_MESSAGE = 'Retome seu onboarding B2B para continuar.';
+const PAPELITO_AUTH_RATE_LIMIT_MESSAGE = 'Muitas tentativas. Tente novamente em alguns instantes.';
+const PAPELITO_AUTH_INVALID_VERIFICATION_MESSAGE = 'Link de confirmação inválido ou expirado.';
 
 add_filter(
 	'graphql_jwt_auth_expire',
@@ -195,11 +201,11 @@ function papelito_auth_build_identity_response( WP_User $user ): array {
 function papelito_auth_complete_b2b_onboarding( int $user_id ) {
 	$user = get_userdata( $user_id );
 	if ( ! $user instanceof WP_User ) {
-		return new WP_Error( 'onboarding_required', 'Retome seu onboarding B2B para continuar.', array( 'status' => 409, 'onboardingRequired' => true ) );
+		return new WP_Error( 'onboarding_required', PAPELITO_AUTH_ONBOARDING_RESUME_MESSAGE, array( 'status' => 409, 'onboardingRequired' => true ) );
 	}
 	$onboarding = papelito_company_onboarding_get( $user_id );
 	if ( null === $onboarding || ( ! empty( $onboarding['expires_at'] ) && strtotime( (string) $onboarding['expires_at'] ) < time() ) ) {
-		return new WP_Error( 'onboarding_required', 'Retome seu onboarding B2B para continuar.', array( 'status' => 409, 'onboardingRequired' => true ) );
+		return new WP_Error( 'onboarding_required', PAPELITO_AUTH_ONBOARDING_RESUME_MESSAGE, array( 'status' => 409, 'onboardingRequired' => true ) );
 	}
 	if ( 'completed' === (string) $onboarding['status'] ) {
 		return array( 'status' => 'completed', 'idempotent' => true );
@@ -211,7 +217,7 @@ function papelito_auth_complete_b2b_onboarding( int $user_id ) {
 		$cpf     = $profile ? papelito_customer_profile_get_cpf( $user_id ) : null;
 		$birth   = $profile && ! empty( $profile['birth_date_ciphertext'] ) ? papelito_pii_decrypt( (string) $profile['birth_date_ciphertext'] ) : null;
 		if ( ! is_string( $cpf ) || ! is_string( $birth ) ) {
-			return new WP_Error( 'onboarding_required', 'Retome seu onboarding B2B para continuar.', array( 'status' => 409, 'onboardingRequired' => true ) );
+			return new WP_Error( 'onboarding_required', PAPELITO_AUTH_ONBOARDING_RESUME_MESSAGE, array( 'status' => 409, 'onboardingRequired' => true ) );
 		}
 		$address = array();
 		foreach ( array( 'cep', 'street', 'number', 'complement', 'neighborhood', 'city', 'state' ) as $field ) {
@@ -281,6 +287,17 @@ function papelito_auth_mark_email_verified( int $user_id ): void {
 	delete_user_meta( $user_id, 'papelito_email_verification_token_hash' );
 	delete_user_meta( $user_id, 'papelito_email_verification_token_expires_at' );
 	delete_user_meta( $user_id, 'papelito_post_email_verification_path' );
+
+	/**
+	 * Disparado sempre que o e-mail principal passa a valer como verificado.
+	 *
+	 * Centraliza os quatro caminhos que marcam verificado (login Google, /auth/verify-email,
+	 * ativacao manual pelo admin e redefinicao de senha) num unico ponto de extensao, para que o
+	 * e-mail de faturamento igual ao principal seja confirmado sem pedir nada ao usuario.
+	 *
+	 * @param int $user_id Usuario verificado.
+	 */
+	do_action( 'papelito_email_verified', $user_id );
 }
 
 /**
@@ -417,21 +434,20 @@ function papelito_auth_prepare_email_verification_token( int $user_id ) {
 /**
  * Resolve a base publica do frontend usada em links de e-mail.
  *
+ * Mantida para os chamadores que montam link informativo dentro de um e-mail ja em voo e nao tem
+ * como abortar o envio. Em ambiente remoto sem configuracao devolve string vazia (link relativo,
+ * degradado e logado) em vez de `localhost`.
+ *
  * @return string
  */
 function papelito_auth_get_frontend_url(): string {
-	$frontend_url = defined( 'PAPELITO_FRONTEND_URL' ) ? (string) PAPELITO_FRONTEND_URL : '';
+	$base = papelito_frontend_base_url();
 
-	if ( '' === $frontend_url && defined( 'PAPELITO_ALLOWED_ORIGINS' ) ) {
-		$origins      = array_filter( array_map( 'trim', explode( ',', (string) PAPELITO_ALLOWED_ORIGINS ) ) );
-		$frontend_url = isset( $origins[0] ) ? (string) $origins[0] : '';
+	if ( '' === $base ) {
+		error_log( 'papelito: PAPELITO_FRONTEND_URL/PAPELITO_ALLOWED_ORIGINS ausentes; links de e-mail sairao relativos.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 	}
 
-	if ( '' === $frontend_url ) {
-		$frontend_url = 'http://localhost:3000';
-	}
-
-	return rtrim( $frontend_url, '/' );
+	return $base;
 }
 
 /**
@@ -442,12 +458,11 @@ function papelito_auth_get_frontend_url(): string {
  * @return string
  */
 function papelito_auth_build_email_verification_link( string $email, string $token ): string {
-	return sprintf(
-		'%s/confirmar-email?email=%s&token=%s',
-		papelito_auth_get_frontend_url(),
-		rawurlencode( $email ),
-		rawurlencode( $token )
+	$link = papelito_frontend_link(
+		sprintf( 'confirmar-email?email=%s&token=%s', rawurlencode( $email ), rawurlencode( $token ) )
 	);
+
+	return is_wp_error( $link ) ? '' : (string) $link;
 }
 
 /**
@@ -465,7 +480,12 @@ function papelito_auth_send_verification_email( WP_User $user, string $token ): 
 		return false;
 	}
 
-	$link       = papelito_auth_build_email_verification_link( $recipient, $token );
+	$link = papelito_auth_build_email_verification_link( $recipient, $token );
+
+	if ( '' === $link ) {
+		return false;
+	}
+
 	$return_path = (string) get_user_meta( $user->ID, 'papelito_post_email_verification_path', true );
 	if ( '/convite' === $return_path ) {
 		$link .= '&callbackUrl=' . rawurlencode( $return_path );
@@ -524,12 +544,11 @@ function papelito_auth_dispatch_verification_email( WP_User $user ) {
  * @return string
  */
 function papelito_auth_build_password_reset_link( string $login, string $key ): string {
-	return sprintf(
-		'%s/redefinir-senha?login=%s&key=%s',
-		papelito_auth_get_frontend_url(),
-		rawurlencode( $login ),
-		rawurlencode( $key )
+	$link = papelito_frontend_link(
+		sprintf( 'redefinir-senha?login=%s&key=%s', rawurlencode( $login ), rawurlencode( $key ) )
 	);
+
+	return is_wp_error( $link ) ? '' : (string) $link;
 }
 
 /**
@@ -547,7 +566,12 @@ function papelito_auth_send_password_reset_email( WP_User $user, string $key ): 
 		return false;
 	}
 
-	$link       = papelito_auth_build_password_reset_link( $user->user_login, $key );
+	$link = papelito_auth_build_password_reset_link( $user->user_login, $key );
+
+	if ( '' === $link ) {
+		return false;
+	}
+
 	$subject    = 'Redefina sua senha - Papelito';
 	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
 	$body_lines = array(
@@ -665,18 +689,9 @@ add_filter(
  * @return bool true se permitido, false se bloqueado.
  */
 function papelito_auth_rate_limit( string $bucket, int $max = 20, int $window = 60 ): bool {
-	$ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown';
-	$key = 'papelito_auth_rl_' . $bucket . '_' . md5( $ip );
+	$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown';
 
-	$count = (int) get_transient( $key );
-
-	if ( $count >= $max ) {
-		return false;
-	}
-
-	set_transient( $key, $count + 1, $window );
-
-	return true;
+	return papelito_rate_limit( 'auth_' . $bucket, 'ip:' . $ip, $max, $window );
 }
 
 /**
@@ -739,7 +754,7 @@ function papelito_auth_verify_google_id_token( string $id_token ) {
  * @return WP_User|WP_Error
  */
 function papelito_auth_find_or_create_google_user( array $payload ) {
-	$email = sanitize_email( (string) $payload['email'] );
+	$email = papelito_normalize_email( (string) $payload['email'] );
 
 	if ( '' === $email ) {
 		return new WP_Error( 'papelito_invalid_email', 'E-mail inválido.', array( 'status' => 400 ) );
@@ -764,7 +779,14 @@ function papelito_auth_find_or_create_google_user( array $payload ) {
 			update_user_meta( $user->ID, 'google_sub', sanitize_text_field( (string) $payload['sub'] ) );
 		}
 
-		papelito_auth_mark_email_verified( $user->ID );
+		// O gate de `papelito_auth_verify_google_id_token()` ja garantiu email_verified=true no
+		// provedor; aqui confirmamos que o endereco persistido e o mesmo que o OAuth devolveu antes
+		// de herdar a verificacao para a conta.
+		if ( papelito_emails_match( (string) $user->user_email, $email ) ) {
+			update_user_meta( $user->ID, 'papelito_email_verification_method', 'google' );
+			papelito_auth_mark_email_verified( $user->ID );
+		}
+
 		if ( '1' !== (string) get_user_meta( $user->ID, 'papelito_profile_complete', true ) && null === papelito_company_onboarding_get( $user->ID ) ) {
 			papelito_b2b_mark_cohort( $user->ID );
 			papelito_company_onboarding_mark_google( $user->ID );

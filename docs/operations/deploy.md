@@ -16,14 +16,54 @@ Deploy manual: GitHub → Actions → **Deploy** → *Run workflow* → escolher
 
 Em produção:
 
+```php
+// wp-config.php, acima do "That's all". Precisa das DUAS formas:
+putenv( 'PAPELITO_FRONTEND_URL=https://marketplace.papelito.com' );
+putenv( 'PAPELITO_ALLOWED_ORIGINS=https://marketplace.papelito.com,https://papelito-web.vercel.app' );
+define( 'PAPELITO_FRONTEND_URL', papelito_env( 'PAPELITO_FRONTEND_URL', '' ) );
+define( 'PAPELITO_ALLOWED_ORIGINS', papelito_env( 'PAPELITO_ALLOWED_ORIGINS', '' ) );
 ```
-PAPELITO_FRONTEND_URL=https://marketplace.papelito.com
-PAPELITO_ALLOWED_ORIGINS=...,https://marketplace.papelito.com
+
+```
 # na Vercel, no ambiente de produção:
 NEXTAUTH_URL=https://marketplace.papelito.com
+
+# APP_URL é OPCIONAL. Só crie se Preview e Production precisarem de domínios diferentes,
+# e então com escopo separado (não "All Environments"):
+#   Production = https://marketplace.papelito.com
+#   Preview    = https://papelito-web.vercel.app
+# Sem ela, o Next usa o domínio que a Vercel injeta e, por último, NEXTAUTH_URL.
+```
+
+> **`define()` sozinho não bastava.** Alguns módulos liam a base por `papelito_env()`, que consulta **apenas `getenv()`** e nunca vê a constante. Onde o valor existia só como `define()`, o e-mail de faturamento saía com `http://localhost:3000`. Hoje `papelito_frontend_base_url()` (`frontend_links.php`) lê as duas formas e é a única fonte, mas manter `putenv()` **e** `define()` continua sendo o mais seguro — outras variáveis (`PAPELITO_B2B_*`, diretórios privados) ainda dependem só de `getenv()`.
+
+Diagnóstico rápido no servidor, antes de mexer em qualquer coisa:
+
+```bash
+wp eval 'var_dump( defined("PAPELITO_FRONTEND_URL") ? PAPELITO_FRONTEND_URL : null, getenv("PAPELITO_FRONTEND_URL"), papelito_frontend_base_url() );'
 ```
 
 Durante a transição, `https://papelito-web.vercel.app` pode continuar na allowlist de CORS e acessível como fallback. **Nunca** use esse domínio em `PAPELITO_FRONTEND_URL` nem em `NEXTAUTH_URL`: **sessões de login não são compartilhadas entre os domínios** — o usuário que logar em um não estará logado no outro.
+
+O que o domínio de Preview **pode** fazer é servir de base de link de e-mail: o Next manda a própria `APP_URL` no header `X-Papelito-Frontend-Base` e o WordPress aceita **só se o valor estiver em `PAPELITO_ALLOWED_ORIGINS`**. Por isso `papelito-web.vercel.app` precisa estar na allowlist, e por isso a allowlist é **exata, sem curinga** — `*.vercel.app` permitiria a um terceiro forjar o header e fazer o WordPress mandar link de phishing. Consequência aceita: deploy de branch com URL dinâmica não está na allowlist e cai para `PAPELITO_FRONTEND_URL`; definir `APP_URL=https://papelito-web.vercel.app` no escopo Preview faz todo preview emitir link para o alias estável.
+
+`localhost` é rejeitado como base de link fora de `WP_ENVIRONMENT_TYPE` `local`/`development`, **mesmo estando na allowlist** (ele fica lá por causa do CORS).
+
+## Backfill do e-mail de faturamento
+
+Empresas antigas ficaram com `billing_email_verified_at IS NULL` mesmo quando o `billing_email` é o próprio e-mail de login já verificado. Isso as bloqueia com `billing_email_unverified`.
+
+```bash
+# 1. diagnóstico — não grava nada
+wp papelito billing-email backfill
+
+# 2. só depois de revisar as contagens
+wp papelito billing-email backfill --execute
+```
+
+O relatório traz `scanned`, `matched` (elegíveis), `confirmed`, `email_differs`, `account_pending`, `no_owner` e uma amostra de IDs. É idempotente: rodar de novo não confirma nada a mais.
+
+**Endereço diferente do e-mail verificado do owner nunca é alterado** — nem aqui, nem no fluxo. `account_pending` e `no_owner` também ficam intocados; são casos que precisam de decisão humana.
 
 ## Rollback
 

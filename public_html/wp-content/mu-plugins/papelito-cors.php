@@ -25,7 +25,7 @@ if ( ! function_exists( 'papelito_cors_send_headers' ) ) {
 			header( 'Access-Control-Allow-Origin: ' . $origin );
 			header( 'Vary: Origin', false );
 			header( 'Access-Control-Allow-Credentials: true' );
-			header( 'Access-Control-Allow-Headers: Authorization, Content-Type, X-WP-Nonce' );
+			header( 'Access-Control-Allow-Headers: Authorization, Content-Type, X-Papelito-Upload-Ticket, X-WP-Nonce' );
 			header( 'Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS' );
 			header( 'Access-Control-Max-Age: 600' );
 		}

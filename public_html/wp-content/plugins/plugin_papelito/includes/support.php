@@ -46,6 +46,93 @@ function papelito_brazilian_states(): array {
 }
 
 /**
+ * Normaliza um e-mail para persistencia e comparacao.
+ *
+ * Unica forma canonica do projeto: quem comparar dois enderecos precisa passar os dois por aqui.
+ * `sanitize_email` sozinho preserva a caixa, entao `Fiscal@Empresa.com` e `fiscal@empresa.com`
+ * eram gravados e comparados como enderecos diferentes.
+ *
+ * Nao altera a parte local alem da caixa: remover ponto ou sufixo `+tag` associaria contas
+ * distintas ao mesmo endereco.
+ *
+ * @param string $email E-mail cru.
+ * @return string E-mail normalizado, ou string vazia quando invalido.
+ */
+function papelito_normalize_email( string $email ): string {
+	return strtolower( sanitize_email( trim( $email ) ) );
+}
+
+/**
+ * Compara dois e-mails pela forma normalizada.
+ *
+ * Endereco vazio nunca casa com nada — evita que dois campos nulos sejam considerados iguais.
+ *
+ * @param string $left  Primeiro e-mail.
+ * @param string $right Segundo e-mail.
+ * @return bool
+ */
+function papelito_emails_match( string $left, string $right ): bool {
+	$normalized_left  = papelito_normalize_email( $left );
+	$normalized_right = papelito_normalize_email( $right );
+
+	if ( '' === $normalized_left || '' === $normalized_right ) {
+		return false;
+	}
+
+	return hash_equals( $normalized_left, $normalized_right );
+}
+
+/**
+ * Contador de tentativas por identidade, em janela deslizante de transient.
+ *
+ * A identidade e parametro de proposito. Chavear por `REMOTE_ADDR` so funciona quando quem chama e
+ * o navegador; endpoint consumido pelo proxy Next ve o IP do servidor de frontend e passa a
+ * compartilhar um unico balde entre todos os usuarios — o 21o upload do marketplace inteiro tomava
+ * 429. Mesmo raciocinio ja aplicado em `papelito_shipping_rate_limit()`.
+ *
+ * @param string $bucket   Nome do balde (um por endpoint).
+ * @param string $identity Identidade ja resolvida pelo chamador (`user:12`, `company:3`, `ip:...`).
+ * @param int    $max      Tentativas permitidas na janela.
+ * @param int    $window   Janela em segundos.
+ * @return bool `false` quando a cota acabou.
+ */
+function papelito_rate_limit( string $bucket, string $identity, int $max, int $window ): bool {
+	$key   = 'papelito_rl_' . $bucket . '_' . md5( $identity );
+	$count = (int) get_transient( $key );
+
+	if ( $count >= $max ) {
+		return false;
+	}
+
+	set_transient( $key, $count + 1, $window );
+
+	return true;
+}
+
+/**
+ * Identidade de rate limit para uma requisicao REST.
+ *
+ * Prefere o usuario autenticado, porque e o unico identificador que sobrevive ao proxy. Cai para o
+ * IP apenas quando nao ha sessao — ai o IP e mesmo o do chamador.
+ *
+ * @param string $fallback_scope Sufixo do escopo anonimo, quando o chamador tem um melhor que IP.
+ * @return string
+ */
+function papelito_rate_limit_identity( string $fallback_scope = '' ): string {
+	$user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+
+	if ( $user_id > 0 ) {
+		return 'user:' . $user_id;
+	}
+
+	if ( '' !== $fallback_scope ) {
+		return $fallback_scope;
+	}
+
+	return 'ip:' . ( isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown' );
+}
+
+/**
  * Cria uma excecao adequada para mutations GraphQL sem depender do typehint.
  *
  * Evita diagnostico de tipo indefinido quando o WPGraphQL nao esta indexado

@@ -7,6 +7,12 @@
 
 defined( 'ABSPATH' ) || exit;
 
+const PAPELITO_NOTIFICATION_API_NAMESPACE = 'papelito/v1';
+const PAPELITO_NOTIFICATION_EMAIL_HEADER = 'Content-Type: text/plain; charset=UTF-8';
+const PAPELITO_NOTIFICATION_PROMO_LABEL = 'Promoção';
+const PAPELITO_NOTIFICATION_GREETING_FORMAT = 'Ola %s,';
+const PAPELITO_NOTIFICATION_SIGNATURE = 'Time Papelito';
+
 if ( ! defined( 'PAPELITO_NOTIFICATIONS_TABLE' ) ) {
 	define( 'PAPELITO_NOTIFICATIONS_TABLE', 'papelito_notifications' );
 }
@@ -271,7 +277,7 @@ function papelito_send_manual_shipment_email( WC_Order $order, string $type, str
 		'Código de rastreamento: ' . $tracking_code,
 		'Acompanhe nos Correios: ' . $url,
 	) );
-	wp_mail( $recipient, $subject, $body, array( 'Content-Type: text/plain; charset=UTF-8' ) );
+	wp_mail( $recipient, $subject, $body, array( PAPELITO_NOTIFICATION_EMAIL_HEADER ) );
 }
 add_action( 'papelito_manual_shipment_notified', 'papelito_send_manual_shipment_email', 10, 4 );
 
@@ -494,7 +500,7 @@ function papelito_notification_discount_percent( $regular_price, $sale_price ) {
  */
 function papelito_notification_product_url( array $payload ) {
 	$product_id   = absint( $payload['product_id'] ?? 0 );
-	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : 'http://localhost:3000';
+	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : '';
 
 	if ( $product_id <= 0 ) {
 		return rtrim( $frontend_url, '/' ) . '/produtos';
@@ -536,7 +542,7 @@ function papelito_normalize_favorite_promo_event( $product_id, array $context ) 
 	}
 
 	$promo_type = sanitize_key( (string) ( $context['promo_type'] ?? $context['promoType'] ?? 'promo' ) );
-	$promo_label = sanitize_text_field( (string) ( $context['promo_label'] ?? $context['promoLabel'] ?? 'Promoção' ) );
+	$promo_label = sanitize_text_field( (string) ( $context['promo_label'] ?? $context['promoLabel'] ?? PAPELITO_NOTIFICATION_PROMO_LABEL ) );
 	$regular_price = papelito_notification_promo_number( $context['regular_price'] ?? $context['regularPrice'] ?? null );
 	$sale_price = papelito_notification_promo_number( $context['sale_price'] ?? $context['salePrice'] ?? null );
 	$discount_percent = isset( $context['discount_percent'] ) || isset( $context['discountPercent'] )
@@ -561,7 +567,7 @@ function papelito_normalize_favorite_promo_event( $product_id, array $context ) 
 		papelito_notification_product_payload( $product_id ),
 		array(
 			'promo_type'  => '' !== $promo_type ? $promo_type : 'promo',
-			'promo_label' => '' !== $promo_label ? $promo_label : 'Promoção',
+			'promo_label' => '' !== $promo_label ? $promo_label : PAPELITO_NOTIFICATION_PROMO_LABEL,
 		)
 	);
 
@@ -652,15 +658,15 @@ function papelito_orders_send_new_purchase_email( WP_User $vendor, $order ): boo
 	$store_name   = (string) get_user_meta( $vendor->ID, 'store_name', true );
 	$greeting     = '' !== $store_name ? $store_name : $vendor->display_name;
 	$order_number = (string) $order->get_order_number();
-	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : 'http://localhost:3000';
+	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : '';
 	$order_link   = sprintf( '%s/vendor/pedidos/%d', $frontend_url, (int) $order->get_id() );
 	$total        = function_exists( 'wc_price' ) ? wp_strip_all_tags( wc_price( $order->get_total() ) ) : (string) $order->get_total();
 	$created_at   = $order->get_date_created() ? wp_date( 'd/m/Y H:i', $order->get_date_created()->getTimestamp() ) : '';
 
 	$subject    = sprintf( 'Nova compra na sua loja - Papelito #%s', $order_number );
-	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
+	$headers    = array( PAPELITO_NOTIFICATION_EMAIL_HEADER );
 	$body_lines = array(
-		sprintf( 'Ola %s,', '' !== $greeting ? $greeting : $recipient ),
+		sprintf( PAPELITO_NOTIFICATION_GREETING_FORMAT, '' !== $greeting ? $greeting : $recipient ),
 		'',
 		'Você recebeu uma nova compra na Papelito.',
 		'',
@@ -679,7 +685,7 @@ function papelito_orders_send_new_purchase_email( WP_User $vendor, $order ): boo
 			'Separe o pedido e prepare o envio. Acesse o detalhe abaixo:',
 			$order_link,
 			'',
-			'Time Papelito',
+			PAPELITO_NOTIFICATION_SIGNATURE,
 		)
 	);
 
@@ -870,7 +876,7 @@ function papelito_send_vendor_pending_registration_email( WP_User $user, array $
 
 	$store_name = (string) get_user_meta( $user->ID, 'store_name', true );
 	$greeting   = '' !== $store_name ? $store_name : $user->display_name;
-	$frontend   = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : 'http://localhost:3000';
+	$frontend   = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : '';
 	$vendor_url = $frontend . '/vendor/dashboard';
 
 	$body_lines = array(

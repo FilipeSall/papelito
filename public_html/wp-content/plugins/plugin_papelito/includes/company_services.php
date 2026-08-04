@@ -353,7 +353,11 @@ function papelito_company_create_owner_candidate( int $user_id, array $input ): 
 			if ( is_wp_error( $updated_user ) ) { throw new RuntimeException( $updated_user->get_error_code() ); }
 		}
 		$existing = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tables['companies']} WHERE cnpj = %s FOR UPDATE", papelito_normalize_cnpj( (string) $input['cnpj'] ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
-		$email_verified_at = 'verified' === (string) get_user_meta( $user_id, 'papelito_email_verification_status', true ) ? (string) get_user_meta( $user_id, 'papelito_email_verified_at', true ) : null;
+		// O e-mail de faturamento nasce igual ao da conta, entao herda a verificacao dela. Exigir a
+		// meta com valor 'verified' marcava conta legada (meta ausente) como nao confirmada e
+		// bloqueava a compra por `billing_email_unverified`.
+		$email_verified_at = papelito_billing_email_account_is_verified( $user_id ) ? papelito_billing_email_account_verified_at( $user_id ) : null;
+		$billing_email     = papelito_normalize_email( (string) $user->user_email );
 		if ( is_array( $existing ) ) {
 			$latest = $wpdb->get_row(
 				$wpdb->prepare(
@@ -367,7 +371,7 @@ function papelito_company_create_owner_candidate( int $user_id, array $input ): 
 			}
 			$company_id = (int) $existing['id'];
 		} else {
-			$company_id = papelito_company_create( (string) $input['cnpj'], array( 'legal_name' => (string) ( $lookup['legal_name'] ?? '' ), 'trade_name' => (string) ( $lookup['trade_name'] ?? '' ), 'billing_email' => $user->user_email, 'billing_email_verified_at' => $email_verified_at, 'phone' => (string) ( $input['phone'] ?? get_user_meta( $user_id, 'phone_number', true ) ), 'registry_status' => (string) $lookup['status'], 'ownership_status' => $ownership_status, 'company_status' => $company_status, 'owner_user_id' => $auto_approved ? $user_id : null, 'created_by_user_id' => $user_id ) );
+			$company_id = papelito_company_create( (string) $input['cnpj'], array( 'legal_name' => (string) ( $lookup['legal_name'] ?? '' ), 'trade_name' => (string) ( $lookup['trade_name'] ?? '' ), 'billing_email' => $billing_email, 'billing_email_verified_at' => $email_verified_at, 'phone' => (string) ( $input['phone'] ?? get_user_meta( $user_id, 'phone_number', true ) ), 'registry_status' => (string) $lookup['status'], 'ownership_status' => $ownership_status, 'company_status' => $company_status, 'owner_user_id' => $auto_approved ? $user_id : null, 'created_by_user_id' => $user_id ) );
 			if ( is_wp_error( $company_id ) ) { throw new RuntimeException( $company_id->get_error_code() ); }
 		}
 		$member = papelito_company_member_upsert(
@@ -389,7 +393,7 @@ function papelito_company_create_owner_candidate( int $user_id, array $input ): 
 		$company_fields = array(
 			'legal_name'                     => (string) ( $lookup['legal_name'] ?? '' ),
 			'trade_name'                     => (string) ( $lookup['trade_name'] ?? '' ),
-			'billing_email'                  => $user->user_email,
+			'billing_email'                  => $billing_email,
 			'billing_email_verified_at'      => $email_verified_at,
 			'phone'                          => (string) ( $input['phone'] ?? get_user_meta( $user_id, 'phone_number', true ) ),
 			'registry_status'                => (string) $lookup['status'],

@@ -19,8 +19,9 @@ define( 'ABSPATH', __DIR__ );
 define( 'DAY_IN_SECONDS', 86400 );
 define( 'HOUR_IN_SECONDS', 3600 );
 define( 'ARRAY_A', 'ARRAY_A' );
+define( 'PAPELITO_TEST_MYSQL_DATETIME_FORMAT', 'Y-m-d H:i:s' );
 
-class WP_Error {
+class WP_Error { // NOSONAR - mock precisa preservar o nome da classe global do WordPress.
 	private string $code;
 	private mixed $data;
 	public function __construct( string $code = '', string $m = '', mixed $d = null ) { $this->code = $code; $this->data = $d; }
@@ -32,23 +33,36 @@ function is_wp_error( mixed $v ) { return $v instanceof WP_Error; }
 /* -------- WP function stubs -------- */
 function sanitize_email( string $v ) { return trim( strtolower( $v ) ); }
 function is_email( string $v ) { return (bool) filter_var( $v, FILTER_VALIDATE_EMAIL ); }
+/** @param mixed $v @return mixed */
 function sanitize_text_field( $v ) { return is_string( $v ) ? trim( $v ) : $v; }
+/** @param mixed $v */
 function sanitize_key( $v ) { return strtolower( (string) $v ); }
+/** @param mixed $v */
 function wp_json_encode( $v ) { return json_encode( $v ); }
-function current_time( string $type, $gmt = 0 ) { global $papelito_now; return gmdate( 'Y-m-d H:i:s', $papelito_now ); }
-function wp_mail( $to, $subject, $body ) { return true; }
+function current_time( string $type, bool $gmt = false ) { global $papelito_now; return gmdate( PAPELITO_TEST_MYSQL_DATETIME_FORMAT, $papelito_now ); }
+function wp_mail( string $to, string $subject, string $body ) { global $papelito_mail; $papelito_mail[] = array( 'to' => $to, 'subject' => $subject, 'body' => $body ); return true; }
 function get_userdata( int $id ) { global $papelito_users; return $papelito_users[ $id ] ?? false; }
-function papelito_env( string $k, $d = null ) { return $d; }
+function wp_parse_url( string $url, int $component = -1 ) { return parse_url( $url, $component ); }
+function wp_get_environment_type() { return 'production'; }
+/** @param mixed $d @return mixed */
+function papelito_env( string $k, $d = null ) {
+	// O link do convite passa pelo mesmo resolvedor do e-mail de faturamento; sem uma base
+	// configurada aqui o envio seria abortado de proposito.
+	return 'PAPELITO_FRONTEND_URL' === $k ? 'https://marketplace.papelito.com' : $d;
+}
+
+$papelito_mail = array();
 
 $papelito_meta = array();
 function get_user_meta( int $u, string $k, bool $s = false ) { global $papelito_meta; return $papelito_meta[ "{$u}:{$k}" ] ?? ''; }
+/** @param mixed $v */
 function update_user_meta( int $u, string $k, $v ) { global $papelito_meta; $papelito_meta[ "{$u}:{$k}" ] = $v; return true; }
 function delete_user_meta( int $u, string $k ) { global $papelito_meta; unset( $papelito_meta[ "{$u}:{$k}" ] ); return true; }
 
-class WP_User {
-	public int $ID;
-	public string $user_email;
-	public string $display_name = 'Test';
+class WP_User { // NOSONAR - mock precisa preservar o nome da classe global do WordPress.
+	public int $ID; // NOSONAR - propriedade compatível com WP_User.
+	public string $user_email; // NOSONAR - propriedade compatível com WP_User.
+	public string $display_name = 'Test'; // NOSONAR - propriedade compatível com WP_User.
 	public function __construct( int $id, string $email ) { $this->ID = $id; $this->user_email = $email; }
 }
 
@@ -56,19 +70,20 @@ class WP_User {
 $papelito_now = 1_700_000_000;
 
 /* -------- in-memory $wpdb fake -------- */
-class Fake_WPDB {
+class FakeWpdb {
 	public string $prefix = 'wp_';
-	public string $last_error = '';
-	public int $insert_id = 0;
+	public string $last_error = ''; // NOSONAR - propriedade compatível com $wpdb.
+	public int $insert_id = 0; // NOSONAR - propriedade compatível com $wpdb.
 	public array $t = array(); // table => rows[]
 	private int $auto = 0;
 
 	public function get_charset_collate() { return ''; }
 
-	public function prepare( $query, ...$args ) {
+	/** @param mixed ...$args */
+	public function prepare( string $query, ...$args ) {
 		if ( 1 === count( $args ) && is_array( $args[0] ) ) { $args = $args[0]; }
 		$i = 0;
-		return preg_replace_callback( '/%[dsf]/', function ( $m ) use ( &$i, $args ) {
+		return preg_replace_callback( '/%[dsf]/', function ( array $m ) use ( &$i, $args ) {
 			$v = $args[ $i++ ] ?? '';
 			return ( '%d' === $m[0] ) ? (string) (int) $v : "'" . addslashes( (string) $v ) . "'";
 		}, $query );
@@ -77,14 +92,16 @@ class Fake_WPDB {
 		if ( preg_match( '/\bwp_([a-z_]+)\b/', $q, $m ) ) { return 'wp_' . $m[1]; }
 		return '';
 	}
-	public function insert( $table, $data ) {
+	/** @param array<string,mixed> $data */
+	public function insert( string $table, array $data ) {
 		$this->t[ $table ] ??= array();
 		$data['id'] = ++$this->auto;
 		$this->t[ $table ][] = $data;
 		$this->insert_id = $data['id'];
 		return 1;
 	}
-	public function update( $table, $data, $where ) {
+	/** @param array<string,mixed> $data @param array<string,mixed> $where */
+	public function update( string $table, array $data, array $where ) {
 		if ( ! isset( $this->t[ $table ] ) ) { return 0; }
 		$n = 0;
 		foreach ( $this->t[ $table ] as &$row ) {
@@ -95,30 +112,38 @@ class Fake_WPDB {
 		unset( $row );
 		return $n;
 	}
-	public function get_row( $query, $output = null ) {
+	/** @param mixed $output */
+	public function get_row( string $query, $output = null ) {
 		$table = $this->table_of( $query );
 		foreach ( ( $this->t[ $table ] ?? array() ) as $row ) {
 			if ( $this->where_matches( $query, $row ) ) { return $row; }
 		}
 		return null;
 	}
-	public function query( $query ) {
+	public function query( string $query ) {
 		if ( preg_match( '/^\s*(START TRANSACTION|COMMIT|ROLLBACK)/i', $query ) ) { return true; }
 		$table = $this->table_of( $query );
 		if ( '' === $table ) { return 0; }
 		$set_part = preg_match( '/\bSET\b(.*?)\bWHERE\b/is', $query, $sm ) ? $sm[1] : '';
+		return $this->update_matching_rows( $table, $query, $set_part );
+	}
+	private function update_matching_rows( string $table, string $query, string $set_part ): int {
 		if ( ! isset( $this->t[ $table ] ) ) { return 0; }
 		$n = 0;
 		foreach ( $this->t[ $table ] as &$row ) {
 			if ( ! $this->where_matches( $query, $row ) ) { continue; }
-			if ( preg_match_all( "/(\w+)\s*=\s*'([^']*)'/", $set_part, $sets, PREG_SET_ORDER ) ) {
-				foreach ( $sets as $s ) { $row[ $s[1] ] = $s[2]; }
-			}
-			if ( preg_match( '/resend_count\s*=\s*resend_count\s*\+\s*1/', $query ) ) { $row['resend_count'] = ( (int) ( $row['resend_count'] ?? 0 ) ) + 1; }
+			$this->apply_update( $row, $query, $set_part );
 			$n++;
 		}
 		unset( $row );
 		return $n;
+	}
+	/** @param array<string,mixed> $row */
+	private function apply_update( array &$row, string $query, string $set_part ): void {
+		if ( preg_match_all( "/(\w+)\s*=\s*'([^']*)'/", $set_part, $sets, PREG_SET_ORDER ) ) {
+			foreach ( $sets as $set ) { $row[ $set[1] ] = $set[2]; }
+		}
+		if ( preg_match( '/resend_count\s*=\s*resend_count\s*\+\s*1/', $query ) ) { $row['resend_count'] = ( (int) ( $row['resend_count'] ?? 0 ) ) + 1; }
 	}
 	/*
 	 * Matches only the WHERE clause of a (prepared) query against a row. Supports equality on
@@ -138,19 +163,19 @@ class Fake_WPDB {
 				if ( array_key_exists( $nm[1], $row ) && (string) (int) $row[ $nm[1] ] !== $nm[2] ) { return false; }
 			}
 		}
-		if ( preg_match( "/(\w+)\s*<\s*'([^']*)'/", $where, $lt ) ) {
-			if ( array_key_exists( $lt[1], $row ) && ! ( (string) $row[ $lt[1] ] < $lt[2] ) ) { return false; }
+		if ( preg_match( "/(\w+)\s*<\s*'([^']*)'/", $where, $lt ) && array_key_exists( $lt[1], $row ) && (string) $row[ $lt[1] ] >= $lt[2] ) {
+			return false;
 		}
 		return true;
 	}
 }
 
-$wpdb = new Fake_WPDB();
+$wpdb = new FakeWpdb();
 $papelito_users = array();
 
 /* -------- includes under test -------- */
-require __DIR__ . '/../includes/cnpj_validation.php';
-require __DIR__ . '/../includes/customer_identity.php';
+require_once __DIR__ . '/../includes/cnpj_validation.php';
+require_once __DIR__ . '/../includes/customer_identity.php';
 
 /* customer_identity uses papelito_env for keys — provide via override */
 $papelito_test_env = array(
@@ -164,17 +189,18 @@ $papelito_test_env = array(
 // a wrapper: override get_key by defining PAPELITO_* env through $_ENV consulted by papelito_env?
 // papelito_env here returns $d (null). We instead stub the two functions the invitation flow uses:
 
-require __DIR__ . '/../includes/company_schema.php';
-require __DIR__ . '/../includes/company_repository.php';
-require __DIR__ . '/../includes/company_active_context.php';
-require __DIR__ . '/../includes/company_authz.php';
+require_once __DIR__ . '/../includes/company_schema.php';
+require_once __DIR__ . '/../includes/company_repository.php';
+require_once __DIR__ . '/../includes/company_active_context.php';
+require_once __DIR__ . '/../includes/company_authz.php';
 
 /* company_services provides papelito_company_context / audit? audit is in company_services. Stub audit + context minimally. */
 function papelito_company_audit( int $c, ?int $a, string $action, array $p = array() ): void {}
 function papelito_company_context( int $user_id ): array { return array( 'user' => $user_id ); }
 
-require __DIR__ . '/../includes/company_invitation_services.php';
-require __DIR__ . '/../includes/company_access_request_services.php';
+require_once __DIR__ . '/../includes/frontend_links.php';
+require_once __DIR__ . '/../includes/company_invitation_services.php';
+require_once __DIR__ . '/../includes/company_access_request_services.php';
 
 /* -------- CPF crypto needs real keys: override the getter used by hmac/encrypt -------- */
 /* customer_identity.papelito_pii_get_key() calls papelito_env(); our papelito_env returns null.
@@ -223,7 +249,7 @@ ok( 'reused token fails', is_wp_error( $reuse ) );
 $inv2   = papelito_company_invitation_issue( 1, $company_id, array( 'invited_email' => 'late@acme.com', 'invited_role' => 'viewer' ) );
 $papelito_users[4] = new WP_User( 4, 'late@acme.com' );
 foreach ( $wpdb->t['wp_papelito_company_invitations'] as &$__row ) {
-	if ( (int) $__row['id'] === (int) $inv2['id'] ) { $__row['expires_at'] = gmdate( 'Y-m-d H:i:s', time() - DAY_IN_SECONDS ); }
+	if ( (int) $__row['id'] === (int) $inv2['id'] ) { $__row['expires_at'] = gmdate( PAPELITO_TEST_MYSQL_DATETIME_FORMAT, time() - DAY_IN_SECONDS ); }
 }
 unset( $__row );
 $expired = papelito_company_invitation_accept_token( 4, $inv2['token'] );
@@ -257,19 +283,26 @@ $pending = papelito_company_member_get( $company_id, 9 );
 ok( 'access-request created pending membership', $pending && $pending['member_status'] === 'pending_company_approval' && $pending['membership_origin'] === 'access_request' );
 
 /* ---- resubmit policy: reject then cooldown blocks, then limit (repo uses real time()) ---- */
-papelito_company_member_upsert( $company_id, 9, array( 'member_status' => 'rejected', 'rejected_reason' => 'nope', 'request_count' => 1, 'last_request_at' => gmdate( 'Y-m-d H:i:s', time() ) ) );
+papelito_company_member_upsert( $company_id, 9, array( 'member_status' => 'rejected', 'rejected_reason' => 'nope', 'request_count' => 1, 'last_request_at' => gmdate( PAPELITO_TEST_MYSQL_DATETIME_FORMAT, time() ) ) );
 $cool = papelito_company_access_request_submit( 9, $existing_company_cnpj );
 ok( 'resubmit within cooldown blocked', is_wp_error( $cool ) && $cool->get_error_code() === 'papelito_b2b_access_request_cooldown' );
 
 /* move last_request_at into the past (beyond cooldown) → allowed */
-papelito_company_member_upsert( $company_id, 9, array( 'last_request_at' => gmdate( 'Y-m-d H:i:s', time() - 25 * HOUR_IN_SECONDS ) ) );
+papelito_company_member_upsert( $company_id, 9, array( 'last_request_at' => gmdate( PAPELITO_TEST_MYSQL_DATETIME_FORMAT, time() - 25 * HOUR_IN_SECONDS ) ) );
 $after = papelito_company_access_request_submit( 9, $existing_company_cnpj );
 ok( 'resubmit after cooldown allowed', is_array( $after ) );
 
 /* push to the attempt limit */
-papelito_company_member_upsert( $company_id, 9, array( 'member_status' => 'rejected', 'request_count' => 3, 'last_request_at' => gmdate( 'Y-m-d H:i:s', time() - 100 * HOUR_IN_SECONDS ) ) );
+papelito_company_member_upsert( $company_id, 9, array( 'member_status' => 'rejected', 'request_count' => 3, 'last_request_at' => gmdate( PAPELITO_TEST_MYSQL_DATETIME_FORMAT, time() - 100 * HOUR_IN_SECONDS ) ) );
 $limit = papelito_company_access_request_submit( 9, $existing_company_cnpj );
 ok( 'resubmit beyond attempt limit blocked', is_wp_error( $limit ) && $limit->get_error_code() === 'papelito_b2b_access_request_limit' );
+
+/* o link do convite usa o dominio do ambiente, nunca localhost */
+$invitation_mails = array_values( array_filter( $papelito_mail, static fn( array $mail ): bool => str_contains( (string) $mail['subject'], 'Convite' ) ) );
+ok( 'invitation email sent', ! empty( $invitation_mails ) );
+$invitation_body = (string) ( $invitation_mails[0]['body'] ?? '' );
+ok( 'invitation link uses the environment domain', str_contains( $invitation_body, 'https://marketplace.papelito.com/convite/' ) );
+ok( 'invitation link never uses localhost', ! str_contains( $invitation_body, 'localhost' ) );
 
 if ( $failures > 0 ) { echo "RESULT: {$failures} assertion(s) FAILED\n"; exit( 1 ); }
 echo "RESULT: all assertions passed\n";

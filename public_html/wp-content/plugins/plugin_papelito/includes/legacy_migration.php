@@ -352,8 +352,11 @@ function papelito_legacy_send_campaign_to_user( int $user_id, string $campaign, 
 		return false;
 	}
 
-	$base = rtrim( (string) papelito_env( 'PAPELITO_FRONTEND_URL', 'http://localhost:3000' ), '/' );
-	$link = $base . '/perfil/empresa';
+	$link = papelito_frontend_link( 'perfil/empresa' );
+	if ( is_wp_error( $link ) ) {
+		papelito_legacy_email_log_upsert( $user_id, $campaign, array( 'status' => 'failed', 'attempts' => (int) ( $existing['attempts'] ?? 0 ) + 1, 'last_error_code' => 'frontend_url_unresolved', 'campaign_version' => $version ) );
+		return false;
+	}
 	$subject = 'Atualize seu cadastro empresarial na Papelito';
 	$body = "A Papelito passará a operar somente com contas empresariais.\n\nAcesse sua conta para cadastrar uma empresa ou solicitar acesso a uma empresa existente:\n{$link}\n\nNenhum CPF ou CNPJ é enviado neste link.";
 	$sent = wp_mail( $user->user_email, $subject, $body, array( 'Content-Type: text/plain; charset=UTF-8' ) );

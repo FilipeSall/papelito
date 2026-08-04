@@ -288,8 +288,12 @@ function papelito_company_invitation_decline_token( int $user_id, string $token 
  * Best-effort: falha de e-mail não derruba a criação do convite (o token já foi persistido).
  */
 function papelito_company_invitation_send_email( int $company_id, string $email, string $token ): void {
-	$base = rtrim( (string) papelito_env( 'PAPELITO_FRONTEND_URL', 'http://localhost:3000' ), '/' );
-	$link = $base . '/convite/' . rawurlencode( $token );
+	$link = papelito_frontend_link( 'convite/' . rawurlencode( $token ) );
+
+	if ( is_wp_error( $link ) ) {
+		error_log( 'papelito: convite nao enviado, URL do frontend nao configurada.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		return;
+	}
 
 	$company = papelito_company_get( $company_id );
 	$name    = $company ? (string) ( ! empty( $company['trade_name'] ) ? $company['trade_name'] : $company['legal_name'] ) : 'sua empresa';

@@ -4,7 +4,7 @@
 
 **Não existe harness PHPUnit no `plugin_papelito`.** Não há `phpunit.xml`, nem `require-dev`, nem `bin/install-wp-tests.sh`, nem PSR-4 de teste. Quem procurar por isso não vai achar.
 
-O que existe: **52 scripts PHP standalone** em `public_html/wp-content/plugins/plugin_papelito/tests/`, mais um na raiz do repositório (`tests/test-company-purchase-gate.php`). Cada script:
+O que existe: **69 scripts PHP standalone** em `public_html/wp-content/plugins/plugin_papelito/tests/`, mais um na raiz do repositório (`tests/test-company-purchase-gate.php`). Cada script:
 
 - declara `ABSPATH` por conta própria;
 - stuba inline as funções do WordPress que o código sob teste chama (`add_filter`, `register_rest_route`, `get_user_meta`, ...);
@@ -35,6 +35,10 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Pedido | `test-order-receipt-pdf.php`, `test-receipts-snapshot.php`, `test-receipts-backfill.php` |
 | Documento fiscal | `test-fiscal-documents.php`, `test-fiscal-xml.php` (exige SimpleXML) |
 | Administração | `test-admin-activate-email.php` |
+| E-mail de faturamento | `test-billing-email-rules.php` (tabela de decisão), `test-billing-email-sync.php` (cascata e backfill), `test-billing-email-token.php`, `test-pre-account-email-verification.php` (**estrutural**: nenhum `wp_insert_user()` pode ficar sem gravar o estado de verificação) |
+| Links de e-mail | `test-frontend-base-url.php` (allowlist, nunca `localhost` em ambiente remoto, `Origin` não é fallback) |
+| Upload direto | `test-direct-uploads.php` (tíquete single-use, claim atômico, contexto sem token cru), `test-direct-upload-image.php` (assinatura, divergência conteúdo × extensão, truncamento) |
+| Rate limit | `test-rate-limit-identity.php` (endpoint atrás do proxy não pode compartilhar balde por IP) |
 
 As invariantes que essas suítes protegem estão catalogadas em [context/business-rules.md](business-rules.md).
 
@@ -107,7 +111,8 @@ O ruleset é `phpcs.xml.dist` (WordPress coding standards). Tudo que é auto-cor
 **As únicas violações aceitas são:**
 
 - `Squiz.Commenting.FunctionComment.*` (`@param` / typehint);
-- `WordPress.Files.FileName.NotHyphenatedLowercase`.
+- `WordPress.Files.FileName.NotHyphenatedLowercase`;
+- `WordPress.Files.FileName.InvalidClassFileName` + `Universal.Files.SeparateFunctionsFromOO.Mixed`, **apenas** em arquivo que junta funções e uma classe `*_CLI` de WP-CLI no mesmo módulo — o padrão já em produção em `receipts_backfill.php` e seguido por `billing_email_sync.php`. O nome da classe é o binding de `WP_CLI::add_command()`: renomear quebra o comando.
 
 Elas são aceitas porque são **as mesmas categorias já presentes nos arquivos em produção** (`vendor_stock.php`, `pagarme_payments.php`, `order_routing.php`): o plugin usa nomes de arquivo com underscore e docblocks enxutos por convenção. Consistência com o código vizinho vence a regra genérica. O `base64` do envelope de criptografia tem `phpcs:ignore` justificado.
 

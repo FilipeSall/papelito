@@ -164,7 +164,12 @@ papelito_companies
 | `cnpj` | **CHAR(14) CHARACTER SET ascii COLLATE ascii_bin**, UNIQUE | canônico maiúsculo; 12 alfanuméricos + 2 dígitos. `ascii_bin` para ser **case-sensitive** |
 | `legal_name` | VARCHAR(255) | |
 | `trade_name` | VARCHAR(255) NULL | |
-| `billing_email` | VARCHAR(191) | pode diferir do e-mail do owner; editável por owner/admin |
+| `billing_email` | VARCHAR(191) | pode diferir do e-mail do owner; editável por owner/admin. **Sempre gravado na forma de `papelito_normalize_email()`** (trim + caixa baixa) — comparações downstream lowercaseiam, e gravar com a caixa original fazia o mesmo endereço parecer dois |
+| `billing_email_verified_at` | DATETIME NULL | preenchido = confirmado. Nasce preenchido quando o endereço é igual ao e-mail da conta e a conta vale como verificada |
+| `pending_billing_email` | VARCHAR(191) NULL | endereço aguardando confirmação. `billing_email` mantém o último valor confirmado até o token ser consumido |
+| `pending_billing_email_token_hash` | CHAR(64) NULL | sha256 do token; o valor em claro só existe no e-mail. Sobrescrever invalida o link anterior |
+| `pending_billing_email_expires_at` | DATETIME NULL | UTC, 24h. Expirado responde **410**, inexistente responde **404** |
+| `billing_email_verification_sent_at` | DATETIME NULL | último envio; **não** é limpo na confirmação |
 | `phone` | VARCHAR(24) NULL | |
 | `registry_status` | VARCHAR(32), default `pending` | `pending`/`active`/`inactive`/`not_found`/`unavailable`/`provider_unsupported`/`conflict` |
 | `ownership_status` | VARCHAR(32), default `pending` | `pending_evidence`/`pending_manual_review`/`verified`/`rejected` |

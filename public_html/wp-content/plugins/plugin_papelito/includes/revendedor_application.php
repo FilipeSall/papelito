@@ -2308,7 +2308,14 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 	}
 
 	$user_id = (int) $user_id;
-	$user    = get_userdata( $user_id );
+
+	// Conta nova nasce `pending`: sem a usermeta,
+	// `papelito_auth_requires_email_verification()` a trataria como conta legada ja verificada.
+	if ( $is_new_user ) {
+		papelito_auth_mark_email_pending( $user_id );
+	}
+
+	$user = get_userdata( $user_id );
 
 	if ( ! $user instanceof WP_User ) {
 		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );

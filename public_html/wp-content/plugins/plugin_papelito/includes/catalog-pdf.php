@@ -12,7 +12,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 const PAPELITO_CATALOG_PDF_OPTION_ID       = 'papelito_catalog_pdf_id';
 const PAPELITO_CATALOG_PDF_CACHE_VERSION   = 'papelito_catalog_pdf_version';
 const PAPELITO_CATALOG_DEFAULT_PUBLIC_PATH = '/pdf/catalogo-papelito.pdf';
-const PAPELITO_CATALOG_MAX_FILE_SIZE       = 15728640;
+const PAPELITO_CATALOG_MAX_FILE_SIZE       = 10 * 1024 * 1024;
 
 function papelito_catalog_pdf_default_catalog(): array {
 	return array(
@@ -93,7 +93,7 @@ function papelito_catalog_pdf_validate_upload( array $file ) {
 	}
 
 	if ( (int) $file['size'] > PAPELITO_CATALOG_MAX_FILE_SIZE ) {
-		return papelito_catalog_pdf_error( 'papelito_catalog_file_too_large', 'O PDF excede o limite permitido de 15 MB.', 413 );
+		return papelito_catalog_pdf_error( 'papelito_catalog_file_too_large', 'O PDF excede o limite permitido de 10 MB.', 413 );
 	}
 
 	$extension = strtolower( pathinfo( (string) ( $file['name'] ?? '' ), PATHINFO_EXTENSION ) );

@@ -54,8 +54,35 @@ function papelito_pre_account_application_by_token( string $token ): ?array {
 	return is_array( $row ) ? $row : null;
 }
 
+/**
+ * Autoriza uma candidatura pelo id interno, sem passar pelo `resume_token`.
+ *
+ * Existe para o tiquete de upload direto: guardar o token cru num transient deixaria o segredo em
+ * claro em `wp_options`. O id sozinho nao autoriza nada — quem o obtem ja passou pelo token uma vez,
+ * e a validade da candidatura e revalidada aqui do mesmo jeito.
+ *
+ * @param int $application_id Id interno da candidatura.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_pre_account_application_authorize_by_id( int $application_id ): array|WP_Error {
+	global $wpdb;
+	$tables      = papelito_company_table_names();
+	$application = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tables['pre_account_applications']} WHERE id = %d", $application_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+	return papelito_pre_account_application_assert_open( is_array( $application ) ? $application : null );
+}
+
 function papelito_pre_account_application_authorize( string $token ): array|WP_Error {
-	$application = papelito_pre_account_application_by_token( $token );
+	return papelito_pre_account_application_assert_open( papelito_pre_account_application_by_token( $token ) );
+}
+
+/**
+ * Guarda comum de validade da candidatura.
+ *
+ * @param array<string,mixed>|null $application Linha carregada, ou null.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_pre_account_application_assert_open( ?array $application ): array|WP_Error {
 	if ( ! $application || empty( $application['resume_token_expires_at'] ) || strtotime( (string) $application['resume_token_expires_at'] ) < time() ) {
 		return new WP_Error( 'papelito_pre_account_application_not_found', 'Candidatura não encontrada.', array( 'status' => 404 ) );
 	}
@@ -310,7 +337,20 @@ function papelito_pre_account_application_create( array $input ): array|WP_Error
 }
 
 function papelito_pre_account_application_upload( string $token, array $file ): array|WP_Error {
-	$application = papelito_pre_account_application_authorize( $token );
+	return papelito_pre_account_application_upload_authorized( papelito_pre_account_application_authorize( $token ), $file );
+}
+
+/**
+ * Recebe o documento de uma candidatura ja autorizada.
+ *
+ * Separado de `papelito_pre_account_application_upload()` para o upload direto poder autorizar pelo
+ * id da candidatura, sem precisar do `resume_token` em claro.
+ *
+ * @param array<string,mixed>|WP_Error $application Candidatura autorizada.
+ * @param array<string,mixed>          $file        Arquivo recebido.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_pre_account_application_upload_authorized( array|WP_Error $application, array $file ): array|WP_Error {
 	if ( is_wp_error( $application ) ) {
 		return $application;
 	}
@@ -660,13 +700,37 @@ function papelito_pre_account_application_send_decision_email( array $applicatio
 
 	if ( 'approved' === $status ) {
 		$subject = 'Cadastro empresarial aprovado - Papelito';
-		$body    = "Seu cadastro empresarial foi aprovado.\n\nSua conta já foi criada. Você já pode entrar e realizar compras na Papelito.";
+		$body    = "Seu cadastro empresarial foi aprovado.\n\nSua conta já foi criada. Enviamos, em outra mensagem, um link para confirmar este endereço de e-mail — ele libera as compras e passa a receber os documentos fiscais dos pedidos.";
 	} else {
 		$subject = 'Cadastro empresarial não aprovado - Papelito';
 		$body    = "Não foi possível aprovar seu cadastro empresarial porque encontramos divergências nos dados analisados.\n\nEsta solicitação foi encerrada. Para realizar uma nova tentativa, será necessário iniciar novamente o processo de cadastro empresarial.";
 	}
 
 	wp_mail( $recipient, $subject, $body, array( 'Content-Type: text/plain; charset=UTF-8' ) );
+}
+
+/**
+ * Envia o link de confirmacao do e-mail principal da conta recem-provisionada.
+ *
+ * Best-effort e sempre depois do COMMIT: uma aprovacao revertida nao pode ter mandado e-mail, e
+ * uma falha de SMTP nao pode desfazer a aprovacao. Sem o link o comprador nao fica preso — o
+ * fluxo de reenvio em /auth/resend-verification continua disponivel.
+ *
+ * @param int $user_id Conta criada pela aprovacao.
+ * @return void
+ */
+function papelito_pre_account_application_dispatch_verification( int $user_id ): void {
+	$user = get_userdata( $user_id );
+
+	if ( ! $user instanceof WP_User ) {
+		return;
+	}
+
+	$dispatched = papelito_auth_dispatch_verification_email( $user );
+
+	if ( is_wp_error( $dispatched ) ) {
+		error_log( 'papelito: pre-conta aprovada sem e-mail de confirmacao (' . $dispatched->get_error_code() . ').' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+	}
 }
 
 /**
@@ -714,6 +778,12 @@ function papelito_pre_account_application_approve( array $application, int $acto
 		return $user_id;
 	}
 
+	// A candidatura de pre-conta nunca provou a posse da caixa: o `resume_token` volta direto na
+	// resposta, nunca por e-mail. Sem marcar `pending` aqui a conta nasceria sem a usermeta, e
+	// `papelito_auth_requires_email_verification()` trata meta ausente como conta legada
+	// verificada — o endereco entraria como confirmado sem ninguem ter aberto nada.
+	papelito_auth_mark_email_pending( $user_id );
+
 	global $wpdb;
 	$now     = current_time( 'mysql', true );
 	$address = json_decode( $values['address'], true );
@@ -729,12 +799,16 @@ function papelito_pre_account_application_approve( array $application, int $acto
 		return papelito_pre_account_application_abort_approval( $user_id, $profile );
 	}
 
+	// O e-mail de faturamento nasce igual ao da conta, mas nao herda verificacao nenhuma: a conta
+	// acabou de nascer `pending`. Quem confirmar o e-mail principal dispara `papelito_email_verified`
+	// e `papelito_billing_email_sync_for_user()` confirma esta empresa em cascata.
 	$company_id = papelito_company_create(
 		(string) $application['canonical_cnpj'],
 		array(
 			'legal_name'         => (string) ( $registry['lookup']['legal_name'] ?? '' ),
 			'trade_name'         => (string) ( $registry['lookup']['trade_name'] ?? '' ),
-			'billing_email'      => $values['email'],
+			'billing_email'      => papelito_normalize_email( (string) $values['email'] ),
+			'billing_email_verified_at' => null,
 			'phone'              => $values['phone'],
 			'registry_status'    => 'active',
 			'ownership_status'   => 'verified',
@@ -799,6 +873,10 @@ function papelito_pre_account_application_approve( array $application, int $acto
 	clean_user_cache( $user_id );
 	update_user_meta( $user_id, 'papelito_account_state', 'active' );
 	papelito_pre_account_application_purge_document( $application_id );
+
+	// Depois do COMMIT de proposito: aprovacao revertida nao pode ter mandado e-mail. Best-effort —
+	// falha de SMTP nao desfaz a aprovacao, o usuario reobtem o link por /auth/resend-verification.
+	papelito_pre_account_application_dispatch_verification( $user_id );
 
 	return papelito_pre_account_application_view( papelito_pre_account_application_get( $application_id ) ?: $application );
 }

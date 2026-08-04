@@ -44,7 +44,7 @@ function papelito_company_create( string $raw_cnpj, array $data ) {
 		'cnpj'               => $cnpj,
 		'legal_name'         => isset( $data['legal_name'] ) ? sanitize_text_field( (string) $data['legal_name'] ) : '',
 		'trade_name'         => isset( $data['trade_name'] ) ? sanitize_text_field( (string) $data['trade_name'] ) : null,
-		'billing_email'      => isset( $data['billing_email'] ) ? sanitize_email( (string) $data['billing_email'] ) : '',
+		'billing_email'      => isset( $data['billing_email'] ) ? papelito_normalize_email( (string) $data['billing_email'] ) : '',
 		'billing_email_verified_at' => isset( $data['billing_email_verified_at'] ) ? (string) $data['billing_email_verified_at'] : null,
 		'phone'              => isset( $data['phone'] ) ? sanitize_text_field( (string) $data['phone'] ) : null,
 		'registry_status'    => isset( $data['registry_status'] ) ? (string) $data['registry_status'] : 'pending',

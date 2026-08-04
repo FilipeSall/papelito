@@ -82,14 +82,19 @@ function papelito_check_vendor_processing_overdue(): void {
 	$now = time();
 
 	foreach ( $orders as $order ) {
+		papelito_check_vendor_processing_order( $order, $now );
+	}
+}
+
+function papelito_check_vendor_processing_order( $order, int $now ): void {
 		if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
-			continue;
+			return;
 		}
 
 		// Defesa extra: so alerta quem ainda nao comecou a separar.
 		$status = sanitize_key( (string) $order->get_meta( '_papelito_vendor_status', true ) );
 		if ( PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT !== $status ) {
-			continue;
+			return;
 		}
 
 		$vendor_id = function_exists( 'papelito_messaging_order_vendor_id' )
@@ -97,20 +102,20 @@ function papelito_check_vendor_processing_overdue(): void {
 			: absint( $order->get_meta( '_papelito_vendor_id', true ) );
 
 		if ( $vendor_id <= 0 ) {
-			continue;
+			return;
 		}
 
 		$lead_time = papelito_vendor_processing_lead_time_days( $vendor_id );
 		$paid_ts   = papelito_vendor_processing_paid_timestamp( $order );
 
 		if ( $paid_ts <= 0 ) {
-			continue;
+			return;
 		}
 
 		$deadline = $paid_ts + ( $lead_time * DAY_IN_SECONDS );
 
 		if ( $now <= $deadline ) {
-			continue;
+			return;
 		}
 
 		$days_overdue = (int) floor( ( $now - $deadline ) / DAY_IN_SECONDS ) + 1;
@@ -129,18 +134,17 @@ function papelito_check_vendor_processing_overdue(): void {
 		);
 
 		if ( false === $notification_id ) {
-			continue;
+			return;
 		}
 
 		if ( ! papelito_claim_notification_email_dispatch( $vendor_id, PAPELITO_NOTIF_PROCESSING_OVERDUE, $dedupe_key ) ) {
-			continue;
+			return;
 		}
 
 		$vendor = get_user_by( 'id', $vendor_id );
 		if ( $vendor instanceof WP_User ) {
 			papelito_vendor_processing_overdue_send_email( $vendor, $order, $days_overdue, $lead_time );
 		}
-	}
 }
 add_action( PAPELITO_VENDOR_PROCESSING_OVERDUE_HOOK, 'papelito_check_vendor_processing_overdue' );
 
@@ -163,7 +167,7 @@ function papelito_vendor_processing_overdue_send_email( WP_User $vendor, $order,
 	$store_name   = (string) get_user_meta( $vendor->ID, 'store_name', true );
 	$greeting     = '' !== $store_name ? $store_name : $vendor->display_name;
 	$order_number = (string) $order->get_order_number();
-	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : 'http://localhost:3000';
+	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : '';
 	$order_link   = sprintf( '%s/vendor/pedidos/%d', $frontend_url, (int) $order->get_id() );
 
 	$subject    = sprintf( 'Prazo de separação vencido - Papelito #%s', $order_number );
