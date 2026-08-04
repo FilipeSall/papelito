@@ -42,19 +42,35 @@ function papelito_company_create( string $raw_cnpj, array $data ) {
 
 	$row = array(
 		'cnpj'               => $cnpj,
-		'legal_name'         => isset( $data['legal_name'] ) ? sanitize_text_field( (string) $data['legal_name'] ) : '',
-		'trade_name'         => isset( $data['trade_name'] ) ? sanitize_text_field( (string) $data['trade_name'] ) : null,
 		'billing_email'      => isset( $data['billing_email'] ) ? papelito_normalize_email( (string) $data['billing_email'] ) : '',
-		'billing_email_verified_at' => isset( $data['billing_email_verified_at'] ) ? (string) $data['billing_email_verified_at'] : null,
-		'phone'              => isset( $data['phone'] ) ? sanitize_text_field( (string) $data['phone'] ) : null,
-		'registry_status'    => isset( $data['registry_status'] ) ? (string) $data['registry_status'] : 'pending',
-		'ownership_status'   => isset( $data['ownership_status'] ) ? (string) $data['ownership_status'] : 'pending',
-		'company_status'     => isset( $data['company_status'] ) ? (string) $data['company_status'] : 'onboarding',
 		'owner_user_id'      => isset( $data['owner_user_id'] ) ? (int) $data['owner_user_id'] : null,
 		'created_by_user_id' => (int) $data['created_by_user_id'],
 		'created_at'         => $now,
 		'updated_at'         => $now,
 	);
+
+	// As colunas fiscais entram aqui, e não num update posterior: papelito_company_purchase_capability()
+	// bloqueia a compra enquanto qualquer uma delas estiver vazia, e nenhum fluxo de produto sabe
+	// preenchê-las depois da criação.
+	$defaults = array(
+		'legal_name'                => '',
+		'trade_name'                => null,
+		'billing_email_verified_at' => null,
+		'phone'                     => null,
+		'registry_status'           => 'pending',
+		'ownership_status'          => 'pending',
+		'company_status'            => 'onboarding',
+		'fiscal_cep'                => null,
+		'fiscal_state'              => null,
+		'fiscal_city'               => null,
+		'fiscal_neighborhood'       => null,
+		'fiscal_street'             => null,
+		'fiscal_number'             => null,
+		'fiscal_complement'         => null,
+	);
+	foreach ( $defaults as $column => $default ) {
+		$row[ $column ] = isset( $data[ $column ] ) ? sanitize_text_field( (string) $data[ $column ] ) : $default;
+	}
 
 	$result = $wpdb->insert( $tables['companies'], $row ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
