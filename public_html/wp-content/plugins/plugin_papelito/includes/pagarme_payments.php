@@ -273,7 +273,17 @@ function papelito_pagarme_b2b_customer_payload_from_order( object $order ) {
 		'document' => $cnpj,
 		'type' => 'company',
 		'phones' => array( 'mobile_phone' => papelito_pagarme_phone_payload( $phone ) ),
-		'address' => papelito_pagarme_address_payload( $address ),
+		'address' => papelito_pagarme_address_payload(
+			array(
+				'street'       => $address['street'],
+				'number'       => $address['number'],
+				'complement'   => $address['complement'],
+				'neighborhood' => $address['neighborhood'],
+				'city'         => $address['city'],
+				'state'        => $address['state'],
+				'zip_code'     => $address['cep'],
+			)
+		),
 	);
 }
 
