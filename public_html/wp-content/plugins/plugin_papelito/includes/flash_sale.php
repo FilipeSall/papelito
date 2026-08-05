@@ -13,6 +13,22 @@ if ( ! defined( 'PAPELITO_FLASH_SALE_PROMO_HOOK' ) ) {
 	define( 'PAPELITO_FLASH_SALE_PROMO_HOOK', 'papelito_flash_sale_promo_start' );
 }
 
+if ( ! defined( 'PAPELITO_FLASH_SALE_DEFAULT_LABEL' ) ) {
+	define( 'PAPELITO_FLASH_SALE_DEFAULT_LABEL', 'Oferta Relâmpago' );
+}
+
+if ( ! defined( 'PAPELITO_FLASH_SALE_INVALID_CONTEXT_MESSAGE' ) ) {
+	define( 'PAPELITO_FLASH_SALE_INVALID_CONTEXT_MESSAGE', 'A oferta deste item não pôde ser validada.' );
+}
+
+if ( ! defined( 'PAPELITO_FLASH_SALE_ADMIN_REST_NAMESPACE' ) ) {
+	define( 'PAPELITO_FLASH_SALE_ADMIN_REST_NAMESPACE', 'papelito/v1/admin' );
+}
+
+if ( ! defined( 'PAPELITO_FLASH_SALE_ADMIN_ROUTE' ) ) {
+	define( 'PAPELITO_FLASH_SALE_ADMIN_ROUTE', '/flash-sale' );
+}
+
 /**
  * Nome da option usada no singleton de campanha.
  *
@@ -177,7 +193,7 @@ function papelito_flash_sale_normalize_campaign( array $campaign ): ?array {
 		'ends_at'         => papelito_flash_sale_format_datetime( $ends_at ),
 		'productIds'      => $product_ids,
 		'discountPercent' => $discount,
-		'label'           => '' !== $label ? $label : 'Oferta Relâmpago',
+		'label'           => '' !== $label ? $label : PAPELITO_FLASH_SALE_DEFAULT_LABEL,
 		'supportingText'  => $supporting,
 	);
 }
@@ -294,7 +310,7 @@ function papelito_flash_sale_get_active_campaign_for_product( int $product_id ):
  */
 function papelito_flash_sale_resolve_promotion_context( string $context, int $product_id ) {
 	if ( '' === $context || strlen( $context ) > 2048 || 2 !== count( explode( '.', $context ) ) ) {
-		return new WP_Error( 'papelito_promotion_context_invalid', 'A oferta deste item não pôde ser validada.', array( 'status' => 409 ) );
+			return new WP_Error( 'papelito_promotion_context_invalid', PAPELITO_FLASH_SALE_INVALID_CONTEXT_MESSAGE, array( 'status' => 409 ) );
 	}
 
 	list( $encoded, $encoded_signature ) = explode( '.', $context, 2 );
@@ -302,13 +318,13 @@ function papelito_flash_sale_resolve_promotion_context( string $context, int $pr
 	$expected                            = hash_hmac( 'sha256', $encoded, papelito_flash_sale_context_signing_key(), true );
 
 	if ( ! is_string( $signature ) || ! hash_equals( $expected, $signature ) ) {
-		return new WP_Error( 'papelito_promotion_context_invalid', 'A oferta deste item não pôde ser validada.', array( 'status' => 409 ) );
+		return new WP_Error( 'papelito_promotion_context_invalid', PAPELITO_FLASH_SALE_INVALID_CONTEXT_MESSAGE, array( 'status' => 409 ) );
 	}
 
 	$decoded = papelito_flash_sale_base64url_decode( $encoded );
 	$payload = is_string( $decoded ) ? json_decode( $decoded, true ) : null;
 	if ( ! is_array( $payload ) || 1 !== (int) ( $payload['v'] ?? 0 ) ) {
-		return new WP_Error( 'papelito_promotion_context_invalid', 'A oferta deste item não pôde ser validada.', array( 'status' => 409 ) );
+		return new WP_Error( 'papelito_promotion_context_invalid', PAPELITO_FLASH_SALE_INVALID_CONTEXT_MESSAGE, array( 'status' => 409 ) );
 	}
 
 	if ( $product_id <= 0 || $product_id !== (int) ( $payload['pid'] ?? 0 ) ) {
@@ -420,17 +436,7 @@ function papelito_flash_sale_build_admin_candidate( WC_Product $product ): array
 	);
 }
 
-/**
- * Consulta produtos elegíveis usando a mesma regra aplicada ao salvar.
- *
- * @param array<string,mixed> $args Filtros de busca.
- * @return array{items:array<int,array<string,mixed>>,page:int,perPage:int,total:int,totalPages:int}
- */
-function papelito_flash_sale_query_eligible_products( array $args = array() ): array {
-	$page       = max( 1, absint( $args['page'] ?? 1 ) );
-	$per_page   = min( 100, max( 1, absint( $args['per_page'] ?? 24 ) ) );
-	$search     = sanitize_text_field( (string) ( $args['search'] ?? '' ) );
-	$category   = absint( $args['category'] ?? 0 );
+function papelito_flash_sale_build_eligible_product_query_args( int $page, int $per_page, int $category ): array {
 	$query_args = array(
 		'post_type'              => 'product',
 		'post_status'            => 'publish',
@@ -454,8 +460,11 @@ function papelito_flash_sale_query_eligible_products( array $args = array() ): a
 		);
 	}
 
-	$search_filter      = null;
-	$eligibility_filter = static function ( string $where ): string {
+	return $query_args;
+}
+
+function papelito_flash_sale_build_eligibility_filter(): Closure {
+	return static function ( string $where ): string {
 		global $wpdb;
 
 		return $where . "
@@ -481,34 +490,87 @@ function papelito_flash_sale_query_eligible_products( array $args = array() ): a
 			)
 		";
 	};
-	add_filter( 'posts_where', $eligibility_filter, 20, 1 );
+}
 
-	if ( '' !== $search ) {
-		$query_args['s'] = $search;
-		$search_filter = static function ( string $where ) use ( $search ): string {
-			global $wpdb;
+function papelito_flash_sale_build_search_filter( string $search ): Closure {
+	return static function ( string $where ) use ( $search ): string {
+		global $wpdb;
 
-			$like = '%' . $wpdb->esc_like( $search ) . '%';
-			if ( ctype_digit( $search ) ) {
-				return $wpdb->prepare(
-					" AND ( {$wpdb->posts}.ID = %d OR {$wpdb->posts}.post_title LIKE %s OR EXISTS ( SELECT 1 FROM {$wpdb->postmeta} flash_sku WHERE flash_sku.post_id = {$wpdb->posts}.ID AND flash_sku.meta_key = '_sku' AND flash_sku.meta_value LIKE %s ) ) ",
-					absint( $search ),
-					$like,
-					$like
-				);
-			}
-
+		$like = '%' . $wpdb->esc_like( $search ) . '%';
+		if ( ctype_digit( $search ) ) {
 			return $wpdb->prepare(
-				" AND ( {$wpdb->posts}.post_title LIKE %s OR EXISTS ( SELECT 1 FROM {$wpdb->postmeta} flash_sku WHERE flash_sku.post_id = {$wpdb->posts}.ID AND flash_sku.meta_key = '_sku' AND flash_sku.meta_value LIKE %s ) ) ",
+				" AND ( {$wpdb->posts}.ID = %d OR {$wpdb->posts}.post_title LIKE %s OR EXISTS ( SELECT 1 FROM {$wpdb->postmeta} flash_sku WHERE flash_sku.post_id = {$wpdb->posts}.ID AND flash_sku.meta_key = '_sku' AND flash_sku.meta_value LIKE %s ) ) ",
+				absint( $search ),
 				$like,
 				$like
 			);
-		};
+		}
+
+		return $wpdb->prepare(
+			" AND ( {$wpdb->posts}.post_title LIKE %s OR EXISTS ( SELECT 1 FROM {$wpdb->postmeta} flash_sku WHERE flash_sku.post_id = {$wpdb->posts}.ID AND flash_sku.meta_key = '_sku' AND flash_sku.meta_value LIKE %s ) ) ",
+			$like,
+			$like
+		);
+	};
+}
+
+function papelito_flash_sale_product_matches_search( WC_Product $product, string $search ): bool {
+	if ( '' === $search ) {
+		return true;
+	}
+
+	$id_matches   = ctype_digit( $search ) && (int) $search === (int) $product->get_id();
+	$name_matches = false !== stripos( (string) $product->get_name(), $search );
+	$sku_matches  = false !== stripos( (string) $product->get_sku(), $search );
+
+	return $id_matches || $name_matches || $sku_matches;
+}
+
+/**
+ * @param array<int,mixed> $product_ids
+ * @return array<int,WC_Product>
+ */
+function papelito_flash_sale_collect_eligible_products( array $product_ids, string $search ): array {
+	$eligible = array();
+
+	foreach ( $product_ids as $product_id ) {
+		$product = papelito_flash_sale_load_product( (int) $product_id );
+
+		if ( ! $product instanceof WC_Product || ! papelito_flash_sale_product_matches_search( $product, $search ) ) {
+			continue;
+		}
+
+		$eligible[] = $product;
+	}
+
+	return $eligible;
+}
+
+/**
+ * Consulta produtos elegíveis usando a mesma regra aplicada ao salvar.
+ *
+ * @param array<string,mixed> $args Filtros de busca.
+ * @return array{items:array<int,array<string,mixed>>,page:int,perPage:int,total:int,totalPages:int}
+ */
+function papelito_flash_sale_query_eligible_products( array $args = array() ): array {
+	$page       = max( 1, absint( $args['page'] ?? 1 ) );
+	$per_page   = min( 100, max( 1, absint( $args['per_page'] ?? 24 ) ) );
+	$search     = sanitize_text_field( (string) ( $args['search'] ?? '' ) );
+	$category   = absint( $args['category'] ?? 0 );
+	$query_args = papelito_flash_sale_build_eligible_product_query_args( $page, $per_page, $category );
+
+	$eligibility_filter = papelito_flash_sale_build_eligibility_filter();
+	add_filter( 'posts_where', $eligibility_filter, 20, 1 );
+
+	$search_filter = null;
+	if ( '' !== $search ) {
+		$query_args['s'] = $search;
+		$search_filter   = papelito_flash_sale_build_search_filter( $search );
 		add_filter( 'posts_search', $search_filter, 20, 1 );
 	}
 
-	$query = new WP_Query( $query_args );
-	$total = (int) $query->found_posts;
+	$query       = new WP_Query( $query_args );
+	$total       = (int) $query->found_posts;
 	$total_pages = max( 1, (int) ceil( $total / $per_page ) );
 	$safe_page   = min( $page, $total_pages );
 
@@ -522,36 +584,14 @@ function papelito_flash_sale_query_eligible_products( array $args = array() ): a
 	}
 	remove_filter( 'posts_where', $eligibility_filter, 20 );
 
-	$eligible = array();
-	foreach ( (array) $query->posts as $product_id ) {
-		$product = papelito_flash_sale_load_product( (int) $product_id );
-		if ( ! $product instanceof WC_Product ) {
-			continue;
-		}
-
-		if ( '' !== $search ) {
-			$id_matches   = ctype_digit( $search ) && (int) $search === (int) $product->get_id();
-			$name_matches = false !== stripos( (string) $product->get_name(), $search );
-			$sku_matches  = false !== stripos( (string) $product->get_sku(), $search );
-			if ( ! $id_matches && ! $name_matches && ! $sku_matches ) {
-				continue;
-			}
-		}
-
-		$eligible[] = $product;
-	}
+	$eligible = papelito_flash_sale_collect_eligible_products( (array) $query->posts, $search );
 
 	return array(
-		'items'      => array_values(
-			array_map(
-				'papelito_flash_sale_build_admin_candidate',
-				$eligible
-			)
-		),
+		'items'      => array_values( array_map( 'papelito_flash_sale_build_admin_candidate', $eligible ) ),
 		'page'       => $safe_page,
 		'perPage'    => $per_page,
-		'total'      => $total,
-		'totalPages' => $total_pages,
+		'total'       => $total,
+		'totalPages'  => $total_pages,
 	);
 }
 
@@ -670,7 +710,7 @@ function papelito_flash_sale_dispatch_promo_events( array $campaign ): void {
 	$promo_label = trim( (string) ( $campaign['title'] ?? '' ) );
 
 	if ( '' === $promo_label ) {
-		$promo_label = trim( (string) ( $campaign['label'] ?? 'Oferta Relâmpago' ) );
+		$promo_label = trim( (string) ( $campaign['label'] ?? PAPELITO_FLASH_SALE_DEFAULT_LABEL ) );
 	}
 
 	foreach ( papelito_flash_sale_normalize_product_ids( $campaign['productIds'] ?? array() ) as $product_id ) {
@@ -687,7 +727,7 @@ function papelito_flash_sale_dispatch_promo_events( array $campaign ): void {
 			(int) $product_id,
 			array(
 				'promo_type'      => 'flash_sale',
-				'promo_label'     => '' !== $promo_label ? $promo_label : 'Oferta Relâmpago',
+				'promo_label'     => '' !== $promo_label ? $promo_label : PAPELITO_FLASH_SALE_DEFAULT_LABEL,
 				'promo_event_key' => sprintf(
 					'flash_sale:%d:%s',
 					(int) $product_id,
@@ -799,6 +839,7 @@ function papelito_flash_sale_validate_input( array $input, array $stored ) {
 	$starts_at     = papelito_flash_sale_parse_datetime( $starts_at_raw );
 	$ends_at       = papelito_flash_sale_parse_datetime( $ends_at_raw );
 	$discount      = papelito_flash_sale_clamp_discount( $input['discountPercent'] ?? ( $stored['discountPercent'] ?? 0 ) );
+	$extreme_discount_confirmed = true === ( $input['extremeDiscountConfirmed'] ?? false );
 	$label         = sanitize_text_field( (string) ( $input['label'] ?? ( $stored['label'] ?? '' ) ) );
 	$supporting    = sanitize_textarea_field( (string) ( $input['supportingText'] ?? ( $stored['supportingText'] ?? '' ) ) );
 
@@ -814,6 +855,14 @@ function papelito_flash_sale_validate_input( array $input, array $stored ) {
 		return new WP_Error(
 			'papelito_flash_sale_invalid_window',
 			'O início da campanha precisa ser anterior ao fim.',
+			array( 'status' => 422 )
+		);
+	}
+
+	if ( 99 === $discount && ! $extreme_discount_confirmed ) {
+		return new WP_Error(
+			'papelito_flash_sale_extreme_discount_confirmation_required',
+			'Confirme explicitamente o desconto de 99% antes de salvar a campanha.',
 			array( 'status' => 422 )
 		);
 	}
@@ -853,8 +902,126 @@ function papelito_flash_sale_validate_input( array $input, array $stored ) {
 		'ends_at'         => papelito_flash_sale_format_datetime( $ends_at ),
 		'productIds'      => $product_ids,
 		'discountPercent' => $discount,
-		'label'           => '' !== $label ? $label : 'Oferta Relâmpago',
+		'label'           => '' !== $label ? $label : PAPELITO_FLASH_SALE_DEFAULT_LABEL,
 		'supportingText'  => $supporting,
+	);
+}
+
+function papelito_flash_sale_build_home_products( array $campaign ): array {
+	$products = array();
+
+	foreach ( $campaign['productIds'] as $product_id ) {
+		$product = papelito_flash_sale_load_product( $product_id );
+
+		if ( ! $product instanceof WC_Product ) {
+			continue;
+		}
+
+		$product_payload                     = papelito_flash_sale_build_product_payload( $product, $campaign['discountPercent'] );
+		$product_payload['promotionContext'] = papelito_flash_sale_create_promotion_context( $campaign, $product_id );
+		$products[]                          = $product_payload;
+	}
+
+	return $products;
+}
+
+function papelito_flash_sale_home_response(): WP_REST_Response {
+	if ( papelito_flash_sale_current_user_is_seller() ) {
+		return new WP_REST_Response( (object) array(), 200 );
+	}
+
+	$campaign = papelito_flash_sale_normalize_campaign( papelito_flash_sale_get_raw_campaign() );
+
+	if ( null === $campaign || 'active' !== $campaign['status'] ) {
+		return new WP_REST_Response(
+			array(
+				'code'    => 'papelito_flash_sale_not_active',
+				'message' => 'Nenhuma campanha ativa no momento.',
+			),
+			404
+		);
+	}
+
+	$products = papelito_flash_sale_build_home_products( $campaign );
+
+	if ( empty( $products ) ) {
+		return new WP_REST_Response(
+			array(
+				'code'    => 'papelito_flash_sale_no_valid_products',
+				'message' => 'Nenhum produto válido na campanha.',
+			),
+			404
+		);
+	}
+
+	return new WP_REST_Response(
+		array(
+			'campaign' => $campaign,
+			'products' => $products,
+		),
+		200
+	);
+}
+
+function papelito_flash_sale_admin_permission(): bool {
+	return current_user_can( 'manage_options' );
+}
+
+function papelito_flash_sale_admin_products_response( WP_REST_Request $request ): WP_REST_Response {
+	return new WP_REST_Response(
+		papelito_flash_sale_query_eligible_products(
+			array(
+				'page'     => $request->get_param( 'page' ),
+				'per_page' => $request->get_param( 'per_page' ),
+				'search'   => $request->get_param( 'search' ),
+				'category' => $request->get_param( 'category' ),
+			)
+		),
+		200
+	);
+}
+
+function papelito_flash_sale_admin_snapshot_response(): WP_REST_Response {
+	return new WP_REST_Response( papelito_flash_sale_get_admin_snapshot(), 200 );
+}
+
+function papelito_flash_sale_admin_update_response( WP_REST_Request $request ): WP_REST_Response {
+	$params    = $request->get_json_params();
+	$payload   = is_array( $params ) ? $params : array();
+	$stored    = papelito_flash_sale_get_raw_campaign();
+	$validated = papelito_flash_sale_validate_input( $payload, $stored );
+
+	if ( is_wp_error( $validated ) ) {
+		$error_data = $validated->get_error_data();
+		$status     = is_array( $error_data ) && isset( $error_data['status'] ) ? (int) $error_data['status'] : 422;
+
+		return new WP_REST_Response(
+			array(
+				'code'    => $validated->get_error_code(),
+				'message' => $validated->get_error_message(),
+			),
+			$status
+		);
+	}
+
+	update_option( papelito_flash_sale_option_name(), $validated, false );
+	papelito_flash_sale_sync_promo_schedule( $validated );
+	papelito_flash_sale_dispatch_promo_events( $validated );
+
+	return new WP_REST_Response( papelito_flash_sale_get_admin_snapshot(), 200 );
+}
+
+function papelito_flash_sale_admin_delete_response(): WP_REST_Response {
+	papelito_flash_sale_clear_scheduled_promo_event();
+	delete_option( papelito_flash_sale_option_name() );
+
+	return new WP_REST_Response(
+		array(
+			'campaign'         => null,
+			'selectedProducts' => array(),
+			'issues'           => array(),
+		),
+		200
 	);
 }
 
@@ -867,157 +1034,53 @@ add_action(
 			array(
 				'methods'             => WP_REST_Server::READABLE,
 				'permission_callback' => '__return_true',
-				'callback'            => static function (): WP_REST_Response {
-					if ( papelito_flash_sale_current_user_is_seller() ) {
-						return new WP_REST_Response( (object) array(), 200 );
-					}
-
-					$campaign = papelito_flash_sale_normalize_campaign( papelito_flash_sale_get_raw_campaign() );
-
-					if ( null === $campaign || 'active' !== $campaign['status'] ) {
-						return new WP_REST_Response(
-							array(
-								'code'    => 'papelito_flash_sale_not_active',
-								'message' => 'Nenhuma campanha ativa no momento.',
-							),
-							404
-						);
-					}
-
-					$products = array();
-
-					foreach ( $campaign['productIds'] as $product_id ) {
-						$product = papelito_flash_sale_load_product( $product_id );
-
-						if ( $product instanceof WC_Product ) {
-							$product_payload                     = papelito_flash_sale_build_product_payload( $product, $campaign['discountPercent'] );
-							$product_payload['promotionContext'] = papelito_flash_sale_create_promotion_context( $campaign, $product_id );
-							$products[]                          = $product_payload;
-						}
-					}
-
-					if ( empty( $products ) ) {
-						return new WP_REST_Response(
-							array(
-								'code'    => 'papelito_flash_sale_no_valid_products',
-								'message' => 'Nenhum produto válido na campanha.',
-							),
-							404
-						);
-					}
-
-					return new WP_REST_Response(
-						array(
-							'campaign' => $campaign,
-							'products' => $products,
-						),
-						200
-					);
-				},
+				'callback'            => 'papelito_flash_sale_home_response',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1/admin',
+			PAPELITO_FLASH_SALE_ADMIN_REST_NAMESPACE,
 			'/flash-sale/products',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
-				'permission_callback' => static function (): bool {
-					return current_user_can( 'manage_options' );
-				},
+				'permission_callback' => 'papelito_flash_sale_admin_permission',
 				'args'                => array(
 					'page'     => array( 'sanitize_callback' => 'absint', 'default' => 1 ),
 					'per_page' => array( 'sanitize_callback' => 'absint', 'default' => 24 ),
 					'search'   => array( 'sanitize_callback' => 'sanitize_text_field', 'default' => '' ),
 					'category' => array( 'sanitize_callback' => 'absint', 'default' => 0 ),
 				),
-				'callback'            => static function ( WP_REST_Request $request ): WP_REST_Response {
-					return new WP_REST_Response(
-						papelito_flash_sale_query_eligible_products(
-							array(
-								'page'     => $request->get_param( 'page' ),
-								'per_page' => $request->get_param( 'per_page' ),
-								'search'   => $request->get_param( 'search' ),
-								'category' => $request->get_param( 'category' ),
-							)
-						),
-						200
-					);
-				},
+				'callback'            => 'papelito_flash_sale_admin_products_response',
 			),
 		);
 
 		register_rest_route(
-			'papelito/v1/admin',
-			'/flash-sale',
+			PAPELITO_FLASH_SALE_ADMIN_REST_NAMESPACE,
+			PAPELITO_FLASH_SALE_ADMIN_ROUTE,
 			array(
 				'methods'             => WP_REST_Server::READABLE,
-				'permission_callback' => static function (): bool {
-					return current_user_can( 'manage_options' );
-				},
-				'callback'            => static function (): WP_REST_Response {
-					return new WP_REST_Response( papelito_flash_sale_get_admin_snapshot(), 200 );
-				},
+				'permission_callback' => 'papelito_flash_sale_admin_permission',
+				'callback'            => 'papelito_flash_sale_admin_snapshot_response',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1/admin',
-			'/flash-sale',
+			PAPELITO_FLASH_SALE_ADMIN_REST_NAMESPACE,
+			PAPELITO_FLASH_SALE_ADMIN_ROUTE,
 			array(
 				'methods'             => WP_REST_Server::EDITABLE,
-				'permission_callback' => static function (): bool {
-					return current_user_can( 'manage_options' );
-				},
-				'callback'            => static function ( WP_REST_Request $request ): WP_REST_Response {
-					$params    = $request->get_json_params();
-					$payload   = is_array( $params ) ? $params : array();
-					$stored    = papelito_flash_sale_get_raw_campaign();
-					$validated = papelito_flash_sale_validate_input( $payload, $stored );
-
-					if ( is_wp_error( $validated ) ) {
-						$error_data = $validated->get_error_data();
-						$status     = is_array( $error_data ) && isset( $error_data['status'] ) ? (int) $error_data['status'] : 422;
-
-						return new WP_REST_Response(
-							array(
-								'code'    => $validated->get_error_code(),
-								'message' => $validated->get_error_message(),
-							),
-							$status
-						);
-					}
-
-					update_option( papelito_flash_sale_option_name(), $validated, false );
-					papelito_flash_sale_sync_promo_schedule( $validated );
-					papelito_flash_sale_dispatch_promo_events( $validated );
-
-					return new WP_REST_Response( papelito_flash_sale_get_admin_snapshot(), 200 );
-				},
+				'permission_callback' => 'papelito_flash_sale_admin_permission',
+				'callback'            => 'papelito_flash_sale_admin_update_response',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1/admin',
-			'/flash-sale',
+			PAPELITO_FLASH_SALE_ADMIN_REST_NAMESPACE,
+			PAPELITO_FLASH_SALE_ADMIN_ROUTE,
 			array(
 				'methods'             => WP_REST_Server::DELETABLE,
-				'permission_callback' => static function (): bool {
-					return current_user_can( 'manage_options' );
-				},
-				'callback'            => static function (): WP_REST_Response {
-					papelito_flash_sale_clear_scheduled_promo_event();
-					delete_option( papelito_flash_sale_option_name() );
-
-					return new WP_REST_Response(
-						array(
-							'campaign'         => null,
-							'selectedProducts' => array(),
-							'issues'           => array(),
-						),
-						200
-					);
-				},
+				'permission_callback' => 'papelito_flash_sale_admin_permission',
+				'callback'            => 'papelito_flash_sale_admin_delete_response',
 			)
 		);
 	}

@@ -7,10 +7,14 @@
 
 defined( 'ABSPATH' ) || exit;
 
+if ( ! defined( 'PAPELITO_CATALOG_SEARCH_WHITESPACE_PATTERN' ) ) {
+	define( 'PAPELITO_CATALOG_SEARCH_WHITESPACE_PATTERN', '/\s+/u' );
+}
+
 function papelito_catalog_search_normalize( string $value ): string {
 	$value = remove_accents( $value );
 	$value = function_exists( 'mb_strtolower' ) ? mb_strtolower( $value, 'UTF-8' ) : strtolower( $value );
-	$value = preg_replace( '/\s+/u', ' ', trim( $value ) );
+	$value = preg_replace( PAPELITO_CATALOG_SEARCH_WHITESPACE_PATTERN, ' ', trim( $value ) );
 
 	return is_string( $value ) ? $value : '';
 }
@@ -21,7 +25,7 @@ function papelito_catalog_search_terms( string $value ): array {
 		return array();
 	}
 
-	return array_values( array_filter( preg_split( '/\s+/u', $normalized ) ) );
+	return array_values( array_filter( preg_split( PAPELITO_CATALOG_SEARCH_WHITESPACE_PATTERN, $normalized ) ) );
 }
 
 function papelito_catalog_search_matches_field( string $field, string $term ): bool {
@@ -29,7 +33,7 @@ function papelito_catalog_search_matches_field( string $field, string $term ): b
 		return false;
 	}
 
-	foreach ( preg_split( '/\s+/u', $field ) as $word ) {
+	foreach ( preg_split( PAPELITO_CATALOG_SEARCH_WHITESPACE_PATTERN, $field ) as $word ) {
 		if ( str_starts_with( $word, $term ) || str_contains( $word, $term ) ) {
 			return true;
 		}
@@ -38,9 +42,8 @@ function papelito_catalog_search_matches_field( string $field, string $term ): b
 	return false;
 }
 
-function papelito_catalog_search_relevance( string $query, array $terms, string $name, array $tags ): ?int {
-	$normalized_name = papelito_catalog_search_normalize( $name );
-	$normalized_tags = array_values(
+function papelito_catalog_search_normalize_tags( array $tags ): array {
+	return array_values(
 		array_filter(
 			array_map(
 				static fn( $tag ): string => papelito_catalog_search_normalize( (string) $tag ),
@@ -48,35 +51,24 @@ function papelito_catalog_search_relevance( string $query, array $terms, string 
 			)
 		)
 	);
-	$has_name_match = false;
-	$has_tag_match  = false;
-	$all_in_name    = true;
+}
 
-	foreach ( $terms as $term ) {
-		$name_matches = papelito_catalog_search_matches_field( $normalized_name, $term );
-		$tag_matches  = false;
-
-		foreach ( $normalized_tags as $tag ) {
-			if ( papelito_catalog_search_matches_field( $tag, $term ) ) {
-				$tag_matches = true;
-				break;
-			}
+function papelito_catalog_search_matches_any_tag( array $tags, string $term ): bool {
+	foreach ( $tags as $tag ) {
+		if ( papelito_catalog_search_matches_field( $tag, $term ) ) {
+			return true;
 		}
-
-		if ( ! $name_matches && ! $tag_matches ) {
-			return null;
-		}
-
-		$has_name_match = $has_name_match || $name_matches;
-		$has_tag_match  = $has_tag_match || $tag_matches;
-		$all_in_name    = $all_in_name && $name_matches;
 	}
 
-	if ( $normalized_name === $query ) {
+	return false;
+}
+
+function papelito_catalog_search_relevance_score( string $query, string $name, bool $has_name_match, bool $has_tag_match, bool $all_in_name ): int {
+	if ( $name === $query ) {
 		return 0;
 	}
 
-	if ( str_starts_with( $normalized_name, $query ) ) {
+	if ( str_starts_with( $name, $query ) ) {
 		return 1;
 	}
 
@@ -88,16 +80,41 @@ function papelito_catalog_search_relevance( string $query, array $terms, string 
 		return 3;
 	}
 
-	if ( $has_tag_match ) {
-		return 4;
+	return $has_tag_match ? 4 : 5;
+}
+
+function papelito_catalog_search_relevance( string $query, array $terms, string $name, array $tags ): ?int {
+	$normalized_name = papelito_catalog_search_normalize( $name );
+	$normalized_tags = papelito_catalog_search_normalize_tags( $tags );
+	$has_name_match = false;
+	$has_tag_match  = false;
+	$all_in_name    = true;
+
+	foreach ( $terms as $term ) {
+		$name_matches = papelito_catalog_search_matches_field( $normalized_name, $term );
+		$tag_matches  = papelito_catalog_search_matches_any_tag( $normalized_tags, $term );
+
+		if ( ! $name_matches && ! $tag_matches ) {
+			return null;
+		}
+
+		$has_name_match = $has_name_match || $name_matches;
+		$has_tag_match  = $has_tag_match || $tag_matches;
+		$all_in_name    = $all_in_name && $name_matches;
 	}
 
-	return 5;
+	return papelito_catalog_search_relevance_score(
+		$query,
+		$normalized_name,
+		$has_name_match,
+		$has_tag_match,
+		$all_in_name
+	);
 }
 
 function papelito_catalog_search_rate_limit(): bool {
 	$ip    = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown';
-	$key   = 'papelito_catalog_search_rl_' . md5( $ip );
+	$key   = 'papelito_catalog_search_rl_' . hash( 'sha256', $ip );
 	$count = (int) get_transient( $key );
 
 	if ( $count >= 90 ) {
@@ -109,8 +126,99 @@ function papelito_catalog_search_rate_limit(): bool {
 	return true;
 }
 
+/**
+ * Preço efetivo dos produtos da campanha ativa, indexado por ID.
+ *
+ * A busca filtra faixa de preço pelo `_price` persistido, que não conhece o desconto
+ * da campanha. Sem isto, um produto exibido a R$ 2,23 sumiria do filtro "até R$ 10".
+ *
+ * @return array<int,float>
+ */
+function papelito_catalog_search_campaign_prices(): array {
+	if ( ! function_exists( 'papelito_flash_sale_normalize_campaign' ) ) {
+		return array();
+	}
+
+	$campaign = papelito_flash_sale_normalize_campaign( papelito_flash_sale_get_raw_campaign() );
+
+	if ( null === $campaign || 'active' !== ( $campaign['status'] ?? '' ) ) {
+		return array();
+	}
+
+	$discount = papelito_flash_sale_clamp_discount( $campaign['discountPercent'] ?? 0 );
+	$prices   = array();
+
+	foreach ( papelito_flash_sale_normalize_product_ids( $campaign['productIds'] ?? array() ) as $product_id ) {
+		$product = papelito_flash_sale_load_product( $product_id );
+
+		if ( ! $product instanceof WC_Product ) {
+			continue;
+		}
+
+		$regular = papelito_flash_sale_to_float( $product->get_regular_price( 'edit' ) );
+		$base    = $regular > 0 ? $regular : papelito_flash_sale_to_float( $product->get_price( 'edit' ) );
+
+		if ( $base <= 0 ) {
+			continue;
+		}
+
+		$prices[ $product_id ] = round( $base * ( 100 - $discount ) / 100, 2 );
+	}
+
+	return $prices;
+}
+
+/**
+ * Descarta produtos da campanha cujo preço promocional está fora da faixa pedida.
+ *
+ * @param array<int,array<string,mixed>> $rows            Linhas cruas do catálogo.
+ * @param array<int,float>               $campaign_prices Preço promocional por produto.
+ * @param array<string,mixed>            $args            Argumentos da busca.
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_catalog_search_filter_campaign_prices( array $rows, array $campaign_prices, array $args ): array {
+	if ( empty( $campaign_prices ) ) {
+		return $rows;
+	}
+
+	$min_price = isset( $args['min_price'] ) && null !== $args['min_price'] ? (float) $args['min_price'] : null;
+	$max_price = isset( $args['max_price'] ) && null !== $args['max_price'] ? (float) $args['max_price'] : null;
+
+	if ( null === $min_price && null === $max_price ) {
+		return $rows;
+	}
+
+	return array_values(
+		array_filter(
+			$rows,
+			static function ( array $row ) use ( $campaign_prices, $min_price, $max_price ): bool {
+				$product_id = (int) ( $row['ID'] ?? 0 );
+
+				if ( ! isset( $campaign_prices[ $product_id ] ) ) {
+					return true;
+				}
+
+				$price = (float) $campaign_prices[ $product_id ];
+
+				if ( null !== $min_price && $price < $min_price ) {
+					return false;
+				}
+
+				return null === $max_price || $price <= $max_price;
+			}
+		)
+	);
+}
+
 function papelito_catalog_search_product_rows( array $args ): array {
 	global $wpdb;
+
+	$campaign_ids    = array_map( 'intval', array_keys( (array) ( $args['campaign_prices'] ?? array() ) ) );
+	$campaign_escape = '';
+
+	if ( ! empty( $campaign_ids ) ) {
+		$campaign_escape = ' OR p.ID IN ( ' . implode( ',', array_fill( 0, count( $campaign_ids ), '%d' ) ) . ' )';
+	}
 
 	$categories = array_values(
 		array_filter(
@@ -126,13 +234,15 @@ function papelito_catalog_search_product_rows( array $args ): array {
 	$params     = array( 'product', 'publish' );
 
 	if ( isset( $args['min_price'] ) && null !== $args['min_price'] ) {
-		$where[]  = "EXISTS ( SELECT 1 FROM {$wpdb->postmeta} min_price_meta WHERE min_price_meta.post_id = p.ID AND min_price_meta.meta_key = '_price' AND CAST( REPLACE( min_price_meta.meta_value, ',', '.' ) AS DECIMAL(20,6) ) >= %f )";
+		$where[]  = "( EXISTS ( SELECT 1 FROM {$wpdb->postmeta} min_price_meta WHERE min_price_meta.post_id = p.ID AND min_price_meta.meta_key = '_price' AND CAST( REPLACE( min_price_meta.meta_value, ',', '.' ) AS DECIMAL(20,6) ) >= %f ){$campaign_escape} )";
 		$params[] = (float) $args['min_price'];
+		$params   = array_merge( $params, $campaign_ids );
 	}
 
 	if ( isset( $args['max_price'] ) && null !== $args['max_price'] ) {
-		$where[]  = "EXISTS ( SELECT 1 FROM {$wpdb->postmeta} max_price_meta WHERE max_price_meta.post_id = p.ID AND max_price_meta.meta_key = '_price' AND CAST( REPLACE( max_price_meta.meta_value, ',', '.' ) AS DECIMAL(20,6) ) <= %f )";
+		$where[]  = "( EXISTS ( SELECT 1 FROM {$wpdb->postmeta} max_price_meta WHERE max_price_meta.post_id = p.ID AND max_price_meta.meta_key = '_price' AND CAST( REPLACE( max_price_meta.meta_value, ',', '.' ) AS DECIMAL(20,6) ) <= %f ){$campaign_escape} )";
 		$params[] = (float) $args['max_price'];
+		$params   = array_merge( $params, $campaign_ids );
 	}
 
 	if ( ! empty( $categories ) ) {
@@ -184,9 +294,15 @@ function papelito_catalog_search_products( array $args ): array {
 		);
 	}
 
-	$rows      = papelito_catalog_search_product_rows( $args );
-	$tags_by_id = papelito_catalog_search_tags_by_product( array_column( $rows, 'ID' ) );
-	$matches   = array();
+	$campaign_prices         = papelito_catalog_search_campaign_prices();
+	$args['campaign_prices'] = $campaign_prices;
+	$rows                    = papelito_catalog_search_filter_campaign_prices(
+		papelito_catalog_search_product_rows( $args ),
+		$campaign_prices,
+		$args
+	);
+	$tags_by_id              = papelito_catalog_search_tags_by_product( array_column( $rows, 'ID' ) );
+	$matches                 = array();
 
 	foreach ( $rows as $position => $row ) {
 		$product_id = (int) ( $row['ID'] ?? 0 );
