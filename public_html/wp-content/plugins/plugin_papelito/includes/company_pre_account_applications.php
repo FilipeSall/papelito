@@ -210,8 +210,9 @@ function papelito_pre_account_application_identity( array $input ): array|WP_Err
 	if ( ! papelito_validate_cpf( $identity['cpf'] ) ) {
 		$errors['cpf'] = array( 'Informe um CPF válido.' );
 	}
-	if ( 1 !== preg_match( '/^\d{4}-\d{2}-\d{2}$/', $identity['birth'] ) || false === strtotime( $identity['birth'] ) ) {
-		$errors['birth_date'] = array( 'Informe uma data de nascimento válida.' );
+	$birth_date_error = papelito_company_birth_date_validation_error( $identity['birth'] );
+	if ( $birth_date_error ) {
+		$errors['birth_date'] = array( $birth_date_error->get_error_message() );
 	}
 	if ( ! papelito_validate_cnpj( $identity['cnpj'] ) ) {
 		$errors['cnpj'] = array( 'Informe um CNPJ válido.' );

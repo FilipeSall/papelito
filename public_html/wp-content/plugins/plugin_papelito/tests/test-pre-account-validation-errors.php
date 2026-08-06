@@ -11,9 +11,14 @@ define( 'ABSPATH', __DIR__ );
 define( 'DAY_IN_SECONDS', 86400 );
 
 class WP_Error { // NOSONAR -- o nome é o da classe do WordPress;
-	public function __construct( private string $code = '', string $message = '', private mixed $data = null ) { unset( $message ); }
+	private string $message;
+
+	public function __construct( private string $code = '', string $message = '', private mixed $data = null ) {
+		$this->message = $message;
+	}
 	public function get_error_code(): string { return $this->code; }
 	public function get_error_data(): mixed { return $this->data; }
+	public function get_error_message(): string { return $this->message; }
 }
 
 function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
@@ -26,6 +31,7 @@ function papelito_normalize_cnpj( string $value ): string { return $value; }
 function papelito_validate_cpf( string $value ): bool { return 'cpf-valido' === $value; }
 function papelito_validate_cnpj( string $value ): bool { return 'cnpj-valido' === $value; }
 
+require_once __DIR__ . '/../includes/company_services.php';
 require_once __DIR__ . '/../includes/company_pre_account_applications.php';
 
 $failures = 0;
@@ -73,5 +79,32 @@ $valid = papelito_pre_account_application_identity(
 );
 
 validation_errors_assert( 'dados válidos preservam o caminho de sucesso', false, is_wp_error( $valid ) );
+
+$today            = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
+$adult_birth_date = $today->sub( new DateInterval( 'P18Y' ) )->format( 'Y-m-d' );
+$minor_birth_date = $today->sub( new DateInterval( 'P18Y' ) )->modify( '+1 day' )->format( 'Y-m-d' );
+$future_birth_date = $today->modify( '+1 day' )->format( 'Y-m-d' );
+
+foreach (
+	array(
+		'adulto no aniversário' => array( $adult_birth_date, false ),
+		'menor de idade'        => array( $minor_birth_date, true ),
+		'data futura'           => array( $future_birth_date, true ),
+	) as $label => $case
+) {
+	$result = papelito_pre_account_application_identity(
+		array(
+			'email'      => 'candidato@example.test',
+			'full_name'  => 'Candidato de Teste',
+			'phone'      => '11999999999',
+			'cpf'        => 'cpf-valido',
+			'birth_date' => $case[0],
+			'cnpj'       => 'cnpj-valido',
+			'password'   => 'senha-secreta',
+		)
+	);
+
+	validation_errors_assert( $label, $case[1], is_wp_error( $result ) );
+}
 
 exit( $failures > 0 ? 1 : 0 );

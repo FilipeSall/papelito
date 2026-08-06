@@ -2,6 +2,43 @@
 
 defined( 'ABSPATH' ) || exit;
 
+
+function papelito_company_birth_date_validation_error(
+	string $birth_date,
+	?DateTimeImmutable $reference_date = null
+): ?WP_Error {
+	$timezone     = new DateTimeZone( 'UTC' );
+	$birth        = DateTimeImmutable::createFromFormat( '!Y-m-d', $birth_date, $timezone );
+	$parse_errors = DateTimeImmutable::getLastErrors();
+	if ( ! $birth || ( is_array( $parse_errors ) && ( $parse_errors['warning_count'] > 0 || $parse_errors['error_count'] > 0 ) ) ) {
+		return new WP_Error(
+			'papelito_b2b_invalid_birth_date',
+			'Informe uma data de nascimento válida.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$today = $reference_date ? $reference_date->setTimezone( $timezone ) : new DateTimeImmutable( 'now', $timezone );
+	$today = new DateTimeImmutable( $today->format( 'Y-m-d' ), $timezone );
+	if ( $birth > $today ) {
+		return new WP_Error(
+			'papelito_b2b_future_birth_date',
+			'Informe uma data de nascimento que não seja futura.',
+			array( 'status' => 422 )
+		);
+	}
+
+	if ( $birth->add( new DateInterval( 'P18Y' ) ) > $today ) {
+		return new WP_Error(
+			'papelito_b2b_underage_birth_date',
+			'Você precisa ter pelo menos 18 anos para se cadastrar.',
+			array( 'status' => 422 )
+		);
+	}
+
+	return null;
+}
+
 function papelito_company_profile_get( int $user_id ): ?array {
 	global $wpdb;
 	$row = $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . papelito_customer_profiles_table_name() . ' WHERE user_id = %d', $user_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL
@@ -9,8 +46,9 @@ function papelito_company_profile_get( int $user_id ): ?array {
 }
 
 function papelito_company_profile_upsert( int $user_id, string $cpf, string $birth_date ): true|WP_Error {
-	if ( ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $birth_date ) || false === strtotime( $birth_date ) ) {
-		return new WP_Error( 'papelito_b2b_invalid_birth_date', 'Data de nascimento inválida.', array( 'status' => 422 ) );
+	$birth_date_error = papelito_company_birth_date_validation_error( $birth_date );
+	if ( $birth_date_error ) {
+		return $birth_date_error;
 	}
 	$result = papelito_customer_profile_upsert( $user_id, $cpf, array( 'identity_status' => 'verified', 'identity_method' => 'email_verified', 'identity_checked_at' => current_time( 'mysql', true ) ) );
 	if ( is_wp_error( $result ) ) {
