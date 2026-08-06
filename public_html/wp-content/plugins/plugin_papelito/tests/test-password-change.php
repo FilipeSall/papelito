@@ -95,7 +95,7 @@ class_alias( PapelitoTestSessionTokens::class, 'WP_Session_Tokens' );
 require_once __DIR__ . '/../includes/auth_endpoints.php';
 
 $failures = 0;
-function papelito_assert( string $label, $expected, $actual ): void {
+function papelito_assert( string $label, mixed $expected, mixed $actual ): void {
 	global $failures;
 	if ( $expected === $actual ) {
 		echo "  PASS: {$label}\n";
