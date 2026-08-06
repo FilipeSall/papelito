@@ -258,50 +258,90 @@ function papelito_auth_build_identity_response( WP_User $user ): array {
 	return $response;
 }
 
+function papelito_auth_onboarding_required_error(): WP_Error {
+	return new WP_Error( 'onboarding_required', PAPELITO_AUTH_ONBOARDING_RESUME_MESSAGE, array( 'status' => 409, 'onboardingRequired' => true ) );
+}
+
+function papelito_auth_complete_create_company_onboarding( int $user_id, WP_User $user, array $onboarding ) {
+	$profile = papelito_company_profile_get( $user_id );
+	$cpf     = $profile ? papelito_customer_profile_get_cpf( $user_id ) : null;
+	$birth   = $profile && ! empty( $profile['birth_date_ciphertext'] ) ? papelito_pii_decrypt( (string) $profile['birth_date_ciphertext'] ) : null;
+
+	if ( ! is_string( $cpf ) || ! is_string( $birth ) ) {
+		return papelito_auth_onboarding_required_error();
+	}
+
+	$address = array();
+	foreach ( array( 'cep', 'street', 'number', 'complement', 'neighborhood', 'city', 'state' ) as $field ) {
+		$meta_key = 'papelito_b2b_onboarding_address_' . $field;
+		if ( metadata_exists( 'user', $user_id, $meta_key ) ) {
+			$address[ $field ] = (string) get_user_meta( $user_id, $meta_key, true );
+		}
+	}
+
+	$result = papelito_company_create_owner_candidate(
+		$user_id,
+		array_merge(
+			$address,
+			array(
+				'cpf'        => $cpf,
+				'birth_date' => $birth,
+				'cnpj'       => (string) $onboarding['target_cnpj'],
+				'full_name'  => trim( $user->first_name . ' ' . $user->last_name ),
+				'phone'      => (string) get_user_meta( $user_id, 'phone_number', true ),
+			)
+		)
+	);
+
+	if ( is_wp_error( $result ) ) {
+		papelito_company_onboarding_mark_error( $user_id, $result->get_error_code() );
+		return $result;
+	}
+
+	$company_id = (int) ( $result['company_id'] ?? 0 );
+	papelito_company_onboarding_mark_completed( $user_id, $company_id, (int) ( $result['membership_id'] ?? 0 ) );
+
+	return array( 'status' => 'completed', 'company_id' => $company_id );
+}
+
+function papelito_auth_complete_join_company_onboarding( int $user_id, array $onboarding ) {
+	$result = papelito_company_access_request_submit( $user_id, (string) $onboarding['target_cnpj'] );
+	if ( is_wp_error( $result ) ) {
+		papelito_company_onboarding_mark_error( $user_id, $result->get_error_code() );
+		return $result;
+	}
+
+	$pending = papelito_company_members_pending_for_user( $user_id );
+	papelito_company_onboarding_mark_completed( $user_id, null, ! empty( $pending[0]['id'] ) ? (int) $pending[0]['id'] : null );
+
+	return array( 'status' => 'completed' );
+}
+
 function papelito_auth_complete_b2b_onboarding( int $user_id ) {
 	$user = get_userdata( $user_id );
+
 	if ( ! $user instanceof WP_User ) {
-		return new WP_Error( 'onboarding_required', PAPELITO_AUTH_ONBOARDING_RESUME_MESSAGE, array( 'status' => 409, 'onboardingRequired' => true ) );
+		return papelito_auth_onboarding_required_error();
 	}
+
 	$onboarding = papelito_company_onboarding_get( $user_id );
 	if ( null === $onboarding || ( ! empty( $onboarding['expires_at'] ) && strtotime( (string) $onboarding['expires_at'] ) < time() ) ) {
-		return new WP_Error( 'onboarding_required', PAPELITO_AUTH_ONBOARDING_RESUME_MESSAGE, array( 'status' => 409, 'onboardingRequired' => true ) );
+		return papelito_auth_onboarding_required_error();
 	}
+
 	if ( 'completed' === (string) $onboarding['status'] ) {
 		return array( 'status' => 'completed', 'idempotent' => true );
 	}
 
-	$type = (string) $onboarding['onboarding_type'];
-	if ( 'create_company' === $type ) {
-		$profile = papelito_company_profile_get( $user_id );
-		$cpf     = $profile ? papelito_customer_profile_get_cpf( $user_id ) : null;
-		$birth   = $profile && ! empty( $profile['birth_date_ciphertext'] ) ? papelito_pii_decrypt( (string) $profile['birth_date_ciphertext'] ) : null;
-		if ( ! is_string( $cpf ) || ! is_string( $birth ) ) {
-			return new WP_Error( 'onboarding_required', PAPELITO_AUTH_ONBOARDING_RESUME_MESSAGE, array( 'status' => 409, 'onboardingRequired' => true ) );
-		}
-		$address = array();
-		foreach ( array( 'cep', 'street', 'number', 'complement', 'neighborhood', 'city', 'state' ) as $field ) {
-			$meta_key = 'papelito_b2b_onboarding_address_' . $field;
-			if ( metadata_exists( 'user', $user_id, $meta_key ) ) {
-				$address[ $field ] = (string) get_user_meta( $user_id, $meta_key, true );
-			}
-		}
-		$result = papelito_company_create_owner_candidate( $user_id, array_merge( $address, array( 'cpf' => $cpf, 'birth_date' => $birth, 'cnpj' => (string) $onboarding['target_cnpj'], 'full_name' => trim( $user->first_name . ' ' . $user->last_name ), 'phone' => (string) get_user_meta( $user_id, 'phone_number', true ) ) ) );
-		if ( is_wp_error( $result ) ) { papelito_company_onboarding_mark_error( $user_id, $result->get_error_code() ); return $result; }
-		$company_id = (int) ( $result['company_id'] ?? 0 );
-		papelito_company_onboarding_mark_completed( $user_id, $company_id, (int) ( $result['membership_id'] ?? 0 ) );
-		return array( 'status' => 'completed', 'company_id' => $company_id );
+	if ( 'create_company' === (string) $onboarding['onboarding_type'] ) {
+		return papelito_auth_complete_create_company_onboarding( $user_id, $user, $onboarding );
 	}
 
-	if ( 'join_company' === $type ) {
-		$result = papelito_company_access_request_submit( $user_id, (string) $onboarding['target_cnpj'] );
-		if ( is_wp_error( $result ) ) { papelito_company_onboarding_mark_error( $user_id, $result->get_error_code() ); return $result; }
-		$pending = papelito_company_members_pending_for_user( $user_id );
-		papelito_company_onboarding_mark_completed( $user_id, null, ! empty( $pending[0]['id'] ) ? (int) $pending[0]['id'] : null );
-		return array( 'status' => 'completed' );
+	if ( 'join_company' === (string) $onboarding['onboarding_type'] ) {
+		return papelito_auth_complete_join_company_onboarding( $user_id, $onboarding );
 	}
 
-	return new WP_Error( 'onboarding_required', 'Complete seu onboarding B2B para continuar.', array( 'status' => 409, 'onboardingRequired' => true ) );
+	return papelito_auth_onboarding_required_error();
 }
 
 /**
@@ -429,7 +469,7 @@ function papelito_auth_welcome_toast_claim( int $user_id ): array {
 		return $denied;
 	}
 
-	if ( ! update_user_meta( $user_id, PAPELITO_WELCOME_TOAST_META, 'shown', 'pending' ) ) {
+	if ( ! update_user_meta( $user_id, PAPELITO_WELCOME_TOAST_META, 'shown', 'pending' ) ) { // NOSONAR: o quarto argumento do WordPress implementa o compare-and-swap.
 		return $denied;
 	}
 
@@ -856,101 +896,78 @@ function papelito_auth_verify_google_id_token( string $id_token ) {
 }
 
 /**
- * Encontra ou cria um WP_User a partir de um payload Google verificado.
+ * Carrega o WP_User já existente resolvido pelo e-mail do payload Google.
+ *
+ * @param int $user_id ID retornado por email_exists().
+ * @return WP_User|WP_Error
+ */
+function papelito_auth_google_existing_user( int $user_id ) {
+	$user = get_userdata( $user_id );
+
+	return $user instanceof WP_User
+		? $user
+		: new WP_Error( 'papelito_user_lookup_failed', 'Falha ao carregar usuário.', array( 'status' => 500 ) );
+}
+
+function papelito_auth_sync_google_user( WP_User $user, string $email, array $payload ) {
+	$known_google_sub = (string) get_user_meta( $user->ID, 'google_sub', true );
+	if ( '' !== $known_google_sub && ! empty( $payload['sub'] ) && ! hash_equals( $known_google_sub, (string) $payload['sub'] ) ) {
+		return new WP_Error( 'papelito_google_account_conflict', 'Esta conta já está vinculada a outra identidade Google.', array( 'status' => 409 ) );
+	}
+
+	if ( '' === $known_google_sub && ! empty( $payload['sub'] ) ) {
+		update_user_meta( $user->ID, 'google_sub', sanitize_text_field( (string) $payload['sub'] ) );
+	}
+
+	if ( papelito_emails_match( (string) $user->user_email, $email ) ) {
+		update_user_meta( $user->ID, 'papelito_email_verification_method', 'google' );
+		papelito_auth_mark_email_verified( $user->ID );
+	}
+
+	if ( '1' !== (string) get_user_meta( $user->ID, 'papelito_profile_complete', true ) && null === papelito_company_onboarding_get( $user->ID ) ) {
+		papelito_b2b_mark_cohort( $user->ID );
+		papelito_company_onboarding_mark_google( $user->ID );
+	}
+
+	return $user;
+}
+
+/**
+ * Resolve o WP_User a partir de um payload Google verificado.
  *
  * @param array $payload Payload do tokeninfo.
  * @return WP_User|WP_Error
  */
 function papelito_auth_find_or_create_google_user( array $payload ) {
 	$email = papelito_normalize_email( (string) $payload['email'] );
-
 	if ( '' === $email ) {
-		return new WP_Error( 'papelito_invalid_email', 'E-mail inválido.', array( 'status' => 400 ) );
+		return new WP_Error( 'papelito_invalid_email', PAPELITO_AUTH_INVALID_EMAIL_MESSAGE, array( 'status' => 400 ) );
 	}
 
 	$existing_id = email_exists( $email );
+	if ( ! $existing_id ) {
+		return new WP_Error( 'papelito_pre_account_required', 'Conclua a candidatura empresarial antes de criar uma conta.', array( 'status' => 422 ) );
+	}
 
-	if ( $existing_id ) {
-		$user = get_userdata( $existing_id );
-
-		if ( ! $user instanceof WP_User ) {
-			return new WP_Error( 'papelito_user_lookup_failed', 'Falha ao carregar usuário.', array( 'status' => 500 ) );
-		}
-
-		$known_google_sub = (string) get_user_meta( $user->ID, 'google_sub', true );
-		if ( '' !== $known_google_sub && ! empty( $payload['sub'] ) && ! hash_equals( $known_google_sub, (string) $payload['sub'] ) ) {
-			return new WP_Error( 'papelito_google_account_conflict', 'Esta conta já está vinculada a outra identidade Google.', array( 'status' => 409 ) );
-		}
-
-		// Vincula google_sub se ainda não tiver (account linking implícito).
-		if ( '' === $known_google_sub && ! empty( $payload['sub'] ) ) {
-			update_user_meta( $user->ID, 'google_sub', sanitize_text_field( (string) $payload['sub'] ) );
-		}
-
-		// O gate de `papelito_auth_verify_google_id_token()` ja garantiu email_verified=true no
-		// provedor; aqui confirmamos que o endereco persistido e o mesmo que o OAuth devolveu antes
-		// de herdar a verificacao para a conta.
-		if ( papelito_emails_match( (string) $user->user_email, $email ) ) {
-			update_user_meta( $user->ID, 'papelito_email_verification_method', 'google' );
-			papelito_auth_mark_email_verified( $user->ID );
-		}
-
-		if ( '1' !== (string) get_user_meta( $user->ID, 'papelito_profile_complete', true ) && null === papelito_company_onboarding_get( $user->ID ) ) {
-			papelito_b2b_mark_cohort( $user->ID );
-			papelito_company_onboarding_mark_google( $user->ID );
-		}
-
+	$user = papelito_auth_google_existing_user( (int) $existing_id );
+	if ( is_wp_error( $user ) ) {
 		return $user;
 	}
 
-	return new WP_Error( 'papelito_pre_account_required', 'Conclua a candidatura empresarial antes de criar uma conta.', array( 'status' => 422 ) );
-
-	$user_id = wp_insert_user(
-		array(
-			'user_login'   => $email,
-			'user_email'   => $email,
-			'user_pass'    => wp_generate_password( 32, true, true ),
-			'first_name'   => isset( $payload['given_name'] ) ? sanitize_text_field( (string) $payload['given_name'] ) : '',
-			'last_name'    => isset( $payload['family_name'] ) ? sanitize_text_field( (string) $payload['family_name'] ) : '',
-			'display_name' => isset( $payload['name'] ) ? sanitize_text_field( (string) $payload['name'] ) : $email,
-			'role'         => 'customer',
-		)
-	);
-
-	if ( is_wp_error( $user_id ) ) {
-		return $user_id;
-	}
-
-	if ( ! empty( $payload['sub'] ) ) {
-		update_user_meta( $user_id, 'google_sub', sanitize_text_field( (string) $payload['sub'] ) );
-	}
-
-	update_user_meta( $user_id, 'papelito_profile_complete', '0' );
-	update_user_meta( $user_id, 'papelito_account_state', 'provisional' );
-	papelito_b2b_mark_cohort( $user_id );
-	papelito_company_onboarding_mark_google( $user_id );
-	papelito_auth_mark_email_verified( $user_id );
-	papelito_auth_welcome_toast_arm( $user_id );
-
-	$user = get_userdata( $user_id );
-
-	return $user instanceof WP_User
-		? $user
-		: new WP_Error( 'papelito_user_lookup_failed', 'Falha ao carregar usuário recém-criado.', array( 'status' => 500 ) );
+	return papelito_auth_sync_google_user( $user, $email, $payload );
 }
 
 /**
  * Valida campos do registro (mesmas regras dos hooks de WooCommerce).
  *
- * @param array $data
- * @return WP_Error|null
+ * @param WP_Error $errors Coletor preenchido com as falhas encontradas.
+ * @param array    $data   Dados enviados no registro.
+ * @return void
  */
-function papelito_auth_validate_register_payload( array $data ) {
-	$errors = new WP_Error();
-
+function papelito_auth_validate_register_identity( WP_Error $errors, array $data ): void {
 	$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
 	if ( '' === $email || ! is_email( $email ) ) {
-		$errors->add( 'email', 'E-mail inválido.' );
+		$errors->add( 'email', PAPELITO_AUTH_INVALID_EMAIL_MESSAGE );
 	}
 
 	$password = isset( $data['password'] ) ? (string) $data['password'] : '';
@@ -965,7 +982,9 @@ function papelito_auth_validate_register_payload( array $data ) {
 	if ( empty( $data['last_name'] ) ) {
 		$errors->add( 'last_name', 'Informe o seu sobrenome.' );
 	}
+}
 
+function papelito_auth_validate_register_contact( WP_Error $errors, array $data ): void {
 	$phone_digits = papelito_auth_normalize_phone( isset( $data['phone_number'] ) ? (string) $data['phone_number'] : '' );
 	if ( ! in_array( strlen( $phone_digits ), array( 10, 11 ), true ) ) {
 		$errors->add( 'phone_number', 'Telefone inválido. Formato esperado: (11) 99999-9999.' );
@@ -989,6 +1008,12 @@ function papelito_auth_validate_register_payload( array $data ) {
 	if ( ! empty( $data['state'] ) && ! array_key_exists( (string) $data['state'], papelito_brazilian_states() ) ) {
 		$errors->add( 'state', 'Estado inválido.' );
 	}
+}
+
+function papelito_auth_validate_register_payload( array $data ) {
+	$errors = new WP_Error();
+	papelito_auth_validate_register_identity( $errors, $data );
+	papelito_auth_validate_register_contact( $errors, $data );
 
 	return $errors->has_errors() ? $errors : null;
 }
@@ -1056,7 +1081,7 @@ function papelito_auth_create_registered_user( array $data ) {
 
 	return $user instanceof WP_User
 		? $user
-		: new WP_Error( 'papelito_user_lookup_failed', 'Falha ao carregar usuário recém-criado.', array( 'status' => 500 ) );
+		: new WP_Error( 'papelito_user_lookup_failed', PAPELITO_AUTH_NEW_USER_LOOKUP_MESSAGE, array( 'status' => 500 ) );
 }
 
 /** Validação mínima para uma conta criada exclusivamente a partir de convite empresarial. */
@@ -1064,7 +1089,7 @@ function papelito_auth_validate_invitation_register_payload( array $data ) {
 	$errors = new WP_Error();
 	$email = strtolower( sanitize_email( trim( (string) ( $data['email'] ?? '' ) ) ) );
 	if ( '' === $email || ! is_email( $email ) ) {
-		$errors->add( 'email', 'E-mail inválido.' );
+		$errors->add( 'email', PAPELITO_AUTH_INVALID_EMAIL_MESSAGE );
 	}
 	if ( strlen( (string) ( $data['password'] ?? '' ) ) < 8 ) {
 		$errors->add( 'password', 'Senha precisa ter pelo menos 8 caracteres.' );
@@ -1102,68 +1127,273 @@ function papelito_auth_create_invited_user( array $data ): WP_User|WP_Error {
 	papelito_b2b_mark_cohort( $user_id );
 	update_user_meta( $user_id, 'papelito_post_email_verification_path', '/convite' );
 	$user = get_userdata( $user_id );
-	return $user instanceof WP_User ? $user : new WP_Error( 'papelito_user_lookup_failed', 'Falha ao carregar usuário recém-criado.', array( 'status' => 500 ) );
+	return $user instanceof WP_User ? $user : new WP_Error( 'papelito_user_lookup_failed', PAPELITO_AUTH_NEW_USER_LOOKUP_MESSAGE, array( 'status' => 500 ) );
+}
+
+function papelito_auth_request_data( WP_REST_Request $request ): array {
+	$data = $request->get_json_params();
+
+	return is_array( $data ) ? $data : $request->get_params();
+}
+
+function papelito_auth_logged_in(): bool {
+	return is_user_logged_in();
+}
+
+function papelito_auth_handle_current_user() {
+	$user = wp_get_current_user();
+	if ( ! $user instanceof WP_User || ! $user->exists() ) {
+		return new WP_Error( 'papelito_not_authenticated', 'Usuário não autenticado.', array( 'status' => 401 ) );
+	}
+
+	return new WP_REST_Response( papelito_auth_build_identity_response( $user ), 200 );
+}
+
+function papelito_auth_handle_welcome_toast_claim() {
+	$user = wp_get_current_user();
+	if ( ! $user instanceof WP_User || ! $user->exists() ) {
+		return new WP_Error( 'papelito_not_authenticated', 'Usuário não autenticado.', array( 'status' => 401 ) );
+	}
+
+	return new WP_REST_Response( papelito_auth_welcome_toast_claim( $user->ID ), 200 );
+}
+
+function papelito_auth_handle_google( WP_REST_Request $request ) {
+	if ( ! papelito_auth_rate_limit( 'google' ) ) {
+		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+	}
+
+	$id_token = (string) $request->get_param( 'id_token' );
+	if ( '' === trim( $id_token ) ) {
+		return new WP_Error( 'papelito_missing_token', 'id_token ausente.', array( 'status' => 400 ) );
+	}
+
+	$payload = papelito_auth_verify_google_id_token( $id_token );
+	if ( is_wp_error( $payload ) ) {
+		return $payload;
+	}
+
+	$user = papelito_auth_find_or_create_google_user( $payload );
+	if ( is_wp_error( $user ) ) {
+		return $user;
+	}
+
+	$response = papelito_auth_build_token_response( $user );
+	return is_wp_error( $response ) ? $response : new WP_REST_Response( $response, 200 );
+}
+
+function papelito_auth_handle_register( WP_REST_Request $request ) {
+	if ( ! papelito_b2b_company_model_enabled() ) {
+		return new WP_Error( 'papelito_b2b_company_rollout_disabled', 'Cadastro empresarial temporariamente indisponível.', array( 'status' => 503 ) );
+	}
+
+	$writes = papelito_b2b_require_company_writes();
+	if ( is_wp_error( $writes ) ) {
+		return $writes;
+	}
+
+	if ( ! papelito_auth_rate_limit( 'register', 10, 60 ) ) {
+		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+	}
+
+	return new WP_Error( 'papelito_pre_account_required', 'Use o fluxo de candidatura empresarial para criar uma conta após aprovação.', array( 'status' => 422 ) );
+}
+
+function papelito_auth_handle_invitation_register( WP_REST_Request $request ) {
+	if ( ! papelito_b2b_company_model_enabled() || ! papelito_auth_rate_limit( 'register_invitation', 10, 60 ) ) {
+		return new WP_Error( 'papelito_rate_limited', 'Não foi possível processar este cadastro agora.', array( 'status' => 429 ) );
+	}
+
+	$data       = papelito_auth_request_data( $request );
+	$validation = papelito_auth_validate_invitation_register_payload( $data );
+	if ( is_wp_error( $validation ) ) {
+		$validation->add_data( array( 'status' => 422 ) );
+		return $validation;
+	}
+
+	$invitation = papelito_company_invitation_find_pending_by_token( (string) $data['token'] );
+	$email      = strtolower( sanitize_email( trim( (string) $data['email'] ) ) );
+	if ( null === $invitation || ! hash_equals( strtolower( (string) $invitation['invited_email'] ), $email ) ) {
+		return new WP_Error( 'papelito_invitation_registration_unavailable', 'Não foi possível criar uma conta para este convite.', array( 'status' => 409 ) );
+	}
+
+	$user = papelito_auth_create_invited_user( $data );
+	if ( is_wp_error( $user ) ) {
+		return $user;
+	}
+
+	$dispatch = papelito_auth_dispatch_verification_email( $user );
+	return new WP_REST_Response(
+		array(
+			'ok'                        => true,
+			'requiresEmailVerification' => true,
+			'email'                     => $user->user_email,
+			'emailSent'                 => ! is_wp_error( $dispatch ),
+		),
+		201
+	);
+}
+
+function papelito_auth_handle_verify_email( WP_REST_Request $request ) {
+	$data  = papelito_auth_request_data( $request );
+	$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
+	$token = isset( $data['token'] ) ? trim( (string) $data['token'] ) : '';
+	if ( '' === $email || '' === $token ) {
+		return new WP_Error( 'papelito_invalid_verification_request', PAPELITO_AUTH_INVALID_VERIFICATION_MESSAGE, array( 'status' => 400 ) );
+	}
+
+	$user_id = email_exists( $email );
+	$user    = $user_id ? get_userdata( $user_id ) : false;
+	if ( ! $user instanceof WP_User || ! papelito_auth_requires_email_verification( $user->ID ) ) {
+		return new WP_Error( 'papelito_invalid_verification_token', PAPELITO_AUTH_INVALID_VERIFICATION_MESSAGE, array( 'status' => 400 ) );
+	}
+
+	$stored_hash   = (string) get_user_meta( $user->ID, 'papelito_email_verification_token_hash', true );
+	$stored_expiry = (string) get_user_meta( $user->ID, 'papelito_email_verification_token_expires_at', true );
+	if ( '' === $stored_hash || '' === $stored_expiry ) {
+		return new WP_Error( 'papelito_invalid_verification_token', PAPELITO_AUTH_INVALID_VERIFICATION_MESSAGE, array( 'status' => 400 ) );
+	}
+
+	$expiry_ts = strtotime( $stored_expiry );
+	if ( false === $expiry_ts || $expiry_ts < time() ) {
+		return new WP_Error( 'papelito_verification_token_expired', 'Link de confirmação expirado. Solicite um novo e-mail para continuar.', array( 'status' => 410 ) );
+	}
+
+	if ( ! hash_equals( $stored_hash, hash( 'sha256', $token ) ) ) {
+		return new WP_Error( 'papelito_invalid_verification_token', PAPELITO_AUTH_INVALID_VERIFICATION_MESSAGE, array( 'status' => 400 ) );
+	}
+
+	papelito_auth_mark_email_verified( $user->ID );
+	papelito_company_onboarding_mark_email_confirmed( $user->ID );
+	$b2b_result = papelito_auth_complete_b2b_onboarding( $user->ID );
+	if ( is_wp_error( $b2b_result ) && 'onboarding_required' !== $b2b_result->get_error_code() ) {
+		return $b2b_result;
+	}
+
+	update_user_meta( $user->ID, 'papelito_profile_complete', '1' );
+	return new WP_REST_Response( array( 'ok' => true, 'onboardingRequired' => is_wp_error( $b2b_result ), 'b2b' => papelito_company_context( $user->ID ) ), 200 );
+}
+
+function papelito_auth_handle_resend_verification( WP_REST_Request $request ) {
+	if ( ! papelito_auth_rate_limit( 'resend_verification', 10, 60 ) ) {
+		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+	}
+
+	$data  = papelito_auth_request_data( $request );
+	$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
+	if ( '' === $email ) {
+		return new WP_REST_Response( array( 'ok' => true ), 200 );
+	}
+
+	$user_id = email_exists( $email );
+	$user    = $user_id ? get_userdata( $user_id ) : false;
+	if ( ! $user instanceof WP_User || ! papelito_auth_requires_email_verification( $user->ID ) ) {
+		return new WP_REST_Response( array( 'ok' => true ), 200 );
+	}
+
+	$last_sent_at = (string) get_user_meta( $user->ID, 'papelito_email_verification_sent_at', true );
+	$last_sent_ts = '' !== $last_sent_at ? strtotime( $last_sent_at ) : false;
+	if ( false !== $last_sent_ts && ( time() - $last_sent_ts ) < MINUTE_IN_SECONDS ) {
+		return new WP_Error( 'papelito_verification_cooldown', 'Aguarde 60 segundos antes de solicitar um novo e-mail.', array( 'status' => 429 ) );
+	}
+
+	$dispatch = papelito_auth_dispatch_verification_email( $user );
+	return is_wp_error( $dispatch ) ? $dispatch : new WP_REST_Response( array( 'ok' => true ), 200 );
+}
+
+function papelito_auth_handle_forgot_password( WP_REST_Request $request ) {
+	if ( ! papelito_auth_rate_limit( 'forgot_password', 10, 60 ) ) {
+		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+	}
+
+	$data  = papelito_auth_request_data( $request );
+	$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
+	if ( '' === $email || ! is_email( $email ) ) {
+		return new WP_Error( 'papelito_invalid_email', 'Informe um e-mail válido.', array( 'status' => 422 ) );
+	}
+
+	$user_id = email_exists( $email );
+	$user    = $user_id ? get_userdata( $user_id ) : false;
+	if ( ! $user instanceof WP_User ) {
+		return new WP_REST_Response( array( 'ok' => true ), 200 );
+	}
+
+	$dispatch = papelito_auth_requires_email_verification( $user->ID )
+		? papelito_auth_maybe_resend_pending_verification( $user )
+		: papelito_auth_dispatch_password_reset_email( $user );
+
+	return is_wp_error( $dispatch ) ? $dispatch : new WP_REST_Response( array( 'ok' => true ), 200 );
+}
+
+function papelito_auth_handle_change_password( WP_REST_Request $request ) {
+	$user = wp_get_current_user();
+	if ( ! $user instanceof WP_User || $user->ID <= 0 ) {
+		return new WP_Error( 'papelito_not_authenticated', 'Não autenticado.', array( 'status' => 401 ) );
+	}
+
+	$result = papelito_auth_change_password( $user, papelito_auth_request_data( $request ) );
+	return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'ok' => true ), 200 );
+}
+
+function papelito_auth_handle_reset_password( WP_REST_Request $request ) {
+	if ( ! papelito_auth_rate_limit( 'reset_password', 20, 60 ) ) {
+		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+	}
+
+	$data             = papelito_auth_request_data( $request );
+	$login            = isset( $data['login'] ) ? sanitize_text_field( trim( (string) $data['login'] ) ) : '';
+	$key              = isset( $data['key'] ) ? trim( (string) $data['key'] ) : '';
+	$password         = isset( $data['password'] ) ? (string) $data['password'] : '';
+	$confirm_password = isset( $data['confirmPassword'] ) ? (string) $data['confirmPassword'] : '';
+	if ( '' === $login || '' === $key ) {
+		return new WP_Error( 'papelito_password_reset_invalid_request', 'Link de redefinicao inválido ou expirado.', array( 'status' => 400 ) );
+	}
+
+	if ( strlen( $password ) < 8 ) {
+		return new WP_Error( 'papelito_password_too_short', 'A nova senha precisa ter pelo menos 8 caracteres.', array( 'status' => 422 ) );
+	}
+
+	if ( $password !== $confirm_password ) {
+		return new WP_Error( 'papelito_password_mismatch', 'As senhas precisam coincidir.', array( 'status' => 422 ) );
+	}
+
+	$user = check_password_reset_key( $key, $login );
+	if ( is_wp_error( $user ) || ! $user instanceof WP_User ) {
+		return papelito_auth_map_password_reset_key_error( $user instanceof WP_Error ? $user : new WP_Error( 'invalid_key' ) );
+	}
+
+	reset_password( $user, $password );
+	papelito_auth_invalidate_user_sessions( $user->ID );
+	papelito_auth_mark_email_verified( $user->ID );
+
+	return new WP_REST_Response( array( 'ok' => true ), 200 );
 }
 
 add_action(
 	'rest_api_init',
 	static function (): void {
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_AUTH_API_NAMESPACE,
 			'/auth/me',
 			array(
 				'methods'             => 'GET',
-				'permission_callback' => static function (): bool {
-					return is_user_logged_in();
-				},
-				'callback'            => static function () {
-					$user = wp_get_current_user();
-
-					if ( ! $user instanceof WP_User || ! $user->exists() ) {
-						return new WP_Error(
-							'papelito_not_authenticated',
-							'Usuário não autenticado.',
-							array( 'status' => 401 )
-						);
-					}
-
-					return new WP_REST_Response(
-						papelito_auth_build_identity_response( $user ),
-						200
-					);
-				},
+				'permission_callback' => 'papelito_auth_logged_in',
+				'callback'            => 'papelito_auth_handle_current_user',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_AUTH_API_NAMESPACE,
 			'/auth/welcome-toast/claim',
 			array(
 				'methods'             => 'POST',
-				'permission_callback' => static function (): bool {
-					return is_user_logged_in();
-				},
-				'callback'            => static function () {
-					$user = wp_get_current_user();
-
-					if ( ! $user instanceof WP_User || ! $user->exists() ) {
-						return new WP_Error(
-							'papelito_not_authenticated',
-							'Usuário não autenticado.',
-							array( 'status' => 401 )
-						);
-					}
-
-					return new WP_REST_Response(
-						papelito_auth_welcome_toast_claim( $user->ID ),
-						200
-					);
-				},
+				'permission_callback' => 'papelito_auth_logged_in',
+				'callback'            => 'papelito_auth_handle_welcome_toast_claim',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_AUTH_API_NAMESPACE,
 			'/auth/google',
 			array(
 				'methods'             => 'POST',
@@ -1174,425 +1404,77 @@ add_action(
 						'type'     => 'string',
 					),
 				),
-				'callback'            => static function ( WP_REST_Request $request ) {
-					if ( ! papelito_auth_rate_limit( 'google' ) ) {
-						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
-					}
-
-					$id_token = (string) $request->get_param( 'id_token' );
-
-					if ( '' === trim( $id_token ) ) {
-						return new WP_Error( 'papelito_missing_token', 'id_token ausente.', array( 'status' => 400 ) );
-					}
-
-					$payload = papelito_auth_verify_google_id_token( $id_token );
-
-					if ( is_wp_error( $payload ) ) {
-						return $payload;
-					}
-
-					$user = papelito_auth_find_or_create_google_user( $payload );
-
-					if ( is_wp_error( $user ) ) {
-						return $user;
-					}
-
-					$response = papelito_auth_build_token_response( $user );
-
-					if ( is_wp_error( $response ) ) {
-						return $response;
-					}
-
-					return new WP_REST_Response( $response, 200 );
-				},
+				'callback'            => 'papelito_auth_handle_google',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_AUTH_API_NAMESPACE,
 			'/auth/register',
 			array(
 				'methods'             => 'POST',
 				'permission_callback' => '__return_true',
-				'callback'            => static function ( WP_REST_Request $request ) {
-					if ( ! papelito_b2b_company_model_enabled() ) {
-						return new WP_Error( 'papelito_b2b_company_rollout_disabled', 'Cadastro empresarial temporariamente indisponível.', array( 'status' => 503 ) );
-					}
-					$writes = papelito_b2b_require_company_writes();
-					if ( is_wp_error( $writes ) ) {
-						return $writes;
-					}
-					if ( ! papelito_auth_rate_limit( 'register', 10, 60 ) ) {
-						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
-					}
-
-					$data = $request->get_json_params();
-
-					if ( ! is_array( $data ) ) {
-						$data = $request->get_params();
-					}
-
-					return new WP_Error( 'papelito_pre_account_required', 'Use o fluxo de candidatura empresarial para criar uma conta após aprovação.', array( 'status' => 422 ) );
-
-					$validation = papelito_auth_validate_register_payload( (array) $data );
-
-					if ( $validation instanceof WP_Error ) {
-						$validation->add_data( array( 'status' => 422 ) );
-						return $validation;
-					}
-
-					$onboarding_type = (string) ( $data['onboarding_type'] ?? $data['intent'] ?? 'create_company' );
-					if ( 'join_company' === $onboarding_type ) {
-						return new WP_Error( 'papelito_b2b_invite_required', 'Para acessar uma empresa existente, solicite um convite por e-mail ao administrador.', array( 'status' => 422 ) );
-					}
-					if ( 'create_company' === $onboarding_type ) {
-						$owner_validation = papelito_company_validate_owner_registry(
-							(string) ( $data['cpf'] ?? '' ),
-							(string) ( $data['birth_date'] ?? '' ),
-							(string) ( $data['cnpj'] ?? '' ),
-							trim( (string) ( $data['first_name'] ?? '' ) . ' ' . (string) ( $data['last_name'] ?? '' ) )
-						);
-						if ( is_wp_error( $owner_validation ) ) {
-							return $owner_validation;
-						}
-					}
-
-					$user = papelito_auth_create_registered_user( (array) $data );
-
-					if ( is_wp_error( $user ) ) {
-						return $user;
-					}
-
-					$dispatch = papelito_auth_dispatch_verification_email( $user );
-
-					return new WP_REST_Response(
-						array(
-							'ok'                        => true,
-							'requiresEmailVerification' => true,
-							'email'                     => $user->user_email,
-							'emailSent'                 => ! is_wp_error( $dispatch ),
-						),
-						201
-					);
-				},
+				'callback'            => 'papelito_auth_handle_register',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_AUTH_API_NAMESPACE,
 			'/auth/register-invitation',
 			array(
 				'methods'             => 'POST',
 				'permission_callback' => '__return_true',
-				'callback'            => static function ( WP_REST_Request $request ) {
-					if ( ! papelito_b2b_company_model_enabled() || ! papelito_auth_rate_limit( 'register_invitation', 10, 60 ) ) {
-						return new WP_Error( 'papelito_rate_limited', 'Não foi possível processar este cadastro agora.', array( 'status' => 429 ) );
-					}
-					$data = $request->get_json_params();
-					if ( ! is_array( $data ) ) {
-						$data = $request->get_params();
-					}
-					$validation = papelito_auth_validate_invitation_register_payload( (array) $data );
-					if ( is_wp_error( $validation ) ) {
-						$validation->add_data( array( 'status' => 422 ) );
-						return $validation;
-					}
-					$invitation = papelito_company_invitation_find_pending_by_token( (string) $data['token'] );
-					$email = strtolower( sanitize_email( trim( (string) $data['email'] ) ) );
-					if ( null === $invitation || ! hash_equals( strtolower( (string) $invitation['invited_email'] ), $email ) ) {
-						return new WP_Error( 'papelito_invitation_registration_unavailable', 'Não foi possível criar uma conta para este convite.', array( 'status' => 409 ) );
-					}
-					$user = papelito_auth_create_invited_user( (array) $data );
-					if ( is_wp_error( $user ) ) {
-						return $user;
-					}
-					$dispatch = papelito_auth_dispatch_verification_email( $user );
-					return new WP_REST_Response(
-						array(
-							'ok' => true,
-							'requiresEmailVerification' => true,
-							'email' => $user->user_email,
-							'emailSent' => ! is_wp_error( $dispatch ),
-						),
-						201
-					);
-				},
+				'callback'            => 'papelito_auth_handle_invitation_register',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_AUTH_API_NAMESPACE,
 			'/auth/verify-email',
 			array(
 				'methods'             => 'POST',
 				'permission_callback' => '__return_true',
-				'callback'            => static function ( WP_REST_Request $request ) {
-					$data = $request->get_json_params();
-
-					if ( ! is_array( $data ) ) {
-						$data = $request->get_params();
-					}
-
-					$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
-					$token = isset( $data['token'] ) ? trim( (string) $data['token'] ) : '';
-
-					if ( '' === $email || '' === $token ) {
-						return new WP_Error(
-							'papelito_invalid_verification_request',
-							'Link de confirmação inválido ou expirado.',
-							array( 'status' => 400 )
-						);
-					}
-
-					$user_id = email_exists( $email );
-					$user    = $user_id ? get_userdata( $user_id ) : false;
-
-					if ( ! $user instanceof WP_User || ! papelito_auth_requires_email_verification( $user->ID ) ) {
-						return new WP_Error(
-							'papelito_invalid_verification_token',
-							'Link de confirmação inválido ou expirado.',
-							array( 'status' => 400 )
-						);
-					}
-
-					$stored_hash   = (string) get_user_meta( $user->ID, 'papelito_email_verification_token_hash', true );
-					$stored_expiry = (string) get_user_meta( $user->ID, 'papelito_email_verification_token_expires_at', true );
-
-					if ( '' === $stored_hash || '' === $stored_expiry ) {
-						return new WP_Error(
-							'papelito_invalid_verification_token',
-							'Link de confirmação inválido ou expirado.',
-							array( 'status' => 400 )
-						);
-					}
-
-					$expiry_ts = strtotime( $stored_expiry );
-
-					if ( false === $expiry_ts || $expiry_ts < time() ) {
-						return new WP_Error(
-							'papelito_verification_token_expired',
-							'Link de confirmação expirado. Solicite um novo e-mail para continuar.',
-							array( 'status' => 410 )
-						);
-					}
-
-					if ( ! hash_equals( $stored_hash, hash( 'sha256', $token ) ) ) {
-						return new WP_Error(
-							'papelito_invalid_verification_token',
-							'Link de confirmação inválido ou expirado.',
-							array( 'status' => 400 )
-						);
-					}
-
-					papelito_auth_mark_email_verified( $user->ID );
-					papelito_company_onboarding_mark_email_confirmed( $user->ID );
-					$b2b_result = papelito_auth_complete_b2b_onboarding( $user->ID );
-					if ( is_wp_error( $b2b_result ) && 'onboarding_required' !== $b2b_result->get_error_code() ) {
-						return $b2b_result;
-					}
-					update_user_meta( $user->ID, 'papelito_profile_complete', '1' );
-
-					return new WP_REST_Response( array( 'ok' => true, 'onboardingRequired' => is_wp_error( $b2b_result ), 'b2b' => papelito_company_context( $user->ID ) ), 200 );
-				},
+				'callback'            => 'papelito_auth_handle_verify_email',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_AUTH_API_NAMESPACE,
 			'/auth/resend-verification',
 			array(
 				'methods'             => 'POST',
 				'permission_callback' => '__return_true',
-				'callback'            => static function ( WP_REST_Request $request ) {
-					if ( ! papelito_auth_rate_limit( 'resend_verification', 10, 60 ) ) {
-						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
-					}
-
-					$data = $request->get_json_params();
-
-					if ( ! is_array( $data ) ) {
-						$data = $request->get_params();
-					}
-
-					$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
-
-					if ( '' === $email ) {
-						return new WP_REST_Response( array( 'ok' => true ), 200 );
-					}
-
-					$user_id = email_exists( $email );
-					$user    = $user_id ? get_userdata( $user_id ) : false;
-
-					if ( ! $user instanceof WP_User || ! papelito_auth_requires_email_verification( $user->ID ) ) {
-						return new WP_REST_Response( array( 'ok' => true ), 200 );
-					}
-
-					$last_sent_at = (string) get_user_meta( $user->ID, 'papelito_email_verification_sent_at', true );
-					$last_sent_ts = '' !== $last_sent_at ? strtotime( $last_sent_at ) : false;
-
-					if ( false !== $last_sent_ts && ( time() - $last_sent_ts ) < MINUTE_IN_SECONDS ) {
-						return new WP_Error(
-							'papelito_verification_cooldown',
-							'Aguarde 60 segundos antes de solicitar um novo e-mail.',
-							array( 'status' => 429 )
-						);
-					}
-
-					$dispatch = papelito_auth_dispatch_verification_email( $user );
-
-					if ( is_wp_error( $dispatch ) ) {
-						return $dispatch;
-					}
-
-					return new WP_REST_Response( array( 'ok' => true ), 200 );
-				},
+				'callback'            => 'papelito_auth_handle_resend_verification',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_AUTH_API_NAMESPACE,
 			'/auth/forgot-password',
 			array(
 				'methods'             => 'POST',
 				'permission_callback' => '__return_true',
-				'callback'            => static function ( WP_REST_Request $request ) {
-					if ( ! papelito_auth_rate_limit( 'forgot_password', 10, 60 ) ) {
-						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
-					}
-
-					$data = $request->get_json_params();
-
-					if ( ! is_array( $data ) ) {
-						$data = $request->get_params();
-					}
-
-					$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
-
-					if ( '' === $email || ! is_email( $email ) ) {
-						return new WP_Error(
-							'papelito_invalid_email',
-							'Informe um e-mail válido.',
-							array( 'status' => 422 )
-						);
-					}
-
-					$user_id = email_exists( $email );
-					$user    = $user_id ? get_userdata( $user_id ) : false;
-
-					if ( ! $user instanceof WP_User ) {
-						return new WP_REST_Response( array( 'ok' => true ), 200 );
-					}
-
-					if ( papelito_auth_requires_email_verification( $user->ID ) ) {
-						$dispatch = papelito_auth_maybe_resend_pending_verification( $user );
-
-						if ( is_wp_error( $dispatch ) ) {
-							return $dispatch;
-						}
-
-						return new WP_REST_Response( array( 'ok' => true ), 200 );
-					}
-
-					$dispatch = papelito_auth_dispatch_password_reset_email( $user );
-
-					if ( is_wp_error( $dispatch ) ) {
-						return $dispatch;
-					}
-
-					return new WP_REST_Response( array( 'ok' => true ), 200 );
-				},
+				'callback'            => 'papelito_auth_handle_forgot_password',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_AUTH_API_NAMESPACE,
 			'/auth/change-password',
 			array(
 				'methods'             => 'POST',
-				'permission_callback' => static function (): bool {
-					return is_user_logged_in();
-				},
-				'callback'            => static function ( WP_REST_Request $request ) {
-					$user = wp_get_current_user();
-					if ( ! $user instanceof WP_User || $user->ID <= 0 ) {
-						return new WP_Error( 'papelito_not_authenticated', 'Não autenticado.', array( 'status' => 401 ) );
-					}
-
-					$data = $request->get_json_params();
-					if ( ! is_array( $data ) ) {
-						$data = $request->get_params();
-					}
-
-					$result = papelito_auth_change_password( $user, $data );
-					if ( is_wp_error( $result ) ) {
-						return $result;
-					}
-
-					return new WP_REST_Response( array( 'ok' => true ), 200 );
-				},
+				'permission_callback' => 'papelito_auth_logged_in',
+				'callback'            => 'papelito_auth_handle_change_password',
 			)
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_AUTH_API_NAMESPACE,
 			'/auth/reset-password',
 			array(
 				'methods'             => 'POST',
 				'permission_callback' => '__return_true',
-				'callback'            => static function ( WP_REST_Request $request ) {
-					if ( ! papelito_auth_rate_limit( 'reset_password', 20, 60 ) ) {
-						return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
-					}
-
-					$data = $request->get_json_params();
-
-					if ( ! is_array( $data ) ) {
-						$data = $request->get_params();
-					}
-
-					$login            = isset( $data['login'] ) ? sanitize_text_field( trim( (string) $data['login'] ) ) : '';
-					$key              = isset( $data['key'] ) ? trim( (string) $data['key'] ) : '';
-					$password         = isset( $data['password'] ) ? (string) $data['password'] : '';
-					$confirm_password = isset( $data['confirmPassword'] ) ? (string) $data['confirmPassword'] : '';
-
-					if ( '' === $login || '' === $key ) {
-						return new WP_Error(
-							'papelito_password_reset_invalid_request',
-							'Link de redefinicao inválido ou expirado.',
-							array( 'status' => 400 )
-						);
-					}
-
-					if ( strlen( $password ) < 8 ) {
-						return new WP_Error(
-							'papelito_password_too_short',
-							'A nova senha precisa ter pelo menos 8 caracteres.',
-							array( 'status' => 422 )
-						);
-					}
-
-					if ( $password !== $confirm_password ) {
-						return new WP_Error(
-							'papelito_password_mismatch',
-							'As senhas precisam coincidir.',
-							array( 'status' => 422 )
-						);
-					}
-
-					$user = check_password_reset_key( $key, $login );
-
-					if ( is_wp_error( $user ) || ! $user instanceof WP_User ) {
-						return papelito_auth_map_password_reset_key_error(
-							$user instanceof WP_Error ? $user : new WP_Error( 'invalid_key' )
-						);
-					}
-
-					reset_password( $user, $password );
-					papelito_auth_invalidate_user_sessions( $user->ID );
-					papelito_auth_mark_email_verified( $user->ID );
-
-					return new WP_REST_Response( array( 'ok' => true ), 200 );
-				},
+				'callback'            => 'papelito_auth_handle_reset_password',
 			)
 		);
 	}
