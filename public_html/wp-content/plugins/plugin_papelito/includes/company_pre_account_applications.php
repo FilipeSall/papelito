@@ -197,16 +197,41 @@ function papelito_pre_account_application_identity( array $input ): array|WP_Err
 		'cnpj'     => papelito_normalize_cnpj( (string) ( $input['cnpj'] ?? '' ) ),
 		'password' => (string) ( $input['password'] ?? '' ),
 	);
-	$is_valid = is_email( $identity['email'] )
-		&& '' !== $identity['name']
-		&& '' !== $identity['phone']
-		&& papelito_validate_cpf( $identity['cpf'] )
-		&& 1 === preg_match( '/^\d{4}-\d{2}-\d{2}$/', $identity['birth'] )
-		&& false !== strtotime( $identity['birth'] )
-		&& papelito_validate_cnpj( $identity['cnpj'] )
-		&& strlen( $identity['password'] ) >= 8;
+	$errors = array();
+	if ( ! is_email( $identity['email'] ) ) {
+		$errors['email'] = array( 'Informe um e-mail válido.' );
+	}
+	if ( '' === $identity['name'] ) {
+		$errors['full_name'] = array( 'Informe seu nome completo.' );
+	}
+	if ( '' === $identity['phone'] ) {
+		$errors['phone'] = array( 'Informe seu telefone.' );
+	}
+	if ( ! papelito_validate_cpf( $identity['cpf'] ) ) {
+		$errors['cpf'] = array( 'Informe um CPF válido.' );
+	}
+	if ( 1 !== preg_match( '/^\d{4}-\d{2}-\d{2}$/', $identity['birth'] ) || false === strtotime( $identity['birth'] ) ) {
+		$errors['birth_date'] = array( 'Informe uma data de nascimento válida.' );
+	}
+	if ( ! papelito_validate_cnpj( $identity['cnpj'] ) ) {
+		$errors['cnpj'] = array( 'Informe um CNPJ válido.' );
+	}
+	if ( strlen( $identity['password'] ) < 8 ) {
+		$errors['password'] = array( 'A senha precisa ter pelo menos 8 caracteres.' );
+	}
 
-	return $is_valid ? $identity : new WP_Error( 'papelito_pre_account_invalid_input', 'Dados cadastrais inválidos.', array( 'status' => 422 ) );
+	if ( empty( $errors ) ) {
+		return $identity;
+	}
+
+	return new WP_Error(
+		'papelito_pre_account_invalid_input',
+		'Revise os dados informados.',
+		array(
+			'status' => 422,
+			'errors' => $errors,
+		)
+	);
 }
 
 function papelito_pre_account_application_address( array $input ): array|WP_Error {
