@@ -60,7 +60,7 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 
 | Arquivo | Responsabilidade |
 |---|---|
-| `auth_endpoints.php` | registro, verificação de e-mail, Google OAuth, recuperação de senha, `/auth/me` |
+| `auth_endpoints.php` | registro, verificação de e-mail, Google OAuth, recuperação/troca de senha, invalidação de sessão e `/auth/me` |
 | `user_registration.php` | hooks do WooCommerce: campos extras e validação BR no cadastro clássico |
 | `customer_identity.php` | criptografia/HMAC de CPF + repositório de perfis de customer |
 

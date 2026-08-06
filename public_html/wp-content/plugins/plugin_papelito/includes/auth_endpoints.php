@@ -26,6 +26,7 @@ const PAPELITO_AUTH_NEW_USER_LOOKUP_MESSAGE = 'Falha ao carregar usuário recém
 const PAPELITO_AUTH_ONBOARDING_RESUME_MESSAGE = 'Retome seu onboarding B2B para continuar.';
 const PAPELITO_AUTH_RATE_LIMIT_MESSAGE = 'Muitas tentativas. Tente novamente em alguns instantes.';
 const PAPELITO_AUTH_INVALID_VERIFICATION_MESSAGE = 'Link de confirmação inválido ou expirado.';
+const PAPELITO_AUTH_SESSION_VERSION_META = 'papelito_auth_session_version';
 
 add_filter(
 	'graphql_jwt_auth_expire',
@@ -40,6 +41,65 @@ add_filter(
 		return DAY_IN_SECONDS;
 	}
 );
+
+/**
+ * Acrescenta a versao de sessao quando ela existe, preservando JWTs legados ate uma invalidação explicita.
+ *
+ * @param array   $token Payload JWT.
+ * @param WP_User $user Usuario dono do token.
+ * @return array
+ */
+function papelito_auth_add_session_version_to_token( array $token, WP_User $user ): array {
+	$version = (string) get_user_meta( $user->ID, PAPELITO_AUTH_SESSION_VERSION_META, true );
+
+	if ( '' === $version ) {
+		return $token;
+	}
+
+	if ( ! isset( $token['data'] ) || ! is_array( $token['data'] ) ) {
+		$token['data'] = array();
+	}
+	if ( ! isset( $token['data']['user'] ) || ! is_array( $token['data']['user'] ) ) {
+		$token['data']['user'] = array();
+	}
+
+	$token['data']['user']['papelito_session_version'] = $version;
+
+	return $token;
+}
+
+add_filter( 'graphql_jwt_auth_token_before_sign', 'papelito_auth_add_session_version_to_token', 20, 2 );
+
+/**
+ * Rejeita JWTs emitidos antes da ultima invalidacao de sessao da conta.
+ *
+ * @param object $token JWT decodificado pelo plugin de autenticacao.
+ * @return object|WP_Error
+ */
+function papelito_auth_validate_session_version( $token ) {
+	$user_id = isset( $token->data->user->id ) ? (int) $token->data->user->id : 0;
+
+	if ( $user_id <= 0 ) {
+		return $token;
+	}
+
+	$expected_version = (string) get_user_meta( $user_id, PAPELITO_AUTH_SESSION_VERSION_META, true );
+	if ( '' === $expected_version ) {
+		return $token;
+	}
+
+	$token_version = isset( $token->data->user->papelito_session_version )
+		? (string) $token->data->user->papelito_session_version
+		: '';
+
+	if ( ! hash_equals( $expected_version, $token_version ) ) {
+		return new WP_Error( 'papelito_session_invalidated', 'Sessão expirada. Faça login novamente.', array( 'status' => 401 ) );
+	}
+
+	return $token;
+}
+
+add_filter( 'graphql_jwt_auth_validate_token', 'papelito_auth_validate_session_version' );
 
 /**
  * Valida formatos comuns de CEP usados no projeto.
@@ -692,6 +752,54 @@ function papelito_auth_rate_limit( string $bucket, int $max = 20, int $window = 
 	$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown';
 
 	return papelito_rate_limit( 'auth_' . $bucket, 'ip:' . $ip, $max, $window );
+}
+
+/**
+ * Invalida sessoes WordPress e todos os JWTs emitidos antes da troca de credencial.
+ *
+ * @param int $user_id Usuario cuja credencial mudou.
+ * @return void
+ */
+function papelito_auth_invalidate_user_sessions( int $user_id ): void {
+	update_user_meta( $user_id, PAPELITO_AUTH_SESSION_VERSION_META, wp_generate_uuid4() );
+
+	if ( class_exists( 'WP_Session_Tokens' ) ) {
+		WP_Session_Tokens::get_instance( $user_id )->destroy_all();
+	}
+}
+
+/**
+ * Troca a senha da propria conta somente apos confirmar a credencial atual.
+ *
+ * @param WP_User $user Usuario autenticado.
+ * @param array   $data Payload validado pelo endpoint.
+ * @return true|WP_Error
+ */
+function papelito_auth_change_password( WP_User $user, array $data ) {
+	if ( ! papelito_rate_limit( 'password_change', papelito_rate_limit_identity(), 5, 300 ) ) {
+		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+	}
+
+	$current_password = isset( $data['currentPassword'] ) ? (string) $data['currentPassword'] : '';
+	$password         = isset( $data['password'] ) ? (string) $data['password'] : '';
+	$confirm_password = isset( $data['confirmPassword'] ) ? (string) $data['confirmPassword'] : '';
+
+	if ( '' === $current_password || ! wp_check_password( $current_password, $user->user_pass, $user->ID ) ) {
+		return new WP_Error( 'papelito_current_password_invalid', 'Não foi possível confirmar a senha atual.', array( 'status' => 403 ) );
+	}
+
+	if ( strlen( $password ) < 8 ) {
+		return new WP_Error( 'papelito_password_too_short', 'A nova senha precisa ter pelo menos 8 caracteres.', array( 'status' => 422 ) );
+	}
+
+	if ( $password !== $confirm_password ) {
+		return new WP_Error( 'papelito_password_mismatch', 'As senhas precisam coincidir.', array( 'status' => 422 ) );
+	}
+
+	wp_set_password( $password, $user->ID );
+	papelito_auth_invalidate_user_sessions( $user->ID );
+
+	return true;
 }
 
 /**
@@ -1398,6 +1506,35 @@ add_action(
 
 		register_rest_route(
 			'papelito/v1',
+			'/auth/change-password',
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => static function (): bool {
+					return is_user_logged_in();
+				},
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$user = wp_get_current_user();
+					if ( ! $user instanceof WP_User || $user->ID <= 0 ) {
+						return new WP_Error( 'papelito_not_authenticated', 'Não autenticado.', array( 'status' => 401 ) );
+					}
+
+					$data = $request->get_json_params();
+					if ( ! is_array( $data ) ) {
+						$data = $request->get_params();
+					}
+
+					$result = papelito_auth_change_password( $user, $data );
+					if ( is_wp_error( $result ) ) {
+						return $result;
+					}
+
+					return new WP_REST_Response( array( 'ok' => true ), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
 			'/auth/reset-password',
 			array(
 				'methods'             => 'POST',
@@ -1451,6 +1588,7 @@ add_action(
 					}
 
 					reset_password( $user, $password );
+					papelito_auth_invalidate_user_sessions( $user->ID );
 					papelito_auth_mark_email_verified( $user->ID );
 
 					return new WP_REST_Response( array( 'ok' => true ), 200 );
