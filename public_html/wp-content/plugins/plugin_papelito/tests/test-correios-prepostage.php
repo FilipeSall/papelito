@@ -57,7 +57,7 @@ echo "Scenario 2: mock is deterministic, explicit and offline\n";
 putenv( 'PAPELITO_CORREIOS_PREPOST_MODE=mock' );
 putenv( 'PAPELITO_CORREIOS_PREPOST_MOCK_SCENARIO=success' );
 $GLOBALS['papelito_environment_type'] = 'local';
-$adapter = new Papelito_Correios_Mock_Prepostage_Adapter();
+$adapter = new PapelitoCorreiosMockPrepostageAdapter();
 $first = $adapter->create( new Papelito_Prepostage_Test_Order(), 55 );
 $second = $adapter->create( new Papelito_Prepostage_Test_Order(), 55 );
 papelito_prepostage_assert( 'same order has same fake tracking id', $first['tracking_code'], $second['tracking_code'] );

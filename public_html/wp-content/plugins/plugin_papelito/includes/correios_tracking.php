@@ -712,10 +712,10 @@ function papelito_tracking_mock_reconciliation_data( $order, int $vendor_id ) {
 	if ( ! function_exists( 'papelito_correios_prepostage_is_test_environment' ) || ! papelito_correios_prepostage_is_test_environment() ) {
 		return array( 'status' => 'needs_support', 'reason' => 'mock_reconciliation_forbidden' );
 	}
-	if ( ! class_exists( 'Papelito_Correios_Mock_Prepostage_Adapter' ) ) {
+	if ( ! class_exists( 'PapelitoCorreiosMockPrepostageAdapter' ) ) {
 		return array( 'status' => 'needs_support', 'reason' => 'mock_adapter_missing' );
 	}
-	$adapter = new Papelito_Correios_Mock_Prepostage_Adapter();
+	$adapter = new PapelitoCorreiosMockPrepostageAdapter();
 	$data    = $adapter->create( $order, $vendor_id );
 	if ( is_wp_error( $data ) ) {
 		$error_data = $data->get_error_data();

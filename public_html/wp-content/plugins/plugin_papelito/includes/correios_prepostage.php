@@ -11,13 +11,17 @@
 
 defined( 'ABSPATH' ) || exit;
 
+if ( ! defined( 'PAPELITO_CORREIOS_JSON_CONTENT_TYPE' ) ) {
+	define( 'PAPELITO_CORREIOS_JSON_CONTENT_TYPE', 'application/json' );
+}
+
 /** Contrato interno para providers de pre-postagem. */
-interface Papelito_Correios_Prepostage_Adapter {
+interface PapelitoCorreiosPrepostageAdapter {
 	/** Retorna a saude do provider sem criar objetos. */
 	public function health(): array;
 
 	/** Cria uma pre-postagem. */
-	public function create( $order, int $vendor_id );
+	public function create( object $order, int $vendor_id );
 
 	/** Recupera ou reemite um rotulo existente. */
 	public function get_or_regenerate_label( array $shipment );
@@ -36,13 +40,21 @@ function papelito_correios_prepostage_config( string $name, string $default = ''
 	}
 
 	$value = getenv( $name );
-	return false === $value ? $default : trim( (string) $value );
+	if ( false === $value ) {
+		return $default;
+	}
+
+	return trim( (string) $value );
 }
 
 /** Retorna o modo efetivo: disabled, mock ou real. */
 function papelito_correios_prepostage_mode(): string {
 	$mode = sanitize_key( papelito_correios_prepostage_config( 'PAPELITO_CORREIOS_PREPOST_MODE', 'disabled' ) );
-	return in_array( $mode, array( 'disabled', 'mock', 'real' ), true ) ? $mode : 'disabled';
+	if ( in_array( $mode, array( 'disabled', 'mock', 'real' ), true ) ) {
+		return $mode;
+	}
+
+	return 'disabled';
 }
 
 /** Retorna o ambiente WordPress normalizado. */
@@ -51,7 +63,11 @@ function papelito_correios_prepostage_environment(): string {
 		return sanitize_key( wp_get_environment_type() );
 	}
 
-	return defined( 'WP_ENVIRONMENT_TYPE' ) ? sanitize_key( (string) WP_ENVIRONMENT_TYPE ) : 'production';
+	if ( defined( 'WP_ENVIRONMENT_TYPE' ) ) {
+		return sanitize_key( (string) WP_ENVIRONMENT_TYPE );
+	}
+
+	return 'production';
 }
 
 /** Permite recursos de teste somente em ambientes explicitamente locais. */
@@ -66,7 +82,10 @@ function papelito_correios_prepostage_is_production(): bool {
 
 /** Flag explicita para o fallback de cadastro manual pelo vendor. */
 function papelito_correios_manual_tracking_enabled(): bool {
-	$default = 'disabled' === papelito_correios_prepostage_mode() ? 'true' : 'false';
+	$default = 'false';
+	if ( 'disabled' === papelito_correios_prepostage_mode() ) {
+		$default = 'true';
+	}
 	$value = strtolower( papelito_correios_prepostage_config( 'PAPELITO_CORREIOS_MANUAL_TRACKING_ENABLED', $default ) );
 	return in_array( $value, array( '1', 'true', 'yes', 'on' ), true );
 }
@@ -88,7 +107,11 @@ function papelito_correios_prepostage_error( string $code, string $message, int 
 /** Retorna a fonte de saude usada pelo provider mock. */
 function papelito_correios_dev_health_source(): string {
 	$source = sanitize_key( papelito_correios_prepostage_config( 'PAPELITO_CORREIOS_DEV_HEALTH_SOURCE', 'mock' ) );
-	return in_array( $source, array( 'mock', 'real' ), true ) ? $source : 'mock';
+	if ( in_array( $source, array( 'mock', 'real' ), true ) ) {
+		return $source;
+	}
+
+	return 'mock';
 }
 
 /** Detecta flags de desenvolvimento configuradas fora da allowlist segura. */
@@ -174,7 +197,102 @@ function papelito_correios_dev_health_request( string $method, string $url, arra
 
 	$status = (int) wp_remote_retrieve_response_code( $response );
 	$body   = json_decode( wp_remote_retrieve_body( $response ), true );
-	return array( 'http_status' => $status, 'body' => is_array( $body ) ? $body : array() );
+	if ( ! is_array( $body ) ) {
+		$body = array();
+	}
+
+	return array( 'http_status' => $status, 'body' => $body );
+}
+
+/** Cria a chave não reversível do cache de saúde sem usar hash fraco. */
+function papelito_correios_dev_health_cache_key( array $credentials ): string {
+	$fingerprint = hash_hmac( 'sha256', implode( '|', array( $credentials['access_code'], $credentials['username'] ) ), wp_salt( 'auth' ) );
+	$parts       = array(
+		papelito_correios_prepostage_environment(),
+		'real',
+		$credentials['environment'],
+		$credentials['contract'],
+		$credentials['posting_card'],
+		$fingerprint,
+	);
+
+	return 'papelito_correios_dev_health_' . hash( 'sha256', implode( '|', $parts ) );
+}
+
+/** Tenta adquirir o lock curto do health check real. */
+function papelito_correios_dev_health_acquire_lock( string $lock_key ): bool {
+	if ( add_option( $lock_key, time(), '', false ) ) {
+		return true;
+	}
+
+	$locked_at = absint( get_option( $lock_key, 0 ) );
+	if ( $locked_at > time() - 30 ) {
+		return false;
+	}
+
+	delete_option( $lock_key );
+	return add_option( $lock_key, time(), '', false );
+}
+
+/** Autentica no CWS sem criar uma pre-postagem. */
+function papelito_correios_dev_health_token_request( array $credentials, string $base_url ): array {
+	return papelito_correios_dev_health_request(
+		'POST',
+		$base_url . 'token/v1/autentica/cartaopostagem',
+		array(
+			'body'    => wp_json_encode( array( 'numero' => $credentials['posting_card'] ) ),
+			'headers' => array(
+				'Authorization' => 'Basic ' . base64_encode( $credentials['username'] . ':' . $credentials['access_code'] ), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
+				'Accept'        => PAPELITO_CORREIOS_JSON_CONTENT_TYPE,
+				'Content-Type'  => PAPELITO_CORREIOS_JSON_CONTENT_TYPE,
+			),
+		)
+	);
+}
+
+/** Interpreta a resposta do serviço 86720. */
+function papelito_correios_dev_health_service_result( array $service_response ): array {
+	$service_status = (int) ( $service_response['http_status'] ?? 0 );
+	if ( $service_status >= 200 && $service_status < 300 ) {
+		return array( 'status' => 'healthy', 'reason' => 'service_authorized' );
+	}
+
+	if ( in_array( $service_status, array( 401, 403, 404 ), true ) ) {
+		return array( 'status' => 'unhealthy', 'reason' => 'service_not_authorized' );
+	}
+
+	return array( 'status' => 'unknown', 'reason' => 'authentication_unavailable' );
+}
+
+/** Valida o token e a autorização do serviço 86720. */
+function papelito_correios_dev_health_token_result( array $token_response, array $credentials, string $base_url ): array {
+	$default = array( 'status' => 'unknown', 'reason' => 'authentication_unavailable' );
+	$status  = (int) ( $token_response['http_status'] ?? 0 );
+
+	if ( in_array( $status, array( 401, 403 ), true ) ) {
+		return array( 'status' => 'unhealthy', 'reason' => 'credentials_invalid' );
+	}
+
+	if ( 200 !== $status || empty( $token_response['body']['token'] ) ) {
+		return $default;
+	}
+
+	$token    = $token_response['body'];
+	$contract = sanitize_text_field( (string) ( $token['cartaoPostagem']['contrato'] ?? $credentials['contract'] ) );
+	$card     = sanitize_text_field( (string) ( $token['cartaoPostagem']['numero'] ?? $credentials['posting_card'] ) );
+	$cnpj     = preg_replace( '/\D+/', '', (string) ( $token['cnpj'] ?? '' ) );
+	if ( '' === $contract || '' === $card || '' === $cnpj ) {
+		return array( 'status' => 'unhealthy', 'reason' => 'contract_missing' );
+	}
+
+	$url = $base_url . 'meucontrato/v1/empresas/' . rawurlencode( $cnpj ) . '/contratos/' . rawurlencode( $contract ) . '/cartoes/' . rawurlencode( $card ) . '/servicos/86720';
+	$service_response = papelito_correios_dev_health_request(
+		'GET',
+		$url,
+		array( 'headers' => array( 'Authorization' => 'Bearer ' . sanitize_text_field( (string) $token['token'] ), 'Accept' => PAPELITO_CORREIOS_JSON_CONTENT_TYPE ) )
+	);
+
+	return papelito_correios_dev_health_service_result( $service_response );
 }
 
 /** Verifica autenticacao e autorizacao 86720 sem criar uma pre-postagem. */
@@ -182,71 +300,30 @@ function papelito_correios_dev_health_real(): array {
 	if ( ! function_exists( 'papelito_correios_credentials' ) || ! function_exists( 'papelito_correios_base_url' ) ) {
 		return array( 'status' => 'unhealthy', 'reason' => 'integration_missing' );
 	}
+
 	$credentials = papelito_correios_credentials();
 	if ( is_wp_error( $credentials ) ) {
 		return array( 'status' => 'unhealthy', 'reason' => 'credentials_missing' );
 	}
 
-	$fingerprint = hash_hmac( 'sha256', implode( '|', array( $credentials['access_code'], $credentials['username'] ) ), wp_salt( 'auth' ) );
-	$cache_key   = 'papelito_correios_dev_health_' . md5( implode( '|', array( papelito_correios_prepostage_environment(), 'real', $credentials['environment'], $credentials['contract'], $credentials['posting_card'], $fingerprint ) ) );
-	$cached      = get_transient( $cache_key );
+	$cache_key = papelito_correios_dev_health_cache_key( $credentials );
+	$cached    = get_transient( $cache_key );
 	if ( is_array( $cached ) && isset( $cached['status'] ) ) {
 		return $cached;
 	}
 
 	$lock_key = $cache_key . '_lock';
-	if ( ! add_option( $lock_key, time(), '', false ) ) {
-		$locked_at = absint( get_option( $lock_key, 0 ) );
-		if ( $locked_at > time() - 30 ) {
-			return array( 'status' => 'unknown', 'reason' => 'check_in_progress' );
-		}
-		delete_option( $lock_key );
-		if ( ! add_option( $lock_key, time(), '', false ) ) {
-			return array( 'status' => 'unknown', 'reason' => 'check_in_progress' );
-		}
+	if ( ! papelito_correios_dev_health_acquire_lock( $lock_key ) ) {
+		return array( 'status' => 'unknown', 'reason' => 'check_in_progress' );
 	}
 
-	$base_url = papelito_correios_base_url( $credentials['environment'] );
-	$token_response = papelito_correios_dev_health_request(
-		'POST',
-		$base_url . 'token/v1/autentica/cartaopostagem',
-		array(
-			'body'    => wp_json_encode( array( 'numero' => $credentials['posting_card'] ) ),
-			'headers' => array(
-				'Authorization' => 'Basic ' . base64_encode( $credentials['username'] . ':' . $credentials['access_code'] ), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
-				'Accept'        => 'application/json',
-				'Content-Type'  => 'application/json',
-			),
-		)
-	);
-	$result = array( 'status' => 'unknown', 'reason' => 'authentication_unavailable' );
-	if ( isset( $token_response['http_status'] ) && in_array( $token_response['http_status'], array( 401, 403 ), true ) ) {
-		$result = array( 'status' => 'unhealthy', 'reason' => 'credentials_invalid' );
-	} elseif ( 200 === ( $token_response['http_status'] ?? 0 ) && ! empty( $token_response['body']['token'] ) ) {
-		$token    = $token_response['body'];
-		$contract = sanitize_text_field( (string) ( $token['cartaoPostagem']['contrato'] ?? $credentials['contract'] ) );
-		$card     = sanitize_text_field( (string) ( $token['cartaoPostagem']['numero'] ?? $credentials['posting_card'] ) );
-		$cnpj     = preg_replace( '/\D+/', '', (string) ( $token['cnpj'] ?? '' ) );
-		if ( '' === $contract || '' === $card || '' === $cnpj ) {
-			$result = array( 'status' => 'unhealthy', 'reason' => 'contract_missing' );
-		} else {
-			$url = $base_url . 'meucontrato/v1/empresas/' . rawurlencode( $cnpj ) . '/contratos/' . rawurlencode( $contract ) . '/cartoes/' . rawurlencode( $card ) . '/servicos/86720';
-			$service_response = papelito_correios_dev_health_request(
-				'GET',
-				$url,
-				array( 'headers' => array( 'Authorization' => 'Bearer ' . sanitize_text_field( (string) $token['token'] ), 'Accept' => 'application/json' ) )
-			);
-			$service_status = (int) ( $service_response['http_status'] ?? 0 );
-			if ( $service_status >= 200 && $service_status < 300 ) {
-				$result = array( 'status' => 'healthy', 'reason' => 'service_authorized' );
-			} elseif ( in_array( $service_status, array( 401, 403, 404 ), true ) ) {
-				$result = array( 'status' => 'unhealthy', 'reason' => 'service_not_authorized' );
-			}
-		}
-	}
+	$base_url       = papelito_correios_base_url( $credentials['environment'] );
+	$token_response = papelito_correios_dev_health_token_request( $credentials, $base_url );
+	$result         = papelito_correios_dev_health_token_result( $token_response, $credentials, $base_url );
 
 	set_transient( $cache_key, $result, 15 * MINUTE_IN_SECONDS );
 	delete_option( $lock_key );
+
 	return $result;
 }
 
@@ -260,9 +337,14 @@ function papelito_correios_dev_health(): array {
 	}
 
 	$scenario = sanitize_key( papelito_correios_prepostage_config( 'PAPELITO_CORREIOS_DEV_HEALTH_SCENARIO', 'healthy' ) );
+	$status   = 'unknown';
+	if ( in_array( $scenario, array( 'healthy', 'unhealthy', 'unknown' ), true ) ) {
+		$status = $scenario;
+	}
+
 	return array(
 		'source' => 'mock',
-		'status' => in_array( $scenario, array( 'healthy', 'unhealthy', 'unknown' ), true ) ? $scenario : 'unknown',
+		'status' => $status,
 		'reason' => 'configured_scenario',
 	);
 }
@@ -296,23 +378,32 @@ function papelito_correios_mock_pdf( string $prepost_id, string $tracking_code )
 }
 
 /** Adapter local deterministico, sem rede e sem objetos postais reais. */
-final class Papelito_Correios_Mock_Prepostage_Adapter implements Papelito_Correios_Prepostage_Adapter {
+final class PapelitoCorreiosMockPrepostageAdapter implements PapelitoCorreiosPrepostageAdapter {
 	/** {@inheritDoc} */
 	public function health(): array {
 		return array( 'provider' => 'mock', 'status' => 'available', 'external_calls' => false );
 	}
 
 	/** {@inheritDoc} */
-	public function create( $order, int $vendor_id ) {
+	public function create( object $order, int $vendor_id ) {
 		$health = papelito_correios_dev_health();
 		if ( 'healthy' !== ( $health['status'] ?? '' ) ) {
 			$unknown = 'unknown' === ( $health['status'] ?? '' );
+			if ( $unknown ) {
+				return papelito_correios_prepostage_error(
+					'papelito_correios_dev_health_unknown',
+					'Não foi possível confirmar a saúde da integração no teste local.',
+					503,
+					'dev_health_unknown',
+					true
+				);
+			}
+
 			return papelito_correios_prepostage_error(
-				$unknown ? 'papelito_correios_dev_health_unknown' : 'papelito_correios_dev_health_unhealthy',
-				$unknown ? 'Não foi possível confirmar a saúde da integração no teste local.' : 'A verificacao local indicou que a integração não esta disponível.',
-				$unknown ? 503 : 424,
-				$unknown ? 'dev_health_unknown' : 'dev_health_unhealthy',
-				$unknown
+				'papelito_correios_dev_health_unhealthy',
+				'A verificacao local indicou que a integração não esta disponível.',
+				424,
+				'dev_health_unhealthy'
 			);
 		}
 
@@ -332,13 +423,17 @@ final class Papelito_Correios_Mock_Prepostage_Adapter implements Papelito_Correi
 			return papelito_correios_prepostage_error( ...$errors[ $scenario ] );
 		}
 
-		$order_id      = is_object( $order ) && method_exists( $order, 'get_id' ) ? absint( $order->get_id() ) : 0;
+		$order_id      = 0;
+		if ( method_exists( $order, 'get_id' ) ) {
+			$order_id = absint( $order->get_id() );
+		}
 		$fingerprint   = strtoupper( substr( hash( 'sha256', $order_id . '|' . $vendor_id ), 0, 8 ) );
 		$prepost_id    = 'MOCK-PREPOST-' . $order_id . '-' . $fingerprint;
 		$tracking_code = papelito_correios_mock_tracking_code( $order_id, $vendor_id );
-		$service_code  = is_object( $order ) && method_exists( $order, 'get_meta' )
-			? sanitize_text_field( (string) $order->get_meta( '_papelito_shipping_service_code', true ) )
-			: '';
+		$service_code  = '';
+		if ( method_exists( $order, 'get_meta' ) ) {
+			$service_code = sanitize_text_field( (string) $order->get_meta( '_papelito_shipping_service_code', true ) );
+		}
 
 		return array(
 			'provider'       => 'mock',
@@ -367,7 +462,7 @@ final class Papelito_Correios_Mock_Prepostage_Adapter implements Papelito_Correi
 }
 
 /** Provider do filtro legado, registrado apenas no modo mock seguro. */
-function papelito_correios_mock_generate_prepostage( $current, $order, int $vendor_id ) {
+function papelito_correios_mock_generate_prepostage( mixed $current, object $order, int $vendor_id ) {
 	if ( null !== $current ) {
 		return $current;
 	}
@@ -377,7 +472,7 @@ function papelito_correios_mock_generate_prepostage( $current, $order, int $vend
 		return $readiness;
 	}
 
-	$adapter = new Papelito_Correios_Mock_Prepostage_Adapter();
+	$adapter = new PapelitoCorreiosMockPrepostageAdapter();
 	return $adapter->create( $order, $vendor_id );
 }
 

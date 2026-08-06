@@ -60,6 +60,7 @@ require_once __DIR__ . '/includes/company_schema.php';
 require_once __DIR__ . '/includes/company_onboarding.php';
 require_once __DIR__ . '/includes/company_repository.php';
 require_once __DIR__ . '/includes/cnpj_providers.php';
+require_once __DIR__ . '/includes/cnpj_dev_fixtures.php';
 require_once __DIR__ . '/includes/company_idempotency.php';
 require_once __DIR__ . '/includes/company_authz.php';
 require_once __DIR__ . '/includes/company_services.php';

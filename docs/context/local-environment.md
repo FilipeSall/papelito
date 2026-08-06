@@ -64,6 +64,40 @@ Lembrete de comportamento: o cadastro cria a **conta pendente**; a empresa só �
 
 > **Uma variável de ambiente nova só chega ao PHP se estiver no bloco `environment:` do serviço `web`.** Preencher o `.env` não basta — `getenv()` volta vazio dentro do container. Esse foi um bug real, silencioso, com as variáveis da Pagar.me.
 
+### CNPJs fictícios para o cadastro B2B
+
+O cadastro só avança quando o QSA devolvido pela Receita bate com CPF, nome e data de nascimento digitados — sem ser sócio de uma empresa real, o fluxo sempre morre em `papelito_b2b_qsa_mismatch`. `includes/cnpj_dev_fixtures.php` responde à consulta HTTP dos providers com duas empresas fictícias, no formato bruto da BrasilAPI (a normalização continua sendo do adapter de produção, então a simulação não diverge do contrato interno).
+
+Para ligar, no `.env`, junto das duas flags acima:
+
+```env
+PAPELITO_CNPJ_DEV_FIXTURES_ENABLED=true
+```
+
+O gate é **duplo (AND)**: ambiente em `local`/`development` **e** a flag. Ligar só a variável em produção não tem efeito nenhum — fora do gate as fixtures nem são carregadas e os filtros não são registrados.
+
+Digite os dados **exatamente** como abaixo. `papelito_company_names_match()` só tolera inserção/remoção de partículas (`de/da/do/das/dos/e`) — não há similaridade nem ordem trocada. O campo de nascimento é um `<input type="date">`: o valor é `AAAA-MM-DD`.
+
+| | Cenário 1 — caminho limpo | Cenário 2 — exige documento |
+|---|---|---|
+| CNPJ | `99.999.001/0001-59` | `99.999.002/0001-01` |
+| Razão social (vem do mock) | Papelândia Distribuidora de Papéis LTDA | Império do Papel Comércio LTDA |
+| Nome completo | `Joana Fixture de Almeida` | `Ricardo Mock de Souza` |
+| CPF | `123.456.789-09` | `987.654.321-00` |
+| Nascimento | `1985-03-12` | `1992-11-05` |
+| CEP sugerido | `01310-100` | `20040-002` |
+| `review_path` | `qsa_review` | `document_required` |
+
+Ambos terminam em `pending_manual_review` e exigem aprovação em `/admin/empresas`. O cenário 2 pede antes um documento em `/cadastro/analise` — **PDF, JPG ou PNG válido e menor que 10 MB** (`papelito_company_document_spec()`).
+
+Pontos que costumam confundir:
+
+- **A aprovação reconsulta o CNPJ** (`papelito_pre_account_application_approve()`, com `include_evidence: true`). Se a flag for desligada entre a candidatura e a aprovação, a reconsulta vai para os providers reais e a aprovação falha com `papelito_b2b_registry_inactive` (422). Nada corrompe: religue a flag e reaprove.
+- **O cache das fixtures é isolado por namespace** (`papelito_cnpj_devfix_<rev>_<cnpj>`, via o filtro `papelito_cnpj_cache_key`). A chave canônica nunca recebe dado fictício, então desligar a flag dá cache miss em vez de continuar servindo `active` por 7 dias — **não é preciso limpar transient nenhum por segurança**. O `<rev>` é derivado do conteúdo das fixtures: editar uma invalida o cache dela sozinha.
+- **Cada CNPJ serve a um cadastro por vez** (`UNIQUE (canonical_cnpj, is_open)` + `papelito_company_find_by_cnpj()`). Para repetir, remova empresa e usuário pelo admin, ou acrescente uma entrada em `papelito_cnpj_dev_fixtures()`.
+- **O rate limit é 5/60s por IP** em `/company-applications`. Testes em sequência batem em 429.
+- Os documentos são sintéticos e nunca saem do MySQL local: o responder devolve `404` para todos os hosts que não sejam o da BrasilAPI, então nenhum provider externo chega a ser consultado. `php tests/test-cnpj-dev-fixtures.php` verifica isso contando as chamadas de rede.
+
 ## Segurança do ambiente local
 
 **O banco local é uma cópia da base do cliente.** Contém dados reais. Este ambiente não deve ser usado para disparar integrações reais: mantenha chaves de teste, `PAPELITO_CORREIOS_PREPOST_MODE` em `mock` ou `disabled`, e o simulador da Pagar.me ativo em vez de chamadas live.
