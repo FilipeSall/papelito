@@ -157,6 +157,26 @@ function papelito_admin_reports_parse_simple_export_filters( WP_REST_Request $re
 }
 
 /**
+ * Filtros do snapshot financeiro administrativo.
+ *
+ * @param WP_REST_Request $request Request REST.
+ * @return array<string, string>
+ */
+function papelito_admin_reports_parse_sales_snapshot_filters( WP_REST_Request $request ): array {
+	$filters = papelito_admin_reports_parse_simple_export_filters( $request );
+
+	return array(
+		'from'     => $filters['from'],
+		'to'       => $filters['to'],
+		'interval' => papelito_admin_reports_normalize_enum(
+			sanitize_key( (string) $request->get_param( 'interval' ) ),
+			array( 'day', 'month' ),
+			'day'
+		),
+	);
+}
+
+/**
  * SQL base do relatorio.
  *
  * @return string
@@ -895,12 +915,12 @@ function papelito_admin_reports_generate_simple_users_csv( array $rows ): string
 }
 
 /**
- * Linhas simples do export de vendas.
+ * Busca pedidos criados no período para relatórios administrativos.
  *
- * @param array<string, string> $filters Filtros.
- * @return array<int, array<string, string|float|int>>
+ * @param array<string, string> $filters Filtros com from e to.
+ * @return array<int, WC_Order>
  */
-function papelito_admin_reports_query_simple_sales_rows( array $filters ): array {
+function papelito_admin_reports_query_sales_orders( array $filters ): array {
 	if ( ! function_exists( 'wc_get_orders' ) ) {
 		return array();
 	}
@@ -921,6 +941,175 @@ function papelito_admin_reports_query_simple_sales_rows( array $filters ): array
 			'return'       => 'objects',
 			'status'       => $statuses,
 		)
+	);
+
+	return array_values(
+		array_filter(
+			is_array( $orders ) ? $orders : array(),
+			static fn( $order ): bool => $order instanceof WC_Order
+		)
+	);
+}
+
+/**
+ * Filtra pedidos que contam como venda confirmada.
+ *
+ * A regra canônica vive no domínio de pedidos do vendor e também considera
+ * estados persistidos do pagamento quando o status WooCommerce é desconhecido.
+ *
+ * @param array<int, WC_Order> $orders Pedidos a filtrar.
+ * @return array<int, WC_Order>
+ */
+function papelito_admin_reports_paid_sales_orders( array $orders ): array {
+	return array_values(
+		array_filter(
+			$orders,
+			static fn( WC_Order $order ): bool => papelito_vendor_dashboard_order_is_paid( $order )
+		)
+	);
+}
+
+/**
+ * Retorna a chave de agrupamento de receita de um pedido.
+ *
+ * @param WC_Order $order Pedido WooCommerce.
+ * @param string   $interval day|month.
+ * @return string
+ */
+function papelito_admin_reports_sales_bucket( WC_Order $order, string $interval ): string {
+	$date = $order->get_date_created();
+
+	if ( ! $date instanceof WC_DateTime ) {
+		return '';
+	}
+
+	return 'month' === $interval ? $date->date_i18n( 'Y-m' ) : $date->date_i18n( 'Y-m-d' );
+}
+
+/**
+ * Cria um snapshot financeiro com a regra canônica de pagamento.
+ *
+ * @param array<string, string> $filters Filtros com from, to e interval.
+ * @return array<string, mixed>
+ */
+function papelito_admin_reports_get_sales_snapshot( array $filters ): array {
+	$all_orders         = papelito_admin_reports_query_sales_orders( $filters );
+	$paid_orders        = papelito_admin_reports_paid_sales_orders( $all_orders );
+	$gross_revenue      = 0.0;
+	$discounts_total    = 0.0;
+	$shipping_total     = 0.0;
+	$taxes_total        = 0.0;
+	$refunds_total      = 0.0;
+	$items_sold         = 0;
+	$revenue_by_bucket  = array();
+	$status_counts      = array();
+	$order_volume       = array();
+	$product_revenue    = array();
+	$payment_mix        = array();
+
+	foreach ( $all_orders as $order ) {
+		$status = sanitize_key( (string) $order->get_status() );
+		$status = '' === $status ? 'unknown' : $status;
+		$status_counts[ $status ] = ( $status_counts[ $status ] ?? 0 ) + 1;
+
+		$bucket = papelito_admin_reports_sales_bucket( $order, $filters['interval'] );
+		if ( '' !== $bucket ) {
+			$order_volume[ $bucket ] = ( $order_volume[ $bucket ] ?? 0 ) + 1;
+		}
+	}
+
+	foreach ( $paid_orders as $order ) {
+		$total          = max( 0.0, (float) $order->get_total() );
+		$discount        = max( 0.0, (float) $order->get_discount_total() );
+		$shipping        = max( 0.0, (float) $order->get_shipping_total() );
+		$taxes           = max( 0.0, (float) $order->get_total_tax() );
+		$refunded        = max( 0.0, (float) $order->get_total_refunded() );
+		$gross_revenue  += $total;
+		$discounts_total += $discount;
+		$shipping_total += $shipping;
+		$taxes_total    += $taxes;
+		$refunds_total  += $refunded;
+
+		$bucket = papelito_admin_reports_sales_bucket( $order, $filters['interval'] );
+		if ( '' !== $bucket ) {
+			$revenue_by_bucket[ $bucket ] = ( $revenue_by_bucket[ $bucket ] ?? 0.0 ) + $total;
+		}
+
+		$payment_method = trim( (string) $order->get_payment_method_title() );
+		$payment_method = '' === $payment_method ? 'não informado' : $payment_method;
+		$payment_mix[ $payment_method ] = ( $payment_mix[ $payment_method ] ?? 0.0 ) + $total;
+
+		foreach ( $order->get_items( 'line_item' ) as $item ) {
+			if ( ! is_object( $item ) || ! method_exists( $item, 'get_name' ) ) {
+				continue;
+			}
+
+			$name     = trim( (string) $item->get_name() );
+			$name     = '' === $name ? 'item' : $name;
+			$quantity = method_exists( $item, 'get_quantity' ) ? max( 0, (int) $item->get_quantity() ) : 0;
+			$total    = method_exists( $item, 'get_total' ) ? max( 0.0, (float) $item->get_total() ) : 0.0;
+			$items_sold += $quantity;
+			$product_revenue[ $name ] = ( $product_revenue[ $name ] ?? 0.0 ) + $total;
+		}
+	}
+
+	arsort( $status_counts );
+	arsort( $product_revenue );
+	arsort( $payment_mix );
+
+	$product_rows = array_slice( $product_revenue, 0, 6, true );
+	$product_total = array_sum( $product_rows );
+	$leaderboard = array_map(
+		static fn( string $label, float $value ): array => array(
+			'label' => strtolower( $label ),
+			'value' => round( $value, 2 ),
+			'share' => $product_total > 0 ? round( ( $value / $product_total ) * 100, 1 ) : 0.0,
+		),
+		array_keys( $product_rows ),
+		array_values( $product_rows )
+	);
+
+	$payment_rows = array_slice( $payment_mix, 0, 3, true );
+	$payment_rest = array_slice( $payment_mix, 3, null, true );
+	if ( ! empty( $payment_rest ) ) {
+		$payment_rows['outros'] = array_sum( $payment_rest );
+	}
+
+	return array(
+		'grossRevenue'      => round( $gross_revenue, 2 ),
+		'netRevenue'        => round( max( 0.0, $gross_revenue - $shipping_total - $taxes_total - $refunds_total ), 2 ),
+		'orders'            => count( $paid_orders ),
+		'avgOrderValue'     => count( $paid_orders ) > 0 ? round( $gross_revenue / count( $paid_orders ), 2 ) : 0.0,
+		'discountsTotal'    => round( $discounts_total, 2 ),
+		'shippingTotal'     => round( $shipping_total, 2 ),
+		'taxesTotal'        => round( $taxes_total, 2 ),
+		'refundsTotal'      => round( $refunds_total, 2 ),
+		'itemsSold'         => $items_sold,
+		'revenueByInterval' => $revenue_by_bucket,
+		'orderVolumeByInterval' => $order_volume,
+		'orderStatusSeries' => array_map(
+			static fn( string $label, int $value ): array => array( 'label' => $label, 'value' => $value ),
+			array_keys( array_slice( $status_counts, 0, 6, true ) ),
+			array_values( array_slice( $status_counts, 0, 6, true ) )
+		),
+		'paymentMixSeries' => array_map(
+			static fn( string $label, float $value ): array => array( 'label' => strtolower( $label ), 'value' => round( $value, 2 ) ),
+			array_keys( $payment_rows ),
+			array_values( $payment_rows )
+		),
+		'leaderboard'      => array_values( $leaderboard ),
+	);
+}
+
+/**
+ * Linhas simples do export de vendas.
+ *
+ * @param array<string, string> $filters Filtros.
+ * @return array<int, array<string, string|float|int>>
+ */
+function papelito_admin_reports_query_simple_sales_rows( array $filters ): array {
+	$orders = papelito_admin_reports_paid_sales_orders(
+		papelito_admin_reports_query_sales_orders( $filters )
 	);
 
 	$rows = array();
@@ -1105,6 +1294,21 @@ function papelito_admin_reports_output_download( string $binary, string $filenam
 add_action(
 	'rest_api_init',
 	static function (): void {
+		register_rest_route(
+			'papelito/v1/admin',
+			'/sales/snapshot',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => static function (): bool {
+					return current_user_can( 'manage_options' );
+				},
+				'callback'            => static function ( WP_REST_Request $request ): WP_REST_Response {
+					$filters = papelito_admin_reports_parse_sales_snapshot_filters( $request );
+					return new WP_REST_Response( papelito_admin_reports_get_sales_snapshot( $filters ), 200 );
+				},
+			)
+		);
+
 		register_rest_route(
 			'papelito/v1/admin',
 			'/reports/users',

@@ -22,6 +22,8 @@ Defina os dois segredos do GraphQL **antes** de subir o container — sem eles a
 | `phpmyadmin` | `papelito-phpmyadmin` | `phpmyadmin:5-apache` | http://localhost:8081 |
 | `mailpit` | `papelito-mailpit` | `axllent/mailpit` | http://localhost:8025 (web) / `1025` (SMTP) |
 
+O `phpcs` é uma tarefa efêmera no perfil `quality`, sem container ou porta persistente: execute `docker compose --profile quality run --rm phpcs` quando precisar checar os padrões de código.
+
 Admin do WordPress local: `admin` / `admin`. As portas e nomes de container são sobrescrevíveis por variáveis (`WEB_PORT`, `DB_PORT`, `PHPMYADMIN_PORT`, `MAILPIT_WEB_PORT`, `MAILPIT_SMTP_PORT`).
 
 > **O nome do serviço é `web`, não `papelito-web`.** Comandos de compose usam o serviço: `docker compose exec web wp ...`, `docker compose up -d --force-recreate web`. `papelito-web` é o nome do container.
@@ -109,7 +111,7 @@ O bootstrap é **fail-closed** nesse ponto: qualquer flag `mock` ou `DEV_*` fora
 ```bash
 docker compose exec web wp <comando>          # WP-CLI
 docker compose logs -f web                     # logs do Apache/PHP
-composer phpcs                                 # padrões de código
+docker compose --profile quality run --rm phpcs # padrões de código
 php -l <arquivo>                               # syntax check
 php public_html/wp-content/plugins/plugin_papelito/tests/test-<x>.php   # suíte standalone
 bash scripts/pull-from-prod.sh                 # sincroniza servidor → repo
@@ -135,5 +137,5 @@ O `wp-config.php` local lê variáveis de ambiente pelos helpers `papelito_env()
 | Site mostrando links de produção | rodar `scripts/local-wordpress-setup.sh` de novo |
 | E-mail não aparece no Mailpit | plugin com SMTP próprio |
 | Variável de ambiente vazia no PHP | falta no bloco `environment:` do serviço `web` |
-| PHPCS falha por extensão ausente | o PHP CLI do host não tem `SimpleXML`/`xmlwriter`; rodar via container — ver [context/testing.md](testing.md) |
+| PHPCS falha por extensão ausente | use `docker compose --profile quality run --rm phpcs`; ele não depende das extensões do PHP CLI do host |
 | WP-CLI "não encontrado" | use `docker compose exec web wp`, ou `php wp-cli.phar` na raiz do repositório |

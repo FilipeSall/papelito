@@ -254,12 +254,28 @@ function papelito_admin_users_customer_orders_count( int $user_id ): int {
  * @param int $limit Quantidade maxima.
  * @return array<int, object>
  */
-function papelito_admin_users_sales_orders( int $user_id, int $limit = 10 ): array {
-	if ( ! function_exists( 'papelito_vendor_dashboard_orders_for_vendor' ) || $user_id <= 0 ) {
+function papelito_admin_users_sales_orders( int $user_id, int $limit = 10, ?array $all_orders = null ): array {
+	if ( $user_id <= 0 ) {
 		return array();
 	}
 
-	return array_slice( papelito_vendor_dashboard_orders_for_vendor( $user_id ), 0, max( 1, $limit ) );
+	$orders = $all_orders;
+	if ( null === $orders ) {
+		if ( ! function_exists( 'papelito_vendor_dashboard_orders_for_vendor' ) ) {
+			return array();
+		}
+
+		$orders = papelito_vendor_dashboard_orders_for_vendor( $user_id );
+	}
+
+	$orders = array_values(
+		array_filter(
+			is_array( $orders ) ? $orders : array(),
+			static fn( $order ): bool => papelito_vendor_dashboard_order_is_paid( $order )
+		)
+	);
+
+	return array_slice( $orders, 0, max( 1, $limit ) );
 }
 
 /**
@@ -268,12 +284,24 @@ function papelito_admin_users_sales_orders( int $user_id, int $limit = 10 ): arr
  * @param int $user_id Usuario alvo.
  * @return int
  */
-function papelito_admin_users_sales_orders_count( int $user_id ): int {
-	if ( ! function_exists( 'papelito_vendor_dashboard_orders_for_vendor' ) || $user_id <= 0 ) {
-		return 0;
-	}
+function papelito_admin_users_sales_orders_count( int $user_id, ?array $all_orders = null ): int {
+	return count( papelito_admin_users_sales_orders( $user_id, PHP_INT_MAX, $all_orders ) );
+}
 
-	return count( papelito_vendor_dashboard_orders_for_vendor( $user_id ) );
+/**
+ * Busca cancelamentos recentes de vendas sem restringir a pedidos pagos.
+ *
+ * @param array<int, object> $all_orders Pedidos brutos do vendor.
+ * @param int                $limit Quantidade máxima.
+ * @return array<int, object>
+ */
+function papelito_admin_users_cancelled_sales_orders( array $all_orders, int $limit = 10 ): array {
+	return array_values(
+		array_filter(
+			array_slice( $all_orders, 0, max( 1, $limit ) ),
+			static fn( $order ): bool => papelito_admin_users_order_is_cancelled( $order )
+		)
+	);
 }
 
 /**
@@ -484,13 +512,16 @@ function papelito_admin_users_map_related_order( $order, string $relationship, i
  * @param WP_User $user Usuario alvo.
  * @return array<string, int>
  */
-function papelito_admin_users_metrics( WP_User $user ): array {
+function papelito_admin_users_metrics( WP_User $user, ?array $vendor_orders = null ): array {
 	$user_id          = (int) $user->ID;
 	$purchases_count  = papelito_admin_users_customer_orders_count( $user_id );
-	$sales_count      = papelito_admin_users_sales_orders_count( $user_id );
 	$favorites_count  = papelito_admin_users_favorites_count( $user_id );
 	$tickets_count    = papelito_admin_users_support_tickets_count( $user_id );
 	$cancelled_orders = 0;
+	$vendor_orders    = null === $vendor_orders && function_exists( 'papelito_vendor_dashboard_orders_for_vendor' )
+		? papelito_vendor_dashboard_orders_for_vendor( $user_id )
+		: ( is_array( $vendor_orders ) ? $vendor_orders : array() );
+	$sales_count      = papelito_admin_users_sales_orders_count( $user_id, $vendor_orders );
 
 	foreach ( papelito_admin_users_customer_orders( $user_id, 20 ) as $order ) {
 		if ( papelito_admin_users_order_is_cancelled( $order ) ) {
@@ -498,7 +529,7 @@ function papelito_admin_users_metrics( WP_User $user ): array {
 		}
 	}
 
-	foreach ( papelito_admin_users_sales_orders( $user_id, 20 ) as $order ) {
+	foreach ( array_slice( $vendor_orders, 0, 20 ) as $order ) {
 		if ( papelito_admin_users_order_is_cancelled( $order ) ) {
 			++$cancelled_orders;
 		}
@@ -845,9 +876,13 @@ function papelito_admin_users_get_detail( int $user_id ) {
 	}
 
 	$base            = papelito_admin_users_base_detail( $user );
-	$metrics         = papelito_admin_users_metrics( $user );
+	$vendor_orders   = function_exists( 'papelito_vendor_dashboard_orders_for_vendor' )
+		? papelito_vendor_dashboard_orders_for_vendor( $user_id )
+		: array();
+	$metrics         = papelito_admin_users_metrics( $user, $vendor_orders );
 	$recent_purchase_orders = papelito_admin_users_customer_orders( $user_id, 10 );
-	$recent_sales_orders    = papelito_admin_users_sales_orders( $user_id, 10 );
+	$recent_sales_orders    = papelito_admin_users_sales_orders( $user_id, 10, $vendor_orders );
+	$recent_cancelled_sales_orders = papelito_admin_users_cancelled_sales_orders( $vendor_orders, 10 );
 
 	$recent_purchases = array_map(
 		static fn( $order ): array => papelito_admin_users_map_related_order( $order, 'purchase', $user_id ),
@@ -857,9 +892,13 @@ function papelito_admin_users_get_detail( int $user_id ) {
 		static fn( $order ): array => papelito_admin_users_map_related_order( $order, 'sale', $user_id ),
 		$recent_sales_orders
 	);
+	$recent_cancelled_sales = array_map(
+		static fn( $order ): array => papelito_admin_users_map_related_order( $order, 'sale', $user_id ),
+		$recent_cancelled_sales_orders
+	);
 
 	$cancelled_orders = array();
-	foreach ( array_merge( $recent_purchases, $recent_sales ) as $order ) {
+	foreach ( array_merge( $recent_purchases, $recent_cancelled_sales ) as $order ) {
 		if ( ! empty( $order['isCancelled'] ) ) {
 			$cancelled_orders[ (int) $order['id'] ] = $order;
 		}

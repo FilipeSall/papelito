@@ -1,4 +1,20 @@
 services:
+  phpcs:
+    build:
+      context: ./docker/phpcs
+      dockerfile: Dockerfile
+    profiles:
+      - quality
+    working_dir: /workspace
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    environment:
+      COMPOSER_HOME: /tmp/composer
+    volumes:
+      - .:/workspace
+    entrypoint:
+      - sh
+      - /workspace/scripts/docker-phpcs.sh
+
   web:
     build:
       context: .

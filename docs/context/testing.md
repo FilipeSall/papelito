@@ -98,11 +98,17 @@ wp --allow-root eval-file $T report 50
 ## PHPCS
 
 ```bash
-composer phpcs
-./vendor/bin/phpcs --report=summary
+docker compose --profile quality run --rm phpcs
+docker compose --profile quality run --rm phpcs --report=summary
 ```
 
-O PHP CLI do host normalmente **não tem `SimpleXML` e `xmlwriter`**, e o PHPCS não roda sem eles. Rode via container (`php:8.2-cli` serve) ou dentro do serviço `web`.
+O serviço `phpcs` usa PHP 8.3 com `SimpleXML` e `xmlwriter`, monta a raiz do repositório e instala as dependências Composer apenas se `vendor/bin/phpcs` ainda não existir. Ele não inicia WordPress, banco ou portas e não depende das extensões do PHP CLI do host.
+
+Em Linux, se seu usuário não tiver UID/GID `1000`, preserve a propriedade dos arquivos criados pelo Composer com:
+
+```bash
+LOCAL_UID=$(id -u) LOCAL_GID=$(id -g) docker compose --profile quality run --rm phpcs
+```
 
 ### Baseline de PHPCS
 
@@ -133,7 +139,7 @@ As demais regras ficam ligadas e devem ser corrigidas no código — inclusive `
 ```bash
 php -l <arquivos alterados>
 php public_html/wp-content/plugins/plugin_papelito/tests/test-<relevante>.php
-composer phpcs
+docker compose --profile quality run --rm phpcs
 ```
 
 Quando a mudança cruza os dois repositórios, rode também `bun run lint`, `tsc --noEmit`, `bun run test` e `bun run build` no `papelito-web`.
