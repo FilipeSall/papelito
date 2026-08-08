@@ -39,6 +39,8 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Links de e-mail | `test-frontend-base-url.php` (allowlist, nunca `localhost` em ambiente remoto, `Origin` não é fallback) |
 | Upload direto | `test-direct-uploads.php` (tíquete single-use, claim atômico, contexto sem token cru), `test-direct-upload-image.php` (assinatura, divergência conteúdo × extensão, truncamento) |
 | Rate limit | `test-rate-limit-identity.php` (endpoint atrás do proxy não pode compartilhar balde por IP) |
+| Faixas da Home | `test-home-assets-rich-text.php` (whitelist de formatos e tokens, referência de produto sem snapshot, compat com texto puro), `test-home-assets-free-shipping-placeholder.php` (migração dos textos legados) |
+| Frete grátis | `test-shipping-free-shipping-threshold.php` (default, persistência, validação, autorização) |
 
 As invariantes que essas suítes protegem estão catalogadas em [context/business-rules.md](business-rules.md).
 

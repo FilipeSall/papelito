@@ -284,7 +284,9 @@ O snapshot fiscal B2B (22 chaves canônicas) está em [`../../../docs/flows/cart
 | `_papelito_import_todo` | pendências por produto deixadas pela importação de catálogo |
 | `_correios_tracking_code` | **legado**, do plugin Correios for WooCommerce 4.2.5 |
 
-Options relevantes: `papelito_catalog_pdf_id` (override do catálogo em PDF), `papelito_coverage_cache_version` (versão do cache de cobertura).
+Options relevantes: `papelito_catalog_pdf_id` (override do catálogo em PDF), `papelito_coverage_cache_version` (versão do cache de cobertura), `papelito_shipping_free_shipping_minimum_cents` (mínimo do pedido para o cupom manual de frete grátis, em centavos, default `9900`).
+
+`papelito_home_promo_marquee` e `papelito_home_features` guardam, além do texto puro, o conteúdo estruturado das faixas (`content` / `subtitleContent`): lista plana de nós `text`/`token`, sem HTML. O texto puro é derivado dos nós de texto e serve de fallback de leitura.
 
 ## Criptografia de PII
 
