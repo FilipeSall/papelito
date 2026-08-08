@@ -50,7 +50,7 @@ A versão de schema corrente é `PAPELITO_DB_VERSION`, em `plugin_papelito.php` 
 - **PHPCS com WordPress coding standards** (`phpcs.xml.dist`). Baseline aceito em [docs/context/testing.md](docs/context/testing.md#baseline-de-phpcs) — não amplie.
 - **Sanitizar sempre** (`sanitize_text_field`, `sanitize_email`, `wp_kses_post`), escapar na saída (`esc_*`). Nunca confiar em `$_POST`/`$_GET` direto.
 - `$wpdb->prepare` sempre.
-- **Endpoint REST público novo exige rate limit por IP** via transient — padrão em `auth_endpoints.php`.
+- Rotas REST públicas que executem trabalho caro, chamem provedores externos, sejam abusáveis ou mutem estado exigem rate limit via transient. Leituras pequenas, somente leitura e cacheáveis — como configurações públicas da Home e o mínimo de frete grátis — podem ficar sem rate limit no plugin. Quando houver proxy Next, não use um balde por IP compartilhado pelo proxy: derive a identidade de usuário/cliente ou aplique a proteção na borda (CDN/WAF).
 - Sem chaves estrangeiras físicas: índices + validação em código.
 - Nomes de arquivo com underscore; funções com prefixo `papelito_`.
 - **Não editar core nem plugins de terceiros.** Estender por hooks/filters no `plugin_papelito` ou em mu-plugin novo.

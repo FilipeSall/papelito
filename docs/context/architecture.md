@@ -212,7 +212,7 @@ mu-plugins carregam automaticamente e **não podem ser desativados pela interfac
 - **Sanitizar sempre**: `sanitize_text_field`, `sanitize_email`, `wp_kses_post`; escapar na saída com `esc_*`. Nunca confiar em `$_POST` / `$_GET` direto.
   - Exceção documentada: senha temporária de vendor **não** passa por `sanitize_text_field` — corromperia caracteres válidos. Ver [`../../../docs/flows/authentication.md`](../../../docs/flows/authentication.md#senha-temporária-de-vendor).
 - `current_user_can()` dentro do endpoint é a autorização real, não o `permission_callback` isolado.
-- **Endpoint REST público novo exige rate limit por IP** via transient — padrão em `auth_endpoints.php`.
+- Rotas REST públicas que executem trabalho caro, chamem provedores externos, sejam abusáveis ou mutem estado exigem rate limit via transient. Leituras pequenas, somente leitura e cacheáveis — como configurações públicas da Home e o mínimo de frete grátis — podem ficar sem rate limit no plugin. Quando houver proxy Next, não use um balde por IP compartilhado pelo proxy: derive a identidade de usuário/cliente ou aplique a proteção na borda (CDN/WAF).
 - `$wpdb->prepare` sempre. Nada de interpolação em SQL.
 - Sem chaves estrangeiras físicas: índices + validação em código (convenção do projeto).
 - Convenção de nomes: arquivos com underscore, funções com prefixo `papelito_`.
