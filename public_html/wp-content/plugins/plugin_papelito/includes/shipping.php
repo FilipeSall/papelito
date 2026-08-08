@@ -9,6 +9,65 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+const PAPELITO_SHIPPING_FREE_SHIPPING_MINIMUM_OPTION = 'papelito_shipping_free_shipping_minimum_cents';
+const PAPELITO_SHIPPING_DEFAULT_FREE_SHIPPING_MINIMUM_CENTS = 9900;
+
+function papelito_shipping_normalize_free_shipping_minimum_cents( $value ): ?int {
+	if ( is_int( $value ) && $value > 0 ) {
+		return $value;
+	}
+
+	if ( is_string( $value ) && 1 === preg_match( '/^[1-9]\d*$/', $value ) ) {
+		$normalized = (int) $value;
+		return $normalized > 0 ? $normalized : null;
+	}
+
+	return null;
+}
+
+function papelito_shipping_get_free_shipping_minimum_cents(): int {
+	$value = get_option(
+		PAPELITO_SHIPPING_FREE_SHIPPING_MINIMUM_OPTION,
+		PAPELITO_SHIPPING_DEFAULT_FREE_SHIPPING_MINIMUM_CENTS
+	);
+
+	return papelito_shipping_normalize_free_shipping_minimum_cents( $value )
+		?? PAPELITO_SHIPPING_DEFAULT_FREE_SHIPPING_MINIMUM_CENTS;
+}
+
+// TODO(frete-gratis): definir estratégia de concessão do benefício após atingir o valor mínimo configurado. Avaliar geração automática de cupom versus fluxo manual via admin/vendor.
+function papelito_shipping_get_free_shipping_threshold_snapshot(): array {
+	return array(
+		'minimumOrderCents' => papelito_shipping_get_free_shipping_minimum_cents(),
+	);
+}
+
+function papelito_shipping_update_free_shipping_minimum_cents( $value ) {
+	if ( ! is_int( $value ) || $value <= 0 ) {
+		return new WP_Error(
+			'papelito_shipping_invalid_free_shipping_minimum',
+			'Informe um valor mínimo positivo em centavos.',
+			array( 'status' => 422 )
+		);
+	}
+
+	update_option( PAPELITO_SHIPPING_FREE_SHIPPING_MINIMUM_OPTION, $value, false );
+
+	return papelito_shipping_get_free_shipping_threshold_snapshot();
+}
+
+function papelito_shipping_require_admin() {
+	if ( current_user_can( 'manage_options' ) ) {
+		return true;
+	}
+
+	return new WP_Error(
+		'papelito_shipping_forbidden',
+		'Acesso administrativo necessário.',
+		array( 'status' => 403 )
+	);
+}
+
 /**
  * Le uma variavel de ambiente/constante de Correios.
  *
@@ -948,6 +1007,52 @@ function papelito_shipping_rate_limit( WP_REST_Request $request, int $max = 60, 
 add_action(
 	'rest_api_init',
 	static function (): void {
+		register_rest_route(
+			'papelito/v1',
+			'/shipping/free-shipping-threshold',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => '__return_true',
+				'callback'            => static fn() => new WP_REST_Response( papelito_shipping_get_free_shipping_threshold_snapshot(), 200 ),
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/admin/shipping/free-shipping-threshold',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => 'papelito_shipping_require_admin',
+				'callback'            => static fn() => new WP_REST_Response( papelito_shipping_get_free_shipping_threshold_snapshot(), 200 ),
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/admin/shipping/free-shipping-threshold',
+			array(
+				'methods'             => WP_REST_Server::EDITABLE,
+				'permission_callback' => 'papelito_shipping_require_admin',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$payload = $request->get_json_params();
+					if ( ! is_array( $payload ) || ! array_key_exists( 'minimumOrderCents', $payload ) ) {
+						return new WP_Error(
+							'papelito_shipping_invalid_free_shipping_minimum',
+							'Informe um valor mínimo positivo em centavos.',
+							array( 'status' => 422 )
+						);
+					}
+
+					$result = papelito_shipping_update_free_shipping_minimum_cents( $payload['minimumOrderCents'] );
+					if ( is_wp_error( $result ) ) {
+						return $result;
+					}
+
+					return new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+
 		register_rest_route(
 			'papelito/v1',
 			'/shipping/quote',
