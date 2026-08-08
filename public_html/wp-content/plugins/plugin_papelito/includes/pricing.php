@@ -499,6 +499,24 @@ add_action(
 	static function (): void {
 		register_rest_route(
 			'papelito/v1',
+			'/home/payment-config',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => '__return_true',
+				'callback'            => static function (): WP_REST_Response {
+					return new WP_REST_Response(
+						array(
+							'maxInstallments'         => papelito_pricing_max_installments(),
+							'installmentMinimumCents' => papelito_pricing_installment_minimum_cents(),
+						),
+						200
+					);
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
 			'/cart/pricing',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,

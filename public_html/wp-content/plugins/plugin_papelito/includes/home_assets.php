@@ -9,6 +9,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+const PAPELITO_HOME_ASSETS_FREE_SHIPPING_TOKEN = '{minimo_frete_gratis}';
+const PAPELITO_HOME_ASSETS_FREE_SHIPPING_MARQUEE_TEXT = '🔥 FRETE GRÁTIS a partir de ' . PAPELITO_HOME_ASSETS_FREE_SHIPPING_TOKEN . ' com cupom';
+const PAPELITO_HOME_ASSETS_FREE_SHIPPING_SUBTITLE = 'A partir de ' . PAPELITO_HOME_ASSETS_FREE_SHIPPING_TOKEN . ' com cupom';
+
 /**
  * Nome da option dos banners hero.
  *
@@ -113,6 +117,176 @@ function papelito_home_assets_clean_textarea( $value ): string {
  */
 function papelito_home_assets_to_bool( $value ): bool {
 	return rest_sanitize_boolean( $value );
+}
+
+/**
+ * Identificadores de token aceitos no conteudo rico das faixas.
+ *
+ * Whitelist explicita: token fora desta lista e recusado na escrita, entao o painel nunca
+ * persiste referencia a dado que o frontend nao sabe resolver.
+ *
+ * @return array<int, string>
+ */
+function papelito_home_assets_allowed_rich_text_tokens(): array {
+	return array(
+		'frete_gratis.minimo',
+		'parcelamento.maximo',
+		'parcelamento.parcela_minima',
+		'produto.desconto',
+		'produto.nome',
+		'produto.preco_promocional',
+		'promocao.desconto',
+		'promocao.nome',
+	);
+}
+
+/**
+ * Sanitiza um fragmento de texto do conteudo rico.
+ *
+ * Diferente de `papelito_home_assets_clean_text()`, nao apara as bordas: o espaco antes ou
+ * depois de um token faz parte da frase, e apara-lo colaria o valor resolvido na palavra
+ * vizinha. Tags e quebras de linha continuam sendo removidas.
+ *
+ * @param mixed $value Valor arbitrario.
+ * @return string
+ */
+function papelito_home_assets_clean_rich_text_fragment( $value ): string {
+	$raw  = (string) $value;
+	$text = trim( (string) preg_replace( '/[\r\n\t]+/', ' ', wp_strip_all_tags( $raw ) ) );
+
+	// O espaco ao redor de um token faz parte da frase: sem ele o valor resolvido cola na
+	// palavra vizinha ("em ate" + "6" viraria "em ate6"). Por isso as bordas sao aparadas e
+	// recompostas em vez de preservadas como vieram.
+	$leading  = 1 === preg_match( '/^\s/', $raw ) ? ' ' : '';
+	$trailing = 1 === preg_match( '/\s$/', $raw ) ? ' ' : '';
+
+	if ( '' === $text ) {
+		return '' !== $leading || '' !== $trailing ? ' ' : '';
+	}
+
+	return $leading . $text . $trailing;
+}
+
+/**
+ * Limite de nos por conteudo rico.
+ *
+ * @return int
+ */
+function papelito_home_assets_rich_text_max_nodes(): int {
+	return 40;
+}
+
+/**
+ * Normaliza os parametros de um token.
+ *
+ * Só `productId` é aceito hoje, sempre como inteiro positivo: nenhum parametro livre entra
+ * no conteudo persistido.
+ *
+ * @param mixed $value Parametros brutos.
+ * @return array<string, int>
+ */
+function papelito_home_assets_normalize_rich_text_params( $value ): array {
+	if ( ! is_array( $value ) || ! isset( $value['productId'] ) ) {
+		return array();
+	}
+
+	$product_id = absint( $value['productId'] );
+
+	return $product_id > 0 ? array( 'productId' => $product_id ) : array();
+}
+
+/**
+ * Normaliza o conteudo rico de uma faixa.
+ *
+ * O formato persistido e uma lista plana de nos tipados; nao existe HTML em nenhum ponto do
+ * pipeline. Negrito e italico sao flags booleanas e qualquer outro atributo e descartado.
+ *
+ * @param mixed $value Conteudo bruto.
+ * @return array<int, array<string, mixed>>|null
+ */
+function papelito_home_assets_normalize_rich_text_content( $value ): ?array {
+	if ( ! is_array( $value ) ) {
+		return null;
+	}
+
+	$allowed    = papelito_home_assets_allowed_rich_text_tokens();
+	$normalized = array();
+
+	foreach ( array_slice( array_values( $value ), 0, papelito_home_assets_rich_text_max_nodes() ) as $node ) {
+		if ( ! is_array( $node ) ) {
+			continue;
+		}
+
+		$bold   = ! empty( $node['bold'] );
+		$italic = ! empty( $node['italic'] );
+
+		if ( isset( $node['type'] ) && 'token' === $node['type'] ) {
+			$token = isset( $node['token'] ) ? (string) $node['token'] : '';
+
+			if ( ! in_array( $token, $allowed, true ) ) {
+				continue;
+			}
+
+			$entry  = array( 'type' => 'token', 'token' => $token );
+			$params = papelito_home_assets_normalize_rich_text_params( $node['params'] ?? null );
+
+			if ( ! empty( $params ) ) {
+				$entry['params'] = $params;
+			}
+		} else {
+			$text = papelito_home_assets_clean_rich_text_fragment( $node['text'] ?? '' );
+
+			if ( '' === $text ) {
+				continue;
+			}
+
+			$entry = array( 'type' => 'text', 'text' => $text );
+		}
+
+		if ( $bold ) {
+			$entry['bold'] = true;
+		}
+
+		if ( $italic ) {
+			$entry['italic'] = true;
+		}
+
+		$normalized[] = $entry;
+	}
+
+	return empty( $normalized ) ? null : $normalized;
+}
+
+/**
+ * Decide se um campo tem conteudo exibivel.
+ *
+ * Texto e conteudo rico sao um par: uma mensagem composta apenas por tokens tem texto puro
+ * vazio e mesmo assim e valida. Quem decide nunca e o texto sozinho.
+ *
+ * @param mixed $text    Texto puro.
+ * @param mixed $content Conteudo rico normalizado.
+ * @return bool
+ */
+function papelito_home_assets_has_displayable_content( $text, $content ): bool {
+	return '' !== trim( (string) $text ) || ! empty( $content );
+}
+
+/**
+ * Texto puro derivado do conteudo rico, usado como fallback de leitura e para medir tamanho.
+ *
+ * @param array<int, array<string, mixed>> $content Conteudo normalizado.
+ * @return string
+ */
+function papelito_home_assets_rich_text_to_plain( array $content ): string {
+	$parts = array();
+
+	foreach ( $content as $node ) {
+		if ( is_array( $node ) && isset( $node['type'] ) && 'text' === $node['type'] ) {
+			$parts[] = (string) ( $node['text'] ?? '' );
+		}
+	}
+
+	return implode( '', $parts );
 }
 
 /**
@@ -268,7 +442,7 @@ function papelito_home_assets_default_promo_marquee_items(): array {
 		),
 		array(
 			'id'       => 'default-marquee-6',
-			'text'     => '🔥 FRETE GRÁTIS acima de R$79',
+			'text'     => PAPELITO_HOME_ASSETS_FREE_SHIPPING_MARQUEE_TEXT,
 			'order'    => 6,
 			'isActive' => true,
 		),
@@ -303,7 +477,7 @@ function papelito_home_assets_default_features(): array {
 		array(
 			'id'       => 'frete-gratis',
 			'title'    => 'Frete Grátis',
-			'subtitle' => 'Acima de R$500',
+			'subtitle' => PAPELITO_HOME_ASSETS_FREE_SHIPPING_SUBTITLE,
 			'iconId'   => 0,
 			'iconUrl'  => '/images/icons/truck.svg',
 		),
@@ -507,6 +681,69 @@ function papelito_home_assets_seed_features(): void {
 }
 
 /**
+ * Textos legados do beneficio de frete gratis, anteriores ao token de minimo configuravel.
+ *
+ * @return array<string, array<int, string>>
+ */
+function papelito_home_assets_legacy_free_shipping_copy(): array {
+	return array(
+		'features' => array( 'Acima de R$500', 'Com cupom' ),
+		'marquee'  => array( '🔥 FRETE GRÁTIS acima de R$79', '🔥 FRETE GRÁTIS com cupom' ),
+	);
+}
+
+/**
+ * Converte os textos legados de frete gratis para o token de minimo configuravel.
+ *
+ * Roda no bootstrap de migration porque alterar os defaults nao alcanca instalacoes em que a
+ * option ja existe. Reescreve somente o que ainda casa exatamente com um literal legado
+ * conhecido: texto ja customizado pelo administrador e uma decisao dele e passa a valer.
+ *
+ * @return void
+ */
+function papelito_home_assets_migrate_free_shipping_placeholder(): void {
+	$legacy = papelito_home_assets_legacy_free_shipping_copy();
+
+	$marquee = get_option( papelito_home_assets_promo_marquee_option_name(), null );
+
+	if ( is_array( $marquee ) ) {
+		$changed = false;
+
+		foreach ( $marquee as $index => $item ) {
+			if ( ! is_array( $item ) || ! in_array( (string) ( $item['text'] ?? '' ), $legacy['marquee'], true ) ) {
+				continue;
+			}
+
+			$marquee[ $index ]['text'] = PAPELITO_HOME_ASSETS_FREE_SHIPPING_MARQUEE_TEXT;
+			$changed                   = true;
+		}
+
+		if ( $changed ) {
+			update_option( papelito_home_assets_promo_marquee_option_name(), $marquee, false );
+		}
+	}
+
+	$features = get_option( papelito_home_assets_features_option_name(), null );
+
+	if ( is_array( $features ) ) {
+		$changed = false;
+
+		foreach ( $features as $index => $item ) {
+			if ( ! is_array( $item ) || ! in_array( (string) ( $item['subtitle'] ?? '' ), $legacy['features'], true ) ) {
+				continue;
+			}
+
+			$features[ $index ]['subtitle'] = PAPELITO_HOME_ASSETS_FREE_SHIPPING_SUBTITLE;
+			$changed                        = true;
+		}
+
+		if ( $changed ) {
+			update_option( papelito_home_assets_features_option_name(), $features, false );
+		}
+	}
+}
+
+/**
  * Busca option partner.
  *
  * @return array<string, mixed>
@@ -626,9 +863,17 @@ function papelito_home_assets_normalize_promo_marquee_item( array $item, int $in
 		$id = papelito_home_assets_generate_promo_marquee_id();
 	}
 
+	$content = papelito_home_assets_normalize_rich_text_content( $item['content'] ?? null );
+	$text    = papelito_home_assets_clean_text( $item['text'] ?? '' );
+
+	if ( null !== $content ) {
+		$text = papelito_home_assets_rich_text_to_plain( $content );
+	}
+
 	return array(
 		'id'       => $id,
-		'text'     => papelito_home_assets_clean_text( $item['text'] ?? '' ),
+		'text'     => $text,
+		'content'  => $content,
 		'order'    => max( 1, absint( $item['order'] ?? ( $index + 1 ) ) ),
 		'isActive' => papelito_home_assets_to_bool( $item['isActive'] ?? true ),
 	);
@@ -716,12 +961,20 @@ function papelito_home_assets_normalize_feature( array $item, int $index ): arra
 	$icon_id  = absint( $item['iconId'] ?? 0 );
 	$icon_url = papelito_home_assets_resolve_svg_url( $icon_id, $item['iconUrl'] ?? '' );
 
+	$subtitle_content = papelito_home_assets_normalize_rich_text_content( $item['subtitleContent'] ?? null );
+	$subtitle         = papelito_home_assets_clean_text( $item['subtitle'] ?? $default['subtitle'] );
+
+	if ( null !== $subtitle_content ) {
+		$subtitle = papelito_home_assets_rich_text_to_plain( $subtitle_content );
+	}
+
 	return array(
-		'id'       => sanitize_key( (string) ( $item['id'] ?? $default['id'] ) ) ?: $default['id'],
-		'title'    => papelito_home_assets_clean_text( $item['title'] ?? $default['title'] ),
-		'subtitle' => papelito_home_assets_clean_text( $item['subtitle'] ?? $default['subtitle'] ),
-		'iconId'   => $icon_id,
-		'iconUrl'  => '' !== $icon_url ? $icon_url : $default['iconUrl'],
+		'id'              => sanitize_key( (string) ( $item['id'] ?? $default['id'] ) ) ?: $default['id'],
+		'title'           => papelito_home_assets_clean_text( $item['title'] ?? $default['title'] ),
+		'subtitle'        => $subtitle,
+		'subtitleContent' => $subtitle_content,
+		'iconId'          => $icon_id,
+		'iconUrl'         => '' !== $icon_url ? $icon_url : $default['iconUrl'],
 	);
 }
 
@@ -757,7 +1010,11 @@ function papelito_home_assets_collect_features_issues( array $items ): array {
 		$title  = (string) $item['title'];
 		$subtitle = (string) $item['subtitle'];
 
-		if ( '' === $title || '' === $subtitle || '' === (string) $item['iconUrl'] ) {
+		if (
+			'' === $title
+			|| ! papelito_home_assets_has_displayable_content( $subtitle, $item['subtitleContent'] ?? null )
+			|| '' === (string) $item['iconUrl']
+		) {
 			$issues[] = sprintf( 'Benefício #%d precisa ter título, texto auxiliar e SVG.', $number );
 		}
 
@@ -834,7 +1091,12 @@ function papelito_home_assets_validate_features_payload( $input ) {
 			);
 		}
 
-		if ( '' === $title || '' === $subtitle ) {
+		$has_subtitle = papelito_home_assets_has_displayable_content(
+			$subtitle,
+			papelito_home_assets_normalize_rich_text_content( $item['subtitleContent'] ?? null )
+		);
+
+		if ( '' === $title || ! $has_subtitle ) {
 			return new WP_Error(
 				'papelito_home_assets_empty_feature_text',
 				sprintf( 'Benefício #%d precisa ter título e texto auxiliar.', $number ),
@@ -873,11 +1135,12 @@ function papelito_home_assets_validate_features_payload( $input ) {
 
 		$ids[ $id ]  = true;
 		$validated[] = array(
-			'id'       => $id,
-			'title'    => $title,
-			'subtitle' => $subtitle,
-			'iconId'   => $icon_id,
-			'iconUrl'  => $icon_url,
+			'id'              => $id,
+			'title'           => $title,
+			'subtitle'        => $subtitle,
+			'subtitleContent' => $normalized['subtitleContent'],
+			'iconId'          => $icon_id,
+			'iconUrl'         => $icon_url,
 		);
 	}
 
@@ -985,7 +1248,7 @@ function papelito_home_assets_validate_promo_marquee_payload( $input ) {
 		$text       = (string) $normalized['text'];
 		$length     = function_exists( 'mb_strlen' ) ? mb_strlen( $text ) : strlen( $text );
 
-		if ( '' === $text ) {
+		if ( ! papelito_home_assets_has_displayable_content( $text, $normalized['content'] ) ) {
 			return new WP_Error(
 				'papelito_home_assets_empty_promo_marquee_text',
 				sprintf( 'Mensagem #%d não pode ficar vazia.', $index + 1 ),
@@ -1017,6 +1280,7 @@ function papelito_home_assets_validate_promo_marquee_payload( $input ) {
 		$validated[]             = array(
 			'id'       => $normalized['id'],
 			'text'     => $text,
+			'content'  => $normalized['content'],
 			'order'    => $index + 1,
 			'isActive' => $normalized['isActive'],
 		);
@@ -1708,7 +1972,7 @@ add_action(
 									: strlen( (string) $item['text'] );
 
 								return ! empty( $item['isActive'] )
-									&& '' !== (string) $item['text']
+									&& papelito_home_assets_has_displayable_content( $item['text'], $item['content'] ?? null )
 									&& $length <= papelito_home_assets_promo_marquee_max_length();
 							}
 						)

@@ -78,7 +78,7 @@ require_once __DIR__ . '/includes/billing_email_sync.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.26.0' );
+	define( 'PAPELITO_DB_VERSION', '1.27.0' );
 }
 
 /**
@@ -139,6 +139,10 @@ function papelito_maybe_migrate_db() {
 
 	if ( function_exists( 'papelito_home_assets_seed_features' ) ) {
 		papelito_home_assets_seed_features();
+	}
+
+	if ( function_exists( 'papelito_home_assets_migrate_free_shipping_placeholder' ) ) {
+		papelito_home_assets_migrate_free_shipping_placeholder();
 	}
 
 	update_option( 'papelito_db_version', PAPELITO_DB_VERSION, true );
