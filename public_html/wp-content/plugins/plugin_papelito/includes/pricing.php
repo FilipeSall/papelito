@@ -11,6 +11,81 @@ if ( ! defined( 'PAPELITO_PRICING_MAX_ITEMS' ) ) {
 	define( 'PAPELITO_PRICING_MAX_ITEMS', 120 );
 }
 
+const PAPELITO_PRICING_INSTALLMENT_CONFIG_OPTION = 'papelito_pricing_installment_config';
+const PAPELITO_PRICING_DEFAULT_MAX_INSTALLMENTS = 6;
+const PAPELITO_PRICING_DEFAULT_INSTALLMENT_MINIMUM_CENTS = 100;
+const PAPELITO_PRICING_MAX_INSTALLMENTS_LIMIT = 12;
+
+function papelito_pricing_normalize_positive_int( $value ): ?int {
+	if ( is_int( $value ) && $value > 0 ) {
+		return $value;
+	}
+
+	if ( is_string( $value ) && 1 === preg_match( '/^[1-9]\d*$/', $value ) ) {
+		$normalized = (int) $value;
+		return $normalized > 0 ? $normalized : null;
+	}
+
+	return null;
+}
+
+function papelito_pricing_normalize_installment_count( $value ): ?int {
+	$normalized = papelito_pricing_normalize_positive_int( $value );
+	return null !== $normalized && $normalized <= PAPELITO_PRICING_MAX_INSTALLMENTS_LIMIT ? $normalized : null;
+}
+
+function papelito_pricing_get_installment_config(): array {
+	$value = get_option( PAPELITO_PRICING_INSTALLMENT_CONFIG_OPTION, array() );
+	$value = is_array( $value ) ? $value : array();
+
+	return array(
+		'maxInstallments'         => papelito_pricing_normalize_installment_count( $value['maxInstallments'] ?? null )
+			?? PAPELITO_PRICING_DEFAULT_MAX_INSTALLMENTS,
+		'installmentMinimumCents' => papelito_pricing_normalize_positive_int( $value['installmentMinimumCents'] ?? null )
+			?? PAPELITO_PRICING_DEFAULT_INSTALLMENT_MINIMUM_CENTS,
+	);
+}
+
+function papelito_pricing_get_installment_config_snapshot(): array {
+	return papelito_pricing_get_installment_config();
+}
+
+function papelito_pricing_update_installment_config( $max_installments, $installment_minimum_cents ) {
+	$max_installments          = papelito_pricing_normalize_installment_count( $max_installments );
+	$installment_minimum_cents = papelito_pricing_normalize_positive_int( $installment_minimum_cents );
+
+	if ( null === $max_installments || null === $installment_minimum_cents ) {
+		return new WP_Error(
+			'papelito_pricing_invalid_installment_config',
+			'Informe de 1 a ' . PAPELITO_PRICING_MAX_INSTALLMENTS_LIMIT . ' parcelas e um valor mínimo positivo por parcela.',
+			array( 'status' => 422 )
+		);
+	}
+
+	update_option(
+		PAPELITO_PRICING_INSTALLMENT_CONFIG_OPTION,
+		array(
+			'maxInstallments'         => $max_installments,
+			'installmentMinimumCents' => $installment_minimum_cents,
+		),
+		false
+	);
+
+	return papelito_pricing_get_installment_config_snapshot();
+}
+
+function papelito_pricing_require_admin() {
+	if ( current_user_can( 'manage_options' ) ) {
+		return true;
+	}
+
+	return new WP_Error(
+		'papelito_pricing_forbidden',
+		'Acesso administrativo necessário.',
+		array( 'status' => 403 )
+	);
+}
+
 /**
  * Converte valor monetário em centavos inteiros.
  *
@@ -413,11 +488,13 @@ function papelito_pricing_payment_minimum_cents( string $method ): int {
 }
 
 function papelito_pricing_installment_minimum_cents(): int {
-	return max( 1, (int) apply_filters( 'papelito_installment_minimum_cents', 100 ) );
+	$config = papelito_pricing_get_installment_config();
+	return max( 1, (int) apply_filters( 'papelito_installment_minimum_cents', $config['installmentMinimumCents'] ) );
 }
 
 function papelito_pricing_max_installments(): int {
-	return max( 1, (int) apply_filters( 'papelito_max_installments', 6 ) );
+	$config = papelito_pricing_get_installment_config();
+	return min( PAPELITO_PRICING_MAX_INSTALLMENTS_LIMIT, max( 1, (int) apply_filters( 'papelito_max_installments', $config['maxInstallments'] ) ) );
 }
 
 function papelito_pricing_payment_restrictions( int $total_cents ): array {
@@ -450,11 +527,12 @@ function papelito_pricing_validate_payment_amount( string $method, int $total_ce
 		);
 	}
 
-	if ( 'credit_card' === $method && $installments > 1 && intdiv( $total_cents, $installments ) < papelito_pricing_installment_minimum_cents() ) {
+	$installment_minimum = papelito_pricing_installment_minimum_cents();
+	if ( 'credit_card' === $method && $installments > 1 && intdiv( $total_cents, $installments ) < $installment_minimum ) {
 		return new WP_Error(
 			'papelito_checkout_installment_below_minimum',
-			'Cada parcela precisa ter valor mínimo de R$ 1,00.',
-			array( 'status' => 422, 'minimum_installment_cents' => papelito_pricing_installment_minimum_cents() )
+			'Cada parcela precisa ter valor mínimo de R$ ' . number_format( $installment_minimum / 100, 2, ',', '.' ) . '.',
+			array( 'status' => 422, 'minimum_installment_cents' => $installment_minimum )
 		);
 	}
 
@@ -511,6 +589,41 @@ add_action(
 						),
 						200
 					);
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/admin/payment-config',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => 'papelito_pricing_require_admin',
+				'callback'            => static fn() => new WP_REST_Response( papelito_pricing_get_installment_config_snapshot(), 200 ),
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/admin/payment-config',
+			array(
+				'methods'             => WP_REST_Server::EDITABLE,
+				'permission_callback' => 'papelito_pricing_require_admin',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$payload = $request->get_json_params();
+					if ( ! is_array( $payload ) ) {
+						return new WP_Error(
+							'papelito_pricing_invalid_installment_config',
+							'Informe máximo de parcelas e mínimo por parcela.',
+							array( 'status' => 422 )
+						);
+					}
+
+					$result = papelito_pricing_update_installment_config(
+						$payload['maxInstallments'] ?? null,
+						$payload['installmentMinimumCents'] ?? null
+					);
+					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
 				},
 			)
 		);

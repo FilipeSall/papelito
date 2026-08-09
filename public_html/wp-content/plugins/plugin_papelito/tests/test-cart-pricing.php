@@ -17,6 +17,10 @@ function sanitize_text_field( mixed $value ) { return trim( (string) $value ); }
 function wc_format_decimal( mixed $value ) { return (string) $value; }
 function wp_unslash( mixed $value ) { return $value; }
 
+$papelito_test_options = array();
+function get_option( mixed $key, mixed $default = false ) { global $papelito_test_options; return $papelito_test_options[ $key ] ?? $default; }
+function update_option( mixed $key, mixed $value, mixed $autoload = null ) { global $papelito_test_options; $papelito_test_options[ $key ] = $value; return true; }
+
 $papelito_test_rate_limit_allowed = true;
 function papelito_auth_rate_limit( string $bucket, int $max = 20, int $window = 60 ): bool {
 	global $papelito_test_rate_limit_allowed;
@@ -185,6 +189,19 @@ echo "Scenario 9: public pricing rate limit fails closed\n";
 $papelito_test_rate_limit_allowed = false;
 $rate_limited = papelito_pricing_check_rate_limit();
 papelito_assert_same( 'rate limit error', 'papelito_rate_limited', $rate_limited->get_error_code() );
+
+echo "Scenario 10: installment configuration is persisted and validates positive values\n";
+$saved_installments = papelito_pricing_update_installment_config( 8, 250 );
+papelito_assert_same( 'installment max persisted', 8, $saved_installments['maxInstallments'] ?? null );
+papelito_assert_same( 'installment minimum persisted', 250, $saved_installments['installmentMinimumCents'] ?? null );
+papelito_assert_same( 'configured max applies to checkout', 8, papelito_pricing_max_installments() );
+papelito_assert_same( 'configured minimum applies to checkout', 250, papelito_pricing_installment_minimum_cents() );
+$invalid_installments = papelito_pricing_update_installment_config( 0, 250 );
+papelito_assert_same( 'invalid installment configuration rejected', 'papelito_pricing_invalid_installment_config', $invalid_installments->get_error_code() );
+$too_many_installments = papelito_pricing_update_installment_config( 13, 250 );
+papelito_assert_same( 'more than 12 installments rejected', 'papelito_pricing_invalid_installment_config', $too_many_installments->get_error_code() );
+$configured_minimum_error = papelito_pricing_validate_payment_amount( 'credit_card', 499, 2 );
+papelito_assert_same( 'configured installment minimum is named in the error', 'Cada parcela precisa ter valor mínimo de R$ 2,50.', $configured_minimum_error->get_error_message() );
 
 echo "\n";
 if ( $failures > 0 ) {
