@@ -2,6 +2,8 @@
 
 defined('ABSPATH') || exit;
 
+const PAPELITO_NON_DIGIT_PATTERN = '/\D+/';
+
 /**
  * Read the user CEP from cookies safely.
  */
@@ -11,7 +13,7 @@ function papelito_cookie_cep()
         return null;
     }
 
-    $cep = preg_replace('/\D+/', '', sanitize_text_field(wp_unslash($_COOKIE['user_cep'])));
+    $cep = preg_replace(PAPELITO_NON_DIGIT_PATTERN, '', sanitize_text_field(wp_unslash($_COOKIE['user_cep'])));
 
     return '' === $cep ? null : (int) $cep;
 }
@@ -19,7 +21,7 @@ function papelito_cookie_cep()
 /**
  * Log debug messages only in development.
  */
-function papelito_debug_log($message)
+function papelito_debug_log(mixed $message): void
 {
     if (defined('WP_DEBUG') && WP_DEBUG) {
         error_log(wp_json_encode(['papelito' => $message], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
@@ -56,7 +58,7 @@ function papelito_catalog_filter_cep()
     $user_cep = null;
 
     if (is_user_logged_in()) {
-        $user_cep = preg_replace('/\D+/', '', (string) get_user_meta(get_current_user_id(), 'cep', true));
+    $user_cep = preg_replace(PAPELITO_NON_DIGIT_PATTERN, '', (string) get_user_meta(get_current_user_id(), 'cep', true));
     }
 
     if (empty($user_cep)) {
@@ -92,8 +94,8 @@ function papelito_matching_vendor_ids($user_cep)
         $count = min(count($min_ceps), count($max_ceps));
 
         for ($i = 0; $i < $count; $i++) {
-            $min_cep = (int) preg_replace('/\D+/', '', (string) $min_ceps[$i]);
-            $max_cep = (int) preg_replace('/\D+/', '', (string) $max_ceps[$i]);
+            $min_cep = (int) preg_replace(PAPELITO_NON_DIGIT_PATTERN, '', (string) $min_ceps[$i]);
+            $max_cep = (int) preg_replace(PAPELITO_NON_DIGIT_PATTERN, '', (string) $max_ceps[$i]);
 
             if ($min_cep <= $user_cep && $max_cep >= $user_cep) {
                 $vendors_ids[] = (int) $vendor->ID;
@@ -195,7 +197,12 @@ function papelito_force_shop_archive_query($query)
     $query->is_post_type_archive = true;
 }
 add_action('pre_get_posts', 'papelito_force_shop_archive_query', 5);
-// Filtra a consulta baseada no CEP do usuário (do perfil ou cookie).
+/**
+ * Filter the catalog query based on the user's CEP.
+ *
+ * @param WP_Query $query Catalog query.
+ * @return void
+ */
 function custom_products_filter($query)
 {
     if (
@@ -236,6 +243,12 @@ function custom_products_filter($query)
 }
 add_action('pre_get_posts', 'custom_products_filter');
 
+/**
+ * Filter JetWooBuilder product query arguments by the user's CEP.
+ *
+ * @param array<string, mixed> $query Product query arguments.
+ * @return array<string, mixed>
+ */
 function product_list_filter($query)
 {
     $user_cep = papelito_catalog_filter_cep();
@@ -360,7 +373,7 @@ function papelito_render_shop_products_loop_fallback()
  * Replace Elementor's empty archive widget output on the shop page with a manual Woo loop.
  *
  * @param string $content Rendered widget HTML.
- * @param ElementorWidget_Base $widget Widget instance.
+ * @param \Elementor\Widget_Base $widget Widget instance.
  * @return string
  */
 function papelito_shop_archive_widget_fallback($content, $widget)
@@ -390,6 +403,13 @@ function papelito_shop_archive_widget_fallback($content, $widget)
 add_filter('elementor/widget/render_content', 'papelito_shop_archive_widget_fallback', 10, 2);
 
 
+/**
+ * Restrict related products to the current product's vendor.
+ *
+ * @param array<string, mixed> $query_args Related products query arguments.
+ * @param int                 $product_id Current product ID.
+ * @return array<string, mixed>
+ */
 function my_related_products_query_args($query_args, $product_id)
 {
     // Get the author ID of the current product
@@ -402,10 +422,15 @@ function my_related_products_query_args($query_args, $product_id)
 }
 add_filter('woocommerce_product_related_posts_query', 'my_related_products_query_args', 10, 2);
 
+/**
+ * Keep the legacy product duplication hook as a no-op.
+ *
+ * @param int $user_id Registered user ID.
+ * @return void
+ */
 function duplicate_products_for_vendor($user_id)
 {
     // Legado do modelo antigo de catálogo duplicado por vendor.
     // Mantido como no-op para não recriar acoplamento com Dokan no novo onboarding.
-    return;
 }
 add_action('user_register', 'duplicate_products_for_vendor', 10, 1);
