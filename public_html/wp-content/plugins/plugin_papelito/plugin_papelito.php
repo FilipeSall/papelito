@@ -18,6 +18,10 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/products_filter.php';
 require_once __DIR__ . '/includes/rest_api.php';
 require_once __DIR__ . '/includes/frontend_links.php';
 require_once __DIR__ . '/includes/auth_endpoints.php';
+require_once __DIR__ . '/includes/product_taxonomy.php';
+require_once __DIR__ . '/includes/product_taxonomy_rest.php';
+require_once __DIR__ . '/includes/product_taxonomy_graphql.php';
+require_once __DIR__ . '/includes/product_taxonomy_compat.php';
 require_once __DIR__ . '/includes/catalog_search.php';
 require_once __DIR__ . '/includes/revendedor_application.php';
 require_once __DIR__ . '/includes/vendor_interests.php';
@@ -78,7 +82,7 @@ require_once __DIR__ . '/includes/billing_email_sync.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.27.0' );
+	define( 'PAPELITO_DB_VERSION', '1.28.0' );
 }
 
 /**
@@ -91,6 +95,10 @@ function papelito_maybe_migrate_db() {
 
 	if ( version_compare( $current, PAPELITO_DB_VERSION, '>=' ) ) {
 		return;
+	}
+
+	if ( function_exists( 'papelito_product_taxonomy_install_tables' ) ) {
+		papelito_product_taxonomy_install_tables();
 	}
 
 	if ( function_exists( 'papelito_vendor_stock_install_tables' ) ) {

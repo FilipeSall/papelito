@@ -108,6 +108,70 @@ curl -s -X POST https://papelitobrasil.com.br/graphql \
   -d '{"query":"{ products(where:{onSale:true}) { nodes { name } } }"}'
 ```
 
+## Migração da taxonomia (`product_cat` → entidade Papelito)
+
+Três arquivos, independentes do pipeline de import acima. Plano completo em
+[`docs/product-taxonomy-migration.md`](../../../docs/product-taxonomy-migration.md).
+
+| Arquivo | O que é |
+|---|---|
+| `taxonomy_map.php` | só dados e funções puras: seed da taxonomia proposta, mapa `raiz\|filho` → destino, tokens de título e o resolvedor. Nada consulta banco nem imprime |
+| `migrate_taxonomy.php` | **fase 3, dry-run**: lê o estado atual, aplica o mapa e imprime o relatório. **Não escreve nada** |
+| `test_taxonomy_map.php` | 34 checagens sobre as funções puras. Trava as armadilhas de derivação |
+
+O container `web` só monta `public_html`, então os scripts entram por `docker cp`:
+
+```bash
+docker cp scripts/catalog/taxonomy_map.php      papelito-web:/tmp/
+docker cp scripts/catalog/migrate_taxonomy.php  papelito-web:/tmp/
+docker cp scripts/catalog/test_taxonomy_map.php papelito-web:/tmp/
+
+docker compose exec -T web wp eval-file /tmp/test_taxonomy_map.php
+docker compose exec -T web wp eval-file /tmp/migrate_taxonomy.php
+```
+
+Variáveis: `PAPELITO_TAXONOMY_REPORT` (caminho do CSV, default `/tmp/papelito-taxonomy-dryrun.csv`) e
+`PAPELITO_TAXONOMY_VERBOSE=1` (lista produto por produto).
+
+### Aplicar de verdade (fase 4)
+
+```bash
+# dump antes — o script é idempotente, mas dump é barato
+docker exec papelito-db mariadb-dump -upapelito -ppapelito_local_123 papelito_local \
+  wp_terms wp_term_taxonomy wp_term_relationships wp_postmeta wp_options > /tmp/pre-taxonomia.sql
+
+docker compose exec -T -e PAPELITO_TAXONOMY_APPLY=1 web wp eval-file /tmp/migrate_taxonomy.php
+```
+
+**Escreve somente nas tabelas `wp_papelito_*`.** `product_cat` não é tocado: o dual-write fica suprimido
+durante a migração, de propósito. Confira com o hash do conjunto de vínculos antes e depois:
+
+```bash
+docker exec papelito-db mariadb -upapelito -ppapelito_local_123 papelito_local -N -e "
+SELECT MD5(GROUP_CONCAT(CONCAT(tr.object_id,':',tt.term_id) ORDER BY tr.object_id, tt.term_id))
+  FROM wp_term_relationships tr JOIN wp_term_taxonomy tt USING(term_taxonomy_id)
+ WHERE tt.taxonomy='product_cat';"
+```
+
+Rollback: `PAPELITO_TAXONOMY_APPLY=1 PAPELITO_TAXONOMY_RESET=1` apaga os vínculos de produto e reaplica. O
+seed de categorias permanece.
+
+Produtos com classificação parcial ficam marcados em `_papelito_taxonomy_todo` — mesma convenção do
+`_papelito_import_todo`. Para listar:
+
+```bash
+docker compose exec -T web wp eval 'foreach ( get_posts( array( "post_type" => "product", "post_status" => "any", "numberposts" => -1, "meta_key" => "_papelito_taxonomy_todo" ) ) as $p ) { echo "#{$p->ID} {$p->post_title}\n"; }'
+```
+
+**Armadilhas que o `test_taxonomy_map.php` protege** — cada uma classificaria errado em silêncio:
+
+- token de título é casado **do mais longo para o mais curto** e o trecho é consumido; sem isso `Longa`
+  casaria dentro de `Mega Longa`;
+- tamanho de bandeja só é derivado quando o tipo é `bandeja`: `Bandeja Chaveiro P Amarelo` tem um "P"
+  que é **cor**, não tamanho;
+- termo combinado é decomposto (`Brown Slim` → Brown + Slim), então toda subcategoria referenciada pelo
+  mapa precisa existir no seed — há teste de integridade referencial para isso.
+
 ## Limitações conhecidas
 - 9 produtos importados como `draft` por dados incompletos na planilha (`Filtro Gomado`, `Dichavador Cristal`, `Bandeja Chaveiro Relax/Amarelo/Black`, `Cinzeiro`, `Bandeja P/M/G`). Procurar pela meta `_papelito_import_todo` no admin para ver o que falta.
 - SKU `PP03020002` aparece duplicado na planilha (Seda Slim Longa + Filtro Slim Longo). O da seda é renomeado para `PP03020002-<slug>` durante o import.
