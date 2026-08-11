@@ -180,18 +180,29 @@ function papelito_direct_upload_media( array $ticket, array $file ) {
 		return papelito_direct_upload_error( 'papelito_upload_not_allowed', 'Você não tem permissão para enviar esta mídia.', 403 );
 	}
 
-	// O arquivo deixou de passar pelo proxy Next, onde `validateImageUpload()` conferia assinatura,
-	// divergencia entre conteudo e extensao e truncamento. A conferencia precisa existir aqui, ou o
-	// caminho direto aceita qualquer coisa que o WordPress engula.
-	$validated = papelito_direct_upload_validate_image( $file );
-	if ( is_wp_error( $validated ) ) {
-		return $validated;
+	wp_set_current_user( $user_id );
+
+	if ( papelito_media_is_svg_filename( (string) ( $file['name'] ?? '' ) ) ) {
+		$svg_error = papelito_media_svg_upload_error( $file );
+
+		if ( '' !== $svg_error ) {
+			return papelito_direct_upload_error( 'papelito_upload_svg_invalid', $svg_error, 422 );
+		}
+
+		$file['type'] = PAPELITO_MEDIA_SVG_MIME_TYPE;
+	} else {
+		// O arquivo deixou de passar pelo proxy Next, onde `validateImageUpload()` conferia assinatura,
+		// divergencia entre conteudo e extensao e truncamento. A conferencia precisa existir aqui, ou o
+		// caminho direto aceita qualquer coisa que o WordPress engula.
+		$validated = papelito_direct_upload_validate_image( $file );
+		if ( is_wp_error( $validated ) ) {
+			return $validated;
+		}
+
+		$file['name'] = $validated['file_name'];
+		$file['type'] = $validated['mime'];
 	}
 
-	$file['name'] = $validated['file_name'];
-	$file['type'] = $validated['mime'];
-
-	wp_set_current_user( $user_id );
 	$request = new WP_REST_Request( 'POST', '/wp/v2/media' );
 	$request->set_file_params( array( 'file' => $file ) );
 	$response = rest_do_request( $request );

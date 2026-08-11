@@ -37,7 +37,7 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Administração | `test-admin-activate-email.php` |
 | E-mail de faturamento | `test-billing-email-rules.php` (tabela de decisão), `test-billing-email-sync.php` (cascata e backfill), `test-billing-email-token.php`, `test-pre-account-email-verification.php` (**estrutural**: nenhum `wp_insert_user()` pode ficar sem gravar o estado de verificação) |
 | Links de e-mail | `test-frontend-base-url.php` (allowlist, nunca `localhost` em ambiente remoto, `Origin` não é fallback) |
-| Upload direto | `test-direct-uploads.php` (tíquete single-use, claim atômico, contexto sem token cru), `test-direct-upload-image.php` (assinatura, divergência conteúdo × extensão, truncamento) |
+| Upload direto | `test-direct-uploads.php` (tíquete single-use, claim atômico, contexto sem token cru), `test-direct-upload-image.php` (assinatura, divergência conteúdo × extensão, truncamento), `test-direct-upload-media.php` (upload de SVG seguro pela Media Library e rejeição de SVG inseguro) |
 | Rate limit | `test-rate-limit-identity.php` (endpoint atrás do proxy não pode compartilhar balde por IP) |
 | Faixas da Home | `test-home-assets-rich-text.php` (whitelist de formatos e tokens, referência de produto sem snapshot, compat com texto puro), `test-home-assets-free-shipping-placeholder.php` (migração dos textos legados) |
 | Frete grátis | `test-shipping-free-shipping-threshold.php` (default, persistência, validação, autorização) |
