@@ -35,6 +35,7 @@ A versão de schema corrente é `PAPELITO_DB_VERSION`, em `plugin_papelito.php` 
 - **`coverage/products` calcula em lote.** Não volte para loop que recalcula geocodificação, vendors e estoque produto a produto. Com `vendor_id`, checa só aquele vendor **sem geocodificar**. Preserve o transient versionado por `papelito_coverage_cache_version` e a resposta com `has_coverage`, `best_vendor` e `alternatives`.
 - **Alteração de estoque dispara `papelito_vendor_stock_changed`**, e mudança nos metadados de cobertura invalida a versão do cache: `min_cep`, `max_cep`, `cep`, `cep_lat`, `cep_lng`, `shipping_lead_time_days`, `store_name`, `city`, `state`, `application_status`.
 - **O estoque nativo do WooCommerce é deliberadamente intocado.** Sem espelhamento em `_stock`/`_stock_status`.
+- **A taxonomia Papelito é a única classificação do fluxo headless.** Produto publicado precisa de categoria principal para a vitrine; subcategoria é opcional e os filtros usam OR por faceta e AND entre facetas.
 - **`papelito_stock_zeroed` só dispara na transição `qty > 0 → 0`** e apenas com `notified_zero_at IS NULL`.
 - **Pagamento direto ao vendor, sem split de receita**: `split` do PSP com recebedor único a 100%, `liable: true`, taxas no vendor. Vender exige **dupla aprovação** — cobertura regional **e** recebedor Pagar.me `active`.
 - **Nenhum pedido B2B lê documento fiscal de `wp_usermeta`** nem chama `papelito_pagarme_resolve_customer_document()`. O snapshot do pedido é a única fonte.

@@ -171,13 +171,13 @@ function papelito_flash_sale_get_raw_campaign(): array {
  * @return array<string, mixed>|null
  */
 function papelito_flash_sale_normalize_campaign( array $campaign ): ?array {
-	$title           = sanitize_text_field( (string) ( $campaign['title'] ?? '' ) );
-	$label           = sanitize_text_field( (string) ( $campaign['label'] ?? '' ) );
-	$supporting      = sanitize_textarea_field( (string) ( $campaign['supportingText'] ?? '' ) );
-	$product_ids     = papelito_flash_sale_normalize_product_ids( $campaign['productIds'] ?? array() );
-	$discount        = papelito_flash_sale_clamp_discount( $campaign['discountPercent'] ?? 0 );
-	$starts_at = papelito_flash_sale_parse_datetime( (string) ( $campaign['starts_at'] ?? '' ) );
-	$ends_at   = papelito_flash_sale_parse_datetime( (string) ( $campaign['ends_at'] ?? '' ) );
+	$title       = sanitize_text_field( (string) ( $campaign['title'] ?? '' ) );
+	$label       = sanitize_text_field( (string) ( $campaign['label'] ?? '' ) );
+	$supporting  = sanitize_textarea_field( (string) ( $campaign['supportingText'] ?? '' ) );
+	$product_ids = papelito_flash_sale_normalize_product_ids( $campaign['productIds'] ?? array() );
+	$discount    = papelito_flash_sale_clamp_discount( $campaign['discountPercent'] ?? 0 );
+	$starts_at   = papelito_flash_sale_parse_datetime( (string) ( $campaign['starts_at'] ?? '' ) );
+	$ends_at     = papelito_flash_sale_parse_datetime( (string) ( $campaign['ends_at'] ?? '' ) );
 
 	if ( '' === $title && empty( $product_ids ) && 0 === $discount && ! $starts_at && ! $ends_at ) {
 		return null;
@@ -269,13 +269,13 @@ function papelito_flash_sale_create_promotion_context( ?array $campaign, int $pr
 		return '';
 	}
 
-	$payload = array(
+	$payload   = array(
 		'v'   => 1,
 		'pid' => $product_id,
 		'fp'  => papelito_flash_sale_campaign_fingerprint( $campaign ),
 		'exp' => $ends_at->getTimestamp(),
 	);
-	$encoded = papelito_flash_sale_base64url_encode(
+	$encoded   = papelito_flash_sale_base64url_encode(
 		(string) wp_json_encode( $payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE )
 	);
 	$signature = hash_hmac( 'sha256', $encoded, papelito_flash_sale_context_signing_key(), true );
@@ -383,6 +383,10 @@ function papelito_flash_sale_load_product( int $product_id ): ?WC_Product {
 		return null;
 	}
 
+	if ( ! function_exists( 'papelito_product_get_category' ) || null === papelito_product_get_category( $product_id ) ) {
+		return null;
+	}
+
 	return $product;
 }
 
@@ -395,7 +399,7 @@ function papelito_flash_sale_load_product( int $product_id ): ?WC_Product {
 function papelito_flash_sale_build_admin_candidate( WC_Product $product ): array {
 	$image_id   = (int) $product->get_image_id();
 	$image_url  = $image_id > 0 ? wp_get_attachment_image_url( $image_id, 'thumbnail' ) : '';
-	$categories = wc_get_product_terms( $product->get_id(), 'product_cat', array( 'fields' => 'all' ) );
+	$category   = papelito_product_get_category( $product->get_id() );
 	$tags       = wc_get_product_terms( $product->get_id(), 'product_tag', array( 'fields' => 'all' ) );
 	$map_term   = static function ( $term ): array {
 		return array(
@@ -431,7 +435,13 @@ function papelito_flash_sale_build_admin_candidate( WC_Product $product ): array
 				),
 			)
 			: array(),
-		'categories'    => array_values( array_map( $map_term, is_array( $categories ) ? $categories : array() ) ),
+		'papelitoCategory' => null === $category
+			? null
+			: array(
+				'id'   => (int) $category['id'],
+				'name' => (string) $category['name'],
+				'slug' => (string) $category['slug'],
+			),
 		'tags'          => array_values( array_map( $map_term, is_array( $tags ) ? $tags : array() ) ),
 	);
 }
@@ -451,13 +461,14 @@ function papelito_flash_sale_build_eligible_product_query_args( int $page, int $
 	);
 
 	if ( $category > 0 ) {
-		$query_args['tax_query'] = array(
-			array(
-				'taxonomy' => 'product_cat',
-				'field'    => 'term_id',
-				'terms'    => $category,
-			),
-		);
+		// `tax_query` incluía descendentes por padrão; a taxonomia Papelito não tem
+		// descendentes de categoria. Resolver os ids antes mantém a semântica
+		// idêntica à da busca e à do estoque — era essa divergência que fazia o
+		// mesmo filtro devolver conjuntos diferentes em cada tela.
+		$ids = papelito_taxonomy_product_ids( $category );
+
+		// Fail-closed: categoria sem produto não pode virar "todos os produtos".
+		$query_args['post__in'] = empty( $ids ) ? array( 0 ) : $ids;
 	}
 
 	return $query_args;
@@ -488,7 +499,7 @@ function papelito_flash_sale_build_eligibility_filter(): Closure {
 						AND CAST(flash_variation_weight.meta_value AS DECIMAL(20,6)) > 0
 				)
 			)
-		";
+		\tAND " . papelito_taxonomy_classified_clause( "{$wpdb->posts}.ID" );
 	};
 }
 
@@ -590,8 +601,8 @@ function papelito_flash_sale_query_eligible_products( array $args = array() ): a
 		'items'      => array_values( array_map( 'papelito_flash_sale_build_admin_candidate', $eligible ) ),
 		'page'       => $safe_page,
 		'perPage'    => $per_page,
-		'total'       => $total,
-		'totalPages'  => $total_pages,
+		'total'      => $total,
+		'totalPages' => $total_pages,
 	);
 }
 
@@ -603,18 +614,18 @@ function papelito_flash_sale_query_eligible_products( array $args = array() ): a
  * @return array<string, mixed>
  */
 function papelito_flash_sale_build_product_payload( WC_Product $product, int $discount_percent ): array {
-	$discount       = papelito_flash_sale_clamp_discount( $discount_percent );
-	$image_id       = (int) $product->get_image_id();
-	$image_url      = $image_id > 0 ? wp_get_attachment_image_url( $image_id, 'large' ) : '';
-	$categories     = wc_get_product_terms( $product->get_id(), 'product_cat', array( 'fields' => 'all' ) );
-	$tags           = wc_get_product_terms( $product->get_id(), 'product_tag', array( 'fields' => 'all' ) );
-	$regular_price  = papelito_flash_sale_to_float( $product->get_regular_price( 'edit' ) );
-	$current_price  = papelito_flash_sale_to_float( $product->get_price( 'edit' ) );
-	$base_price     = $regular_price > 0 ? $regular_price : $current_price;
-	$campaign_price = $base_price > 0
+	$discount          = papelito_flash_sale_clamp_discount( $discount_percent );
+	$image_id          = (int) $product->get_image_id();
+	$image_url         = $image_id > 0 ? wp_get_attachment_image_url( $image_id, 'large' ) : '';
+	$tags              = wc_get_product_terms( $product->get_id(), 'product_tag', array( 'fields' => 'all' ) );
+	$papelito_category = papelito_product_get_category( $product->get_id() );
+	$regular_price     = papelito_flash_sale_to_float( $product->get_regular_price( 'edit' ) );
+	$current_price     = papelito_flash_sale_to_float( $product->get_price( 'edit' ) );
+	$base_price        = $regular_price > 0 ? $regular_price : $current_price;
+	$campaign_price    = $base_price > 0
 		? round( $base_price * ( 100 - $discount ) / 100, 2 )
 		: 0.0;
-	$category_label = ! empty( $categories ) && isset( $categories[0]->name ) ? (string) $categories[0]->name : 'Produto';
+	$category_label = null !== $papelito_category ? (string) $papelito_category['name'] : 'Produto';
 	$badge_label    = ! empty( $tags ) && isset( $tags[0]->name ) ? (string) $tags[0]->name : 'Destaque';
 
 	return array(
@@ -726,9 +737,9 @@ function papelito_flash_sale_dispatch_promo_events( array $campaign ): void {
 			'papelito_product_on_promo',
 			(int) $product_id,
 			array(
-				'promo_type'      => 'flash_sale',
-				'promo_label'     => '' !== $promo_label ? $promo_label : PAPELITO_FLASH_SALE_DEFAULT_LABEL,
-				'promo_event_key' => sprintf(
+				'promo_type'       => 'flash_sale',
+				'promo_label'      => '' !== $promo_label ? $promo_label : PAPELITO_FLASH_SALE_DEFAULT_LABEL,
+				'promo_event_key'  => sprintf(
 					'flash_sale:%d:%s',
 					(int) $product_id,
 					sanitize_text_field( (string) ( $campaign['starts_at'] ?? '' ) )
@@ -832,16 +843,16 @@ function papelito_flash_sale_get_admin_snapshot(): array {
  * @return array<string, mixed>|WP_Error
  */
 function papelito_flash_sale_validate_input( array $input, array $stored ) {
-	$title         = sanitize_text_field( (string) ( $input['title'] ?? '' ) );
-	$product_ids   = papelito_flash_sale_normalize_product_ids( $input['productIds'] ?? array() );
-	$starts_at_raw = sanitize_text_field( (string) ( $input['startsAt'] ?? '' ) );
-	$ends_at_raw   = sanitize_text_field( (string) ( $input['endsAt'] ?? '' ) );
-	$starts_at     = papelito_flash_sale_parse_datetime( $starts_at_raw );
-	$ends_at       = papelito_flash_sale_parse_datetime( $ends_at_raw );
-	$discount      = papelito_flash_sale_clamp_discount( $input['discountPercent'] ?? ( $stored['discountPercent'] ?? 0 ) );
+	$title                      = sanitize_text_field( (string) ( $input['title'] ?? '' ) );
+	$product_ids                = papelito_flash_sale_normalize_product_ids( $input['productIds'] ?? array() );
+	$starts_at_raw              = sanitize_text_field( (string) ( $input['startsAt'] ?? '' ) );
+	$ends_at_raw                = sanitize_text_field( (string) ( $input['endsAt'] ?? '' ) );
+	$starts_at                  = papelito_flash_sale_parse_datetime( $starts_at_raw );
+	$ends_at                    = papelito_flash_sale_parse_datetime( $ends_at_raw );
+	$discount                   = papelito_flash_sale_clamp_discount( $input['discountPercent'] ?? ( $stored['discountPercent'] ?? 0 ) );
 	$extreme_discount_confirmed = true === ( $input['extremeDiscountConfirmed'] ?? false );
-	$label         = sanitize_text_field( (string) ( $input['label'] ?? ( $stored['label'] ?? '' ) ) );
-	$supporting    = sanitize_textarea_field( (string) ( $input['supportingText'] ?? ( $stored['supportingText'] ?? '' ) ) );
+	$label                      = sanitize_text_field( (string) ( $input['label'] ?? ( $stored['label'] ?? '' ) ) );
+	$supporting                 = sanitize_textarea_field( (string) ( $input['supportingText'] ?? ( $stored['supportingText'] ?? '' ) ) );
 
 	if ( ! $starts_at || ! $ends_at ) {
 		return new WP_Error(
@@ -1045,10 +1056,22 @@ add_action(
 				'methods'             => WP_REST_Server::READABLE,
 				'permission_callback' => 'papelito_flash_sale_admin_permission',
 				'args'                => array(
-					'page'     => array( 'sanitize_callback' => 'absint', 'default' => 1 ),
-					'per_page' => array( 'sanitize_callback' => 'absint', 'default' => 24 ),
-					'search'   => array( 'sanitize_callback' => 'sanitize_text_field', 'default' => '' ),
-					'category' => array( 'sanitize_callback' => 'absint', 'default' => 0 ),
+					'page'     => array(
+						'sanitize_callback' => 'absint',
+						'default'           => 1,
+					),
+					'per_page' => array(
+						'sanitize_callback' => 'absint',
+						'default'           => 24,
+					),
+					'search'   => array(
+						'sanitize_callback' => 'sanitize_text_field',
+						'default'           => '',
+					),
+					'category' => array(
+						'sanitize_callback' => 'absint',
+						'default'           => 0,
+					),
 				),
 				'callback'            => 'papelito_flash_sale_admin_products_response',
 			),

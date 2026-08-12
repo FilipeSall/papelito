@@ -1440,8 +1440,9 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 		return;
 	}
 
-	$missing_weight = ! papelito_product_has_valid_weight( $product );
-	$missing_price  = ! papelito_product_has_valid_price( $product );
+	$missing_weight   = ! papelito_product_has_valid_weight( $product );
+	$missing_price    = ! papelito_product_has_valid_price( $product );
+	$missing_category = ! function_exists( 'papelito_product_get_category' ) || null === papelito_product_get_category( $product_id );
 
 	foreach ( is_array( $admins ) ? $admins : array() as $admin_id ) {
 		$admin_id = absint( $admin_id );
@@ -1450,7 +1451,7 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 			continue;
 		}
 
-		if ( 'publish' !== $product->get_status() || ( ! $missing_weight && ! $missing_price ) ) {
+		if ( 'publish' !== $product->get_status() || ( ! $missing_weight && ! $missing_price && ! $missing_category ) ) {
 			papelito_resolve_product_data_notifications( $admin_id, $product_id );
 			continue;
 		}
@@ -1458,6 +1459,7 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 		$payload = array_merge(
 			papelito_notification_product_payload( $product_id ),
 			array(
+				'missing_category' => $missing_category,
 				'missing_price'  => $missing_price,
 				'missing_weight' => $missing_weight,
 			)
@@ -1484,10 +1486,11 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 
 		if ( is_array( $current_row ) ) {
 			$current_payload = json_decode( (string) $current_row['payload'], true );
-			$current_price   = ! empty( $current_payload['missing_price'] );
-			$current_weight  = ! empty( $current_payload['missing_weight'] );
+			$current_category = ! empty( $current_payload['missing_category'] );
+			$current_price    = ! empty( $current_payload['missing_price'] );
+			$current_weight   = ! empty( $current_payload['missing_weight'] );
 
-			if ( $current_price === $missing_price && $current_weight === $missing_weight ) {
+			if ( $current_category === $missing_category && $current_price === $missing_price && $current_weight === $missing_weight ) {
 				continue;
 			}
 
@@ -1514,6 +1517,18 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 }
 add_action( 'woocommerce_new_product', 'papelito_sync_product_data_notification', 20, 2 );
 add_action( 'woocommerce_update_product', 'papelito_sync_product_data_notification', 20, 2 );
+add_action(
+	'papelito_product_taxonomy_changed',
+	static function ( $scope, $product_id ): void {
+		if ( 'product' !== $scope ) {
+			return;
+		}
+
+		papelito_sync_product_data_notification( absint( $product_id ) );
+	},
+	20,
+	2
+);
 
 /**
  * Faz um scan leve dos produtos publicados com preço ou peso ausente quando um admin consulta notificações.

@@ -245,10 +245,21 @@ function papelito_catalog_search_product_rows( array $args ): array {
 		$params   = array_merge( $params, $campaign_ids );
 	}
 
-	if ( ! empty( $categories ) ) {
-		$placeholders = implode( ',', array_fill( 0, count( $categories ), '%s' ) );
-		$where[]      = "EXISTS ( SELECT 1 FROM {$wpdb->term_relationships} category_relationship INNER JOIN {$wpdb->term_taxonomy} category_taxonomy ON category_taxonomy.term_taxonomy_id = category_relationship.term_taxonomy_id AND category_taxonomy.taxonomy = 'product_cat' INNER JOIN {$wpdb->terms} category_term ON category_term.term_id = category_taxonomy.term_id WHERE category_relationship.object_id = p.ID AND category_term.slug IN ({$placeholders}) )";
-		$params       = array_merge( $params, $categories );
+	$subcategories = array_values(
+		array_filter(
+			array_map( 'sanitize_title', (array) ( $args['subcategories'] ?? array() ) )
+		)
+	);
+
+	// Vitrine não mostra produto sem categoria principal. Sem chave estrangeira,
+	// é este gate que faz o "pelo menos uma categoria" valer onde importa.
+	$where[] = papelito_taxonomy_classified_clause( 'p.ID' );
+
+	$clause = papelito_taxonomy_slug_filter_clause( 'p.ID', $categories, $subcategories );
+
+	if ( null !== $clause ) {
+		$where[] = $clause['sql'];
+		$params  = array_merge( $params, $clause['params'] );
 	}
 
 	$sql = "SELECT p.ID, p.post_title FROM {$wpdb->posts} p WHERE " . implode( ' AND ', $where ) . ' ORDER BY p.post_date DESC, p.ID DESC';
@@ -353,8 +364,9 @@ add_action(
 				'methods'             => 'GET',
 				'permission_callback' => '__return_true',
 				'args'                => array(
-					'busca'     => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => 'sanitize_text_field' ),
-					'categories' => array( 'type' => 'string', 'default' => '' ),
+					'busca'         => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => 'sanitize_text_field' ),
+					'categories'     => array( 'type' => 'string', 'default' => '', 'sanitize_callback' => 'sanitize_text_field' ),
+					'subcategories'  => array( 'type' => 'string', 'default' => '', 'sanitize_callback' => 'sanitize_text_field' ),
 					'preco_min' => array( 'type' => 'number', 'required' => false ),
 					'preco_max' => array( 'type' => 'number', 'required' => false ),
 					'page'      => array( 'type' => 'integer', 'default' => 1 ),
@@ -368,8 +380,9 @@ add_action(
 					return new WP_REST_Response(
 						papelito_catalog_search_products(
 							array(
-								'search'     => (string) $request->get_param( 'busca' ),
-								'categories' => explode( ',', (string) $request->get_param( 'categories' ) ),
+								'search'        => (string) $request->get_param( 'busca' ),
+								'categories'    => explode( ',', (string) $request->get_param( 'categories' ) ),
+								'subcategories' => explode( ',', (string) $request->get_param( 'subcategories' ) ),
 								'min_price'  => $request->get_param( 'preco_min' ),
 								'max_price'  => $request->get_param( 'preco_max' ),
 								'page'       => (int) $request->get_param( 'page' ),

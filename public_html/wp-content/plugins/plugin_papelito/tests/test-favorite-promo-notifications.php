@@ -646,6 +646,17 @@ function function_exists_override() {
 
 $GLOBALS['papelito_scheduled_events'] = array();
 
+/**
+ * Stub da taxonomia própria: este teste cobre elegibilidade e preço da campanha,
+ * não o filtro por categoria. Devolver vazio mantém o filtro neutro.
+ */
+function papelito_taxonomy_product_ids( $category_id, array $subcategory_ids = array() ) { return array(); }
+function papelito_product_get_category( $product_id ) {
+	return isset( $GLOBALS['papelito_uncategorized_products'][ (int) $product_id ] )
+		? null
+		: array( 'id' => 1, 'name' => 'Sedas', 'slug' => 'sedas' );
+}
+
 require __DIR__ . '/../includes/favorites.php';
 require __DIR__ . '/../includes/notifications.php';
 require __DIR__ . '/../includes/flash_sale.php';
@@ -946,6 +957,26 @@ $GLOBALS['papelito_products'][20] = papelito_seed_product(
 );
 papelito_sync_product_data_notification( 20 );
 papelito_assert( 'correction resolves the existing notification', true, ! empty( $wpdb->notification_rows[0]['read_at'] ) );
+
+echo "Scenario 9: published product without Papelito category is consolidated and resolved\n";
+papelito_reset_notification_state();
+$GLOBALS['papelito_products'][30] = papelito_seed_product(
+	array(
+		'id'            => 30,
+		'name'          => 'Produto sem categoria',
+		'status'        => 'publish',
+		'regular_price' => '10.00',
+		'weight'        => '1',
+	)
+);
+$GLOBALS['papelito_uncategorized_products'][30] = true;
+papelito_sync_product_data_notification( 30 );
+$payload = json_decode( $wpdb->notification_rows[0]['payload'], true );
+papelito_assert( 'missing category creates one notification', 1, count( $wpdb->notification_rows ) );
+papelito_assert( 'payload marks missing category', true, $payload['missing_category'] );
+unset( $GLOBALS['papelito_uncategorized_products'][30] );
+papelito_sync_product_data_notification( 30 );
+papelito_assert( 'category correction resolves notification', true, ! empty( $wpdb->notification_rows[0]['read_at'] ) );
 
 echo "\n";
 if ( $failures > 0 ) {

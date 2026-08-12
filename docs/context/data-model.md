@@ -18,6 +18,17 @@ Tabelas customizadas, metadados e criptografia. As decisões de "quem é fonte d
 
 Antes de aplicar migração em produção: backup completo do banco e validação em ambiente equivalente. Restaurar backup só em caso de falha comprovada de migração.
 
+## Taxonomia de produtos Papelito
+
+`wp_papelito_categories` guarda a categoria principal, e `wp_papelito_subcategories` guarda facetas
+opcionais. Os vínculos usam `wp_papelito_product_category` (PK em `product_id`, portanto no máximo uma
+categoria) e `wp_papelito_product_subcategory`. O catálogo headless lê somente essas tabelas; termos
+`product_cat` do WooCommerce permanecem inertes por compatibilidade com a loja WP legada.
+
+`papelito_product_replace_taxonomy()` é o writer atômico. Categoria inativa ou arquivada não recebe
+produto; trocar categoria limpa as subcategorias antigas. Filtros aplicam OR dentro da mesma faceta e AND
+entre facetas.
+
 ## Tabelas do marketplace
 
 ### `wp_papelito_vendor_stock`

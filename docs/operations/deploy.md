@@ -133,6 +133,10 @@ SSH_PRIVATE_KEY_STAGING      SSH_PRIVATE_KEY_PRODUCTION
 3. Conferir que `PAPELITO_DB_VERSION` foi bumpada — sem isso o `papelito_maybe_migrate_db()` não roda o instalador novo.
 4. Confirmar que a migração é idempotente (aplicar duas vezes).
 
+## Seed e classificação da taxonomia de produtos
+
+Em ambiente novo ou antes de importar catálogo, a criação das tabelas não basta. Faça backup, rode o dry-run de `scripts/catalog/migrate_taxonomy.php`, revise o CSV de pendências e só então rode novamente com `PAPELITO_TAXONOMY_APPLY=1`. Valide o relatório de integridade; rollback de vínculos é `PAPELITO_TAXONOMY_APPLY=1 PAPELITO_TAXONOMY_RESET=1`. O importador depende desse seed e mantém em rascunho qualquer produto que não consiga classificar.
+
 ## Ambiente de hospedagem
 
 Hostinger Business, hospedagem compartilhada **CloudLinux + CageFS**: sem root, sem `systemctl`, sem Docker, sem editar pool do FPM. PHP 8.3. O diretório home fora do `public_html` é gravável, o que permite guardar arquivo de segredos fora da webroot.

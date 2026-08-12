@@ -54,6 +54,21 @@ define( 'ARRAY_A', 'ARRAY_A' );
 
 $wpdb = new PapelitoTestWpdb();
 
+/**
+ * Stubs da taxonomia própria.
+ *
+ * Este teste cobre relevância, ranking e faixa de preço da busca — não o filtro
+ * de categoria, que tem suite própria (`test-product-taxonomy-catalog.php`, que
+ * roda com o WordPress carregado). Os stubs deixam o filtro neutro para o resto
+ * do comportamento ficar mensurável.
+ */
+function papelito_taxonomy_classified_clause( $product_expr ) { return '1 = 1'; }
+function papelito_taxonomy_category_id_by_slug( $slug ) { return 0; }
+function papelito_taxonomy_subcategory_ids_by_slugs( $category_id, array $slugs ) { return array(); }
+function papelito_taxonomy_exists_clause( $product_expr, $category_id, array $subcategory_ids, $unresolved = false ) { return null; }
+function papelito_taxonomy_has_unresolved_subcategory_slugs( $category_id, array $slugs ) { return false; }
+function papelito_taxonomy_slug_filter_clause( $product_expr, array $categories, array $subcategories ) { return null; }
+
 require_once __DIR__ . '/../includes/catalog_search.php';
 
 $failures = 0;

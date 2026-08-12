@@ -99,6 +99,17 @@ function papelito_product_has_valid_weight( WC_Product $product ) {
 	return (float) $product->get_weight( 'edit' ) > 0;
 }
 
+function papelito_product_get_category( mixed $product_id ) {
+	$product = wc_get_product( $product_id );
+	if ( ! $product || $product->category_id <= 0 ) {
+		return null;
+	}
+
+	return array( 'id' => $product->category_id, 'name' => 'Categoria ' . $product->category_id, 'slug' => 'categoria-' . $product->category_id );
+}
+
+function papelito_taxonomy_classified_clause( mixed $product_expr ) { return '1 = 1'; }
+
 function wc_get_product_terms( mixed $product_id, $taxonomy, $args ) {
 	$product = wc_get_product( $product_id );
 	if ( ! $product ) return array();
@@ -119,7 +130,9 @@ class WP_Query {
 				if ( 'publish' !== $product->get_status() ) return false;
 				if ( ! papelito_product_has_valid_weight( $product ) ) return false;
 				if ( isset( $args['p'] ) && (int) $args['p'] !== $product->get_id() ) return false;
-				if ( isset( $args['tax_query'][0]['terms'] ) && (int) $args['tax_query'][0]['terms'] !== $product->category_id ) return false;
+				// `tax_query` deu lugar a `post__in`: a taxonomia propria resolve os ids
+				// antes da query, para os tres modulos usarem o mesmo criterio.
+				if ( isset( $args['post__in'] ) && ! in_array( $product->get_id(), (array) $args['post__in'], true ) ) return false;
 				if ( isset( $args['s'] ) && '' !== trim( (string) $args['s'] ) ) {
 					$search = trim( (string) $args['s'] );
 					$id_matches = ctype_digit( $search ) && (int) $search === $product->get_id();
@@ -138,6 +151,24 @@ class WP_Query {
 		$products = array_slice( $products, ( $page - 1 ) * $per_page, $per_page );
 		$this->posts = array_map( static fn( WC_Product $product ): int => $product->get_id(), $products );
 	}
+}
+
+/**
+ * Stub da taxonomia própria: este teste cobre elegibilidade e preço da campanha,
+ * não o filtro por categoria. Devolver vazio mantém o filtro neutro.
+ */
+function papelito_taxonomy_product_ids( $category_id, array $subcategory_ids = array() ) {
+	global $papelito_test_products;
+
+	$ids = array();
+
+	foreach ( (array) $papelito_test_products as $product ) {
+		if ( (int) $product->category_id === (int) $category_id ) {
+			$ids[] = $product->get_id();
+		}
+	}
+
+	return $ids;
 }
 
 require __DIR__ . '/../includes/flash_sale.php';

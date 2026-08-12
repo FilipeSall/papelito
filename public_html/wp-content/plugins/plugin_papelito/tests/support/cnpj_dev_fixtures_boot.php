@@ -24,14 +24,14 @@ $papelito_boot_environment = isset( $argv[1] ) ? (string) $argv[1] : 'production
 $papelito_boot_flag_present = isset( $argv[2] ) && 'missing' !== $argv[2];
 $papelito_boot_flag         = $papelito_boot_flag_present && 'true' === ( $argv[2] ?? '' );
 
-class WP_Error {
+class PapelitoWpError {
 	public function __construct( public string $code = '', public string $message = '', public mixed $data = null ) {}
 }
-function is_wp_error( mixed $v ) { return $v instanceof WP_Error; }
+function is_wp_error( mixed $v ): bool { return $v instanceof PapelitoWpError; }
 
 function sanitize_key( string $key ): string { return strtolower( preg_replace( '/[^a-zA-Z0-9_\-]/', '', $key ) ?? '' ); }
 function wp_get_environment_type(): string { global $papelito_boot_environment; return $papelito_boot_environment; }
-function papelito_env( string $key, $default = null ) { return $default; }
+function papelito_env( string $key, mixed $default = null ): mixed { return $default; }
 function papelito_env_bool( string $key, bool $default = false ): bool {
 	global $papelito_boot_flag, $papelito_boot_flag_present;
 	if ( 'PAPELITO_CNPJ_DEV_FIXTURES_ENABLED' === $key && ! $papelito_boot_flag_present ) {
@@ -41,8 +41,8 @@ function papelito_env_bool( string $key, bool $default = false ): bool {
 }
 
 $papelito_filters = array();
-function add_filter( string $tag, callable $cb, int $priority = 10, int $accepted = 1 ) { global $papelito_filters; $papelito_filters[ $tag ][] = $cb; }
-function apply_filters( string $tag, $value, ...$args ) {
+function add_filter( string $tag, callable $cb, int $priority = 10, int $accepted = 1 ): void { global $papelito_filters; $papelito_filters[ $tag ][] = $cb; }
+function apply_filters( string $tag, mixed $value, mixed ...$args ): mixed {
 	global $papelito_filters;
 	foreach ( $papelito_filters[ $tag ] ?? array() as $cb ) {
 		$value = $cb( $value, ...$args );
@@ -50,17 +50,17 @@ function apply_filters( string $tag, $value, ...$args ) {
 	return $value;
 }
 
-function get_transient( string $k ) { return false; }
-function set_transient( string $k, $v, $ttl ) { return true; }
-function wp_remote_get( string $url, array $args = array() ) { return new WP_Error( 'no_network', 'network disabled' ); }
-function wp_remote_retrieve_response_code( $r ) { return is_array( $r ) ? (int) ( $r['response']['code'] ?? 0 ) : 0; }
-function wp_remote_retrieve_body( $r ) { return is_array( $r ) ? (string) ( $r['body'] ?? '' ) : ''; }
-function wp_json_encode( $data ) { return json_encode( $data ); }
-function wp_parse_url( string $url, int $component = -1 ) { return parse_url( $url, $component ); } // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- esta funcao E o stub de wp_parse_url.
+function get_transient( string $k ): false { return false; }
+function set_transient( string $k, mixed $v, int $ttl ): true { return true; }
+function wp_remote_get( string $url, array $args = array() ): PapelitoWpError { return new PapelitoWpError( 'no_network', 'network disabled' ); }
+function wp_remote_retrieve_response_code( mixed $r ): int { return is_array( $r ) ? (int) ( $r['response']['code'] ?? 0 ) : 0; }
+function wp_remote_retrieve_body( mixed $r ): string { return is_array( $r ) ? (string) ( $r['body'] ?? '' ) : ''; }
+function wp_json_encode( mixed $data ): string|false { return json_encode( $data ); }
+function wp_parse_url( string $url, int $component = -1 ): mixed { return parse_url( $url, $component ); } // phpcs:ignore WordPress.WP.AlternativeFunctions.parse_url_parse_url -- esta funcao E o stub de wp_parse_url.
 
-require __DIR__ . '/../../includes/cnpj_validation.php';
-require __DIR__ . '/../../includes/cnpj_providers.php';
-require __DIR__ . '/../../includes/cnpj_dev_fixtures.php';
+require_once __DIR__ . '/../../includes/cnpj_validation.php';
+require_once __DIR__ . '/../../includes/cnpj_providers.php';
+require_once __DIR__ . '/../../includes/cnpj_dev_fixtures.php';
 
 echo wp_json_encode(
 	array(

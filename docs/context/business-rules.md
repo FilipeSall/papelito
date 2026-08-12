@@ -21,6 +21,16 @@ Todos os arquivos em `public_html/wp-content/plugins/plugin_papelito/includes/`.
 | Empresa / B2B | `company_*`, `cnpj_*`, `customer_identity.php` — `papelito_company_purchase_capability()` é a única política de compra | WP |
 | Frete e rastreamento | `shipping.php`, `correios_prepostage.php`, `correios_tracking.php` | WP + HTTP externo |
 
+## Taxonomia Papelito
+
+- Produto publicado aparece na vitrine somente com categoria principal ativa, via
+  `papelito_taxonomy_classified_clause()`.
+- Subcategoria é opcional; cada uma precisa pertencer à categoria principal. A operação composta é
+  `papelito_product_replace_taxonomy()` e é atômica.
+- Slug de categoria/subcategoria com produto vinculado é imutável; desativação exige reclassificação.
+- `papelito_taxonomy_exists_clause()` faz OR dentro da faceta e AND entre facetas distintas; filtro que não
+  resolve é sempre vazio.
+
 ## Validações brasileiras
 
 1. `papelito_auth_is_valid_cep` aceita **duas** formas: `\d{5}-?\d{3}` **e** `\d{2}\.\d{3}-\d{3}`. Rejeita o resto.

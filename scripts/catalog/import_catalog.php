@@ -33,44 +33,29 @@ require_once ABSPATH . 'wp-admin/includes/image.php';
 require_once ABSPATH . 'wp-admin/includes/file.php';
 require_once ABSPATH . 'wp-admin/includes/media.php';
 
-/* ------------- Categories ------------- */
-function ensure_term( $name, $taxonomy, $parent = 0, $slug = null ) {
-    $existing = term_exists( $name, $taxonomy, $parent ?: null );
-    if ( $existing ) {
-        return is_array( $existing ) ? (int) $existing['term_id'] : (int) $existing;
-    }
-    $args = array( 'parent' => $parent );
-    if ( $slug ) $args['slug'] = $slug;
-    $r = wp_insert_term( $name, $taxonomy, $args );
-    if ( is_wp_error( $r ) ) {
-        WP_CLI::warning( "term '$name': " . $r->get_error_message() );
-        return 0;
-    }
-    return (int) $r['term_id'];
-}
-
-$cat_ids = array();
-$slug_map = array(
+/* ------------- Papelito taxonomy ------------- */
+$papelito_category_slugs = array(
     'Sedas'      => 'sedas',
     'Piteiras'   => 'piteiras',
     'Filtros'    => 'filtros',
     'Acessórios' => 'acessorios',
 );
-foreach ( $slug_map as $name => $slug ) {
-    $cat_ids[ $name ] = ensure_term( $name, 'product_cat', 0, $slug );
-}
 
-/* Subcategories collected from catalog data */
-$subcat_ids = array();
-$collect_sub = function ( $cat, $sub ) use ( &$subcat_ids, $cat_ids ) {
-    if ( ! $sub || $sub === '-' ) return null;
-    $key = "$cat::$sub";
-    if ( isset( $subcat_ids[ $key ] ) ) return $subcat_ids[ $key ];
-    $parent = $cat_ids[ $cat ] ?? 0;
-    $tid    = ensure_term( $sub, 'product_cat', $parent );
-    $subcat_ids[ $key ] = $tid;
-    return $tid;
-};
+function papelito_import_assign_taxonomy( $product_id, $category_name ) {
+    global $papelito_category_slugs;
+
+    $slug = $papelito_category_slugs[ $category_name ] ?? '';
+    if ( '' === $slug ) {
+        return new WP_Error( 'papelito_import_category_unknown', 'Categoria sem correspondência Papelito: ' . $category_name );
+    }
+
+    $category = papelito_category_get_by_slug( $slug );
+    if ( null === $category ) {
+        return new WP_Error( 'papelito_import_category_missing', 'Seed da taxonomia Papelito ausente: ' . $slug );
+    }
+
+    return papelito_product_set_category( (int) $product_id, (int) $category['id'] );
+}
 
 /* ------------- 'Cor' attribute taxonomy ------------- */
 global $wpdb;
@@ -147,10 +132,11 @@ function papelito_unique_slug( $base ) {
 }
 
 /* ------------- Save simple/draft product ------------- */
-function papelito_save_product( $p, $author_id, $cat_ids, $collect_sub, $status_override = null ) {
+function papelito_save_product( $p, $author_id, $status_override = null ) {
     $product = new WC_Product_Simple();
+    $target_status = $status_override ?: ( $p['status'] ?: 'publish' );
     $product->set_name( $p['name'] );
-    $product->set_status( $status_override ?: ( $p['status'] ?: 'publish' ) );
+    $product->set_status( 'draft' );
     $product->set_catalog_visibility( 'visible' );
     $product->set_description( $p['description'] ?: '' );
     $product->set_short_description( '' );
@@ -171,18 +157,15 @@ function papelito_save_product( $p, $author_id, $cat_ids, $collect_sub, $status_
     $product->set_manage_stock( false );
     $product->set_stock_status( 'instock' );
 
-    // Categories
-    $cats = array();
-    if ( ! empty( $cat_ids[ $p['category'] ] ) ) {
-        $cats[] = (int) $cat_ids[ $p['category'] ];
-    }
-    if ( ! empty( $p['subcategory'] ) ) {
-        $sid = $collect_sub( $p['category'], $p['subcategory'] );
-        if ( $sid ) $cats[] = (int) $sid;
-    }
-    $product->set_category_ids( $cats );
-
     $id = $product->save();
+
+    $taxonomy_result = papelito_import_assign_taxonomy( $id, (string) $p['category'] );
+    if ( is_wp_error( $taxonomy_result ) ) {
+        update_post_meta( $id, '_papelito_taxonomy_todo', array( $taxonomy_result->get_error_code() ) );
+        throw new RuntimeException( $taxonomy_result->get_error_message() );
+    }
+
+    wp_update_post( array( 'ID' => $id, 'post_status' => $target_status ) );
 
     // author
     wp_update_post( array( 'ID' => $id, 'post_author' => $author_id ) );
@@ -202,7 +185,7 @@ $report = array( 'simple' => 0, 'variable' => 0, 'draft' => 0, 'image_attached' 
 
 foreach ( $catalog['simple'] as $p ) {
     try {
-        $id = papelito_save_product( $p, $AUTHOR_ID, $cat_ids, $collect_sub );
+        $id = papelito_save_product( $p, $AUTHOR_ID );
         $report['simple']++;
         if ( ! empty( $p['image_path'] ) ) $report['image_attached']++;
         WP_CLI::log( sprintf( "[simple] #%d %s", $id, $p['name'] ) );
@@ -214,7 +197,7 @@ foreach ( $catalog['simple'] as $p ) {
 foreach ( $catalog['draft'] as $p ) {
     try {
         $p['status'] = 'draft';
-        $id = papelito_save_product( $p, $AUTHOR_ID, $cat_ids, $collect_sub, 'draft' );
+        $id = papelito_save_product( $p, $AUTHOR_ID, 'draft' );
         $report['draft']++;
         WP_CLI::log( sprintf( "[draft]  #%d %s — TODO: %s", $id, $p['name'], implode('; ', $p['todo'] ) ) );
     } catch ( Exception $e ) {
@@ -227,19 +210,12 @@ foreach ( $catalog['variable'] as $g ) {
     try {
         $product = new WC_Product_Variable();
         $product->set_name( $g['name'] );
-        $product->set_status( 'publish' );
+        $product->set_status( 'draft' );
         $product->set_catalog_visibility( 'visible' );
         $product->set_description( $g['description'] ?: '' );
         $product->set_slug( sanitize_title( $g['name'] ) );
         $product->set_manage_stock( false );
         $product->set_stock_status( 'instock' );
-
-        // categories
-        $cats = array();
-        if ( ! empty( $cat_ids[ $g['category'] ] ) ) $cats[] = (int) $cat_ids[ $g['category'] ];
-        $sid = $collect_sub( $g['category'], $g['subcategory'] ?? null );
-        if ( $sid ) $cats[] = (int) $sid;
-        $product->set_category_ids( $cats );
 
         // attribute "Cor"
         $colors = array();
@@ -262,6 +238,12 @@ foreach ( $catalog['variable'] as $g ) {
         $product->set_attributes( array( $attr ) );
 
         $product_id = $product->save();
+        $taxonomy_result = papelito_import_assign_taxonomy( $product_id, (string) $g['category'] );
+        if ( is_wp_error( $taxonomy_result ) ) {
+            update_post_meta( $product_id, '_papelito_taxonomy_todo', array( $taxonomy_result->get_error_code() ) );
+            throw new RuntimeException( $taxonomy_result->get_error_message() );
+        }
+        wp_update_post( array( 'ID' => $product_id, 'post_status' => 'publish' ) );
         wp_update_post( array( 'ID' => $product_id, 'post_author' => $AUTHOR_ID ) );
 
         // attach color terms
