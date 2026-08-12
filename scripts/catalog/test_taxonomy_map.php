@@ -187,7 +187,7 @@ $decisoes_conhecidas = array_keys( papelito_taxonomy_decisions() );
 $decisoes_usadas     = array();
 
 foreach ( $seed as $categoria ) {
-	foreach ( $categoria['missing_facet_decision'] as $codigo ) {
+	foreach ( $categoria['missing_facet_decision'] ?? array() as $codigo ) {
 		$decisoes_usadas[ $codigo ] = true;
 	}
 }

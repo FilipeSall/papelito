@@ -142,6 +142,7 @@ if ( null === $sedas || null === $piteiras ) {
 }
 
 $brown = papelito_subcategory_get_by_slug( $sedas['id'], 'brown' );
+$hemp  = papelito_subcategory_get_by_slug( $sedas['id'], 'hemp' );
 $slim  = papelito_subcategory_get_by_slug( $sedas['id'], 'slim' );
 
 echo "\nBusca\n";
@@ -325,13 +326,23 @@ if ( is_wp_error( $vendor_id ) ) {
 		(int) $vendor_id,
 		array(
 			'category'      => $sedas['id'],
+			'subcategories' => $brown['id'] . ',' . $hemp['id'],
+			'paginate'      => false,
+		)
+	);
+
+	assert_catalog( 'duas subcategorias da mesma faceta somam (semântica OR)', true, $estoque_sub_dupla['total'] >= $estoque_sub['total'] );
+
+	$estoque_sub_entre_facetas = papelito_vendor_stock_query(
+		(int) $vendor_id,
+		array(
+			'category'      => $sedas['id'],
 			'subcategories' => $brown['id'] . ',' . $slim['id'],
 			'paginate'      => false,
 		)
 	);
 
-	// OR dentro da faceta: Brown Slim tem as duas, e cada uma sozinha também conta.
-	assert_catalog( 'duas subcategorias somam (semântica OR)', true, $estoque_sub_dupla['total'] >= $estoque_sub['total'] );
+	assert_catalog( 'duas subcategorias de facetas distintas restringem (semântica AND)', true, $estoque_sub_entre_facetas['total'] <= $estoque_sub['total'] );
 
 	$estoque_vazio = papelito_vendor_stock_query(
 		(int) $vendor_id,

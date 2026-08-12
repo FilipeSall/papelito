@@ -41,6 +41,10 @@ if ( ! defined( 'PAPELITO_PRODUCT_COLLECTION_TABLE' ) ) {
 	define( 'PAPELITO_PRODUCT_COLLECTION_TABLE', 'papelito_product_collection' );
 }
 
+if ( ! defined( 'PAPELITO_CATEGORY_NOT_FOUND_MESSAGE' ) ) {
+	define( 'PAPELITO_CATEGORY_NOT_FOUND_MESSAGE', 'Categoria não encontrada.' );
+}
+
 // ------------------------------------------------------------------
 // Schema
 // ------------------------------------------------------------------
@@ -421,46 +425,46 @@ function papelito_category_create( array $data ) {
  * @param array<string,mixed> $data        Campos a atualizar.
  * @return true|WP_Error
  */
-function papelito_category_update( $category_id, array $data ) {
-	global $wpdb;
-
-	$category = papelito_category_get( $category_id );
-
-	if ( null === $category ) {
-		return new WP_Error( 'papelito_category_not_found', 'Categoria não encontrada.', array( 'status' => 404 ) );
+function papelito_category_update_name_field( array $data ) {
+	if ( ! array_key_exists( 'name', $data ) ) {
+		return array();
 	}
 
+	$name = sanitize_text_field( (string) $data['name'] );
+
+	if ( '' === $name ) {
+		return new WP_Error( 'papelito_category_name_required', 'Informe o nome da categoria.', array( 'status' => 422 ) );
+	}
+
+	return array( 'name' => $name );
+}
+
+function papelito_category_update_slug_field( array $category, array $data ) {
+	if ( ! array_key_exists( 'slug', $data ) ) {
+		return array();
+	}
+
+	$slug = papelito_taxonomy_slugify( $data['slug'] );
+
+	if ( '' === $slug ) {
+		return new WP_Error( 'papelito_category_slug_invalid', 'Slug de categoria inválido.', array( 'status' => 422 ) );
+	}
+
+	$existing = papelito_category_get_by_slug( $slug );
+
+	if ( null !== $existing && $existing['id'] !== $category['id'] ) {
+		return new WP_Error( 'papelito_category_slug_taken', 'Já existe uma categoria com esse slug.', array( 'status' => 409 ) );
+	}
+
+	if ( $slug !== $category['slug'] && ( papelito_category_product_counts()[ $category['id'] ]['total'] ?? 0 ) > 0 ) {
+		return new WP_Error( 'papelito_category_slug_locked', 'O slug não pode mudar enquanto houver produtos classificados nesta categoria.', array( 'status' => 409 ) );
+	}
+
+	return array( 'slug' => $slug );
+}
+
+function papelito_category_update_optional_fields( array $data ) {
 	$fields = array();
-
-	if ( array_key_exists( 'name', $data ) ) {
-		$name = sanitize_text_field( (string) $data['name'] );
-
-		if ( '' === $name ) {
-			return new WP_Error( 'papelito_category_name_required', 'Informe o nome da categoria.', array( 'status' => 422 ) );
-		}
-
-		$fields['name'] = $name;
-	}
-
-	if ( array_key_exists( 'slug', $data ) ) {
-		$slug = papelito_taxonomy_slugify( $data['slug'] );
-
-		if ( '' === $slug ) {
-			return new WP_Error( 'papelito_category_slug_invalid', 'Slug de categoria inválido.', array( 'status' => 422 ) );
-		}
-
-		$existing = papelito_category_get_by_slug( $slug );
-
-		if ( null !== $existing && $existing['id'] !== $category['id'] ) {
-			return new WP_Error( 'papelito_category_slug_taken', 'Já existe uma categoria com esse slug.', array( 'status' => 409 ) );
-		}
-
-		if ( $slug !== $category['slug'] && ( papelito_category_product_counts()[ $category['id'] ]['total'] ?? 0 ) > 0 ) {
-			return new WP_Error( 'papelito_category_slug_locked', 'O slug não pode mudar enquanto houver produtos classificados nesta categoria.', array( 'status' => 409 ) );
-		}
-
-		$fields['slug'] = $slug;
-	}
 
 	if ( array_key_exists( 'description', $data ) ) {
 		$fields['description'] = wp_kses_post( (string) $data['description'] );
@@ -482,12 +486,43 @@ function papelito_category_update( $category_id, array $data ) {
 		$fields['sort_order'] = (int) $data['sortOrder'];
 	}
 
-	if ( array_key_exists( 'isActive', $data ) ) {
-		if ( ! $data['isActive'] && ( papelito_category_product_counts()[ $category['id'] ]['total'] ?? 0 ) > 0 ) {
-			return new WP_Error( 'papelito_category_in_use', 'Reclassifique os produtos antes de desativar a categoria.', array( 'status' => 409 ) );
+	return $fields;
+}
+
+function papelito_category_update_active_field( array $category, array $data ) {
+	if ( ! array_key_exists( 'isActive', $data ) ) {
+		return array();
+	}
+
+	if ( ! $data['isActive'] && ( papelito_category_product_counts()[ $category['id'] ]['total'] ?? 0 ) > 0 ) {
+		return new WP_Error( 'papelito_category_in_use', 'Reclassifique os produtos antes de desativar a categoria.', array( 'status' => 409 ) );
+	}
+
+	return array( 'is_active' => $data['isActive'] ? 1 : 0 );
+}
+
+function papelito_category_update( $category_id, array $data ) {
+	global $wpdb;
+
+	$category = papelito_category_get( $category_id );
+
+	if ( null === $category ) {
+		return new WP_Error( 'papelito_category_not_found', PAPELITO_CATEGORY_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
+	}
+
+	$fields = array();
+
+	foreach ( array(
+		papelito_category_update_name_field( $data ),
+		papelito_category_update_slug_field( $category, $data ),
+		papelito_category_update_optional_fields( $data ),
+		papelito_category_update_active_field( $category, $data ),
+	) as $result ) {
+		if ( is_wp_error( $result ) ) {
+			return $result;
 		}
 
-		$fields['is_active'] = $data['isActive'] ? 1 : 0;
+		$fields = array_merge( $fields, $result );
 	}
 
 	if ( empty( $fields ) ) {
@@ -544,7 +579,7 @@ function papelito_category_archive( $category_id ) {
 	$category = papelito_category_get( $category_id );
 
 	if ( null === $category ) {
-		return new WP_Error( 'papelito_category_not_found', 'Categoria não encontrada.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_category_not_found', PAPELITO_CATEGORY_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
 	$in_use = papelito_category_product_count( $category['id'] );
@@ -590,7 +625,7 @@ function papelito_category_restore( $category_id ) {
 	$category = papelito_category_get( $category_id );
 
 	if ( null === $category ) {
-		return new WP_Error( 'papelito_category_not_found', 'Categoria não encontrada.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_category_not_found', PAPELITO_CATEGORY_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
 	$tables = papelito_product_taxonomy_table_names();
@@ -749,7 +784,7 @@ function papelito_subcategory_create( array $data ) {
 	$category    = papelito_category_get( $category_id );
 
 	if ( null === $category ) {
-		return new WP_Error( 'papelito_category_not_found', 'Categoria não encontrada.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_category_not_found', PAPELITO_CATEGORY_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
 	$name = sanitize_text_field( (string) ( $data['name'] ?? '' ) );
@@ -809,46 +844,46 @@ function papelito_subcategory_create( array $data ) {
  * @param array<string,mixed> $data           Campos a atualizar.
  * @return true|WP_Error
  */
-function papelito_subcategory_update( $subcategory_id, array $data ) {
-	global $wpdb;
-
-	$subcategory = papelito_subcategory_get( $subcategory_id );
-
-	if ( null === $subcategory ) {
-		return new WP_Error( 'papelito_subcategory_not_found', 'Subcategoria não encontrada.', array( 'status' => 404 ) );
+function papelito_subcategory_update_name_field( array $data ) {
+	if ( ! array_key_exists( 'name', $data ) ) {
+		return array();
 	}
 
+	$name = sanitize_text_field( (string) $data['name'] );
+
+	if ( '' === $name ) {
+		return new WP_Error( 'papelito_subcategory_name_required', 'Informe o nome da subcategoria.', array( 'status' => 422 ) );
+	}
+
+	return array( 'name' => $name );
+}
+
+function papelito_subcategory_update_slug_field( array $subcategory, array $data ) {
+	if ( ! array_key_exists( 'slug', $data ) ) {
+		return array();
+	}
+
+	$slug = papelito_taxonomy_slugify( $data['slug'] );
+
+	if ( '' === $slug ) {
+		return new WP_Error( 'papelito_subcategory_slug_invalid', 'Slug de subcategoria inválido.', array( 'status' => 422 ) );
+	}
+
+	$existing = papelito_subcategory_get_by_slug( $subcategory['categoryId'], $slug );
+
+	if ( null !== $existing && $existing['id'] !== $subcategory['id'] ) {
+		return new WP_Error( 'papelito_subcategory_slug_taken', 'Já existe uma subcategoria com esse slug nesta categoria.', array( 'status' => 409 ) );
+	}
+
+	if ( $slug !== $subcategory['slug'] && ( papelito_subcategory_product_counts( $subcategory['categoryId'] )[ $subcategory['id'] ] ?? 0 ) > 0 ) {
+		return new WP_Error( 'papelito_subcategory_slug_locked', 'O slug não pode mudar enquanto houver produtos vinculados a esta subcategoria.', array( 'status' => 409 ) );
+	}
+
+	return array( 'slug' => $slug );
+}
+
+function papelito_subcategory_update_optional_fields( array $data ) {
 	$fields = array();
-
-	if ( array_key_exists( 'name', $data ) ) {
-		$name = sanitize_text_field( (string) $data['name'] );
-
-		if ( '' === $name ) {
-			return new WP_Error( 'papelito_subcategory_name_required', 'Informe o nome da subcategoria.', array( 'status' => 422 ) );
-		}
-
-		$fields['name'] = $name;
-	}
-
-	if ( array_key_exists( 'slug', $data ) ) {
-		$slug = papelito_taxonomy_slugify( $data['slug'] );
-
-		if ( '' === $slug ) {
-			return new WP_Error( 'papelito_subcategory_slug_invalid', 'Slug de subcategoria inválido.', array( 'status' => 422 ) );
-		}
-
-		$existing = papelito_subcategory_get_by_slug( $subcategory['categoryId'], $slug );
-
-		if ( null !== $existing && $existing['id'] !== $subcategory['id'] ) {
-			return new WP_Error( 'papelito_subcategory_slug_taken', 'Já existe uma subcategoria com esse slug nesta categoria.', array( 'status' => 409 ) );
-		}
-
-		if ( $slug !== $subcategory['slug'] && ( papelito_subcategory_product_counts( $subcategory['categoryId'] )[ $subcategory['id'] ] ?? 0 ) > 0 ) {
-			return new WP_Error( 'papelito_subcategory_slug_locked', 'O slug não pode mudar enquanto houver produtos vinculados a esta subcategoria.', array( 'status' => 409 ) );
-		}
-
-		$fields['slug'] = $slug;
-	}
 
 	if ( array_key_exists( 'facet', $data ) ) {
 		$facet           = sanitize_key( (string) $data['facet'] );
@@ -863,12 +898,43 @@ function papelito_subcategory_update( $subcategory_id, array $data ) {
 		$fields['sort_order'] = (int) $data['sortOrder'];
 	}
 
-	if ( array_key_exists( 'isActive', $data ) ) {
-		if ( ! $data['isActive'] && ( papelito_subcategory_product_counts( $subcategory['categoryId'] )[ $subcategory['id'] ] ?? 0 ) > 0 ) {
-			return new WP_Error( 'papelito_subcategory_in_use', 'Remova os vínculos de produto antes de desativar a subcategoria.', array( 'status' => 409 ) );
+	return $fields;
+}
+
+function papelito_subcategory_update_active_field( array $subcategory, array $data ) {
+	if ( ! array_key_exists( 'isActive', $data ) ) {
+		return array();
+	}
+
+	if ( ! $data['isActive'] && ( papelito_subcategory_product_counts( $subcategory['categoryId'] )[ $subcategory['id'] ] ?? 0 ) > 0 ) {
+		return new WP_Error( 'papelito_subcategory_in_use', 'Remova os vínculos de produto antes de desativar a subcategoria.', array( 'status' => 409 ) );
+	}
+
+	return array( 'is_active' => $data['isActive'] ? 1 : 0 );
+}
+
+function papelito_subcategory_update( $subcategory_id, array $data ) {
+	global $wpdb;
+
+	$subcategory = papelito_subcategory_get( $subcategory_id );
+
+	if ( null === $subcategory ) {
+		return new WP_Error( 'papelito_subcategory_not_found', 'Subcategoria não encontrada.', array( 'status' => 404 ) );
+	}
+
+	$fields = array();
+
+	foreach ( array(
+		papelito_subcategory_update_name_field( $data ),
+		papelito_subcategory_update_slug_field( $subcategory, $data ),
+		papelito_subcategory_update_optional_fields( $data ),
+		papelito_subcategory_update_active_field( $subcategory, $data ),
+	) as $result ) {
+		if ( is_wp_error( $result ) ) {
+			return $result;
 		}
 
-		$fields['is_active'] = $data['isActive'] ? 1 : 0;
+		$fields = array_merge( $fields, $result );
 	}
 
 	if ( empty( $fields ) ) {
@@ -981,6 +1047,164 @@ function papelito_subcategories_reorder( $category_id, array $ordered_ids ) {
  * @param array<string,mixed> $data       categoryId, subcategoryIds e collections opcionais.
  * @return true|WP_Error
  */
+function papelito_product_taxonomy_resolve_category( $current_category, array $data ) {
+	if ( ! array_key_exists( 'categoryId', $data ) ) {
+		return $current_category;
+	}
+
+	$category = papelito_category_get( (int) $data['categoryId'] );
+
+	if ( null === $category ) {
+		return new WP_Error( 'papelito_category_not_found', PAPELITO_CATEGORY_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
+	}
+
+	if ( ! $category['isActive'] || null !== $category['archivedAt'] ) {
+		return new WP_Error( 'papelito_category_inactive', 'Categoria inativa ou arquivada.', array( 'status' => 422 ) );
+	}
+
+	return $category;
+}
+
+function papelito_product_taxonomy_resolve_subcategory_ids( $category, array $current_subcategory_ids, array $data ) {
+	if ( ! array_key_exists( 'subcategoryIds', $data ) ) {
+		return array();
+	}
+
+	if ( null === $category ) {
+		return new WP_Error( 'papelito_product_category_missing', 'Defina a categoria principal antes das subcategorias.', array( 'status' => 422 ) );
+	}
+
+	$subcategory_ids = array_values( array_unique( array_filter( array_map( 'intval', (array) $data['subcategoryIds'] ) ) ) );
+
+	foreach ( $subcategory_ids as $subcategory_id ) {
+		$subcategory = papelito_subcategory_get( $subcategory_id );
+
+		if ( null === $subcategory ) {
+			return new WP_Error( 'papelito_subcategory_not_found', 'Subcategoria não encontrada: ' . $subcategory_id, array( 'status' => 404 ) );
+		}
+
+		if ( $subcategory['categoryId'] !== $category['id'] ) {
+			return new WP_Error( 'papelito_subcategory_foreign', sprintf( 'A subcategoria "%s" não pertence à categoria "%s".', $subcategory['name'], $category['name'] ), array( 'status' => 422 ) );
+		}
+
+		if ( ( ! $subcategory['isActive'] || null !== $subcategory['archivedAt'] ) && ! in_array( $subcategory['id'], $current_subcategory_ids, true ) ) {
+			return new WP_Error( 'papelito_subcategory_inactive', 'Subcategoria inativa ou arquivada não pode ser vinculada a um novo produto: ' . $subcategory['name'], array( 'status' => 422 ) );
+		}
+	}
+
+	return $subcategory_ids;
+}
+
+function papelito_product_taxonomy_resolve_collections( array $data ) {
+	if ( ! array_key_exists( 'collections', $data ) ) {
+		return array();
+	}
+
+	$allowed     = papelito_curated_collections();
+	$collections = array();
+
+	foreach ( (array) $data['collections'] as $slug ) {
+		$slug = sanitize_key( (string) $slug );
+
+		if ( '' === $slug ) {
+			continue;
+		}
+
+		if ( ! in_array( $slug, $allowed, true ) ) {
+			return new WP_Error( 'papelito_collection_unknown', 'Coleção desconhecida: ' . $slug, array( 'status' => 422 ) );
+		}
+
+		$collections[ $slug ] = $slug;
+	}
+
+	return $collections;
+}
+
+function papelito_product_taxonomy_replace_category_link( $product_id, array $tables, $category, $category_changed ) {
+	global $wpdb;
+
+	if ( ! $category_changed ) {
+		return true;
+	}
+
+	return false !== $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->prepare(
+			"INSERT INTO {$tables['product_category']} (product_id, category_id, updated_at) VALUES (%d, %d, %s) ON DUPLICATE KEY UPDATE category_id = VALUES(category_id), updated_at = VALUES(updated_at)", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$product_id,
+			$category['id'],
+			papelito_taxonomy_now()
+		)
+	);
+}
+
+function papelito_product_taxonomy_replace_subcategory_links( $product_id, array $tables, $category_changed, $has_subcategories, array $subcategory_ids ) {
+	global $wpdb;
+
+	if ( ! $has_subcategories && ! $category_changed ) {
+		return true;
+	}
+
+	if ( false === $wpdb->delete( $tables['product_subcategory'], array( 'product_id' => $product_id ) ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		return false;
+	}
+
+	if ( ! $has_subcategories ) {
+		return true;
+	}
+
+	foreach ( $subcategory_ids as $subcategory_id ) {
+		if ( false === $wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$tables['product_subcategory'],
+			array(
+				'product_id'     => $product_id,
+				'subcategory_id' => $subcategory_id,
+			)
+		) ) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+function papelito_product_taxonomy_replace_collection_links( $product_id, array $tables, $has_collections, array $collections ) {
+	global $wpdb;
+
+	if ( ! $has_collections ) {
+		return true;
+	}
+
+	if ( false === $wpdb->delete( $tables['product_collection'], array( 'product_id' => $product_id ) ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		return false;
+	}
+
+	foreach ( $collections as $slug ) {
+		if ( false === $wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$tables['product_collection'],
+			array(
+				'product_id'      => $product_id,
+				'collection_slug' => $slug,
+			)
+		) ) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+function papelito_product_taxonomy_replace_write( $product_id, array $tables, $category, $category_changed, $has_subcategories, array $subcategory_ids, $has_collections, array $collections ) {
+	if ( ! papelito_product_taxonomy_replace_category_link( $product_id, $tables, $category, $category_changed ) ) {
+		return false;
+	}
+
+	if ( ! papelito_product_taxonomy_replace_subcategory_links( $product_id, $tables, $category_changed, $has_subcategories, $subcategory_ids ) ) {
+		return false;
+	}
+
+	return papelito_product_taxonomy_replace_collection_links( $product_id, $tables, $has_collections, $collections );
+}
+
 function papelito_product_replace_taxonomy( $product_id, array $data ) {
 	global $wpdb;
 
@@ -992,113 +1216,37 @@ function papelito_product_replace_taxonomy( $product_id, array $data ) {
 
 	$current_category        = papelito_product_get_category( $product_id );
 	$current_subcategory_ids = array_map( 'intval', array_column( papelito_product_get_subcategories( $product_id ), 'id' ) );
-	$has_category     = array_key_exists( 'categoryId', $data );
+	$category                = papelito_product_taxonomy_resolve_category( $current_category, $data );
+
+	if ( is_wp_error( $category ) ) {
+		return $category;
+	}
+
+	$subcategory_ids = papelito_product_taxonomy_resolve_subcategory_ids( $category, $current_subcategory_ids, $data );
+
+	if ( is_wp_error( $subcategory_ids ) ) {
+		return $subcategory_ids;
+	}
+
+	$collections = papelito_product_taxonomy_resolve_collections( $data );
+
+	if ( is_wp_error( $collections ) ) {
+		return $collections;
+	}
+
+	$has_category      = array_key_exists( 'categoryId', $data );
 	$has_subcategories = array_key_exists( 'subcategoryIds', $data );
 	$has_collections   = array_key_exists( 'collections', $data );
-	$category          = $current_category;
-
-	if ( $has_category ) {
-		$category = papelito_category_get( (int) $data['categoryId'] );
-
-		if ( null === $category ) {
-			return new WP_Error( 'papelito_category_not_found', 'Categoria não encontrada.', array( 'status' => 404 ) );
-		}
-
-		if ( ! $category['isActive'] || null !== $category['archivedAt'] ) {
-			return new WP_Error( 'papelito_category_inactive', 'Categoria inativa ou arquivada.', array( 'status' => 422 ) );
-		}
-	}
-
-	$subcategory_ids = array();
-
-	if ( $has_subcategories ) {
-		if ( null === $category ) {
-			return new WP_Error( 'papelito_product_category_missing', 'Defina a categoria principal antes das subcategorias.', array( 'status' => 422 ) );
-		}
-
-		foreach ( array_values( array_unique( array_filter( array_map( 'intval', (array) $data['subcategoryIds'] ) ) ) ) as $subcategory_id ) {
-			$subcategory = papelito_subcategory_get( $subcategory_id );
-
-			if ( null === $subcategory ) {
-				return new WP_Error( 'papelito_subcategory_not_found', 'Subcategoria não encontrada: ' . $subcategory_id, array( 'status' => 404 ) );
-			}
-
-			if ( $subcategory['categoryId'] !== $category['id'] ) {
-				return new WP_Error( 'papelito_subcategory_foreign', sprintf( 'A subcategoria "%s" não pertence à categoria "%s".', $subcategory['name'], $category['name'] ), array( 'status' => 422 ) );
-			}
-
-			if ( ( ! $subcategory['isActive'] || null !== $subcategory['archivedAt'] ) && ! in_array( $subcategory['id'], $current_subcategory_ids, true ) ) {
-				return new WP_Error( 'papelito_subcategory_inactive', 'Subcategoria inativa ou arquivada não pode ser vinculada a um novo produto: ' . $subcategory['name'], array( 'status' => 422 ) );
-			}
-
-			$subcategory_ids[] = $subcategory['id'];
-		}
-	}
-
-	$collections = array();
-
-	if ( $has_collections ) {
-		$allowed = papelito_curated_collections();
-
-		foreach ( (array) $data['collections'] as $slug ) {
-			$slug = sanitize_key( (string) $slug );
-
-			if ( '' === $slug ) {
-				continue;
-			}
-
-			if ( ! in_array( $slug, $allowed, true ) ) {
-				return new WP_Error( 'papelito_collection_unknown', 'Coleção desconhecida: ' . $slug, array( 'status' => 422 ) );
-			}
-
-			$collections[ $slug ] = $slug;
-		}
-	}
-
-	$category_changed = $has_category && ( null === $current_category || $current_category['id'] !== $category['id'] );
-	$tables           = papelito_product_taxonomy_table_names();
+	$category_changed  = $has_category && ( null === $current_category || $current_category['id'] !== $category['id'] );
+	$tables            = papelito_product_taxonomy_table_names();
 
 	if ( false === $wpdb->query( 'START TRANSACTION' ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		return new WP_Error( 'papelito_product_taxonomy_failed', 'Não foi possível iniciar a gravação da taxonomia.', array( 'status' => 500 ) );
 	}
 
-	$failed = false;
+	$written = papelito_product_taxonomy_replace_write( $product_id, $tables, $category, $category_changed, $has_subcategories, $subcategory_ids, $has_collections, $collections );
 
-	if ( $category_changed ) {
-		$failed = false === $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-			$wpdb->prepare(
-				"INSERT INTO {$tables['product_category']} (product_id, category_id, updated_at) VALUES (%d, %d, %s) ON DUPLICATE KEY UPDATE category_id = VALUES(category_id), updated_at = VALUES(updated_at)", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-				$product_id,
-				$category['id'],
-				papelito_taxonomy_now()
-			)
-		);
-	}
-
-	if ( ! $failed && ( $has_subcategories || $category_changed ) ) {
-		$failed = false === $wpdb->delete( $tables['product_subcategory'], array( 'product_id' => $product_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-
-		if ( ! $failed && $has_subcategories ) {
-			foreach ( $subcategory_ids as $subcategory_id ) {
-				if ( false === $wpdb->insert( $tables['product_subcategory'], array( 'product_id' => $product_id, 'subcategory_id' => $subcategory_id ) ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-					$failed = true;
-					break;
-				}
-			}
-		}
-	}
-
-	if ( ! $failed && $has_collections ) {
-		$failed = false === $wpdb->delete( $tables['product_collection'], array( 'product_id' => $product_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-
-		foreach ( $collections as $slug ) {
-			if ( ! $failed && false === $wpdb->insert( $tables['product_collection'], array( 'product_id' => $product_id, 'collection_slug' => $slug ) ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-				$failed = true;
-			}
-		}
-	}
-
-	if ( $failed || false === $wpdb->query( 'COMMIT' ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	if ( ! $written || false === $wpdb->query( 'COMMIT' ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
 		return new WP_Error( 'papelito_product_taxonomy_failed', 'Não foi possível gravar a taxonomia do produto.', array( 'status' => 500 ) );
@@ -1464,4 +1612,21 @@ function papelito_category_integrity_report() {
 		&& empty( $report['unknownCollections'] );
 
 	return $report;
+}
+
+if ( defined( 'WP_CLI' ) && WP_CLI ) {
+	class PapelitoProductTaxonomyCli {
+		public function integrity( array $args, array $assoc_args ): void {
+			unset( $args, $assoc_args );
+
+			$report = papelito_category_integrity_report();
+			WP_CLI::log( wp_json_encode( $report ) );
+
+			if ( empty( $report['isClean'] ) ) {
+				WP_CLI::error( 'Relatorio de integridade da taxonomia contem inconsistencias.' );
+			}
+		}
+	}
+
+	WP_CLI::add_command( 'papelito taxonomy', 'PapelitoProductTaxonomyCli' );
 }
