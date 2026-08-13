@@ -273,6 +273,48 @@ $classificado = catalog_search_ids(
 
 assert_catalog( 'classificar o produto o traz de volta', true, in_array( $sem_categoria, $classificado, true ) );
 
+echo "\nBusca: coleção curada\n";
+
+$premium_colecao = catalog_test_product( PAPELITO_CATALOG_TEST_PREFIX . ' colecao premium' );
+$kit_colecao     = catalog_test_product( PAPELITO_CATALOG_TEST_PREFIX . ' colecao kit' );
+$sem_colecao     = catalog_test_product( PAPELITO_CATALOG_TEST_PREFIX . ' colecao comum' );
+
+foreach ( array( $premium_colecao, $kit_colecao, $sem_colecao ) as $product_id ) {
+	papelito_product_set_category( $product_id, $sedas['id'] );
+}
+
+papelito_product_set_collections( $premium_colecao, array( 'premium' ) );
+papelito_product_set_collections( $kit_colecao, array( 'kits' ) );
+
+$premium_encontrado = catalog_search_ids(
+	array(
+		'search'     => PAPELITO_CATALOG_TEST_PREFIX . ' colecao',
+		'collection' => 'premium',
+		'per_page'   => 60,
+	)
+);
+$kits_encontrados  = catalog_search_ids(
+	array(
+		'search'     => PAPELITO_CATALOG_TEST_PREFIX . ' colecao',
+		'collection' => 'kits',
+		'per_page'   => 60,
+	)
+);
+
+assert_catalog( 'coleção premium só devolve o produto marcado', array( $premium_colecao ), $premium_encontrado );
+assert_catalog( 'coleção kits só devolve o produto marcado', array( $kit_colecao ), $kits_encontrados );
+assert_catalog(
+	'coleção inválida falha fechado',
+	array(),
+	catalog_search_ids(
+		array(
+			'search'     => PAPELITO_CATALOG_TEST_PREFIX . ' colecao',
+			'collection' => 'colecao-invalida',
+			'per_page'   => 60,
+		)
+	)
+);
+
 echo "\nEstoque do vendor\n";
 
 $vendor_id = wp_insert_user(

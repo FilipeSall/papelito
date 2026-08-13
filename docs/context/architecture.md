@@ -101,6 +101,8 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `pricing.php` | `/cart/pricing` |
 | `catalog-pdf.php` | catálogo em PDF administrável |
 | `home_assets.php` | banners e assets da home |
+| `product_benefits.php` | benefícios da página de produto: schema, resolução por escopo e seed do grupo global |
+| `product_benefits_rest.php` | rota pública `/products/{id}/benefits` e CRUD admin de `/admin/benefit-groups` |
 | `media_uploads.php` | apoio a upload |
 
 ### Checkout, pagamento e frete

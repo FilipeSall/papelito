@@ -41,12 +41,13 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Rate limit | `test-rate-limit-identity.php` (endpoint atrás do proxy não pode compartilhar balde por IP) |
 | Faixas da Home | `test-home-assets-rich-text.php` (whitelist de formatos e tokens, referência de produto sem snapshot, compat com texto puro), `test-home-assets-free-shipping-placeholder.php` (migração dos textos legados) |
 | Frete grátis | `test-shipping-free-shipping-threshold.php` (default, persistência, validação, autorização) |
+| Benefícios do produto | `test-product-benefits.php` (validação e precedência), `test-product-benefits-db.php` (**WP-CLI**: schema, índices e writers) |
 
 As invariantes que essas suítes protegem estão catalogadas em [context/business-rules.md](business-rules.md).
 
 ### Testes que precisam de banco (WP-CLI)
 
-Onde o SQL **é** a regra de negócio, o script standalone não serve. `test-receipts-sequence-db.php` e `test-receipts-backfill-db.php` rodam por WP-CLI, contra o banco local, e se limpam sozinhos (criam pedidos descartáveis, apagam recibos e pedidos no fim). Eles ficam no mesmo diretório dos demais, mas **não rodam com `php` direto** — o guard de `ABSPATH` avisa.
+ Onde o SQL **é** a regra de negócio, o script standalone não serve. `test-receipts-sequence-db.php`, `test-receipts-backfill-db.php` e `test-product-benefits-db.php` rodam por WP-CLI, contra o banco local, e se limpam sozinhos (criam pedidos descartáveis, apagam recibos e pedidos no fim). Eles ficam no mesmo diretório dos demais, mas **não rodam com `php` direto** — o guard de `ABSPATH` avisa.
 
 ```bash
 docker compose exec web wp --allow-root eval-file \
@@ -128,13 +129,15 @@ Se o seu PR introduzir violação de outra categoria, corrija — não amplie o 
 
 ### SonarLint no editor
 
-O SonarLint usa regras genéricas de PHP que colidem de frente com o WordPress coding standard exigido pelo `phpcs.xml.dist`. As três desligadas em `.vscode/settings.json` (chave `sonarlint.rules`; quem abre o workspace pai precisa do mesmo bloco em `../.vscode/settings.json`, que não é versionado) são:
+O SonarLint usa regras genéricas de PHP que colidem de frente com o WordPress coding standard exigido pelo `phpcs.xml.dist`. Essas regras ficam desligadas na chave `sonarlint.rules`, que tem scope *application*: o VS Code a ignora em settings de workspace, então o bloco vive em `~/.config/Code/User/settings.json` — os `.vscode/settings.json` do repo e do workspace pai só registram esse fato. As desligadas são:
 
 - `php:S105` (tabs) — o WP padroniza indentação com tab, e o PHPCS reprova espaços;
 - `php:S100` (nome de função em camelCase) — o plugin usa `snake_case` com prefixo `papelito_`, e os nomes são contrato de hooks/testes;
-- `php:S1172` (parâmetro não usado) — callback de filtro recebe argumentos por posição (`rest_pre_dispatch`, `wp_check_filetype_and_ext`), então parâmetros no meio da assinatura não podem ser removidos.
+- `php:S101` (nome de classe em PascalCase) — os testes standalone stubam classes do core (`WP_Error`, `WP_REST_Response`, `WP_REST_Request`, `WP_REST_Server`) e o nome é contrato de `new`/`instanceof` do código sob teste: renomear quebra o teste;
+- `php:S1172` (parâmetro não usado) — callback de filtro recebe argumentos por posição (`rest_pre_dispatch`, `wp_check_filetype_and_ext`), então parâmetros no meio da assinatura não podem ser removidos;
+- `php:S1142` (mais de 3 `return`) — desligada no editor, mas a preferência do código segue sendo consolidar o retorno ou extrair helper.
 
-As demais regras ficam ligadas e devem ser corrigidas no código — inclusive `php:S1192` (literal repetido → constante `PAPELITO_*`) e `php:S1142` (mais de 3 `return` → extrair helper ou consolidar o retorno).
+As demais regras ficam ligadas e devem ser corrigidas no código — inclusive `php:S1192` (literal repetido → constante `PAPELITO_*`), `php:S1784` (visibilidade explícita em método) e `php:S2003` (`require` → `require_once`). Em stub de teste, tipar os parâmetros (`mixed` onde a função do core aceita qualquer coisa) também mata os hints `P1132` do intelephense.
 
 ## Verificação de uma mudança
 

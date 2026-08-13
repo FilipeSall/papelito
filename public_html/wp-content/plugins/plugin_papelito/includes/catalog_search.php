@@ -210,6 +210,109 @@ function papelito_catalog_search_filter_campaign_prices( array $rows, array $cam
 	);
 }
 
+/**
+ * Coleções curadas normalizadas para consumo no filtro de busca.
+ *
+ * @return string[]
+ */
+function papelito_catalog_search_curated_collections(): array {
+	return array_values(
+		array_unique(
+			array_filter( array_map( 'sanitize_title', papelito_curated_collections() ) )
+		)
+	);
+}
+
+/**
+ * Normaliza a coleção pública antes de montar a consulta.
+ *
+ * @param mixed $value Valor cru da coleção.
+ * @return string|null `null` quando o valor é inválido, para falhar fechado.
+ */
+function papelito_catalog_search_collection( $value ): ?string {
+	$collection = sanitize_title( (string) $value );
+	$curated    = papelito_catalog_search_curated_collections();
+	$allowed    = array_merge( array( 'todos', 'novidades', 'promocoes' ), $curated );
+
+	return in_array( $collection, $allowed, true ) ? $collection : null;
+}
+
+/**
+ * Restringe a consulta à coleção curada sem trazer produtos para PHP.
+ *
+ * `novidades` é filtrada depois: ela é o recorte global dos oito produtos mais
+ * recentes da vitrine, e não pode ser recalculada a partir do termo pesquisado.
+ *
+ * @param string $product_expr Expressão SQL do produto da consulta externa.
+ * @param string $collection Coleção já normalizada.
+ * @param int[]  $campaign_ids Produtos da campanha relâmpago ativa.
+ * @return array{sql:string,params:array<int,mixed>}|null
+ */
+function papelito_catalog_search_collection_clause( string $product_expr, string $collection, array $campaign_ids ): ?array {
+	global $wpdb;
+
+	if ( 'todos' === $collection || 'novidades' === $collection ) {
+		return null;
+	}
+
+	if ( in_array( $collection, papelito_catalog_search_curated_collections(), true ) ) {
+		$tables = papelito_product_taxonomy_table_names();
+
+		return array(
+			'sql'    => "EXISTS ( SELECT 1 FROM {$tables['product_collection']} papelito_collection WHERE papelito_collection.product_id = {$product_expr} AND papelito_collection.collection_slug = %s )", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			'params' => array( $collection ),
+		);
+	}
+
+	if ( 'promocoes' !== $collection ) {
+		return array(
+			'sql'    => '1 = 0',
+			'params' => array(),
+		);
+	}
+
+	$native_sale  = "EXISTS ( SELECT 1 FROM {$wpdb->postmeta} sale_meta INNER JOIN {$wpdb->postmeta} regular_meta ON regular_meta.post_id = sale_meta.post_id AND regular_meta.meta_key = '_regular_price' WHERE sale_meta.post_id = {$product_expr} AND sale_meta.meta_key = '_sale_price' AND CAST( REPLACE( sale_meta.meta_value, ',', '.' ) AS DECIMAL(20,6) ) > 0 AND CAST( REPLACE( sale_meta.meta_value, ',', '.' ) AS DECIMAL(20,6) ) < CAST( REPLACE( regular_meta.meta_value, ',', '.' ) AS DECIMAL(20,6) ) )"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$campaign_ids = array_values( array_unique( array_filter( array_map( 'intval', $campaign_ids ) ) ) );
+
+	if ( empty( $campaign_ids ) ) {
+		return array(
+			'sql'    => $native_sale,
+			'params' => array(),
+		);
+	}
+
+	return array(
+		'sql'    => "( {$native_sale} OR {$product_expr} IN ( " . implode( ',', array_fill( 0, count( $campaign_ids ), '%d' ) ) . ' ) )', // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		'params' => $campaign_ids,
+	);
+}
+
+/**
+ * Mantém somente a coleção global de novidades: os oito mais recentes da
+ * vitrine elegível, definidos antes de busca, categoria, preço e paginação.
+ *
+ * @param array<int,array<string,mixed>> $rows
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_catalog_search_filter_new_arrivals( array $rows, array $args ): array {
+	$global_args                  = $args;
+	$global_args['categories']    = array();
+	$global_args['subcategories'] = array();
+	$global_args['min_price']     = null;
+	$global_args['max_price']     = null;
+	$global_args['collection']    = 'todos';
+	$global_rows                  = papelito_catalog_search_product_rows( $global_args );
+	$newest_ids                   = array_map( 'intval', array_slice( array_column( $global_rows, 'ID' ), 0, 8 ) );
+	$newest_lookup                = array_fill_keys( $newest_ids, true );
+
+	return array_values(
+		array_filter(
+			$rows,
+			static fn( array $row ): bool => isset( $newest_lookup[ (int) ( $row['ID'] ?? 0 ) ] )
+		)
+	);
+}
+
 function papelito_catalog_search_product_rows( array $args ): array {
 	global $wpdb;
 
@@ -262,6 +365,22 @@ function papelito_catalog_search_product_rows( array $args ): array {
 		$params  = array_merge( $params, $clause['params'] );
 	}
 
+	$collection = papelito_catalog_search_collection( $args['collection'] ?? 'todos' );
+	if ( null === $collection ) {
+		$where[] = '1 = 0';
+	} else {
+		$collection_clause = papelito_catalog_search_collection_clause(
+			'p.ID',
+			$collection,
+			array_map( 'intval', array_keys( (array) ( $args['campaign_prices'] ?? array() ) ) )
+		);
+
+		if ( null !== $collection_clause ) {
+			$where[] = $collection_clause['sql'];
+			$params  = array_merge( $params, $collection_clause['params'] );
+		}
+	}
+
 	$sql = "SELECT p.ID, p.post_title FROM {$wpdb->posts} p WHERE " . implode( ' AND ', $where ) . ' ORDER BY p.post_date DESC, p.ID DESC';
 
 	return $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A );
@@ -307,11 +426,25 @@ function papelito_catalog_search_products( array $args ): array {
 
 	$campaign_prices         = papelito_catalog_search_campaign_prices();
 	$args['campaign_prices'] = $campaign_prices;
+	$collection              = papelito_catalog_search_collection( $args['collection'] ?? 'todos' );
+	if ( null === $collection ) {
+		return array(
+			'ids'      => array(),
+			'total'    => 0,
+			'page'     => 1,
+			'per_page' => $limit,
+		);
+	}
+	$args['collection']       = $collection;
 	$rows                    = papelito_catalog_search_filter_campaign_prices(
 		papelito_catalog_search_product_rows( $args ),
 		$campaign_prices,
 		$args
 	);
+
+	if ( 'novidades' === $collection ) {
+		$rows = papelito_catalog_search_filter_new_arrivals( $rows, $args );
+	}
 	$tags_by_id              = papelito_catalog_search_tags_by_product( array_column( $rows, 'ID' ) );
 	$matches                 = array();
 
@@ -367,6 +500,7 @@ add_action(
 					'busca'         => array( 'type' => 'string', 'required' => true, 'sanitize_callback' => 'sanitize_text_field' ),
 					'categories'     => array( 'type' => 'string', 'default' => '', 'sanitize_callback' => 'sanitize_text_field' ),
 					'subcategories'  => array( 'type' => 'string', 'default' => '', 'sanitize_callback' => 'sanitize_text_field' ),
+					'collection'     => array( 'type' => 'string', 'default' => 'todos', 'sanitize_callback' => 'sanitize_text_field' ),
 					'preco_min' => array( 'type' => 'number', 'required' => false ),
 					'preco_max' => array( 'type' => 'number', 'required' => false ),
 					'page'      => array( 'type' => 'integer', 'default' => 1 ),
@@ -381,8 +515,9 @@ add_action(
 						papelito_catalog_search_products(
 							array(
 								'search'        => (string) $request->get_param( 'busca' ),
-								'categories'    => explode( ',', (string) $request->get_param( 'categories' ) ),
-								'subcategories' => explode( ',', (string) $request->get_param( 'subcategories' ) ),
+							'categories'    => explode( ',', (string) $request->get_param( 'categories' ) ),
+							'subcategories' => explode( ',', (string) $request->get_param( 'subcategories' ) ),
+							'collection'    => (string) $request->get_param( 'collection' ),
 								'min_price'  => $request->get_param( 'preco_min' ),
 								'max_price'  => $request->get_param( 'preco_max' ),
 								'page'       => (int) $request->get_param( 'page' ),

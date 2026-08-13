@@ -29,6 +29,33 @@ categoria) e `wp_papelito_product_subcategory`. O catálogo headless lê somente
 produto; trocar categoria limpa as subcategorias antigas. Filtros aplicam OR dentro da mesma faceta e AND
 entre facetas.
 
+## Benefícios da página de produto
+
+Três tabelas: `wp_papelito_benefit_groups` (configuração nomeada, com `is_global`, `global_key` e `is_active`),
+`wp_papelito_benefit_items` (ícone, título, texto auxiliar, `sort_order`, `is_active`) e
+`wp_papelito_benefit_group_targets` (a quem a configuração se aplica).
+
+`global_key` é nulo para grupos específicos e vale `1` no grupo global. A chave única dessa coluna
+é a garantia no banco de que nunca existem dois grupos globais; a instalação normaliza bases legadas
+mantendo o grupo global de menor `id`.
+
+A invariante central é a **PK `(target_type, target_key)`** da tabela de alvos: um produto, uma coleção
+ou uma categoria pertence a no máximo um grupo — garantido pelo banco, como a PK em `product_id` garante
+"no máximo uma categoria". Sem ela a precedência precisaria de um desempate arbitrário dentro do mesmo
+nível, e por isso **não existe coluna de prioridade**.
+
+`papelito_product_benefits_resolve()` responde `produto > coleção > categoria > global`, parando no
+primeiro grupo ativo; duas coleções desempatam pela ordem de `papelito_curated_collections()`. Não há
+cadeia de fallback: grupo vencedor sem item ativo resulta em faixa vazia, de propósito, mas mantém a
+origem do grupo vencedor.
+
+O ícone é `emoji` ou `svg` — nunca HTML. `description_content` guarda o mesmo documento de nós tipados
+da faixa de avisos, e `description` é o texto plano de degradação quando um token não resolve.
+
+O grupo global é criado por `papelito_product_benefits_seed_global()` no bootstrap de migration, só se
+ainda não existir, com os três benefícios que a página de produto exibia fixos. O cache é um transient
+único versionado por `papelito_product_benefits_version`.
+
 ## Tabelas do marketplace
 
 ### `wp_papelito_vendor_stock`

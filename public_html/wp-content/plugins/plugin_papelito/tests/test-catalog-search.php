@@ -59,11 +59,13 @@ $wpdb = new Papelito_Catalog_Search_Test_WPDB();
  * do comportamento ficar mensurável.
  */
 function papelito_taxonomy_classified_clause( $product_expr ) { return '1 = 1'; }
+function papelito_product_taxonomy_table_names() { return array( 'product_collection' => 'wp_papelito_product_collection' ); }
 function papelito_taxonomy_category_id_by_slug( $slug ) { return 0; }
 function papelito_taxonomy_subcategory_ids_by_slugs( $category_id, array $slugs ) { return array(); }
 function papelito_taxonomy_exists_clause( $product_expr, $category_id, array $subcategory_ids, $unresolved = false ) { return null; }
 function papelito_taxonomy_has_unresolved_subcategory_slugs( $category_id, array $slugs ) { return false; }
 function papelito_taxonomy_slug_filter_clause( $product_expr, array $categories, array $subcategories ) { return null; }
+function papelito_curated_collections() { return array( 'premium', 'kits', 'edicao-limitada' ); }
 
 require __DIR__ . '/../includes/catalog_search.php';
 
@@ -122,6 +124,13 @@ papelito_catalog_search_assert_same( 'total paginado', 9, $result['total'] );
 papelito_catalog_search_assert_same( 'segunda página', array( 9, 10, 11, 12 ), $result['ids'] );
 $result = papelito_catalog_search_products( array( 'search' => 'inexistente', 'per_page' => 5 ) );
 papelito_catalog_search_assert_same( 'resultado vazio', array(), $result['ids'] );
+$result = papelito_catalog_search_products( array( 'search' => 'produto', 'collection' => 'nao-existe', 'per_page' => 5 ) );
+papelito_catalog_search_assert_same( 'coleção inválida falha fechado', array(), $result['ids'] );
+$curated_clause = papelito_catalog_search_collection_clause( 'p.ID', 'edicao-limitada', array() );
+papelito_catalog_search_assert_same( 'coleção curada adicional é aceita', 'edicao-limitada', papelito_catalog_search_collection( 'edicao-limitada' ) );
+papelito_catalog_search_assert_same( 'coleção curada adicional usa seu próprio slug', array( 'edicao-limitada' ), $curated_clause['params'] );
+$sale_clause = papelito_catalog_search_collection_clause( 'p.ID', 'promocoes', array() );
+papelito_catalog_search_assert_same( 'promoções é a única coleção que usa preço promocional', true, str_contains( $sale_clause['sql'], "_sale_price" ) );
 
 echo "Scenario 3: tags são carregadas em lote\n";
 foreach ( array( 1, 10, 40 ) as $count ) {
