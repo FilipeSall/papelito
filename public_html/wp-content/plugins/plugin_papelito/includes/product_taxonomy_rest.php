@@ -103,6 +103,32 @@ function papelito_taxonomy_public_payload() {
 }
 
 /**
+ * Subcategoria no formato administrativo.
+ *
+ * Este é o único lugar que define o formato: leitura e escrita devolvem a mesma
+ * coisa. Antes, mutação devolvia a linha crua, sem `productCount`, e quem
+ * confiasse na resposta do `PUT` recebia um objeto incompleto.
+ *
+ * @param array<string,mixed> $subcategory Subcategoria normalizada.
+ * @param array<int,int>      $sub_counts  Contagens por subcategoria.
+ * @return array<string,mixed>
+ */
+function papelito_taxonomy_admin_subcategory( array $subcategory, array $sub_counts ) {
+	return array(
+		'id'           => $subcategory['id'],
+		'categoryId'   => $subcategory['categoryId'],
+		'slug'         => $subcategory['slug'],
+		'name'         => $subcategory['name'],
+		'facet'        => $subcategory['facet'],
+		'description'  => $subcategory['description'],
+		'sortOrder'    => $subcategory['sortOrder'],
+		'isActive'     => $subcategory['isActive'],
+		'archivedAt'   => $subcategory['archivedAt'],
+		'productCount' => (int) ( $sub_counts[ $subcategory['id'] ] ?? 0 ),
+	);
+}
+
+/**
  * Categoria no formato administrativo: enxerga inativo, arquivado e contagem.
  *
  * @param array<string,mixed>          $category         Categoria normalizada.
@@ -137,21 +163,72 @@ function papelito_taxonomy_admin_category( array $category, array $category_coun
 		),
 		'subcategories'    => array_map(
 			static function ( array $subcategory ) use ( $sub_counts ) {
-				return array(
-					'id'           => $subcategory['id'],
-					'categoryId'   => $subcategory['categoryId'],
-					'slug'         => $subcategory['slug'],
-					'name'         => $subcategory['name'],
-					'facet'        => $subcategory['facet'],
-					'description'  => $subcategory['description'],
-					'sortOrder'    => $subcategory['sortOrder'],
-					'isActive'     => $subcategory['isActive'],
-					'archivedAt'   => $subcategory['archivedAt'],
-					'productCount' => (int) ( $sub_counts[ $subcategory['id'] ] ?? 0 ),
-				);
+				return papelito_taxonomy_admin_subcategory( $subcategory, $sub_counts );
 			},
 			$subcategories
 		),
+	);
+}
+
+/**
+ * Resposta de uma categoria só, no mesmo formato da árvore administrativa.
+ *
+ * @param int $category_id Id da categoria.
+ * @return array<string,mixed>|null
+ */
+function papelito_taxonomy_admin_category_response( $category_id ) {
+	$category = papelito_category_get( $category_id );
+
+	if ( null === $category ) {
+		return null;
+	}
+
+	return papelito_taxonomy_admin_category(
+		$category,
+		papelito_category_product_counts(),
+		papelito_subcategory_product_counts( $category['id'] )
+	);
+}
+
+/**
+ * Resposta de uma subcategoria só, no mesmo formato da árvore administrativa.
+ *
+ * @param int $subcategory_id Id da subcategoria.
+ * @return array<string,mixed>|null
+ */
+function papelito_taxonomy_admin_subcategory_response( $subcategory_id ) {
+	$subcategory = papelito_subcategory_get( $subcategory_id );
+
+	if ( null === $subcategory ) {
+		return null;
+	}
+
+	return papelito_taxonomy_admin_subcategory(
+		$subcategory,
+		papelito_subcategory_product_counts( $subcategory['categoryId'] )
+	);
+}
+
+/**
+ * Lista de subcategorias de uma categoria no formato administrativo.
+ *
+ * @param int $category_id Id da categoria.
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_taxonomy_admin_subcategories_response( $category_id ) {
+	$sub_counts = papelito_subcategory_product_counts( $category_id );
+
+	return array_map(
+		static function ( array $subcategory ) use ( $sub_counts ) {
+			return papelito_taxonomy_admin_subcategory( $subcategory, $sub_counts );
+		},
+		papelito_subcategories_list(
+			$category_id,
+			array(
+				'active_only'      => false,
+				'include_archived' => true,
+			)
+		)
 	);
 }
 
@@ -281,7 +358,7 @@ add_action(
 							return $created;
 						}
 
-						return new WP_REST_Response( papelito_category_get( $created ), 201 );
+						return new WP_REST_Response( papelito_taxonomy_admin_category_response( $created ), 201 );
 					},
 				),
 			)
@@ -338,7 +415,7 @@ add_action(
 							return $result;
 						}
 
-						return new WP_REST_Response( papelito_category_get( $category_id ), 200 );
+						return new WP_REST_Response( papelito_taxonomy_admin_category_response( $category_id ), 200 );
 					},
 				),
 				array(
@@ -352,7 +429,7 @@ add_action(
 							return $result;
 						}
 
-						return new WP_REST_Response( papelito_category_get( $category_id ), 200 );
+						return new WP_REST_Response( papelito_taxonomy_admin_category_response( $category_id ), 200 );
 					},
 				),
 			)
@@ -372,7 +449,7 @@ add_action(
 						return $result;
 					}
 
-					return new WP_REST_Response( papelito_category_get( $category_id ), 200 );
+					return new WP_REST_Response( papelito_taxonomy_admin_category_response( $category_id ), 200 );
 				},
 			)
 		);
@@ -391,16 +468,7 @@ add_action(
 							return new WP_Error( 'papelito_category_not_found', 'Categoria não encontrada.', array( 'status' => 404 ) );
 						}
 
-						return new WP_REST_Response(
-							papelito_subcategories_list(
-								$category_id,
-								array(
-									'active_only'      => false,
-									'include_archived' => true,
-								)
-							),
-							200
-						);
+						return new WP_REST_Response( papelito_taxonomy_admin_subcategories_response( $category_id ), 200 );
 					},
 				),
 				array(
@@ -415,7 +483,7 @@ add_action(
 							return $created;
 						}
 
-						return new WP_REST_Response( papelito_subcategory_get( $created ), 201 );
+						return new WP_REST_Response( papelito_taxonomy_admin_subcategory_response( $created ), 201 );
 					},
 				),
 			)
@@ -435,16 +503,7 @@ add_action(
 						return $result;
 					}
 
-					return new WP_REST_Response(
-						papelito_subcategories_list(
-							$category_id,
-							array(
-								'active_only'      => false,
-								'include_archived' => true,
-							)
-						),
-						200
-					);
+					return new WP_REST_Response( papelito_taxonomy_admin_subcategories_response( $category_id ), 200 );
 				},
 			)
 		);
@@ -467,7 +526,7 @@ add_action(
 							return $result;
 						}
 
-						return new WP_REST_Response( papelito_subcategory_get( $subcategory_id ), 200 );
+						return new WP_REST_Response( papelito_taxonomy_admin_subcategory_response( $subcategory_id ), 200 );
 					},
 				),
 				array(
@@ -481,7 +540,7 @@ add_action(
 							return $result;
 						}
 
-						return new WP_REST_Response( papelito_subcategory_get( $subcategory_id ), 200 );
+						return new WP_REST_Response( papelito_taxonomy_admin_subcategory_response( $subcategory_id ), 200 );
 					},
 				),
 			)

@@ -37,6 +37,9 @@ const PAPELITO_TAXONOMY_API_ADMIN_PRODUCTS_TAXONOMY_ROUTE = PAPELITO_TAXONOMY_AP
 const PAPELITO_TAXONOMY_API_SEDAS_SUFFIX           = '-sedas';
 const PAPELITO_TAXONOMY_API_NOVA_SUFFIX            = '-nova';
 const PAPELITO_TAXONOMY_API_CHECKS_SUFFIX          = " checagens\n";
+const PAPELITO_TAXONOMY_API_ADMIN_SUBCATEGORY_ROUTE = '/papelito/v1/admin/subcategories/';
+const PAPELITO_TAXONOMY_API_SUBCATEGORIES_ROUTE     = '/subcategories';
+const PAPELITO_TAXONOMY_API_PUT                     = 'PUT';
 
 global $wpdb, $failures, $checks, $created_categories, $created_products;
 
@@ -402,6 +405,105 @@ if ( 201 === $criada['status'] ) {
 
 assert_api( 'DELETE recusa categoria com produto publicado', 409, api_test_request( 'DELETE', PAPELITO_TAXONOMY_API_ADMIN_CATEGORY_ROUTE . $sedas )['status'] );
 assert_api( 'categoria inexistente devolve 404', 404, api_test_request( 'PUT', PAPELITO_TAXONOMY_API_ADMIN_CATEGORY_ROUTE . '99999999', array( 'name' => 'x' ) )['status'] );
+
+echo "\nREST admin: escrita devolve o mesmo formato da leitura\n";
+
+// Mutação que devolve a linha crua entrega um objeto sem `productCount`, e o
+// painel que confiar na resposta do PUT em vez de recarregar mostra contagem
+// zerada. Leitura e escrita têm de ter exatamente as mesmas chaves.
+$arvore          = api_test_request( 'GET', PAPELITO_TAXONOMY_API_ADMIN_CATEGORIES_ROUTE )['data'];
+$sedas_da_arvore = null;
+
+foreach ( $arvore['categories'] as $categoria ) {
+	if ( $sedas === $categoria['id'] ) {
+		$sedas_da_arvore = $categoria;
+	}
+}
+
+$brown_da_arvore = null;
+
+foreach ( $sedas_da_arvore['subcategories'] as $subcategoria ) {
+	if ( $brown === $subcategoria['id'] ) {
+		$brown_da_arvore = $subcategoria;
+	}
+}
+
+$chaves_categoria    = array_keys( $sedas_da_arvore );
+$chaves_subcategoria = array_keys( $brown_da_arvore );
+
+sort( $chaves_categoria );
+sort( $chaves_subcategoria );
+
+$sub_editada = api_test_request( PAPELITO_TAXONOMY_API_PUT, PAPELITO_TAXONOMY_API_ADMIN_SUBCATEGORY_ROUTE . $brown, array( 'name' => 'Brown editada' ) );
+$chaves_put  = array_keys( $sub_editada['data'] );
+
+sort( $chaves_put );
+
+assert_api( 'PUT /admin/subcategories/{id} responde 200', 200, $sub_editada['status'] );
+assert_api( 'PUT de subcategoria devolve as chaves da leitura', $chaves_subcategoria, $chaves_put );
+assert_api( 'PUT de subcategoria devolve productCount', $brown_da_arvore['productCount'], $sub_editada['data']['productCount'] );
+assert_api( 'PUT de subcategoria devolve o nome novo', 'Brown editada', $sub_editada['data']['name'] );
+
+papelito_subcategory_update( $brown, array( 'name' => 'Brown' ) );
+
+$sub_criada = api_test_request(
+	'POST',
+	PAPELITO_TAXONOMY_API_ADMIN_CATEGORY_ROUTE . $sedas . PAPELITO_TAXONOMY_API_SUBCATEGORIES_ROUTE,
+	array(
+		'name'  => 'Recém-criada',
+		'facet' => 'formato',
+	)
+);
+$chaves_post = array_keys( $sub_criada['data'] );
+
+sort( $chaves_post );
+
+assert_api( 'POST de subcategoria devolve as chaves da leitura', $chaves_subcategoria, $chaves_post );
+assert_api( 'subcategoria nova nasce com productCount zero', 0, $sub_criada['data']['productCount'] );
+
+$sub_arquivada = api_test_request( 'DELETE', PAPELITO_TAXONOMY_API_ADMIN_SUBCATEGORY_ROUTE . (int) $sub_criada['data']['id'] );
+$chaves_delete = array_keys( $sub_arquivada['data'] );
+
+sort( $chaves_delete );
+
+assert_api( 'DELETE de subcategoria devolve as chaves da leitura', $chaves_subcategoria, $chaves_delete );
+
+$listagem_sub = api_test_request( 'GET', PAPELITO_TAXONOMY_API_ADMIN_CATEGORY_ROUTE . $sedas . PAPELITO_TAXONOMY_API_SUBCATEGORIES_ROUTE );
+$chaves_lista = array_keys( $listagem_sub['data'][0] );
+
+sort( $chaves_lista );
+
+assert_api( 'GET de subcategorias devolve as chaves da árvore', $chaves_subcategoria, $chaves_lista );
+
+$reordenada    = api_test_request(
+	PAPELITO_TAXONOMY_API_PUT,
+	PAPELITO_TAXONOMY_API_ADMIN_CATEGORY_ROUTE . $sedas . PAPELITO_TAXONOMY_API_SUBCATEGORIES_ROUTE . '/reorder',
+	array( 'ids' => array_column( $listagem_sub['data'], 'id' ) )
+);
+$chaves_reorder = array_keys( $reordenada['data'][0] );
+
+sort( $chaves_reorder );
+
+assert_api( 'reorder de subcategorias devolve as chaves da árvore', $chaves_subcategoria, $chaves_reorder );
+
+$cat_editada = api_test_request( PAPELITO_TAXONOMY_API_PUT, PAPELITO_TAXONOMY_API_ADMIN_CATEGORY_ROUTE . $sedas, array( 'seoTitle' => 'Sedas para teste' ) );
+$chaves_cat  = array_keys( $cat_editada['data'] );
+
+sort( $chaves_cat );
+
+assert_api( 'PUT de categoria devolve as chaves da leitura', $chaves_categoria, $chaves_cat );
+assert_api( 'PUT de categoria devolve productCount', $sedas_da_arvore['productCount'], $cat_editada['data']['productCount'] );
+$sedas_agora = null;
+
+foreach ( api_test_request( 'GET', PAPELITO_TAXONOMY_API_ADMIN_CATEGORIES_ROUTE )['data']['categories'] as $categoria ) {
+	if ( $sedas === $categoria['id'] ) {
+		$sedas_agora = $categoria;
+	}
+}
+
+assert_api( 'PUT de categoria devolve as subcategorias', count( $sedas_agora['subcategories'] ), count( $cat_editada['data']['subcategories'] ) );
+
+papelito_category_update( $sedas, array( 'seoTitle' => '' ) );
 
 echo "\nREST admin: taxonomia do produto\n";
 
