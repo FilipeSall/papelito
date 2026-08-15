@@ -47,7 +47,7 @@ Todos os arquivos em `public_html/wp-content/plugins/plugin_papelito/includes/`.
 
 10. `papelito_auth_validate_register_payload` exige e-mail válido, senha ≥ 8, nome e sobrenome, telefone de 10–11 dígitos, CEP e estado; **CNPJ opcional**. Seller exige adicionalmente `store_name`, CNPJ, cidade/estado, instagram, `min_cep`/`max_cep` e `has_sold`.
 11. O e-mail nasce `pending`. O token é **sha256 do valor em claro**, de **uso único**, e expira em **24 h**.
-12. Registro tem **rate limit de 10/min por IP**; reenvio tem cooldown de 1 min.
+12. Cadastro por convite e reenvio usam rate limit por identidade opaca (token ou e-mail), para não compartilhar o IP do proxy Next; reenvio tem cooldown de 1 min.
 13. Login por senha é **bloqueado** até `papelito_email_verification_status = 'verified'`, pelo hook `wp_authenticate_user`. O gate recusa **qualquer valor que não seja exatamente `'verified'`**. Status vazio (`''`) é usuário legado e não exige verificação.
 
 ## Google OAuth

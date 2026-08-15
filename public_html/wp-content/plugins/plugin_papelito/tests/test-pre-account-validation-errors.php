@@ -31,6 +31,7 @@ function papelito_normalize_cnpj( string $value ): string { return $value; }
 function papelito_validate_cpf( string $value ): bool { return 'cpf-valido' === $value; }
 function papelito_validate_cnpj( string $value ): bool { return 'cnpj-valido' === $value; }
 
+require_once __DIR__ . '/../includes/support.php';
 require_once __DIR__ . '/../includes/company_services.php';
 require_once __DIR__ . '/../includes/company_pre_account_applications.php';
 
@@ -79,6 +80,56 @@ $valid = papelito_pre_account_application_identity(
 );
 
 validation_errors_assert( 'dados válidos preservam o caminho de sucesso', false, is_wp_error( $valid ) );
+
+foreach (
+	array(
+		'nome com dígitos' => array( '11999999999', 'QA 12345', 'full_name' ),
+		'nome com script' => array( '11999999999', '<script>alert(1)</script>', 'full_name' ),
+		'nome curto' => array( '11999999999', 'A', 'full_name' ),
+		'telefone curto' => array( '619999888', 'Candidato de Teste', 'phone' ),
+		'telefone repetido' => array( '11111111111', 'Candidato de Teste', 'phone' ),
+		'telefone com letras' => array( 'abcdefghijk', 'Candidato de Teste', 'phone' ),
+		'nome com emoji' => array( '11999999999', 'QA 🚀 Teste', 'full_name' ),
+		'nome com simbolos' => array( '11999999999', 'QA @#$%', 'full_name' ),
+		'nome acima do limite' => array( '11999999999', str_repeat( 'a', 121 ) . ' Silva', 'full_name' ),
+	) as $label => $case
+) {
+	$result = papelito_pre_account_application_identity(
+		array(
+			'email'      => 'candidato@example.test',
+			'full_name'  => $case[1],
+			'phone'      => $case[0],
+			'cpf'        => 'cpf-valido',
+			'birth_date' => '1990-01-01',
+			'cnpj'       => 'cnpj-valido',
+			'password'   => 'senha-secreta',
+		)
+	);
+	validation_errors_assert( $label, true, $result instanceof WP_Error && isset( $result->get_error_data()['errors'][ $case[2] ] ) );
+}
+
+// O NBSP entra junto com nome colado de PDF/Word. O `\s` do JavaScript o colapsa, o do PCRE nao:
+// sem normalizar Unicode nos dois lados, o formulario aceitava e o backend devolvia 422 invisivel.
+foreach ( array( "José D'Ávila", 'Maria-Luíza Sá', "Maria\u{00A0}Luíza Sá" ) as $name ) {
+	$result = papelito_pre_account_application_identity(
+		array(
+			'email'      => 'candidato@example.test',
+			'full_name'  => $name,
+			'phone'      => '+55 (11) 99999-9999',
+			'cpf'        => 'cpf-valido',
+			'birth_date' => '1990-01-01',
+			'cnpj'       => 'cnpj-valido',
+			'password'   => 'senha-secreta',
+		)
+	);
+	validation_errors_assert( 'nome e telefone legítimos: ' . $name, false, is_wp_error( $result ) );
+}
+
+$redos_probe = str_repeat( 'a ', 59 ) . '1';
+$started     = microtime( true );
+papelito_full_name_validation_error( $redos_probe );
+$elapsed = microtime( true ) - $started;
+validation_errors_assert( 'nome ambiguo nao dispara backtracking exponencial', true, $elapsed < 0.05 );
 
 $today            = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
 $adult_birth_date = $today->sub( new DateInterval( 'P18Y' ) )->format( 'Y-m-d' );

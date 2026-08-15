@@ -10,6 +10,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+const PAPELITO_LOGIN_FAILURE_MAX    = 5;
+const PAPELITO_LOGIN_FAILURE_WINDOW = 900;
+
 function papelito_is_legacy_public_host(): bool {
 	$host = isset( $_SERVER['HTTP_HOST'] ) ? strtolower( trim( sanitize_text_field( wp_unslash( $_SERVER['HTTP_HOST'] ) ) ) ) : '';
 
@@ -116,16 +119,169 @@ add_action(
 	}
 );
 
-add_action(
-	'wp_login_failed',
-	static function (): void {
-		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown';
-		$key = 'papelito_login_fail_' . md5( $ip );
-		$n   = (int) get_transient( $key );
-		set_transient( $key, $n + 1, HOUR_IN_SECONDS );
+/**
+ * Chave do contador de falhas de login.
+ *
+ * Chavear por `REMOTE_ADDR` NAO funciona aqui: o login do marketplace nao chega pelo navegador, e
+ * sim pelo `authorize()` do NextAuth, que roda no servidor Next e bate na mutation GraphQL. O WP ve
+ * sempre o mesmo IP — o do frontend —, entao um balde por IP vira um teto do marketplace inteiro e
+ * a sexta senha errada do dia derruba a autenticacao de todo mundo. Mesmo raciocinio ja registrado
+ * em `papelito_rate_limit_identity()` e coberto por `tests/test-rate-limit-identity.php`.
+ *
+ * A identidade tentada e o unico identificador que sobrevive ao proxy. Quando ela corresponde a
+ * uma conta existente, login e e-mail sao reduzidos ao mesmo usuario para nao dobrar a cota.
+ *
+ * @param string $username Identificador tentado no login.
+ * @return string
+ */
+function papelito_login_failure_key( string $username ): string {
+	$identity = strtolower( trim( $username ) );
 
-		if ( $n >= 60 ) {
-			wp_die( 'Too many failed attempts. Try again later.', 'Rate limit', array( 'response' => 429 ) );
+	if ( '' !== $identity && function_exists( 'get_user_by' ) ) {
+		$user = get_user_by( 'login', $identity );
+		$user = $user instanceof WP_User ? $user : get_user_by( 'email', $identity );
+
+		if ( $user instanceof WP_User && $user->ID > 0 ) {
+			return 'papelito_login_fail_user_' . $user->ID;
 		}
 	}
+
+	if ( '' === $identity ) {
+		$identity = 'ip:' . ( isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown' );
+	}
+
+	return 'papelito_login_fail_identity_' . hash( 'sha256', $identity );
+}
+
+/**
+ * Distingue senha/usuario incorretos de estados validos da conta, como e-mail pendente.
+ *
+ * @param WP_Error $error Resultado da autenticacao.
+ * @return bool
+ */
+function papelito_login_is_credential_failure( WP_Error $error ): bool {
+	return in_array( $error->get_error_code(), array( 'incorrect_password', 'invalid_username', 'invalid_email' ), true );
+}
+
+/**
+ * Marca a tentativa que ESTA funcao ja recusou, para nao contar duas vezes.
+ *
+ * `wp_authenticate()` dispara `wp_login_failed` depois de toda a cadeia do filtro `authenticate`,
+ * inclusive quando quem devolveu o WP_Error fomos nos.
+ */
+const PAPELITO_LOGIN_RATE_LIMIT_CODE = 'papelito_login_rate_limited';
+const PAPELITO_LOGIN_RATE_LIMIT_MESSAGE = PAPELITO_LOGIN_RATE_LIMIT_CODE;
+
+/**
+ * Le o balde de falhas de uma identidade, ja descartando janela vencida.
+ *
+ * @param string $key Chave do transient.
+ * @return array{count:int,expires_at:int}
+ */
+function papelito_login_failure_bucket( string $key ): array {
+	$now    = time();
+	$bucket = get_transient( $key );
+
+	// Janela FIXA: guardar o vencimento junto do contador impede que cada nova falha renove o TTL.
+	// Com janela deslizante, uma tentativa por minuto mantinha o bloqueio para sempre.
+	if ( ! is_array( $bucket ) || ! isset( $bucket['count'], $bucket['expires_at'] ) || $bucket['expires_at'] <= $now ) {
+		return array(
+			'count'      => 0,
+			'expires_at' => $now + PAPELITO_LOGIN_FAILURE_WINDOW,
+		);
+	}
+
+	return array(
+		'count'      => (int) $bucket['count'],
+		'expires_at' => (int) $bucket['expires_at'],
+	);
+}
+
+/**
+ * Aplica a cota e libera no acerto — no filtro `authenticate`, nao em `wp_login`.
+ *
+ * `wp_login` NAO serve para este fluxo: ele so dispara dentro de `wp_signon()`, e o plugin JWT usa
+ * `wp_authenticate()` quando `GRAPHQL_JWT_AUTH_SET_COOKIES` nao esta definida — que e o caso aqui.
+ * O filtro `authenticate` e o unico ponto que os dois caminhos atravessam.
+ *
+ * Prioridade 100 (depois de `wp_authenticate_username_password`, que e 20) porque so no fim da
+ * cadeia se sabe se a credencial estava certa. Cedo demais nao funcionaria: aquela funcao so
+ * devolve antes do tempo quando ja recebeu um `WP_User`, entao ela sobrescreveria nosso WP_Error.
+ *
+ * Devolver WP_Error em vez de `wp_die()` mantem a resposta GraphQL em 200 com `errors[]`, que o
+ * proxy Next consegue ler e traduzir. Um `wp_die()` matava a requisicao com HTML 429, e o Next
+ * colapsava isso em "servico indisponivel", escondendo tanto o rate limit quanto o aviso de e-mail
+ * nao confirmado.
+ *
+ * @param null|WP_User|WP_Error $user     Resultado da cadeia de autenticacao.
+ * @param string                $username Identificador tentado.
+ * @return null|WP_User|WP_Error
+ */
+function papelito_login_rate_limit_gate( $user, $username = '' ) {
+	$key = papelito_login_failure_key( (string) $username );
+
+	if ( $user instanceof WP_User ) {
+		// Credencial correta nunca e barrada, e zera a cota na hora.
+		delete_transient( $key );
+		delete_transient( papelito_login_failure_key( (string) $user->user_email ) );
+
+		return $user;
+	}
+
+	if ( ! is_wp_error( $user ) ) {
+		return $user;
+	}
+
+	if ( ! papelito_login_is_credential_failure( $user ) ) {
+		return $user;
+	}
+
+	$bucket = papelito_login_failure_bucket( $key );
+
+	if ( $bucket['count'] >= PAPELITO_LOGIN_FAILURE_MAX ) {
+		return new WP_Error(
+			PAPELITO_LOGIN_RATE_LIMIT_CODE,
+			PAPELITO_LOGIN_RATE_LIMIT_MESSAGE,
+			array( 'status' => 429 )
+		);
+	}
+
+	return $user;
+}
+add_filter( 'authenticate', 'papelito_login_rate_limit_gate', 100, 2 );
+
+add_action(
+	'wp_login_failed',
+	static function ( $username = '', $error = null ): void {
+		// A recusa por cota ja foi contada na tentativa que a esgotou; contar de novo so inflaria o
+		// balde sem mudar decisao nenhuma.
+		if ( $error instanceof WP_Error && PAPELITO_LOGIN_RATE_LIMIT_CODE === $error->get_error_code() ) {
+			return;
+		}
+
+		$key    = papelito_login_failure_key( (string) $username );
+		$bucket = papelito_login_failure_bucket( $key );
+		$now    = time();
+
+		++$bucket['count'];
+
+		set_transient( $key, $bucket, max( 1, $bucket['expires_at'] - $now ) );
+	},
+	10,
+	2
+);
+
+add_action(
+	'wp_login',
+	static function ( $user_login, $user = null ): void {
+		// Redundante com o filtro `authenticate` no fluxo headless; existe para o login de navegador
+		// no wp-admin, que passa por `wp_signon()` e compartilha as mesmas chaves.
+		delete_transient( papelito_login_failure_key( (string) $user_login ) );
+
+		if ( $user instanceof WP_User && '' !== (string) $user->user_email ) {
+			delete_transient( papelito_login_failure_key( (string) $user->user_email ) );
+		}
+	},
+	10,
+	2
 );

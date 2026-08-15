@@ -190,8 +190,10 @@ function papelito_pre_account_application_backfill_pending_notifications(): int 
 function papelito_pre_account_application_identity( array $input ): array|WP_Error {
 	$identity = array(
 		'email'    => sanitize_email( (string) ( $input['email'] ?? '' ) ),
-		'name'     => sanitize_text_field( (string) ( $input['full_name'] ?? '' ) ),
-		'phone'    => sanitize_text_field( (string) ( $input['phone'] ?? '' ) ),
+		// Normalizado antes de validar E de persistir: e este valor que segue para o cruzamento de
+		// QSA e para o e-mail do candidato, entao nao pode guardar NBSP nem espaco duplicado.
+		'name'     => papelito_normalize_unicode_spaces( sanitize_text_field( (string) ( $input['full_name'] ?? '' ) ) ),
+		'phone'    => papelito_normalize_unicode_spaces( sanitize_text_field( (string) ( $input['phone'] ?? '' ) ) ),
 		'cpf'      => papelito_normalize_cpf( (string) ( $input['cpf'] ?? '' ) ),
 		'birth'    => sanitize_text_field( (string) ( $input['birth_date'] ?? '' ) ),
 		'cnpj'     => papelito_normalize_cnpj( (string) ( $input['cnpj'] ?? '' ) ),
@@ -201,11 +203,13 @@ function papelito_pre_account_application_identity( array $input ): array|WP_Err
 	if ( ! is_email( $identity['email'] ) ) {
 		$errors['email'] = array( 'Informe um e-mail válido.' );
 	}
-	if ( '' === $identity['name'] ) {
-		$errors['full_name'] = array( 'Informe seu nome completo.' );
+	$name_error = papelito_full_name_validation_error( $identity['name'] );
+	if ( $name_error ) {
+		$errors['full_name'] = array( $name_error );
 	}
-	if ( '' === $identity['phone'] ) {
-		$errors['phone'] = array( 'Informe seu telefone.' );
+	$phone_error = papelito_phone_validation_error( $identity['phone'] );
+	if ( $phone_error ) {
+		$errors['phone'] = array( $phone_error );
 	}
 	if ( ! papelito_validate_cpf( $identity['cpf'] ) ) {
 		$errors['cpf'] = array( 'Informe um CPF válido.' );

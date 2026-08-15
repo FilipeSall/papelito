@@ -227,3 +227,163 @@ function papelito_user_can_access_seller_area( $user ): bool {
 
 	return $user instanceof WP_User && papelito_user_has_role( $user, 'seller' );
 }
+
+/**
+ * Nome de pessoa: normalizacao e validacao compartilhadas por todas as superficies de cadastro.
+ *
+ * A regra vive aqui, e nao em cada endpoint, porque "nome e nome de pessoa" e regra de dominio:
+ * pre-conta, `/auth/register` e `/auth/register-invitation` precisam concordar. As mensagens sao
+ * identicas as do validador do frontend (`papelito-web/src/lib/validation/person.ts`) para que o
+ * usuario leia o mesmo texto independentemente de qual camada barrou.
+ */
+const PAPELITO_PERSON_NAME_MAX_LENGTH = 120;
+
+/**
+ * Palavra de um nome: letras, opcionalmente ligadas por apostrofo ou hifen.
+ *
+ * Deliberadamente aplicada palavra a palavra, nunca a frase inteira. Uma regex que aceitasse o
+ * espaco tanto dentro do grupo de ligacao quanto entre palavras seria ambigua e teria backtracking
+ * exponencial: 62 caracteres ja custavam 17 s no motor do navegador.
+ */
+const PAPELITO_PERSON_NAME_WORD_PATTERN = "/^\\p{L}+(?:['\\x{2019}\\-]\\p{L}+)*$/u";
+
+/**
+ * Colapsa qualquer separador de espaco Unicode num espaco simples.
+ *
+ * `\s` do PCRE nao cobre NBSP, mas o `\s` do JavaScript cobre. Sem isto, um nome colado de PDF ou
+ * Word passava no frontend e voltava 422 do backend com um erro que o usuario nao consegue ver.
+ *
+ * @param string $value Texto cru.
+ * @return string
+ */
+function papelito_normalize_unicode_spaces( string $value ): string {
+	$normalized = preg_replace( '/[\s\x{00A0}\x{1680}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}\x{FEFF}]+/u', ' ', $value );
+
+	return trim( $normalized ?? $value );
+}
+
+/**
+ * Quebra um nome em palavras ja normalizadas.
+ *
+ * @param string $value Nome cru.
+ * @return string[] Vazio quando nao sobrou nada depois da normalizacao.
+ */
+function papelito_person_name_words( string $value ): array {
+	$normalized = papelito_normalize_unicode_spaces( $value );
+
+	return '' === $normalized ? array() : explode( ' ', $normalized );
+}
+
+/**
+ * Comprimento em pontos de codigo do nome ja normalizado.
+ *
+ * @param string[] $words Palavras do nome.
+ * @return int
+ */
+function papelito_person_name_length( array $words ): int {
+	$normalized = implode( ' ', $words );
+
+	return function_exists( 'mb_strlen' ) ? mb_strlen( $normalized, 'UTF-8' ) : strlen( $normalized );
+}
+
+/**
+ * Primeiro erro de conjunto de caracteres entre as palavras do nome.
+ *
+ * @param string[] $words Palavras do nome.
+ * @return string|null
+ */
+function papelito_person_name_charset_error( array $words ): ?string {
+	foreach ( $words as $word ) {
+		if ( 1 !== preg_match( PAPELITO_PERSON_NAME_WORD_PATTERN, $word ) ) {
+			return 'Informe apenas letras, espaços, apóstrofos e hífens no nome.';
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Valida um nome completo: pelo menos duas palavras, so letras.
+ *
+ * @param string $name Nome cru informado pelo usuario.
+ * @return string|null Mensagem de erro, ou `null` quando valido.
+ */
+function papelito_full_name_validation_error( string $name ): ?string {
+	$words = papelito_person_name_words( $name );
+
+	if ( array() === $words ) {
+		return 'Informe seu nome completo.';
+	}
+	if ( papelito_person_name_length( $words ) > PAPELITO_PERSON_NAME_MAX_LENGTH ) {
+		return 'Informe um nome com até ' . PAPELITO_PERSON_NAME_MAX_LENGTH . ' caracteres.';
+	}
+	if ( count( $words ) < 2 ) {
+		return 'Informe nome e sobrenome.';
+	}
+
+	return papelito_person_name_charset_error( $words );
+}
+
+/**
+ * Valida uma parte isolada do nome (`first_name` ou `last_name`), que pode ter uma palavra so.
+ *
+ * @param string $value         Parte crua do nome.
+ * @param string $empty_message Mensagem especifica do campo quando vazio.
+ * @return string|null
+ */
+function papelito_name_part_validation_error( string $value, string $empty_message ): ?string {
+	$words = papelito_person_name_words( $value );
+
+	if ( array() === $words ) {
+		return $empty_message;
+	}
+	if ( papelito_person_name_length( $words ) > PAPELITO_PERSON_NAME_MAX_LENGTH ) {
+		return 'Informe um nome com até ' . PAPELITO_PERSON_NAME_MAX_LENGTH . ' caracteres.';
+	}
+
+	return papelito_person_name_charset_error( $words );
+}
+
+/**
+ * Digitos locais de um telefone brasileiro, sem o codigo de pais.
+ *
+ * O prefixo `55` so e removido em 12 ou 13 digitos: um fixo do DDD 55 (Santa Maria/RS) tem 10
+ * digitos e precisa sobreviver inteiro.
+ *
+ * @param string $phone Telefone cru.
+ * @return string
+ */
+function papelito_normalize_phone_digits( string $phone ): string {
+	$digits = preg_replace( '/\D+/', '', $phone ) ?? '';
+
+	if ( ( 12 === strlen( $digits ) || 13 === strlen( $digits ) ) && 0 === strpos( $digits, '55' ) ) {
+		return substr( $digits, 2 );
+	}
+
+	return $digits;
+}
+
+/**
+ * Valida um telefone brasileiro com DDD.
+ *
+ * @param string $phone Telefone cru.
+ * @return string|null Mensagem de erro, ou `null` quando valido.
+ */
+function papelito_phone_validation_error( string $phone ): ?string {
+	$phone = papelito_normalize_unicode_spaces( $phone );
+
+	if ( '' === $phone ) {
+		return 'Informe seu telefone.';
+	}
+	if ( 1 !== preg_match( '/^[\d\s()+-]+$/', $phone ) ) {
+		return 'Informe um telefone válido com DDD.';
+	}
+
+	$local = papelito_normalize_phone_digits( $phone );
+
+	if ( ! in_array( strlen( $local ), array( 10, 11 ), true ) || 1 === preg_match( '/^(\d)\1+$/', $local ) ) {
+		return 'Informe um telefone válido com DDD.';
+	}
+
+	return null;
+}

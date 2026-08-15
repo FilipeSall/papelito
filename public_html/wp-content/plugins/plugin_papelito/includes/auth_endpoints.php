@@ -118,17 +118,7 @@ function papelito_auth_is_valid_cep( string $cep ): bool {
  * @return string
  */
 function papelito_auth_normalize_phone( string $phone ): string {
-	$digits = preg_replace( '/\D+/', '', $phone );
-
-	if ( 13 === strlen( $digits ) && 0 === strpos( $digits, '55' ) ) {
-		return substr( $digits, 2 );
-	}
-
-	if ( 12 === strlen( $digits ) && 0 === strpos( $digits, '55' ) ) {
-		return substr( $digits, 2 );
-	}
-
-	return $digits;
+	return papelito_normalize_phone_digits( $phone );
 }
 
 /**
@@ -781,17 +771,25 @@ add_filter(
 );
 
 /**
- * Rate limit simples por IP. Bloqueia se exceder $max em $window segundos.
+ * Rate limit por identidade opaca do pedido. O WordPress recebe chamadas publicas pelo proxy
+ * Next, portanto `REMOTE_ADDR` seria compartilhado por todo o marketplace.
  *
  * @param string $bucket Identificador do endpoint (ex: 'google', 'register').
- * @param int    $max    Máximo de tentativas na janela.
- * @param int    $window Janela em segundos.
+ * @param int    $max        Máximo de tentativas na janela.
+ * @param int    $window     Janela em segundos.
+ * @param string $identifier Identidade recebida no payload, nunca gravada em claro. Chamadores
+ *                           que passam pelo proxy Next devem sempre fornecê-la; o fallback existe
+ *                           apenas para rotas legadas chamadas diretamente pelo navegador.
  * @return bool true se permitido, false se bloqueado.
  */
-function papelito_auth_rate_limit( string $bucket, int $max = 20, int $window = 60 ): bool {
-	$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : 'unknown';
+function papelito_auth_rate_limit( string $bucket, int $max = 20, int $window = 60, string $identifier = '' ): bool {
+	$identifier = trim( $identifier );
 
-	return papelito_rate_limit( 'auth_' . $bucket, 'ip:' . $ip, $max, $window );
+	if ( '' === $identifier ) {
+		return papelito_rate_limit( 'auth_' . $bucket, papelito_rate_limit_identity(), $max, $window );
+	}
+
+	return papelito_rate_limit( 'auth_' . $bucket, 'identity:' . hash( 'sha256', $identifier ), $max, $window );
 }
 
 /**
@@ -975,18 +973,19 @@ function papelito_auth_validate_register_identity( WP_Error $errors, array $data
 		$errors->add( 'password', 'Senha precisa ter pelo menos 8 caracteres.' );
 	}
 
-	if ( empty( $data['first_name'] ) ) {
-		$errors->add( 'first_name', 'Informe o seu nome.' );
+	$first_name_error = papelito_name_part_validation_error( (string) ( $data['first_name'] ?? '' ), 'Informe o seu nome.' );
+	if ( $first_name_error ) {
+		$errors->add( 'first_name', $first_name_error );
 	}
 
-	if ( empty( $data['last_name'] ) ) {
-		$errors->add( 'last_name', 'Informe o seu sobrenome.' );
+	$last_name_error = papelito_name_part_validation_error( (string) ( $data['last_name'] ?? '' ), 'Informe o seu sobrenome.' );
+	if ( $last_name_error ) {
+		$errors->add( 'last_name', $last_name_error );
 	}
 }
 
 function papelito_auth_validate_register_contact( WP_Error $errors, array $data ): void {
-	$phone_digits = papelito_auth_normalize_phone( isset( $data['phone_number'] ) ? (string) $data['phone_number'] : '' );
-	if ( ! in_array( strlen( $phone_digits ), array( 10, 11 ), true ) ) {
+	if ( papelito_phone_validation_error( isset( $data['phone_number'] ) ? (string) $data['phone_number'] : '' ) ) {
 		$errors->add( 'phone_number', 'Telefone inválido. Formato esperado: (11) 99999-9999.' );
 	}
 
@@ -1040,8 +1039,8 @@ function papelito_auth_create_registered_user( array $data ) {
 			'user_login' => $email,
 			'user_email' => $email,
 			'user_pass'  => (string) $data['password'],
-			'first_name' => sanitize_text_field( (string) $data['first_name'] ),
-			'last_name'  => sanitize_text_field( (string) $data['last_name'] ),
+			'first_name' => papelito_normalize_unicode_spaces( sanitize_text_field( (string) $data['first_name'] ) ),
+			'last_name'  => papelito_normalize_unicode_spaces( sanitize_text_field( (string) $data['last_name'] ) ),
 			'role'       => 'customer',
 		)
 	);
@@ -1094,9 +1093,13 @@ function papelito_auth_validate_invitation_register_payload( array $data ) {
 	if ( strlen( (string) ( $data['password'] ?? '' ) ) < 8 ) {
 		$errors->add( 'password', 'Senha precisa ter pelo menos 8 caracteres.' );
 	}
-	foreach ( array( 'first_name', 'last_name', 'token' ) as $field ) {
-		if ( '' === trim( (string) ( $data[ $field ] ?? '' ) ) ) {
-			$errors->add( $field, 'Dados do convite incompletos.' );
+	if ( '' === trim( (string) ( $data['token'] ?? '' ) ) ) {
+		$errors->add( 'token', 'Dados do convite incompletos.' );
+	}
+	foreach ( array( 'first_name', 'last_name' ) as $field ) {
+		$name_error = papelito_name_part_validation_error( (string) ( $data[ $field ] ?? '' ), 'Dados do convite incompletos.' );
+		if ( $name_error ) {
+			$errors->add( $field, $name_error );
 		}
 	}
 	return $errors->has_errors() ? $errors : null;
@@ -1113,8 +1116,8 @@ function papelito_auth_create_invited_user( array $data ): WP_User|WP_Error {
 			'user_login' => $email,
 			'user_email' => $email,
 			'user_pass' => (string) $data['password'],
-			'first_name' => sanitize_text_field( (string) $data['first_name'] ),
-			'last_name' => sanitize_text_field( (string) $data['last_name'] ),
+			'first_name' => papelito_normalize_unicode_spaces( sanitize_text_field( (string) $data['first_name'] ) ),
+			'last_name' => papelito_normalize_unicode_spaces( sanitize_text_field( (string) $data['last_name'] ) ),
 			'role' => 'customer',
 		)
 	);
@@ -1159,13 +1162,12 @@ function papelito_auth_handle_welcome_toast_claim() {
 }
 
 function papelito_auth_handle_google( WP_REST_Request $request ) {
-	if ( ! papelito_auth_rate_limit( 'google' ) ) {
-		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
-	}
-
 	$id_token = (string) $request->get_param( 'id_token' );
 	if ( '' === trim( $id_token ) ) {
 		return new WP_Error( 'papelito_missing_token', 'id_token ausente.', array( 'status' => 400 ) );
+	}
+	if ( ! papelito_auth_rate_limit( 'google', 20, 60, $id_token ) ) {
+		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 	}
 
 	$payload = papelito_auth_verify_google_id_token( $id_token );
@@ -1192,19 +1194,18 @@ function papelito_auth_handle_register( WP_REST_Request $request ) {
 		return $writes;
 	}
 
-	if ( ! papelito_auth_rate_limit( 'register', 10, 60 ) ) {
-		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
-	}
-
 	return new WP_Error( 'papelito_pre_account_required', 'Use o fluxo de candidatura empresarial para criar uma conta após aprovação.', array( 'status' => 422 ) );
 }
 
 function papelito_auth_handle_invitation_register( WP_REST_Request $request ) {
-	if ( ! papelito_b2b_company_model_enabled() || ! papelito_auth_rate_limit( 'register_invitation', 10, 60 ) ) {
+	if ( ! papelito_b2b_company_model_enabled() ) {
 		return new WP_Error( 'papelito_rate_limited', 'Não foi possível processar este cadastro agora.', array( 'status' => 429 ) );
 	}
 
 	$data       = papelito_auth_request_data( $request );
+	if ( ! papelito_auth_rate_limit( 'register_invitation', 10, 60, (string) ( $data['token'] ?? '' ) ) ) {
+		return new WP_Error( 'papelito_rate_limited', 'Não foi possível processar este cadastro agora.', array( 'status' => 429 ) );
+	}
 	$validation = papelito_auth_validate_invitation_register_payload( $data );
 	if ( is_wp_error( $validation ) ) {
 		$validation->add_data( array( 'status' => 422 ) );
@@ -1275,14 +1276,13 @@ function papelito_auth_handle_verify_email( WP_REST_Request $request ) {
 }
 
 function papelito_auth_handle_resend_verification( WP_REST_Request $request ) {
-	if ( ! papelito_auth_rate_limit( 'resend_verification', 10, 60 ) ) {
-		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
-	}
-
 	$data  = papelito_auth_request_data( $request );
 	$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
 	if ( '' === $email ) {
 		return new WP_REST_Response( array( 'ok' => true ), 200 );
+	}
+	if ( ! papelito_auth_rate_limit( 'resend_verification', 10, 60, strtolower( $email ) ) ) {
+		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 	}
 
 	$user_id = email_exists( $email );
@@ -1302,14 +1302,13 @@ function papelito_auth_handle_resend_verification( WP_REST_Request $request ) {
 }
 
 function papelito_auth_handle_forgot_password( WP_REST_Request $request ) {
-	if ( ! papelito_auth_rate_limit( 'forgot_password', 10, 60 ) ) {
-		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
-	}
-
 	$data  = papelito_auth_request_data( $request );
 	$email = isset( $data['email'] ) ? sanitize_email( (string) $data['email'] ) : '';
 	if ( '' === $email || ! is_email( $email ) ) {
 		return new WP_Error( 'papelito_invalid_email', 'Informe um e-mail válido.', array( 'status' => 422 ) );
+	}
+	if ( ! papelito_auth_rate_limit( 'forgot_password', 10, 60, strtolower( $email ) ) ) {
+		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 	}
 
 	$user_id = email_exists( $email );
@@ -1336,10 +1335,6 @@ function papelito_auth_handle_change_password( WP_REST_Request $request ) {
 }
 
 function papelito_auth_handle_reset_password( WP_REST_Request $request ) {
-	if ( ! papelito_auth_rate_limit( 'reset_password', 20, 60 ) ) {
-		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
-	}
-
 	$data             = papelito_auth_request_data( $request );
 	$login            = isset( $data['login'] ) ? sanitize_text_field( trim( (string) $data['login'] ) ) : '';
 	$key              = isset( $data['key'] ) ? trim( (string) $data['key'] ) : '';
@@ -1347,6 +1342,9 @@ function papelito_auth_handle_reset_password( WP_REST_Request $request ) {
 	$confirm_password = isset( $data['confirmPassword'] ) ? (string) $data['confirmPassword'] : '';
 	if ( '' === $login || '' === $key ) {
 		return new WP_Error( 'papelito_password_reset_invalid_request', 'Link de redefinicao inválido ou expirado.', array( 'status' => 400 ) );
+	}
+	if ( ! papelito_auth_rate_limit( 'reset_password', 20, 60, $login ) ) {
+		return new WP_Error( 'papelito_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 	}
 
 	if ( strlen( $password ) < 8 ) {
