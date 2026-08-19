@@ -8,8 +8,8 @@
  * casava `term_id` exato. Buscar `categories=papel` não devolvia um produto que
  * só tinha o filho `Slim`. Aqui a semântica é uma só:
  *
- * - filtrar por CATEGORIA devolve todo produto daquela categoria, tenha ele a
- *   subcategoria que tiver;
+ * - filtrar por CATEGORIA devolve todos os produtos dela, tenham eles a
+ *   subcategoria que tiverem;
  * - filtrar por SUBCATEGORIA restringe dentro dela, com OR dentro de uma
  *   faceta e AND entre facetas distintas.
  *
@@ -17,6 +17,34 @@
  */
 
 defined( 'ABSPATH' ) || exit;
+
+/** Recorte da subcategoria pela categoria dona, repetido em cada consulta por escopo. */
+const PAPELITO_TAXONOMY_SUBCATEGORY_SCOPE_SQL = ' AND subcategory.category_id = %d';
+
+/**
+ * Teto de slugs por requisição.
+ *
+ * A rota de busca é pública e aceita CSV livre, e cada categoria pedida custa
+ * consultas próprias. O teto é ordens de grandeza acima da taxonomia real; passar
+ * dele é abuso, não filtro, e cai fechado como qualquer pedido que não resolve.
+ */
+const PAPELITO_TAXONOMY_MAX_CATEGORY_SLUGS    = 50;
+const PAPELITO_TAXONOMY_MAX_SUBCATEGORY_SLUGS = 200;
+
+/**
+ * Cláusula que não casa com produto nenhum.
+ *
+ * Filtro que não resolve é fail-closed: devolve vazio em vez de ser ignorado, senão
+ * categoria renomeada viraria "mostre o catálogo inteiro".
+ *
+ * @return array{sql:string,params:array<int,mixed>}
+ */
+function papelito_taxonomy_impossible_clause() {
+	return array(
+		'sql'    => '1 = 0',
+		'params' => array(),
+	);
+}
 
 /**
  * Resolve o id de uma categoria a partir do slug.
@@ -58,7 +86,7 @@ function papelito_taxonomy_subcategory_ids_by_slugs( $category_id, array $slugs 
 	$params       = $slugs;
 
 	if ( $category_id > 0 ) {
-		$sql     .= ' AND subcategory.category_id = %d';
+		$sql     .= PAPELITO_TAXONOMY_SUBCATEGORY_SCOPE_SQL;
 		$params[] = $category_id;
 	}
 
@@ -90,7 +118,7 @@ function papelito_taxonomy_has_unresolved_subcategory_slugs( $category_id, array
 	$category_id  = (int) $category_id;
 
 	if ( $category_id > 0 ) {
-		$sql     .= ' AND subcategory.category_id = %d';
+		$sql     .= PAPELITO_TAXONOMY_SUBCATEGORY_SCOPE_SQL;
 		$params[] = $category_id;
 	}
 
@@ -127,7 +155,7 @@ function papelito_taxonomy_subcategory_facet_groups( $category_id, array $subcat
 	$category_id  = (int) $category_id;
 
 	if ( $category_id > 0 ) {
-		$sql     .= ' AND subcategory.category_id = %d';
+		$sql     .= PAPELITO_TAXONOMY_SUBCATEGORY_SCOPE_SQL;
 		$params[] = $category_id;
 	}
 
@@ -166,10 +194,7 @@ function papelito_taxonomy_exists_clause( $product_expr, $category_id, array $su
 	$unresolved      = $unresolved || $facet_groups['unresolved'];
 
 	if ( $unresolved ) {
-		return array(
-			'sql'    => '1 = 0',
-			'params' => array(),
-		);
+		return papelito_taxonomy_impossible_clause();
 	}
 
 	if ( $category_id <= 0 && empty( $subcategory_ids ) ) {
@@ -197,6 +222,168 @@ function papelito_taxonomy_exists_clause( $product_expr, $category_id, array $su
 }
 
 /**
+ * Separa `subcategories` em escopos de categoria.
+ *
+ * O item vem como `categoria.subcategoria`. O slug solto, de link antigo, não tem
+ * escopo e continua valendo para toda categoria pedida.
+ *
+ * Token escopado com metade vazia (`sedas.`, `.brown`) é pedido inválido, não item
+ * a descartar: descartar transformaria filtro quebrado em filtro ausente, e a
+ * listagem devolveria a categoria inteira.
+ *
+ * @param string[] $tokens Itens crus.
+ * @return array{scoped:array<string,string[]>,bare:string[],invalid:bool}
+ */
+function papelito_taxonomy_parse_scoped_subcategories( array $tokens ) {
+	$scoped  = array();
+	$bare    = array();
+	$invalid = false;
+
+	foreach ( $tokens as $token ) {
+		$token = (string) $token;
+		$parts = explode( '.', $token, 2 );
+
+		if ( count( $parts ) < 2 ) {
+			$slug = papelito_taxonomy_slugify( $token );
+			if ( '' !== $slug && ! in_array( $slug, $bare, true ) ) {
+				$bare[] = $slug;
+			}
+			continue;
+		}
+
+		$category = papelito_taxonomy_slugify( $parts[0] );
+		$slug     = papelito_taxonomy_slugify( $parts[1] );
+
+		if ( '' === $category || '' === $slug ) {
+			$invalid = true;
+			continue;
+		}
+
+		if ( ! isset( $scoped[ $category ] ) ) {
+			$scoped[ $category ] = array();
+		}
+
+		if ( ! in_array( $slug, $scoped[ $category ], true ) ) {
+			$scoped[ $category ][] = $slug;
+		}
+	}
+
+	return array( 'scoped' => $scoped, 'bare' => $bare, 'invalid' => $invalid );
+}
+
+/**
+ * Resolve várias categorias numa consulta só, indexadas por slug.
+ *
+ * Uma consulta por slug fazia o custo crescer com o tamanho da lista que a rota
+ * pública aceita, e ainda relia a mesma linha na hora de montar o ramo.
+ *
+ * @param string[] $slugs Slugs já normalizados.
+ * @return array<string,array<string,mixed>>
+ */
+function papelito_taxonomy_categories_by_slugs( array $slugs ) {
+	global $wpdb;
+
+	$slugs = array_values( array_unique( array_filter( $slugs ) ) );
+
+	if ( empty( $slugs ) ) {
+		return array();
+	}
+
+	$tables       = papelito_product_taxonomy_table_names();
+	$placeholders = implode( ',', array_fill( 0, count( $slugs ), '%s' ) );
+	$rows         = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$tables['categories']} WHERE slug IN ({$placeholders})", $slugs ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQL.NotPrepared
+	$categories   = array();
+
+	foreach ( (array) $rows as $row ) {
+		$category = papelito_category_shape( $row );
+
+		if ( null !== $category ) {
+			$categories[ $category['slug'] ] = $category;
+		}
+	}
+
+	return $categories;
+}
+
+/**
+ * Confirma que cada escopo pedido aponta para uma categoria válida do pedido.
+ *
+ * Escopo de categoria que não está na seleção é requisição inválida, não filtro a
+ * ignorar: devolver o catálogo inteiro seria abrir o filtro.
+ *
+ * @param array<string,string[]>            $scoped         Slugs por categoria.
+ * @param string[]                          $category_slugs Categorias pedidas; vazio aceita qualquer uma.
+ * @param array<string,array<string,mixed>> $categories     Categorias já resolvidas, por slug.
+ * @return bool
+ */
+function papelito_taxonomy_scoped_subcategories_resolve( array $scoped, array $category_slugs, array $categories ) {
+	foreach ( $scoped as $category_slug => $slugs ) {
+		if ( ! empty( $category_slugs ) && ! in_array( $category_slug, $category_slugs, true ) ) {
+			return false;
+		}
+
+		if ( ! isset( $categories[ $category_slug ] ) ) {
+			return false;
+		}
+
+		if ( papelito_taxonomy_has_unresolved_subcategory_slugs( $categories[ $category_slug ]['id'], $slugs ) ) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/**
+ * Categorias implícitas quando o pedido veio só de subcategoria.
+ *
+ * @param array<string,string[]> $scoped Slugs por categoria.
+ * @param string[]               $bare   Slugs sem escopo.
+ * @return array<string,array<string,mixed>>
+ */
+function papelito_taxonomy_categories_of_subcategories( array $scoped, array $bare ) {
+	global $wpdb;
+
+	$slugs = array_keys( $scoped );
+
+	if ( ! empty( $bare ) ) {
+		$tables       = papelito_product_taxonomy_table_names();
+		$placeholders = implode( ',', array_fill( 0, count( $bare ), '%s' ) );
+		$sql          = "SELECT DISTINCT category.slug FROM {$tables['subcategories']} subcategory INNER JOIN {$tables['categories']} category ON category.id = subcategory.category_id WHERE subcategory.slug IN ({$placeholders}) AND subcategory.is_active = 1 AND subcategory.archived_at IS NULL"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$slugs        = array_merge( $slugs, array_map( 'strval', (array) $wpdb->get_col( $wpdb->prepare( $sql, $bare ) ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared
+	}
+
+	return papelito_taxonomy_categories_by_slugs( $slugs );
+}
+
+/**
+ * Ramo de uma categoria, já com o refinamento que pertence a ela.
+ *
+ * Categoria sem escopo próprio entra inteira; com escopo, restringe. O slug solto
+ * mantém a semântica antiga — precisa resolver por completo dentro da categoria,
+ * senão o ramo cai fora.
+ *
+ * @param string                 $product_expr Expressão SQL do id do produto.
+ * @param array<string,mixed>    $category     Categoria do ramo.
+ * @param array<string,string[]> $scoped       Slugs por categoria.
+ * @param string[]               $bare         Slugs sem escopo.
+ * @return array{sql:string,params:array<int,mixed>}|null
+ */
+function papelito_taxonomy_category_branch( $product_expr, array $category, array $scoped, array $bare ) {
+	$category_slug = (string) $category['slug'];
+	$has_scope     = isset( $scoped[ $category_slug ] );
+	$wanted        = $has_scope ? $scoped[ $category_slug ] : $bare;
+
+	$subcategory_ids = papelito_taxonomy_subcategory_ids_by_slugs( (int) $category['id'], $wanted );
+
+	if ( ! $has_scope && ! empty( $wanted ) && count( $subcategory_ids ) !== count( $wanted ) ) {
+		return null;
+	}
+
+	return papelito_taxonomy_exists_clause( $product_expr, (int) $category['id'], $subcategory_ids );
+}
+
+/**
  * Normaliza filtros públicos por slug em ramos de categoria independentes.
  *
  * Um slug de subcategoria só é significativo dentro da sua categoria. Montar
@@ -205,46 +392,59 @@ function papelito_taxonomy_exists_clause( $product_expr, $category_id, array $su
  * categorias e aplica OR/AND de facetas somente entre subcategorias da mesma
  * categoria.
  *
+ * Com o escopo `categoria.subcategoria`, cada categoria é refinada de forma
+ * independente e a que não recebeu escopo nenhum entra inteira — sem isso,
+ * refinar Sedas apagaria Piteiras do resultado.
+ *
  * @param string $product_expr Expressão SQL do id do produto.
  * @param string[] $category_slugs Categorias pedidas.
- * @param string[] $subcategory_slugs Subcategorias pedidas.
+ * @param string[] $subcategory_slugs Subcategorias pedidas, com ou sem escopo.
  * @return array{sql:string,params:array<int,mixed>}|null
  */
 function papelito_taxonomy_slug_filter_clause( $product_expr, array $category_slugs, array $subcategory_slugs ) {
-	global $wpdb;
+	$category_slugs = array_values( array_unique( array_filter( array_map( 'papelito_taxonomy_slugify', $category_slugs ) ) ) );
+	$parsed         = papelito_taxonomy_parse_scoped_subcategories( $subcategory_slugs );
+	$scoped         = $parsed['scoped'];
+	$bare           = $parsed['bare'];
 
-	$category_slugs    = array_values( array_unique( array_filter( array_map( 'papelito_taxonomy_slugify', $category_slugs ) ) ) );
-	$subcategory_slugs = array_values( array_unique( array_filter( array_map( 'papelito_taxonomy_slugify', $subcategory_slugs ) ) ) );
-
-	if ( empty( $category_slugs ) && empty( $subcategory_slugs ) ) {
-		return null;
+	if ( empty( $category_slugs ) && empty( $scoped ) && empty( $bare ) ) {
+		return $parsed['invalid'] ? papelito_taxonomy_impossible_clause() : null;
 	}
 
-	$category_ids = array_values( array_unique( array_filter( array_map( 'papelito_taxonomy_category_id_by_slug', $category_slugs ) ) ) );
-	if ( ! empty( $category_slugs ) && count( $category_ids ) !== count( $category_slugs ) ) {
-		return array( 'sql' => '1 = 0', 'params' => array() );
+	if ( $parsed['invalid'] ) {
+		return papelito_taxonomy_impossible_clause();
 	}
 
-	if ( ! empty( $subcategory_slugs ) && papelito_taxonomy_has_unresolved_subcategory_slugs( 0, $subcategory_slugs ) ) {
-		return array( 'sql' => '1 = 0', 'params' => array() );
+	if ( count( $category_slugs ) > PAPELITO_TAXONOMY_MAX_CATEGORY_SLUGS || count( $subcategory_slugs ) > PAPELITO_TAXONOMY_MAX_SUBCATEGORY_SLUGS ) {
+		return papelito_taxonomy_impossible_clause();
 	}
 
-	if ( empty( $category_ids ) ) {
-		$tables       = papelito_product_taxonomy_table_names();
-		$placeholders = implode( ',', array_fill( 0, count( $subcategory_slugs ), '%s' ) );
-		$sql          = "SELECT DISTINCT category_id FROM {$tables['subcategories']} WHERE slug IN ({$placeholders}) AND is_active = 1 AND archived_at IS NULL"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$category_ids = array_map( 'intval', (array) $wpdb->get_col( $wpdb->prepare( $sql, $subcategory_slugs ) ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared
+	$categories = papelito_taxonomy_categories_by_slugs( $category_slugs );
+
+	if ( count( $categories ) !== count( $category_slugs ) ) {
+		return papelito_taxonomy_impossible_clause();
+	}
+
+	if ( ! empty( $bare ) && papelito_taxonomy_has_unresolved_subcategory_slugs( 0, $bare ) ) {
+		return papelito_taxonomy_impossible_clause();
+	}
+
+	// A derivação vem antes da validação: sem `categories`, quem diz de que categoria
+	// o pedido é são os próprios escopos.
+	if ( empty( $categories ) ) {
+		$categories = papelito_taxonomy_categories_of_subcategories( $scoped, $bare );
+	}
+
+	if ( ! papelito_taxonomy_scoped_subcategories_resolve( $scoped, $category_slugs, $categories ) ) {
+		return papelito_taxonomy_impossible_clause();
 	}
 
 	$branches = array();
 	$params   = array();
-	foreach ( $category_ids as $category_id ) {
-		$subcategory_ids = papelito_taxonomy_subcategory_ids_by_slugs( $category_id, $subcategory_slugs );
-		if ( ! empty( $subcategory_slugs ) && count( $subcategory_ids ) !== count( $subcategory_slugs ) ) {
-			continue;
-		}
 
-		$branch = papelito_taxonomy_exists_clause( $product_expr, $category_id, $subcategory_ids );
+	foreach ( $categories as $category ) {
+		$branch = papelito_taxonomy_category_branch( $product_expr, $category, $scoped, $bare );
+
 		if ( null !== $branch ) {
 			$branches[] = $branch['sql'];
 			$params     = array_merge( $params, $branch['params'] );
@@ -252,7 +452,7 @@ function papelito_taxonomy_slug_filter_clause( $product_expr, array $category_sl
 	}
 
 	if ( empty( $branches ) ) {
-		return array( 'sql' => '1 = 0', 'params' => array() );
+		return papelito_taxonomy_impossible_clause();
 	}
 
 	return array(
@@ -264,7 +464,7 @@ function papelito_taxonomy_slug_filter_clause( $product_expr, array $category_sl
 /**
  * Cláusula que barra produto sem categoria principal.
  *
- * É aqui que a regra "todo produto publicado tem categoria" deixa de ser só
+ * É aqui que a regra "todos os produtos publicados têm categoria" deixa de ser só
  * relatório e passa a valer: sem chave estrangeira, o banco garante no máximo
  * uma; o "pelo menos uma" é este gate, no ponto em que importa — a vitrine.
  *

@@ -27,6 +27,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 const PAPELITO_CATALOG_TEST_PREFIX = 'zzz-teste-catalogo-taxonomia';
 
+/** Termos de busca que isolam os produtos de um cenário dos demais. */
+const PAPELITO_CATALOG_TEST_SCOPE = PAPELITO_CATALOG_TEST_PREFIX . ' escopo';
+const PAPELITO_CATALOG_TEST_COLLECTION = PAPELITO_CATALOG_TEST_PREFIX . ' colecao';
+
 global $wpdb, $failures, $checks, $created_products, $created_vendors;
 
 $failures         = 0;
@@ -210,6 +214,109 @@ if ( null !== $brown && null !== $slim ) {
 	assert_catalog( 'AND entre facetas aceita produto Brown e Slim', true, in_array( $ambas, $por_duas_facetas, true ) );
 }
 
+echo "\nBusca: refinamento escopado por categoria\n";
+
+$piteiras = papelito_category_get_by_slug( 'piteiras' );
+
+if ( null !== $brown && null !== $piteiras ) {
+	$piteira_alvo = catalog_test_product( PAPELITO_CATALOG_TEST_SCOPE . ' piteira' );
+	papelito_product_set_category( $piteira_alvo, $piteiras['id'] );
+
+	$seda_brown = catalog_test_product( PAPELITO_CATALOG_TEST_SCOPE . ' seda brown' );
+	papelito_product_set_category( $seda_brown, $sedas['id'] );
+	papelito_product_set_subcategories( $seda_brown, array( $brown['id'] ) );
+
+	$seda_outra = catalog_test_product( PAPELITO_CATALOG_TEST_SCOPE . ' seda hemp' );
+	papelito_product_set_category( $seda_outra, $sedas['id'] );
+	if ( null !== $hemp ) {
+		papelito_product_set_subcategories( $seda_outra, array( $hemp['id'] ) );
+	}
+
+	$escopado = catalog_search_ids(
+		array(
+			'search'        => PAPELITO_CATALOG_TEST_SCOPE,
+			'categories'    => array( 'sedas', 'piteiras' ),
+			'subcategories' => array( 'sedas.brown' ),
+			'per_page'      => 60,
+		)
+	);
+
+	// Refinar Sedas não pode apagar Piteiras: cada categoria tem o próprio escopo.
+	assert_catalog( 'escopo de Sedas preserva Piteiras inteira', true, in_array( $piteira_alvo, $escopado, true ) );
+	assert_catalog( 'escopo de Sedas aceita a seda Brown', true, in_array( $seda_brown, $escopado, true ) );
+	assert_catalog( 'escopo de Sedas recusa a seda de outra faceta', false, in_array( $seda_outra, $escopado, true ) );
+
+	$dois_escopos = catalog_search_ids(
+		array(
+			'search'        => PAPELITO_CATALOG_TEST_SCOPE,
+			'categories'    => array( 'sedas', 'piteiras' ),
+			'subcategories' => array( 'sedas.brown', 'piteiras.slim' ),
+			'per_page'      => 60,
+		)
+	);
+
+	assert_catalog( 'escopo de Piteiras restringe só Piteiras', false, in_array( $piteira_alvo, $dois_escopos, true ) );
+	assert_catalog( 'escopo de Piteiras não mexe em Sedas', true, in_array( $seda_brown, $dois_escopos, true ) );
+
+	assert_catalog(
+		'escopo de categoria fora do pedido devolve ZERO',
+		array(),
+		catalog_search_ids(
+			array(
+				'search'        => PAPELITO_CATALOG_TEST_SCOPE,
+				'categories'    => array( 'sedas' ),
+				'subcategories' => array( 'piteiras.slim' ),
+				'per_page'      => 60,
+			)
+		)
+	);
+
+	// Escopo quebrado é pedido inválido, não item a ignorar: ignorar devolveria a
+	// categoria inteira, que é o oposto do fail-closed.
+	foreach ( array( 'sedas.', '.brown', '../etc/passwd' ) as $token_quebrado ) {
+		assert_catalog(
+			'escopo malformado "' . $token_quebrado . '" devolve ZERO',
+			array(),
+			catalog_search_ids(
+				array(
+					'search'        => PAPELITO_CATALOG_TEST_SCOPE,
+					'categories'    => array( 'sedas' ),
+					'subcategories' => array( $token_quebrado ),
+					'per_page'      => 60,
+				)
+			)
+		);
+	}
+
+	// O slug solto de link antigo derruba o ramo da categoria que não resolve todos
+	// eles — a mesma regra que o SSR aplica, para a URL não responder diferente com
+	// e sem busca.
+	$legado = catalog_search_ids(
+		array(
+			'search'        => PAPELITO_CATALOG_TEST_SCOPE,
+			'categories'    => array( 'sedas', 'piteiras' ),
+			'subcategories' => array( 'brown' ),
+			'per_page'      => 60,
+		)
+	);
+
+	assert_catalog( 'slug legado não resolve em Piteiras e derruba o ramo dela', false, in_array( $piteira_alvo, $legado, true ) );
+	assert_catalog( 'slug legado resolve em Sedas e mantém o ramo dela', true, in_array( $seda_brown, $legado, true ) );
+
+	assert_catalog(
+		'escopo com subcategoria inexistente devolve ZERO',
+		array(),
+		catalog_search_ids(
+			array(
+				'search'        => PAPELITO_CATALOG_TEST_SCOPE,
+				'categories'    => array( 'sedas' ),
+				'subcategories' => array( 'sedas.nao-existe' ),
+				'per_page'      => 60,
+			)
+		)
+	);
+}
+
 echo "\nBusca: fail-closed\n";
 
 assert_catalog(
@@ -275,9 +382,9 @@ assert_catalog( 'classificar o produto o traz de volta', true, in_array( $sem_ca
 
 echo "\nBusca: coleção curada\n";
 
-$premium_colecao = catalog_test_product( PAPELITO_CATALOG_TEST_PREFIX . ' colecao premium' );
-$kit_colecao     = catalog_test_product( PAPELITO_CATALOG_TEST_PREFIX . ' colecao kit' );
-$sem_colecao     = catalog_test_product( PAPELITO_CATALOG_TEST_PREFIX . ' colecao comum' );
+$premium_colecao = catalog_test_product( PAPELITO_CATALOG_TEST_COLLECTION . ' premium' );
+$kit_colecao     = catalog_test_product( PAPELITO_CATALOG_TEST_COLLECTION . ' kit' );
+$sem_colecao     = catalog_test_product( PAPELITO_CATALOG_TEST_COLLECTION . ' comum' );
 
 foreach ( array( $premium_colecao, $kit_colecao, $sem_colecao ) as $product_id ) {
 	papelito_product_set_category( $product_id, $sedas['id'] );
@@ -288,14 +395,14 @@ papelito_product_set_collections( $kit_colecao, array( 'kits' ) );
 
 $premium_encontrado = catalog_search_ids(
 	array(
-		'search'     => PAPELITO_CATALOG_TEST_PREFIX . ' colecao',
+		'search'     => PAPELITO_CATALOG_TEST_COLLECTION,
 		'collection' => 'premium',
 		'per_page'   => 60,
 	)
 );
 $kits_encontrados  = catalog_search_ids(
 	array(
-		'search'     => PAPELITO_CATALOG_TEST_PREFIX . ' colecao',
+		'search'     => PAPELITO_CATALOG_TEST_COLLECTION,
 		'collection' => 'kits',
 		'per_page'   => 60,
 	)
@@ -308,7 +415,7 @@ assert_catalog(
 	array(),
 	catalog_search_ids(
 		array(
-			'search'     => PAPELITO_CATALOG_TEST_PREFIX . ' colecao',
+			'search'     => PAPELITO_CATALOG_TEST_COLLECTION,
 			'collection' => 'colecao-invalida',
 			'per_page'   => 60,
 		)
@@ -325,6 +432,10 @@ $vendor_id = wp_insert_user(
 		'role'       => 'seller',
 	)
 );
+
+// Declarado antes do bloco porque a paridade entre os módulos, lá embaixo, lê o
+// mesmo resultado: o vínculo é ter rodado a consulta, não o vendor ter nascido.
+$estoque_sedas = null;
 
 if ( is_wp_error( $vendor_id ) ) {
 	echo "  aviso: nao criou vendor de teste, pulando bloco de estoque\n";
@@ -471,7 +582,7 @@ $busca_dentro_de_flash = array_values( array_diff( $ids_busca_categoria, $ids_fl
 
 assert_catalog( 'todo produto da busca por categoria está no conjunto da flash sale', array(), $busca_dentro_de_flash );
 
-if ( ! is_wp_error( $vendor_id ) ) {
+if ( null !== $estoque_sedas ) {
 	$ids_estoque = array_map( 'intval', array_column( $estoque_sedas['items'], 'product_id' ) );
 	sort( $ids_estoque );
 

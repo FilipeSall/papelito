@@ -348,9 +348,11 @@ function papelito_catalog_search_product_rows( array $args ): array {
 		$params   = array_merge( $params, $campaign_ids );
 	}
 
+	// `sanitize_title` comeria o ponto do escopo `categoria.subcategoria`; quem
+	// normaliza cada metade é `papelito_taxonomy_slug_filter_clause`.
 	$subcategories = array_values(
 		array_filter(
-			array_map( 'sanitize_title', (array) ( $args['subcategories'] ?? array() ) )
+			array_map( 'trim', array_map( 'strval', (array) ( $args['subcategories'] ?? array() ) ) )
 		)
 	);
 
