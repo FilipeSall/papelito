@@ -167,6 +167,20 @@ function api_test_request( string $method, string $route, array $body = array() 
 /**
  * Apaga tudo que o teste criou.
  *
+ * A varredura é pelo prefixo reservado, não só pelo que esta execução
+ * registrou: um run que morreu no meio deixou 40 produtos publicados para trás,
+ * e eles passaram a poluir o seletor de produtos do cupom e o relatório de
+ * integridade de categorias.
+ *
+ * Por isso a limpeza roda também ANTES de criar qualquer coisa. `register_shutdown_function`
+ * sozinho não resolve: o WordPress registra `WP_Fatal_Error_Handler::handle` no
+ * shutdown durante o bootstrap, portanto antes deste arquivo, e esse handler
+ * termina em `wp_die()` — que encerra a fila de shutdown e nunca chega aqui.
+ * Varrer na entrada é o que garante que lixo de um run abortado não sobreviva
+ * ao próximo.
+ *
+ * Idempotente de propósito — roda na entrada, na saída e de novo no shutdown.
+ *
  * @return void
  */
 function api_test_cleanup(): void {
@@ -174,18 +188,41 @@ function api_test_cleanup(): void {
 
 	$tables = papelito_product_taxonomy_table_names();
 
-	foreach ( $created_products as $product_id ) {
+	$orphans = $wpdb->get_col( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->prepare(
+			"SELECT ID FROM {$wpdb->posts} WHERE post_type = 'product' AND post_title LIKE %s", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			'%' . $wpdb->esc_like( PAPELITO_TAXONOMY_API_TEST_PREFIX ) . '%'
+		)
+	);
+
+	foreach ( array_unique( array_map( 'intval', array_merge( (array) $created_products, (array) $orphans ) ) ) as $product_id ) {
 		papelito_product_clear_taxonomy( $product_id );
 		wp_delete_post( $product_id, true );
 	}
 
-	foreach ( $created_categories as $category_id ) {
+	$stale_categories = $wpdb->get_col( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->prepare(
+			"SELECT id FROM {$tables['categories']} WHERE slug LIKE %s", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$wpdb->esc_like( PAPELITO_TAXONOMY_API_TEST_PREFIX ) . '%'
+		)
+	);
+
+	foreach ( array_unique( array_map( 'intval', array_merge( (array) $created_categories, (array) $stale_categories ) ) ) as $category_id ) {
 		$wpdb->delete( $tables['subcategories'], array( 'category_id' => $category_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		$wpdb->delete( $tables['categories'], array( 'id' => $category_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 	}
+
+	$created_products   = array();
+	$created_categories = array();
 }
 
+// Melhor esforço para saída normal e exceção que escape do handler do WordPress.
+register_shutdown_function( 'api_test_cleanup' );
+
 papelito_product_taxonomy_install_tables();
+
+// Recolhe o que um run anterior tenha deixado para trás antes de criar o próprio.
+api_test_cleanup();
 
 $sedas       = api_test_category( 'sedas' );
 $piteiras    = api_test_category( 'piteiras' );
