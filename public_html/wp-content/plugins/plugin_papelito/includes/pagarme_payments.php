@@ -418,21 +418,20 @@ function papelito_pagarme_reserve_order_stock( object $order, array $lines ) {
 	$reserved_lines = array();
 
 	foreach ( $lines as $line ) {
-		$result = papelito_adjust_vendor_stock(
-			(int) $line['vendor_id'],
-			(int) $line['product_id'],
-			(int) $line['qty'] * -1,
-			'payment_reserve:#' . $order->get_id()
-		);
+		$result = function_exists( 'papelito_adjust_stock_line' )
+			? papelito_adjust_stock_line( $line, -1, 'payment_reserve:#' . $order->get_id() )
+			: papelito_adjust_vendor_stock( (int) $line['vendor_id'], (int) $line['product_id'], (int) $line['qty'] * -1, 'payment_reserve:#' . $order->get_id() );
 
 		if ( is_wp_error( $result ) ) {
 			foreach ( array_reverse( $reserved_lines ) as $reserved_line ) {
-				$rollback = papelito_adjust_vendor_stock(
-					(int) $reserved_line['vendor_id'],
-					(int) $reserved_line['product_id'],
-					(int) $reserved_line['qty'],
-					'payment_reserve_rollback:#' . $order->get_id()
-				);
+				$rollback = function_exists( 'papelito_adjust_stock_line' )
+					? papelito_adjust_stock_line( $reserved_line, 1, 'payment_reserve_rollback:#' . $order->get_id() )
+					: papelito_adjust_vendor_stock(
+						(int) $reserved_line['vendor_id'],
+						(int) $reserved_line['product_id'],
+						(int) $reserved_line['qty'],
+						'payment_reserve_rollback:#' . $order->get_id()
+					);
 
 				if ( is_wp_error( $rollback ) && method_exists( $order, 'add_order_note' ) ) {
 					$order->add_order_note( 'Falha ao reverter reserva parcial de estoque: ' . $rollback->get_error_message() );
@@ -472,12 +471,9 @@ function papelito_pagarme_release_order_stock( object $order, array $lines, stri
 	}
 
 	foreach ( $lines as $line ) {
-		$result = papelito_adjust_vendor_stock(
-			(int) $line['vendor_id'],
-			(int) $line['product_id'],
-			(int) $line['qty'],
-			substr( $reason, 0, 80 ) . ':#' . $order->get_id()
-		);
+		$result = function_exists( 'papelito_adjust_stock_line' )
+			? papelito_adjust_stock_line( $line, 1, substr( $reason, 0, 80 ) . ':#' . $order->get_id() )
+			: papelito_adjust_vendor_stock( (int) $line['vendor_id'], (int) $line['product_id'], (int) $line['qty'], substr( $reason, 0, 80 ) . ':#' . $order->get_id() );
 
 		if ( is_wp_error( $result ) ) {
 			return $result;

@@ -40,6 +40,7 @@ require_once __DIR__ . '/includes/shipping.php';
 require_once __DIR__ . '/includes/correios_prepostage.php';
 require_once __DIR__ . '/includes/vendor_geo.php';
 require_once __DIR__ . '/includes/vendor_stock.php';
+require_once __DIR__ . '/includes/kits.php';
 require_once __DIR__ . '/includes/notifications.php';
 require_once __DIR__ . '/includes/correios_tracking.php';
 require_once __DIR__ . '/includes/active_vendor.php';
@@ -84,7 +85,7 @@ require_once __DIR__ . '/includes/billing_email_sync.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.28.0' );
+	define( 'PAPELITO_DB_VERSION', '1.30.0' );
 }
 
 /**
@@ -119,6 +120,14 @@ function papelito_maybe_migrate_db() {
 
 		if ( function_exists( 'papelito_vendor_stock_install_tables' ) ) {
 			papelito_vendor_stock_install_tables();
+		}
+
+		if ( function_exists( 'papelito_kits_install_tables' ) ) {
+			papelito_kits_install_tables();
+		}
+
+		if ( function_exists( 'papelito_kits_remove_legacy_collection' ) ) {
+			papelito_kits_remove_legacy_collection();
 		}
 
 		if ( function_exists( 'papelito_notifications_install_tables' ) ) {

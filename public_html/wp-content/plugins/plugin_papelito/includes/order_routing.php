@@ -645,6 +645,9 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 				$item->add_meta_data( '_papelito_subtotal_cents', (int) ( $line['subtotal_cents'] ?? 0 ), true );
 				$item->add_meta_data( '_papelito_discount_cents', (int) ( $line['discount_cents'] ?? 0 ), true );
 				$item->add_meta_data( '_papelito_total_cents', (int) ( $line['total_cents'] ?? 0 ), true );
+				if ( ! empty( $line['kit_snapshot'] ) ) {
+					$item->add_meta_data( '_papelito_kit_snapshot', wp_json_encode( $line['kit_snapshot'] ), true );
+				}
 				$item->save();
 			}
 		}
@@ -726,6 +729,7 @@ function papelito_order_routing_order_lines( object $order ): array {
 
 		$product_id = (int) $item->get_product_id();
 
+		$snapshot = json_decode( (string) $item->get_meta( '_papelito_kit_snapshot', true ), true );
 		$lines[] = array(
 			'product'     => function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null,
 			'product_id'  => $product_id,
@@ -735,6 +739,7 @@ function papelito_order_routing_order_lines( object $order ): array {
 			'subtotal'    => (float) ( method_exists( $item, 'get_subtotal' ) ? $item->get_subtotal() : $item->get_total() ),
 			'total'       => (float) $item->get_total(),
 			'discount'    => 0.0,
+			'kit_snapshot' => is_array( $snapshot ) ? $snapshot : array(),
 		);
 	}
 
@@ -857,10 +862,12 @@ function papelito_order_routing_decrement_stock_for_order( int $order_id ): void
 			continue;
 		}
 
+		$snapshot = json_decode( (string) $item->get_meta( '_papelito_kit_snapshot', true ), true );
 		$adjustments[] = array(
 			'vendor_id'  => $vendor_id,
 			'product_id' => $product_id,
 			'qty'        => $qty,
+			'kit_snapshot' => is_array( $snapshot ) ? $snapshot : array(),
 		);
 	}
 
@@ -869,12 +876,14 @@ function papelito_order_routing_decrement_stock_for_order( int $order_id ): void
 	}
 
 	foreach ( $adjustments as $adjustment ) {
-		$result = papelito_adjust_vendor_stock(
-			$adjustment['vendor_id'],
-			$adjustment['product_id'],
-			$adjustment['qty'] * -1,
-			'order_decrement:#' . $order_id
-		);
+		$result = function_exists( 'papelito_adjust_stock_line' )
+			? papelito_adjust_stock_line( $adjustment, -1, 'order_decrement:#' . $order_id )
+			: papelito_adjust_vendor_stock(
+				$adjustment['vendor_id'],
+				$adjustment['product_id'],
+				$adjustment['qty'] * -1,
+				'order_decrement:#' . $order_id
+			);
 
 		if ( is_wp_error( $result ) ) {
 			$order->add_order_note(

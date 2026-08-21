@@ -159,7 +159,7 @@ function papelito_product_taxonomy_install_tables() {
  * @return string[]
  */
 function papelito_curated_collections() {
-	return (array) apply_filters( 'papelito_curated_collections', array( 'premium', 'kits' ) );
+	return (array) apply_filters( 'papelito_curated_collections', array( 'premium' ) );
 }
 
 /**

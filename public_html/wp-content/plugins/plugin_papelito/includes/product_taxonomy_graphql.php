@@ -424,7 +424,7 @@ function papelito_taxonomy_graphql_register_product_fields(): void {
 		'papelitoCollections',
 		array(
 			'type'        => array( 'list_of' => 'String' ),
-			'description' => 'Coleções curadas do produto (premium, kits).',
+			'description' => 'Coleções curadas do produto (premium).',
 			'resolve'     => static function ( $product ) {
 				$product_id = papelito_resolve_graphql_product_id( $product );
 

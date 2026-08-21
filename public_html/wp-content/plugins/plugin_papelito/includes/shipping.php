@@ -691,6 +691,14 @@ function papelito_shipping_build_package( array $items ) {
 		);
 	}
 
+	if ( function_exists( 'papelito_kit_shipping_items' ) ) {
+		$expanded_items = papelito_kit_shipping_items( $items );
+		if ( is_wp_error( $expanded_items ) ) {
+			return $expanded_items;
+		}
+		$items = $expanded_items;
+	}
+
 	$total_weight = 0.0;
 	$max_length   = 0.0;
 	$max_width    = 0.0;
@@ -698,6 +706,22 @@ function papelito_shipping_build_package( array $items ) {
 	$total_value  = 0.0;
 
 	foreach ( $items as $item ) {
+		if ( isset( $item['merchandise'] ) && is_array( $item['merchandise'] ) ) {
+			$merchandise = $item['merchandise'];
+			$weight = (float) ( $merchandise['weight'] ?? 0 );
+			$length = (float) ( $merchandise['length'] ?? 0 );
+			$width = (float) ( $merchandise['width'] ?? 0 );
+			$height = (float) ( $merchandise['height'] ?? 0 );
+			$qty = max( 1, (int) ( $merchandise['required_quantity'] ?? 1 ) );
+			if ( $weight <= 0 || $length <= 0 || $width <= 0 || $height <= 0 ) {
+				return new WP_Error( 'papelito_shipping_product_dimensions_missing', 'Um brinde do Kit precisa de peso e dimensões para cotar frete.', array( 'status' => 422 ) );
+			}
+			$total_weight += (float) wc_get_weight( $weight, 'g' ) * $qty;
+			$max_length = max( $max_length, (float) wc_get_dimension( $length, 'cm' ) );
+			$max_width = max( $max_width, (float) wc_get_dimension( $width, 'cm' ) );
+			$total_height += (float) wc_get_dimension( $height, 'cm' ) * $qty;
+			continue;
+		}
 		$product_id = isset( $item['product_id'] ) ? absint( $item['product_id'] ) : 0;
 		$qty        = isset( $item['qty'] ) ? max( 1, absint( $item['qty'] ) ) : 1;
 		$product    = $product_id > 0 ? wc_get_product( $product_id ) : null;
@@ -727,7 +751,7 @@ function papelito_shipping_build_package( array $items ) {
 		$max_length    = max( $max_length, (float) wc_get_dimension( $length, 'cm' ) );
 		$max_width     = max( $max_width, (float) wc_get_dimension( $width, 'cm' ) );
 		$total_height += (float) wc_get_dimension( $height, 'cm' ) * $qty;
-		$total_value  += (float) $product->get_price() * $qty;
+		$total_value  += array_key_exists( 'declared_value', $item ) ? (float) $item['declared_value'] : (float) $product->get_price() * $qty;
 	}
 
 	return array(

@@ -394,7 +394,7 @@ echo "\nREST admin: leitura e escrita\n";
 $admin = api_test_request( 'GET', PAPELITO_TAXONOMY_API_ADMIN_CATEGORIES_ROUTE );
 
 assert_api( 'admin/categories responde 200', 200, $admin['status'] );
-assert_api( 'admin lista as coleções curadas', array( 'premium', 'kits' ), $admin['data']['collections'] );
+assert_api( 'admin lista as coleções curadas', array( 'premium' ), $admin['data']['collections'] );
 
 $sedas_admin = null;
 

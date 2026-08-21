@@ -211,8 +211,14 @@ function papelito_pricing_resolve_items( array $items ) {
 			return new WP_Error( 'papelito_product_not_found', 'Produto do carrinho nao encontrado.', array( 'status' => 404 ) );
 		}
 
+		$is_kit = function_exists( 'papelito_kit_is_product' ) && papelito_kit_is_product( (int) $item['product_id'] );
 		$current_stock = (int) papelito_get_vendor_stock( $vendor_id, $item['product_id'] );
-		if ( $current_stock < (int) $item['qty'] ) {
+		if ( $is_kit ) {
+			$kit_stock = papelito_kit_vendor_has_stock( (int) $item['product_id'], (int) $item['qty'], $vendor_id );
+			if ( is_wp_error( $kit_stock ) ) {
+				return $kit_stock;
+			}
+		} elseif ( $current_stock < (int) $item['qty'] ) {
 			return new WP_Error(
 				'papelito_checkout_insufficient_stock',
 				sprintf( 'Estoque insuficiente para o produto "%s".', $product->get_name() ),
@@ -251,6 +257,7 @@ function papelito_pricing_resolve_items( array $items ) {
 			'normal_subtotal_cents'  => $normal_unit_cents * (int) $item['qty'],
 			'promotion'              => $promotion,
 			'promotion_context'      => $context,
+			'kit_snapshot'           => $is_kit ? papelito_kit_snapshot( (int) $item['product_id'], (int) $item['qty'] ) : array(),
 		);
 	}
 

@@ -383,15 +383,13 @@ assert_catalog( 'classificar o produto o traz de volta', true, in_array( $sem_ca
 echo "\nBusca: coleção curada\n";
 
 $premium_colecao = catalog_test_product( PAPELITO_CATALOG_TEST_COLLECTION . ' premium' );
-$kit_colecao     = catalog_test_product( PAPELITO_CATALOG_TEST_COLLECTION . ' kit' );
 $sem_colecao     = catalog_test_product( PAPELITO_CATALOG_TEST_COLLECTION . ' comum' );
 
-foreach ( array( $premium_colecao, $kit_colecao, $sem_colecao ) as $product_id ) {
+foreach ( array( $premium_colecao, $sem_colecao ) as $product_id ) {
 	papelito_product_set_category( $product_id, $sedas['id'] );
 }
 
 papelito_product_set_collections( $premium_colecao, array( 'premium' ) );
-papelito_product_set_collections( $kit_colecao, array( 'kits' ) );
 
 $premium_encontrado = catalog_search_ids(
 	array(
@@ -400,16 +398,8 @@ $premium_encontrado = catalog_search_ids(
 		'per_page'   => 60,
 	)
 );
-$kits_encontrados  = catalog_search_ids(
-	array(
-		'search'     => PAPELITO_CATALOG_TEST_COLLECTION,
-		'collection' => 'kits',
-		'per_page'   => 60,
-	)
-);
 
 assert_catalog( 'coleção premium só devolve o produto marcado', array( $premium_colecao ), $premium_encontrado );
-assert_catalog( 'coleção kits só devolve o produto marcado', array( $kit_colecao ), $kits_encontrados );
 assert_catalog(
 	'coleção inválida falha fechado',
 	array(),

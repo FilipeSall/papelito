@@ -480,7 +480,7 @@ function papelito_benefit_normalize_targets( $value ) {
 	}
 
 	$targets     = array();
-	$collections = papelito_curated_collections();
+	$collections = array_merge( papelito_curated_collections(), array( 'kits' ) );
 
 	foreach ( array_map( 'absint', (array) ( $value['products'] ?? array() ) ) as $product_id ) {
 		if ( $product_id <= 0 ) {
@@ -990,6 +990,13 @@ function papelito_product_benefits_product_collections( $product_id ) {
 		if ( in_array( $slug, $assigned, true ) ) {
 			$ordered[] = $slug;
 		}
+	}
+
+	if (
+		in_array( 'kits', $assigned, true )
+		|| ( function_exists( 'papelito_kit_is_product' ) && papelito_kit_is_product( (int) $product_id ) )
+	) {
+		$ordered[] = 'kits';
 	}
 
 	return $ordered;

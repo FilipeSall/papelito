@@ -106,7 +106,7 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 		return array();
 	}
 
-	$matching_vendor_ids = papelito_matching_vendor_ids( (int) $cep_n );
+	$matching_vendor_ids = $active_vendor > 0 ? array( $active_vendor ) : papelito_matching_vendor_ids( (int) $cep_n );
 	if ( empty( $matching_vendor_ids ) ) {
 		return array();
 	}
@@ -446,6 +446,11 @@ function papelito_coverage_products( string $cep, array $product_ids, int $qty, 
 	$matching_vendor_ids = papelito_matching_vendor_ids( (int) $cep_n );
 	$matching_lookup     = array_fill_keys( array_map( 'intval', $matching_vendor_ids ), true );
 	$stock_by_product    = papelito_stock_rows_by_products( $product_ids );
+	if ( function_exists( 'papelito_kits_stock_rows_by_vendor_batch' ) ) {
+		foreach ( papelito_kits_stock_rows_by_vendor_batch( $product_ids, $qty_by_product, $matching_vendor_ids ) as $product_id => $rows ) {
+			$stock_by_product[ $product_id ] = $rows;
+		}
+	}
 
 	if ( $active_vendor > 0 ) {
 		$result = array();
