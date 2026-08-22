@@ -657,3 +657,18 @@ add_action(
 		);
 	}
 );
+
+/**
+ * Metade financeira da dupla aprovacao do vendor.
+ *
+ * Vender exige faixa de CEP que cubra o destino E recebedor `active`. Fica aqui, junto do resto
+ * da regra de recebedor, e nao no filtro de catalogo, para que a origem da decisao seja obvia.
+ * O `function_exists` do lado do chamador garante que uma ordem de carregamento diferente nao
+ * esvazie o catalogo inteiro.
+ *
+ * @param int $vendor_id Vendor.
+ * @return bool
+ */
+function papelito_vendor_can_receive_payments( int $vendor_id ): bool {
+	return papelito_pagarme_vendor_recipient_is_active( $vendor_id );
+}

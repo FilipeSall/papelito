@@ -32,9 +32,46 @@ function sanitize_text_field( mixed $value ) {
 	return trim( (string) $value );
 }
 
+class WP_Error {
+	public function __construct( public string $code, public string $message, public array $data = array() ) {}
+
+	public function get_error_message(): string {
+		return $this->message;
+	}
+}
+
+function is_wp_error( mixed $value ): bool {
+	return $value instanceof WP_Error;
+}
+
 function add_action( ...$args ) {}
 function add_filter( ...$args ) {}
 function do_action( ...$args ) {}
+
+$papelito_test_stock_available = true;
+$papelito_test_stock_adjustments = array();
+
+function papelito_adjust_vendor_stock( int $vendor_id, int $product_id, int $delta, string $reason ) {
+	global $papelito_test_stock_available, $papelito_test_stock_adjustments;
+
+	$papelito_test_stock_adjustments[] = array( $vendor_id, $product_id, $delta, $reason );
+
+	if ( $delta < 0 && ! $papelito_test_stock_available ) {
+		return new WP_Error( 'papelito_insufficient_vendor_stock', 'Estoque insuficiente.', array( 'status' => 409 ) );
+	}
+
+	return true;
+}
+
+function papelito_order_routing_order_lines( object $order ): array {
+	return array(
+		array(
+			'vendor_id'  => 10,
+			'product_id' => 20,
+			'qty'        => 1,
+		),
+	);
+}
 
 class WC_Order_Stub {
 	public $meta = array();
@@ -57,6 +94,10 @@ class WC_Order_Stub {
 
 	public function get_status(): string {
 		return $this->status;
+	}
+
+	public function get_id(): int {
+		return 123;
 	}
 
 	public function get_meta( string $key, bool $single = true ) {
@@ -123,6 +164,46 @@ papelito_pagarme_mark_vendor_status_unpaid( $order );
 papelito_assert( 'legacy failed order becomes cancelado', PAPELITO_VENDOR_STATUS_CANCELLED, $order->meta['_papelito_vendor_status'] );
 papelito_pagarme_mark_vendor_status_unpaid( $order );
 papelito_assert( 'legacy cancellation is idempotent', 1, count( $order->notes ) );
+
+echo "Scenario 8: a late paid webhook recovers an order cancelled by the payment itself\n";
+$order = new WC_Order_Stub( 'aguardando_pagamento' );
+papelito_pagarme_apply_order_state( $order, 'refused', false );
+papelito_assert( 'cancelled by payment', PAPELITO_VENDOR_STATUS_CANCELLED, $order->meta['_papelito_vendor_status'] );
+papelito_assert( 'cancellation is attributed to the payment', 'payment_unpaid', $order->meta['_papelito_vendor_status_source'] ?? '' );
+papelito_pagarme_apply_order_state( $order, 'paid', true );
+papelito_assert( 'late payment restores aguardando_envio', PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT, $order->meta['_papelito_vendor_status'] );
+papelito_assert( 'wc status back to processing', 'processing', $order->status );
+
+echo "Scenario 8b: a recovered paid order reserves stock again before fulfillment\n";
+$papelito_test_stock_available   = true;
+$papelito_test_stock_adjustments = array();
+$order                           = new WC_Order_Stub( PAPELITO_VENDOR_STATUS_CANCELLED, 'failed' );
+$order->update_meta_data( '_papelito_vendor_status_source', PAPELITO_VENDOR_STATUS_SOURCE_PAYMENT_UNPAID );
+$order->update_meta_data( PAPELITO_STOCK_RESERVED_META, '0' );
+papelito_pagarme_apply_order_state( $order, 'paid', true );
+papelito_assert( 'stock is reserved again', '1', $order->meta[ PAPELITO_STOCK_RESERVED_META ] );
+papelito_assert( 'stock decrement is executed once', -1, $papelito_test_stock_adjustments[0][2] ?? null );
+papelito_assert( 'recovered order is released for fulfillment', PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT, $order->meta['_papelito_vendor_status'] );
+
+echo "Scenario 8c: a recovered paid order without stock waits for manual resolution\n";
+$papelito_test_stock_available   = false;
+$papelito_test_stock_adjustments = array();
+$order                           = new WC_Order_Stub( PAPELITO_VENDOR_STATUS_CANCELLED, 'failed' );
+$order->update_meta_data( '_papelito_vendor_status_source', PAPELITO_VENDOR_STATUS_SOURCE_PAYMENT_UNPAID );
+$order->update_meta_data( PAPELITO_STOCK_RESERVED_META, '0' );
+papelito_pagarme_apply_order_state( $order, 'paid', true );
+papelito_assert( 'stock remains unreserved', '0', $order->meta[ PAPELITO_STOCK_RESERVED_META ] );
+papelito_assert( 'order is held instead of processing', 'on-hold', $order->status );
+papelito_assert( 'vendor order waits for stock review', 'aguardando_estoque', $order->meta['_papelito_vendor_status'] );
+papelito_pagarme_apply_order_state( $order, 'paid', true );
+papelito_assert( 'repeated paid event keeps the order on hold', 'on-hold', $order->status );
+papelito_assert( 'repeated paid event does not rerun stock reservation', 1, count( $papelito_test_stock_adjustments ) );
+
+echo "Scenario 9: a late paid webhook never resurrects an order the vendor cancelled\n";
+$order = new WC_Order_Stub( PAPELITO_VENDOR_STATUS_CANCELLED, 'processing' );
+$order->update_meta_data( '_papelito_vendor_status_source', 'vendor_action' );
+papelito_pagarme_apply_order_state( $order, 'paid', true );
+papelito_assert( 'vendor cancellation is respected', PAPELITO_VENDOR_STATUS_CANCELLED, $order->meta['_papelito_vendor_status'] );
 
 echo "Scenario 7: discounted multi-quantity lines never create zero-cent items\n";
 $product = new class() {

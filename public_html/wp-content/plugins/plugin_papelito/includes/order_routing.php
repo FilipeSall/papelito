@@ -48,12 +48,46 @@ function papelito_order_routing_checkout_request_hash( array $payload ): string 
 	return hash_hmac( 'sha256', (string) wp_json_encode( papelito_order_routing_sort_payload( $normalized ) ), wp_salt( 'papelito_checkout_attempt' ) );
 }
 
+/**
+ * Traduz `purchaseBlockReason` na mensagem que o comprador realmente precisa ler.
+ *
+ * Antes toda recusa dizia "Sua empresa não está apta para pagamento", inclusive quando a empresa
+ * estava `active`/`verified` e o problema era o papel do membro. O usuário ia investigar a empresa,
+ * e o titular ia procurar um defeito que não existia.
+ *
+ * @param string $reason Motivo devolvido por `papelito_company_purchase_capability()`.
+ * @return string
+ */
+function papelito_order_routing_purchase_block_message( string $reason ): string {
+	$messages = array(
+		'role_cannot_purchase'       => 'Seu papel nesta empresa não permite concluir compras. Peça a um administrador da empresa para alterar sua permissão.',
+		'company_missing'            => 'Vincule uma empresa à sua conta para concluir a compra.',
+		'company_selection_required' => 'Selecione a empresa que vai realizar esta compra.',
+		'membership_not_active'      => 'Seu vínculo com a empresa não está ativo.',
+		'membership_expired'         => 'Seu vínculo com a empresa expirou.',
+		'identity_pending'           => 'Sua identificação ainda está em análise.',
+		'not_a_customer_buyer'       => 'Esta conta não compra pela plataforma.',
+	);
+
+	return $messages[ $reason ] ?? 'Sua empresa não está apta para pagamento.';
+}
+
 /** @return array<string,mixed>|WP_Error */
 function papelito_order_routing_resolve_b2b_snapshot( int $user_id, array $payload ) {
 	$context = papelito_company_context( $user_id );
 	$capability = papelito_company_purchase_capability( $user_id, $context );
 	if ( empty( $capability['canPurchase'] ) || ! is_array( $capability['company'] ?? null ) || ! is_array( $capability['membership'] ?? null ) ) {
-		return new WP_Error( 'papelito_b2b_purchase_not_allowed', 'Sua empresa não está apta para pagamento.', array( 'status' => 403, 'purchaseMode' => $capability['purchaseMode'] ?? 'blocked', 'purchaseBlockReason' => $capability['purchaseBlockReason'] ?? 'not_a_customer_buyer' ) );
+		$block_reason = (string) ( $capability['purchaseBlockReason'] ?? 'not_a_customer_buyer' );
+
+		return new WP_Error(
+			'papelito_b2b_purchase_not_allowed',
+			papelito_order_routing_purchase_block_message( $block_reason ),
+			array(
+				'status'              => 403,
+				'purchaseMode'        => $capability['purchaseMode'] ?? 'blocked',
+				'purchaseBlockReason' => $block_reason,
+			)
+		);
 	}
 	$expected_company_id = absint( $payload['expected_company_id'] ?? 0 );
 	$company = $capability['company'];
@@ -333,7 +367,7 @@ function papelito_order_routing_require_customer() {
 	if ( empty( $capability['canPurchase'] ) ) {
 		return new WP_Error(
 			'papelito_b2b_purchase_not_allowed',
-			'Sua empresa não está apta para pagamento.',
+			papelito_order_routing_purchase_block_message( (string) ( $capability['purchaseBlockReason'] ?? '' ) ),
 			array( 'status' => 403, 'purchaseMode' => $capability['purchaseMode'], 'purchaseBlockReason' => $capability['purchaseBlockReason'] )
 		);
 	}

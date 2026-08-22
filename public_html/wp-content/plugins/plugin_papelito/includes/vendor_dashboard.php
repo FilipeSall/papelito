@@ -16,6 +16,10 @@ if ( ! defined( 'PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT' ) ) {
 	define( 'PAPELITO_VENDOR_STATUS_CANCELLED', 'cancelado' );
 }
 
+if ( ! defined( 'PAPELITO_VENDOR_STATUS_STOCK_REVIEW' ) ) {
+	define( 'PAPELITO_VENDOR_STATUS_STOCK_REVIEW', 'aguardando_estoque' );
+}
+
 /**
  * Verifica se um valor e uma instancia WooCommerce esperada.
  *
@@ -35,6 +39,7 @@ function papelito_vendor_dashboard_is_wc_instance( $value, string $class ): bool
 function papelito_vendor_dashboard_statuses(): array {
 	return array(
 		PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT,
+		PAPELITO_VENDOR_STATUS_STOCK_REVIEW,
 		PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT,
 		PAPELITO_VENDOR_STATUS_PICKING,
 		PAPELITO_VENDOR_STATUS_SHIPPED,
@@ -219,6 +224,36 @@ function papelito_vendor_dashboard_items( $order, ?int $vendor_id = null ): arra
 }
 
 /**
+ * Nome exibido para quem separa e posta o pedido.
+ *
+ * Em pedido B2B o comprador fiscal e a empresa, entao `billing_first_name`/`billing_last_name`
+ * nascem vazios de proposito e o nome da pessoa fica so em `shipping`. Lendo apenas o billing, a
+ * expedicao via "Cliente nao identificado" em 100% dos pedidos e nao tinha como conferir o
+ * destinatario. Ordem: pessoa que recebe -> empresa compradora -> billing (legado nao-B2B).
+ *
+ * @param object $order Pedido WooCommerce.
+ * @return string
+ */
+function papelito_vendor_dashboard_customer_label( $order ): string {
+	$candidates = array(
+		method_exists( $order, 'get_formatted_shipping_full_name' ) ? (string) $order->get_formatted_shipping_full_name() : '',
+		method_exists( $order, 'get_shipping_company' ) ? (string) $order->get_shipping_company() : '',
+		method_exists( $order, 'get_billing_company' ) ? (string) $order->get_billing_company() : '',
+		method_exists( $order, 'get_formatted_billing_full_name' ) ? (string) $order->get_formatted_billing_full_name() : '',
+	);
+
+	foreach ( $candidates as $candidate ) {
+		$candidate = sanitize_text_field( trim( $candidate ) );
+
+		if ( '' !== $candidate ) {
+			return $candidate;
+		}
+	}
+
+	return '';
+}
+
+/**
  * Map order data shared by seller and customer UIs.
  *
  * `$include_receipt` e opt-in porque a listagem do comprador usa o mesmo
@@ -241,7 +276,7 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
 		'id'             => (int) $order->get_id(),
 		'order_number'   => (string) $order->get_order_number(),
 		'created_at'     => $created_at ? $created_at->date_i18n( 'Y-m-d H:i:s' ) : '',
-		'customer_name'  => sanitize_text_field( (string) $order->get_formatted_billing_full_name() ),
+		'customer_name'  => papelito_vendor_dashboard_customer_label( $order ),
 		'total'          => (float) $order->get_total(),
 		'items_count'    => array_sum( array_map( static fn( array $item ): int => (int) $item['qty'], $items ) ),
 		'items_label'    => implode( ', ', array_slice( array_column( $items, 'name' ), 0, 2 ) ),

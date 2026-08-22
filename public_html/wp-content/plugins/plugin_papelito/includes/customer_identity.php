@@ -357,3 +357,40 @@ function papelito_customer_profile_get_cpf( int $user_id ) {
 
 	return papelito_pii_decrypt( (string) $cipher );
 }
+
+/**
+ * Barra CPF invalido antes de virar `wp_usermeta`.
+ *
+ * A escrita do perfil passa pela API de customer do WooCommerce, fora dos endpoints Papelito, e
+ * chegava sem nenhuma verificacao — `111.111.111-11` era aceito e persistido. Como o modelo B2B
+ * inteiro apoia identidade em CPF, a guarda fica no ponto de escrita para valer em qualquer
+ * caminho, nao so no que a UI usa hoje.
+ *
+ * @param mixed  $check      Curto-circuito da metadata API (null segue o fluxo normal).
+ * @param int    $object_id  Usuario.
+ * @param string $meta_key   Chave.
+ * @param mixed  $meta_value Valor.
+ * @return mixed
+ */
+function papelito_reject_invalid_cpf_usermeta( $check, $object_id, $meta_key, $meta_value ) {
+	if ( 'cpf' !== $meta_key || null !== $check ) {
+		return $check;
+	}
+
+	$raw = is_scalar( $meta_value ) ? (string) $meta_value : '';
+
+	if ( '' === trim( $raw ) ) {
+		return $check;
+	}
+
+	if ( function_exists( 'papelito_validate_cpf' ) && ! papelito_validate_cpf( $raw ) ) {
+		return false;
+	}
+
+	return $check;
+}
+
+if ( function_exists( 'add_filter' ) ) {
+	add_filter( 'update_user_metadata', 'papelito_reject_invalid_cpf_usermeta', 10, 4 );
+	add_filter( 'add_user_metadata', 'papelito_reject_invalid_cpf_usermeta', 10, 4 );
+}

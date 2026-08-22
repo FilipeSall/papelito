@@ -71,6 +71,11 @@ function papelito_catalog_filter_cep()
 /**
  * Find sellers that match a given CEP.
  *
+ * Vender exige dupla aprovacao: faixa de CEP que cubra o destino E recebedor Pagar.me `active`.
+ * Este e o unico ponto que alimenta a cobertura regional, a vitrine e a resolucao de vendor do
+ * carrinho, entao a segunda metade da regra mora aqui. Sem ela o produto de um vendor sem
+ * recebedor aparecia disponivel e so falhava em `place-order`, depois do cartao digitado.
+ *
  * @param int $user_cep CEP normalized to digits.
  * @return int[]
  */
@@ -84,6 +89,10 @@ function papelito_matching_vendor_ids($user_cep)
     $vendors_ids = array();
 
     foreach ($vendors as $vendor) {
+		if ( function_exists( 'papelito_vendor_can_receive_payments' ) && ! papelito_vendor_can_receive_payments( (int) $vendor->ID ) ) {
+			continue;
+		}
+
         $min_ceps = get_user_meta($vendor->ID, 'min_cep');
         $max_ceps = get_user_meta($vendor->ID, 'max_cep');
 

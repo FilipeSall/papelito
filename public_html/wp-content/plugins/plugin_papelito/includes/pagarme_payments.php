@@ -7,6 +7,16 @@
 
 defined( 'ABSPATH' ) || exit;
 
+if ( ! defined( 'PAPELITO_VENDOR_STATUS_SOURCE_PAYMENT_UNPAID' ) ) {
+	// Origem do cancelamento operacional. Distingue "cancelado porque o pagamento nao veio" —
+	// reversivel por uma confirmacao tardia — de "cancelado pelo vendor", que e definitivo.
+	define( 'PAPELITO_VENDOR_STATUS_SOURCE_PAYMENT_UNPAID', 'payment_unpaid' );
+}
+
+if ( ! defined( 'PAPELITO_VENDOR_STATUS_STOCK_REVIEW' ) ) {
+	define( 'PAPELITO_VENDOR_STATUS_STOCK_REVIEW', 'aguardando_estoque' );
+}
+
 if ( ! defined( 'PAPELITO_PAGARME_ORDER_ID_META' ) ) {
 	define( 'PAPELITO_PAGARME_ORDER_ID_META', '_papelito_pagarme_order_id' );
 	define( 'PAPELITO_PAGARME_CHARGE_ID_META', '_papelito_pagarme_charge_id' );
@@ -659,9 +669,9 @@ function papelito_pagarme_apply_order_state( object $order, string $state, bool 
 	$order->update_meta_data( PAPELITO_PAGARME_PAYMENT_STATE_META, $state );
 
 	if ( $paid ) {
+		$ready_for_fulfillment = papelito_pagarme_promote_vendor_status_on_payment( $order );
 		$order->payment_complete();
-		$order->update_status( 'processing' );
-		papelito_pagarme_promote_vendor_status_on_payment( $order );
+		$order->update_status( $ready_for_fulfillment ? 'processing' : 'on-hold' );
 	} elseif ( papelito_pagarme_payment_state_releases_stock( $state ) ) {
 		$order->update_status( 'failed' );
 		papelito_pagarme_mark_vendor_status_unpaid( $order );
@@ -681,21 +691,55 @@ function papelito_pagarme_apply_order_state( object $order, string $state, bool 
  * "aguardando envio" quando o pagamento e confirmado. Idempotente: nao
  * regride pedidos que ja avancaram na esteira de fulfillment.
  */
-function papelito_pagarme_promote_vendor_status_on_payment( object $order ): void {
+function papelito_pagarme_promote_vendor_status_on_payment( object $order ): bool {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) || ! defined( 'PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT' ) ) {
-		return;
+		return true;
 	}
 
 	$current = sanitize_key( (string) $order->get_meta( '_papelito_vendor_status', true ) );
+	$source  = sanitize_key( (string) $order->get_meta( '_papelito_vendor_status_source', true ) );
 
-	if ( '' === $current || PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT === $current ) {
+	if ( PAPELITO_VENDOR_STATUS_STOCK_REVIEW === $current && 'payment_confirmed_stock_unavailable' === $source ) {
+		return false;
+	}
+
+	// Confirmação tardia — boleto pago depois do vencimento, PIX reconciliado fora de ordem — chega
+	// com o pedido já marcado como cancelado por este mesmo mecanismo. Sem recuperar daqui o pedido
+	// ficava pago no PSP, com recibo emitido e estoque reservado, e cancelado para comprador e vendor.
+	// Cancelamento feito pelo vendor (`vendor_action`) é decisão de negócio e nunca é revertido aqui.
+	$recoverable = PAPELITO_VENDOR_STATUS_CANCELLED === $current && PAPELITO_VENDOR_STATUS_SOURCE_PAYMENT_UNPAID === $source;
+	if ( $recoverable ) {
+		$lines = function_exists( 'papelito_order_routing_order_lines' )
+			? papelito_order_routing_order_lines( $order )
+			: array();
+		$reserved = empty( $lines )
+			? new WP_Error( 'papelito_stock_recovery_lines_missing', 'Não foi possível recuperar as linhas de estoque do pedido.', array( 'status' => 500 ) )
+			: papelito_pagarme_reserve_order_stock( $order, $lines );
+
+		if ( is_wp_error( $reserved ) ) {
+			$order->update_meta_data( '_papelito_vendor_status', PAPELITO_VENDOR_STATUS_STOCK_REVIEW );
+			$order->update_meta_data( '_papelito_vendor_status_source', 'payment_confirmed_stock_unavailable' );
+			$order->add_order_note( 'Pagamento confirmado, mas o estoque não pôde ser reservado novamente. Pedido encaminhado para análise manual.' );
+
+			return false;
+		}
+	}
+
+	if ( '' === $current || PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT === $current || $recoverable ) {
 		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT );
-		$order->add_order_note( 'Pagamento confirmado: pedido liberado para envio.' );
+		$order->update_meta_data( '_papelito_vendor_status_source', 'payment_confirmed' );
+		$order->add_order_note(
+			$recoverable
+				? 'Pagamento confirmado apos cancelamento por falta de pagamento: pedido reaberto para envio.'
+				: 'Pagamento confirmado: pedido liberado para envio.'
+		);
 
 		if ( function_exists( 'papelito_orders_notify_vendor_new_purchase' ) ) {
 			papelito_orders_notify_vendor_new_purchase( $order );
 		}
 	}
+
+	return true;
 }
 
 /**
@@ -731,6 +775,9 @@ function papelito_pagarme_mark_vendor_status_unpaid( object $order ): void {
 
 	if ( $cancelled_status !== $current ) {
 		$order->update_meta_data( '_papelito_vendor_status', $cancelled_status );
+		// Marca a origem para que uma confirmação tardia consiga reabrir o pedido sem correr o risco
+		// de ressuscitar um cancelamento feito pelo vendor.
+		$order->update_meta_data( '_papelito_vendor_status_source', PAPELITO_VENDOR_STATUS_SOURCE_PAYMENT_UNPAID );
 
 		if ( method_exists( $order, 'add_order_note' ) ) {
 			$order->add_order_note( 'Pagamento não concluido: pedido cancelado.' );

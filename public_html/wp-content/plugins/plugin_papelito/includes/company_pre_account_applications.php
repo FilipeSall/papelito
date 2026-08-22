@@ -836,10 +836,6 @@ function papelito_pre_account_application_approve( array $application, int $acto
 		return $user_id;
 	}
 
-	// A candidatura de pre-conta nunca provou a posse da caixa: o `resume_token` volta direto na
-	// resposta, nunca por e-mail. Sem marcar `pending` aqui a conta nasceria sem a usermeta, e
-	// `papelito_auth_requires_email_verification()` trata meta ausente como conta legada
-	// verificada — o endereco entraria como confirmado sem ninguem ter aberto nada.
 	papelito_auth_mark_email_pending( $user_id );
 
 	global $wpdb;
@@ -852,6 +848,8 @@ function papelito_pre_account_application_approve( array $application, int $acto
 	// A senha foi escolhida na candidatura e guardada já com hash; wp_insert_user acabou de
 	// gravar uma aleatória e é ela que precisa ser substituída.
 	$wpdb->update( $wpdb->users, array( 'user_pass' => (string) $application['password_hash'] ), array( 'ID' => $user_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	clean_user_cache( $user_id );
 
 	$profile = papelito_company_profile_upsert( $user_id, $values['cpf'], $values['birth'] );
 	if ( is_wp_error( $profile ) ) {

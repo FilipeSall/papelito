@@ -2374,7 +2374,7 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 	}
 
 	if ( $is_new_user ) {
-		wp_new_user_notification( $user_id, null, 'user' );
+		papelito_admin_vendors_dispatch_first_access_emails( $user, '' !== $temporary_password );
 	}
 	papelito_maybe_autosync_vendor_recipient( $user_id, $pending_fields );
 	if ( ! empty( $pending_fields ) ) {
@@ -2382,6 +2382,39 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 	}
 
 	return papelito_get_vendor_application_detail( $user_id );
+}
+
+/**
+ * Dispara os e-mails de primeiro acesso do vendor criado pelo painel.
+ *
+ * A conta nasce com verificacao de e-mail `pending`, e o gate de login barra qualquer tentativa
+ * enquanto isso — entao o link de confirmacao e obrigatorio, senao o vendor fica travado sem
+ * nenhuma pista do que fazer. O e-mail nativo `wp_new_user_notification()` nao serve aqui: manda
+ * o vendor definir senha no `wp-login.php`, expondo o backend que o headless esconde.
+ *
+ * Quando o admin nao informou senha temporaria, `wp_insert_user` gerou uma aleatoria que ninguem
+ * conhece; nesse caso o vendor tambem precisa do link de redefinicao para conseguir entrar.
+ *
+ * @param WP_User $user                    Vendor recem-criado.
+ * @param bool    $has_temporary_password  Se o admin informou uma senha temporaria.
+ * @return void
+ */
+function papelito_admin_vendors_dispatch_first_access_emails( WP_User $user, bool $has_temporary_password ): void {
+	if ( function_exists( 'papelito_auth_dispatch_verification_email' ) ) {
+		$dispatched = papelito_auth_dispatch_verification_email( $user );
+
+		if ( is_wp_error( $dispatched ) ) {
+			error_log( 'papelito: vendor criado sem e-mail de confirmacao (' . $dispatched->get_error_code() . ').' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		}
+	}
+
+	if ( ! $has_temporary_password && function_exists( 'papelito_auth_dispatch_password_reset_email' ) ) {
+		$dispatched = papelito_auth_dispatch_password_reset_email( $user );
+
+		if ( is_wp_error( $dispatched ) ) {
+			error_log( 'papelito: vendor criado sem e-mail de definicao de senha (' . $dispatched->get_error_code() . ').' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		}
+	}
 }
 
 /**
