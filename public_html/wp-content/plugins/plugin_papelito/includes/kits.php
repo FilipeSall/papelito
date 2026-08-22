@@ -17,7 +17,6 @@ function papelito_kits_table_names(): array {
 		'kits'        => $wpdb->prefix . 'papelito_kits',
 		'items'       => $wpdb->prefix . 'papelito_kit_items',
 		'merchandise' => $wpdb->prefix . 'papelito_kit_merchandise',
-		'merch_stock' => $wpdb->prefix . 'papelito_kit_merchandise_stock',
 	);
 }
 
@@ -62,16 +61,6 @@ function papelito_kits_install_tables(): void {
   height DECIMAL(12,2) NOT NULL,
   PRIMARY KEY  (id),
   KEY idx_kit (kit_id)
-) {$charset};"
-	);
-	dbDelta(
-		"CREATE TABLE {$tables['merch_stock']} (
-  merchandise_id BIGINT UNSIGNED NOT NULL,
-  vendor_id BIGINT UNSIGNED NOT NULL,
-  qty INT NOT NULL DEFAULT 0,
-  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY  (merchandise_id, vendor_id),
-  KEY idx_vendor (vendor_id)
 ) {$charset};"
 	);
 }
@@ -125,57 +114,6 @@ function papelito_kit_merchandise( int $kit_id ): array {
 	return is_array( $rows ) ? $rows : array();
 }
 
-function papelito_kit_merchandise_stock( int $merchandise_id, int $vendor_id ): int {
-	global $wpdb;
-	$tables = papelito_kits_table_names();
-	$qty    = $wpdb->get_var( $wpdb->prepare( "SELECT qty FROM {$tables['merch_stock']} WHERE merchandise_id = %d AND vendor_id = %d", $merchandise_id, $vendor_id ) );
-	return null === $qty ? 0 : (int) $qty;
-}
-
-function papelito_kit_merchandise_stocks( int $merchandise_id ): array {
-	global $wpdb;
-	$tables = papelito_kits_table_names();
-	$rows   = $wpdb->get_results( $wpdb->prepare( "SELECT vendor_id, qty FROM {$tables['merch_stock']} WHERE merchandise_id = %d ORDER BY vendor_id ASC", $merchandise_id ), ARRAY_A );
-	return is_array( $rows ) ? $rows : array();
-}
-
-function papelito_kit_adjust_merchandise_stock( int $merchandise_id, int $vendor_id, int $delta ) {
-	global $wpdb;
-	if ( $merchandise_id <= 0 || $vendor_id <= 0 ) {
-		return new WP_Error( 'papelito_kit_merchandise_stock_invalid', 'Estoque de brinde inválido.', array( 'status' => 422 ) );
-	}
-	$tables = papelito_kits_table_names();
-	$wpdb->query( 'START TRANSACTION' );
-	$row     = $wpdb->get_row(
-		$wpdb->prepare(
-			"SELECT qty FROM {$tables['merch_stock']} WHERE merchandise_id = %d AND vendor_id = %d FOR UPDATE",
-			$merchandise_id,
-			$vendor_id
-		),
-		ARRAY_A
-	);
-	$current = $row ? (int) $row['qty'] : 0;
-	$next    = $current + $delta;
-	if ( $next < 0 ) {
-		$wpdb->query( 'ROLLBACK' );
-		return new WP_Error( 'papelito_checkout_insufficient_stock', 'Estoque de brinde insuficiente para o Kit.', array( 'status' => 409 ) );
-	}
-	$result = $wpdb->query(
-		$wpdb->prepare(
-			"INSERT INTO {$tables['merch_stock']} (merchandise_id, vendor_id, qty) VALUES (%d, %d, %d) ON DUPLICATE KEY UPDATE qty = VALUES(qty)",
-			$merchandise_id,
-			$vendor_id,
-			$next
-		)
-	);
-	if ( false === $result ) {
-		$wpdb->query( 'ROLLBACK' );
-		return new WP_Error( 'papelito_kit_merchandise_stock_write_failed', 'Não foi possível atualizar o estoque de brinde.', array( 'status' => 500 ) );
-	}
-	$wpdb->query( 'COMMIT' );
-	return true;
-}
-
 function papelito_kit_expand_requirements( int $kit_product_id, int $kit_qty ): array|WP_Error {
 	$kit = papelito_kit_get_by_product( $kit_product_id );
 	if ( ! $kit ) {
@@ -222,18 +160,6 @@ function papelito_kit_vendor_has_stock( int $kit_product_id, int $kit_qty, int $
 			);
 		}
 	}
-	foreach ( $requirements['merchandise'] as $merchandise ) {
-		if ( papelito_kit_merchandise_stock( (int) $merchandise['id'], $vendor_id ) < (int) $merchandise['required_quantity'] ) {
-			return new WP_Error(
-				'papelito_checkout_insufficient_stock',
-				'O vendor não possui todos os brindes necessários para este Kit.',
-				array(
-					'status'         => 409,
-					'merchandise_id' => (int) $merchandise['id'],
-				)
-			);
-		}
-	}
 	return true;
 }
 
@@ -276,18 +202,10 @@ function papelito_kits_stock_rows_by_vendor_batch( array $product_ids, array $qt
 		$wpdb->prepare( "SELECT kit_id, product_id, quantity FROM {$tables['items']} WHERE kit_id IN ({$kit_placeholders})", $kit_ids ),
 		ARRAY_A
 	);
-	$merchandise      = $wpdb->get_results(
-		$wpdb->prepare( "SELECT id, kit_id, quantity FROM {$tables['merchandise']} WHERE kit_id IN ({$kit_placeholders})", $kit_ids ),
-		ARRAY_A
-	);
 	$requirements     = array();
 	$component_ids    = array();
-	$merchandise_ids  = array();
 	foreach ( $kits as $kit ) {
-		$requirements[ (int) $kit['id'] ] = array(
-			'components'  => array(),
-			'merchandise' => array(),
-		);
+		$requirements[ (int) $kit['id'] ] = array( 'components' => array() );
 	}
 	foreach ( is_array( $items ) ? $items : array() as $item ) {
 		$kit_id = (int) $item['kit_id'];
@@ -297,14 +215,6 @@ function papelito_kits_stock_rows_by_vendor_batch( array $product_ids, array $qt
 		$product_id = (int) $item['product_id'];
 		$requirements[ $kit_id ]['components'][ $product_id ] = ( $requirements[ $kit_id ]['components'][ $product_id ] ?? 0 ) + (int) $item['quantity'];
 		$component_ids[]                                      = $product_id;
-	}
-	foreach ( is_array( $merchandise ) ? $merchandise : array() as $item ) {
-		$kit_id = (int) $item['kit_id'];
-		if ( ! isset( $requirements[ $kit_id ] ) ) {
-			continue;
-		}
-		$requirements[ $kit_id ]['merchandise'][ (int) $item['id'] ] = (int) $item['quantity'];
-		$merchandise_ids[] = (int) $item['id'];
 	}
 	$vendor_placeholders = implode( ',', array_fill( 0, count( $vendor_ids ), '%d' ) );
 	$product_stock       = array();
@@ -320,18 +230,6 @@ function papelito_kits_stock_rows_by_vendor_batch( array $product_ids, array $qt
 			$product_stock[ (int) $row['product_id'] ][ (int) $row['vendor_id'] ] = (int) $row['qty'];
 		}
 	}
-	$merchandise_stock = array();
-	if ( ! empty( $merchandise_ids ) ) {
-		$merchandise_ids          = array_values( array_unique( $merchandise_ids ) );
-		$merchandise_placeholders = implode( ',', array_fill( 0, count( $merchandise_ids ), '%d' ) );
-		$rows                     = $wpdb->get_results(
-			$wpdb->prepare( "SELECT merchandise_id, vendor_id, qty FROM {$tables['merch_stock']} WHERE merchandise_id IN ({$merchandise_placeholders}) AND vendor_id IN ({$vendor_placeholders})", array_merge( $merchandise_ids, $vendor_ids ) ),
-			ARRAY_A
-		);
-		foreach ( is_array( $rows ) ? $rows : array() as $row ) {
-			$merchandise_stock[ (int) $row['merchandise_id'] ][ (int) $row['vendor_id'] ] = (int) $row['qty'];
-		}
-	}
 	$result = array();
 	foreach ( $kits as $kit ) {
 		$kit_id     = (int) $kit['id'];
@@ -344,9 +242,6 @@ function papelito_kits_stock_rows_by_vendor_batch( array $product_ids, array $qt
 			$available = PHP_INT_MAX;
 			foreach ( $requirements[ $kit_id ]['components'] as $component_id => $component_qty ) {
 				$available = min( $available, intdiv( max( 0, (int) ( $product_stock[ $component_id ][ $vendor_id ] ?? 0 ) ), $component_qty ) );
-			}
-			foreach ( $requirements[ $kit_id ]['merchandise'] as $merchandise_id => $merchandise_qty ) {
-				$available = min( $available, intdiv( max( 0, (int) ( $merchandise_stock[ $merchandise_id ][ $vendor_id ] ?? 0 ) ), $merchandise_qty ) );
 			}
 			if ( $available >= $requested ) {
 				$result[ $product_id ][] = array(
@@ -400,19 +295,7 @@ function papelito_kit_snapshot_requirements( array $snapshot ): array|WP_Error {
 	if ( empty( $components ) ) {
 		return new WP_Error( 'papelito_kit_snapshot_invalid', 'A composição salva do Kit está vazia.', array( 'status' => 409 ) );
 	}
-	$merchandise = array();
-	foreach ( (array) ( $snapshot['merchandise'] ?? array() ) as $item ) {
-		$merchandise_id = absint( $item['id'] ?? 0 );
-		$quantity       = absint( $item['quantity'] ?? 0 );
-		if ( $merchandise_id <= 0 || $quantity <= 0 ) {
-			return new WP_Error( 'papelito_kit_snapshot_invalid', 'O brinde salvo do Kit é inválido.', array( 'status' => 409 ) );
-		}
-		$merchandise[ $merchandise_id ] = ( $merchandise[ $merchandise_id ] ?? 0 ) + $quantity;
-	}
-	return array(
-		'components'  => $components,
-		'merchandise' => $merchandise,
-	);
+	return array( 'components' => $components );
 }
 
 function papelito_kit_adjust_snapshot_stock( array $snapshot, int $vendor_id, int $direction, string $reason ) {
@@ -426,34 +309,13 @@ function papelito_kit_adjust_snapshot_stock( array $snapshot, int $vendor_id, in
 		if ( is_wp_error( $result ) ) {
 			break;
 		}
-		$adjusted[] = array(
-			'type'     => 'product',
-			'id'       => $product_id,
-			'quantity' => $quantity,
-		);
-	}
-	if ( ! isset( $result ) || ! is_wp_error( $result ) ) {
-		foreach ( $requirements['merchandise'] as $merchandise_id => $quantity ) {
-			$result = papelito_kit_adjust_merchandise_stock( $merchandise_id, $vendor_id, $direction * $quantity );
-			if ( is_wp_error( $result ) ) {
-				break;
-			}
-			$adjusted[] = array(
-				'type'     => 'merchandise',
-				'id'       => $merchandise_id,
-				'quantity' => $quantity,
-			);
-		}
+		$adjusted[ $product_id ] = $quantity;
 	}
 	if ( ! isset( $result ) || ! is_wp_error( $result ) ) {
 		return true;
 	}
-	foreach ( array_reverse( $adjusted ) as $entry ) {
-		if ( 'product' === $entry['type'] ) {
-			papelito_adjust_vendor_stock( $vendor_id, $entry['id'], $direction * -1 * $entry['quantity'], $reason . '_rollback' );
-			continue;
-		}
-		papelito_kit_adjust_merchandise_stock( $entry['id'], $vendor_id, $direction * -1 * $entry['quantity'] );
+	foreach ( array_reverse( $adjusted, true ) as $product_id => $quantity ) {
+		papelito_adjust_vendor_stock( $vendor_id, $product_id, $direction * -1 * $quantity, $reason . '_rollback' );
 	}
 	return $result;
 }
@@ -545,13 +407,6 @@ function papelito_kit_response( array $kit ): array {
 			'length'            => (string) $item['length'],
 			'width'             => (string) $item['width'],
 			'height'            => (string) $item['height'],
-			'stocks'            => array_map(
-				static fn( array $stock ): array => array(
-					'vendorId' => (int) $stock['vendor_id'],
-					'qty'      => (int) $stock['qty'],
-				),
-				papelito_kit_merchandise_stocks( (int) $item['id'] )
-			),
 		),
 		papelito_kit_merchandise( (int) $kit['id'] )
 	);
@@ -621,13 +476,6 @@ function papelito_kit_write( array $payload, ?int $kit_id = null ) {
 		if ( '' === sanitize_text_field( (string) ( $item['name'] ?? '' ) ) || absint( $item['quantity'] ?? 0 ) <= 0 || min( $dimensions ) <= 0 || ! wp_attachment_is_image( $image_attachment_id ) ) {
 			return new WP_Error( 'papelito_kit_merchandise_invalid', 'Todo brinde precisa de imagem, nome, quantidade, peso e dimensões positivos.', array( 'status' => 422 ) );
 		}
-		foreach ( (array) ( $item['stocks'] ?? array() ) as $stock ) {
-			$vendor_id = absint( $stock['vendorId'] ?? 0 );
-			$user      = get_userdata( $vendor_id );
-			if ( $vendor_id <= 0 || ! $user instanceof WP_User || ! papelito_user_is_effective_seller( $user ) ) {
-				return new WP_Error( 'papelito_kit_merchandise_vendor_invalid', 'Selecione um vendor válido para o estoque do brinde.', array( 'status' => 422 ) );
-			}
-		}
 	}
 	$kit = null !== $kit_id ? papelito_kit_get( $kit_id ) : null;
 	if ( null !== $kit_id && ! $kit ) {
@@ -694,11 +542,13 @@ function papelito_kit_write( array $payload, ?int $kit_id = null ) {
 		$product_id = absint( $item['productId'] ?? 0 );
 		$quantity   = absint( $item['quantity'] ?? 0 );
 		if ( $product_id <= 0 || $product_id === (int) $product->get_id() || $quantity <= 0 || ! wc_get_product( $product_id ) || papelito_kit_is_product( $product_id ) ) {
+			$wpdb->query( 'ROLLBACK' );
 			return new WP_Error( 'papelito_kit_component_invalid', 'Os produtos do Kit precisam ser produtos comuns, únicos e com quantidade positiva.', array( 'status' => 422 ) );
 		}
 		$normalized_items[ $product_id ] = $quantity;
 	}
 	if ( count( $normalized_items ) !== count( $items ) ) {
+		$wpdb->query( 'ROLLBACK' );
 		return new WP_Error( 'papelito_kit_component_duplicate', 'Um produto só pode ser adicionado uma vez ao Kit.', array( 'status' => 422 ) );
 	}
 	$wpdb->delete( $tables['items'], array( 'kit_id' => $kit_id ), array( '%d' ) );
@@ -721,10 +571,12 @@ function papelito_kit_write( array $payload, ?int $kit_id = null ) {
 		$dimensions          = array_map( static fn( $value ): float => (float) wc_format_decimal( (string) $value ), array( $item['weight'] ?? 0, $item['length'] ?? 0, $item['width'] ?? 0, $item['height'] ?? 0 ) );
 		$image_attachment_id = absint( $item['imageAttachmentId'] ?? 0 );
 		if ( '' === $name || $quantity <= 0 || min( $dimensions ) <= 0 || ! wp_attachment_is_image( $image_attachment_id ) ) {
+			$wpdb->query( 'ROLLBACK' );
 			return new WP_Error( 'papelito_kit_merchandise_invalid', 'Todo brinde precisa de imagem, nome, quantidade, peso e dimensões positivos.', array( 'status' => 422 ) );
 		}
-		$merchandise_id = absint( $item['id'] ?? 0 );
-		if ( $merchandise_id > 0 && in_array( $merchandise_id, array_map( 'intval', $existing_merchandise ), true ) ) {
+		$merchandise_id          = absint( $item['id'] ?? 0 );
+		$is_existing_merchandise = $merchandise_id > 0 && in_array( $merchandise_id, array_map( 'intval', $existing_merchandise ), true );
+		if ( $is_existing_merchandise ) {
 			$wpdb->update(
 				$tables['merchandise'],
 				array(
@@ -758,15 +610,8 @@ function papelito_kit_write( array $payload, ?int $kit_id = null ) {
 			$merchandise_id = (int) $wpdb->insert_id;
 		}
 		$submitted_merchandise[] = $merchandise_id;
-		$wpdb->delete( $tables['merch_stock'], array( 'merchandise_id' => $merchandise_id ), array( '%d' ) );
-		foreach ( (array) ( $item['stocks'] ?? array() ) as $stock ) {
-			$vendor_id = absint( $stock['vendorId'] ?? 0 );
-			$stock_qty = max( 0, (int) ( $stock['qty'] ?? 0 ) );
-			$wpdb->query( $wpdb->prepare( "INSERT INTO {$tables['merch_stock']} (merchandise_id, vendor_id, qty) VALUES (%d, %d, %d) ON DUPLICATE KEY UPDATE qty = VALUES(qty)", $merchandise_id, $vendor_id, $stock_qty ) );
-		}
 	}
 	foreach ( array_diff( array_map( 'intval', $existing_merchandise ), $submitted_merchandise ) as $merchandise_id ) {
-		$wpdb->delete( $tables['merch_stock'], array( 'merchandise_id' => $merchandise_id ), array( '%d' ) );
 		$wpdb->delete( $tables['merchandise'], array( 'id' => $merchandise_id ), array( '%d' ) );
 	}
 	$wpdb->query( 'COMMIT' );

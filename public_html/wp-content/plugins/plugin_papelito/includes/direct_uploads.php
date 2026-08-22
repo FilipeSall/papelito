@@ -10,6 +10,25 @@ defined( 'ABSPATH' ) || exit;
 const PAPELITO_DIRECT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024;
 const PAPELITO_DIRECT_UPLOAD_TICKET_TTL = 300;
 const PAPELITO_DIRECT_UPLOAD_PURGE_HOOK = 'papelito_direct_upload_purge_claims_event';
+const PAPELITO_TEMPORARY_ADMIN_MEDIA_META = '_papelito_temporary_admin_media';
+const PAPELITO_TEMPORARY_ADMIN_MEDIA_TTL  = HOUR_IN_SECONDS;
+
+function papelito_mark_temporary_admin_media( int $attachment_id, int $user_id ): void {
+	if ( $attachment_id <= 0 || $user_id <= 0 ) {
+		return;
+	}
+
+	update_post_meta(
+		$attachment_id,
+		PAPELITO_TEMPORARY_ADMIN_MEDIA_META,
+		wp_json_encode(
+			array(
+				'user_id'    => $user_id,
+				'expires_at' => time() + PAPELITO_TEMPORARY_ADMIN_MEDIA_TTL,
+			)
+		)
+	);
+}
 
 function papelito_direct_upload_error( string $code, string $message, int $status ): WP_Error {
 	return new WP_Error( $code, $message, array( 'status' => $status ) );
@@ -208,10 +227,13 @@ function papelito_direct_upload_media( array $ticket, array $file ) {
 		return papelito_direct_upload_media_failure( $response->get_status(), $code );
 	}
 
+	$attachment_id = is_array( $data ) ? (int) ( $data['id'] ?? 0 ) : 0;
+	papelito_mark_temporary_admin_media( $attachment_id, $user_id );
+
 	return array(
 		'media' => array(
 			'alt' => is_array( $data ) ? (string) ( $data['alt_text'] ?? '' ) : '',
-			'id'  => is_array( $data ) ? (int) ( $data['id'] ?? 0 ) : 0,
+			'id'  => $attachment_id,
 			'src' => is_array( $data ) ? (string) ( $data['source_url'] ?? '' ) : '',
 		),
 	);

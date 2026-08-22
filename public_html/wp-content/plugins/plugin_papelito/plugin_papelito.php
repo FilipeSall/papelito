@@ -34,6 +34,7 @@ require_once __DIR__ . '/includes/home_assets.php';
 require_once __DIR__ . '/includes/media_uploads.php';
 require_once __DIR__ . '/includes/image_validation.php';
 require_once __DIR__ . '/includes/direct_uploads.php';
+require_once __DIR__ . '/includes/admin_media_cleanup.php';
 require_once __DIR__ . '/includes/admin_reports.php';
 require_once __DIR__ . '/includes/admin_users.php';
 require_once __DIR__ . '/includes/shipping.php';
@@ -85,7 +86,7 @@ require_once __DIR__ . '/includes/billing_email_sync.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.30.0' );
+	define( 'PAPELITO_DB_VERSION', '1.31.0' );
 }
 
 /**

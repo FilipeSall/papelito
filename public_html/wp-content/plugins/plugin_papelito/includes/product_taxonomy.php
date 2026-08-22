@@ -1109,6 +1109,11 @@ function papelito_product_taxonomy_resolve_collections( array $data ) {
 		if ( '' === $slug ) {
 			continue;
 		}
+		if ( 'kits' === $slug ) {
+			// Aceita o valor legado para que uma edição comum consiga removê-lo
+			// sem reintroduzir a coleção no novo modelo de Kits.
+			continue;
+		}
 
 		if ( ! in_array( $slug, $allowed, true ) ) {
 			return new WP_Error( 'papelito_collection_unknown', 'Coleção desconhecida: ' . $slug, array( 'status' => 422 ) );

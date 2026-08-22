@@ -106,7 +106,10 @@ function papelito_coverage_vendors( string $cep, int $product_id, int $qty, int 
 		return array();
 	}
 
-	$matching_vendor_ids = $active_vendor > 0 ? array( $active_vendor ) : papelito_matching_vendor_ids( (int) $cep_n );
+	$matching_vendor_ids = papelito_matching_vendor_ids( (int) $cep_n );
+	if ( $active_vendor > 0 ) {
+		$matching_vendor_ids = array_values( array_intersect( $matching_vendor_ids, array( $active_vendor ) ) );
+	}
 	if ( empty( $matching_vendor_ids ) ) {
 		return array();
 	}
