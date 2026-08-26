@@ -745,6 +745,60 @@ function papelito_pre_account_application_reject( array $application, int $actor
 	return papelito_pre_account_application_view( papelito_pre_account_application_get( (int) $application['id'] ) ?: $application );
 }
 
+/**
+ * Encerra candidaturas abertas quando o fluxo de vendor vence por e-mail.
+ *
+ * @param string $email         E-mail da conta vendor.
+ * @param int    $actor_user_id Administrador responsável pela decisão.
+ * @return true|WP_Error
+ */
+function papelito_pre_account_application_reject_open_for_vendor( string $email, int $actor_user_id ): true|WP_Error {
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$hmac   = papelito_pii_hmac( strtolower( trim( $email ) ) );
+	if ( is_wp_error( $hmac ) ) {
+		return $hmac;
+	}
+
+	$applications = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT id FROM {$tables['pre_account_applications']} WHERE contact_email_hmac = %s AND is_open = 1 AND application_status IN ('document_required', 'pending_manual_review') FOR UPDATE",
+			$hmac
+		),
+		ARRAY_A
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	if ( ! is_array( $applications ) ) {
+		return new WP_Error( 'papelito_pre_account_vendor_conflict_lookup_failed', 'Não foi possível verificar candidaturas empresariais abertas.', array( 'status' => 500 ) );
+	}
+
+	$now = current_time( 'mysql', true );
+	foreach ( $applications as $application ) {
+		$updated = $wpdb->query(
+			$wpdb->prepare(
+				"UPDATE {$tables['pre_account_applications']} SET application_status = 'rejected', is_open = NULL, decided_by_user_id = %d, decided_at = %s, rejection_reason = %s, updated_at = %s WHERE id = %d AND is_open = 1",
+				$actor_user_id,
+				$now,
+				'Conta direcionada para o fluxo de vendor por decisão administrativa.',
+				$now,
+				(int) $application['id']
+			)
+		); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+		if ( 1 !== $updated ) {
+			return new WP_Error( 'papelito_pre_account_vendor_decision_conflict', PAPELITO_PRE_ACCOUNT_DECISION_CONFLICT_MESSAGE, array( 'status' => 409 ) );
+		}
+
+		papelito_pre_account_application_purge_document( (int) $application['id'] );
+		$decided = papelito_pre_account_application_get( (int) $application['id'] );
+		if ( $decided ) {
+			papelito_pre_account_application_send_decision_email( $decided );
+		}
+	}
+
+	return true;
+}
+
 function papelito_pre_account_application_send_decision_email( array $application ): void {
 	$status = (string) $application['application_status'];
 	if ( ! in_array( $status, array( 'approved', 'rejected' ), true ) ) {

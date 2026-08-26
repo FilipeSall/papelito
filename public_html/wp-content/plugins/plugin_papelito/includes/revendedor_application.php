@@ -27,6 +27,15 @@ const PAPELITO_VENDOR_PAGARME_RECIPIENT_DRAFT_META        = 'papelito_pagarme_re
 const PAPELITO_VENDOR_PAGARME_RECIPIENT_DRAFT_UPDATED_AT  = 'papelito_pagarme_recipient_draft_updated_at';
 const PAPELITO_VENDOR_PENDING_FIELDS_META                 = 'papelito_vendor_pending_registration_fields';
 const PAPELITO_VENDOR_PENDING_FIELDS_UPDATED_AT_META      = 'papelito_vendor_pending_registration_fields_updated_at';
+const PAPELITO_VENDOR_DATE_PATTERN                        = '/^\d{4}\-\d{2}\-\d{2}$/';
+const PAPELITO_VENDOR_CNPJ_PATTERN                        = '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/';
+const PAPELITO_VENDOR_BANK_CODE_PATTERN                   = '/^\d{3}$/';
+const PAPELITO_VENDOR_DIGITS_PATTERN                      = '/^\d+$/';
+const PAPELITO_VENDOR_ACCOUNT_CHECK_DIGIT_PATTERN         = '/^[0-9A-Za-z]+$/';
+const PAPELITO_VENDOR_MISSING_STORE_NAME_MESSAGE         = 'Informe o nome da loja.';
+const PAPELITO_VENDOR_UNAUTHENTICATED_MESSAGE            = 'Usuario nao autenticado.';
+const PAPELITO_VENDOR_INVALID_PAYLOAD_MESSAGE            = 'Payload invalido.';
+const PAPELITO_VENDOR_NOT_FOUND_MESSAGE                  = 'Vendor nao encontrado.';
 
 /**
  * Retorna data/hora em UTC no mesmo formato usado pelo fluxo de mensagens.
@@ -385,7 +394,7 @@ function papelito_sanitize_vendor_pagarme_step3_partial( array $step3, array $co
 		? $step3['bankAccount']
 		: array();
 
-	$normalized = array(
+	return array(
 		'companyName'      => sanitize_text_field( (string) ( $step3['companyName'] ?? $store_name ) ),
 		'tradingName'      => sanitize_text_field( (string) ( $step3['tradingName'] ?? $store_name ) ),
 		'corporationType'  => sanitize_text_field( (string) ( $step3['corporationType'] ?? '' ) ),
@@ -428,8 +437,6 @@ function papelito_sanitize_vendor_pagarme_step3_partial( array $step3, array $co
 			'day'      => sanitize_text_field( (string) ( $step3['transfer']['day'] ?? $base['transfer']['day'] ) ),
 		),
 	);
-
-	return $normalized;
 }
 
 /**
@@ -439,8 +446,23 @@ function papelito_sanitize_vendor_pagarme_step3_partial( array $step3, array $co
  * @return array<int, string>
  */
 function papelito_collect_vendor_pending_registration_fields( array $step3 ): array {
-	$pending = array();
+	$pending = array_merge(
+		papelito_collect_vendor_pending_company_fields( $step3 ),
+		papelito_collect_vendor_pending_partner_fields( $step3 ),
+		papelito_collect_vendor_pending_bank_fields( $step3 )
+	);
 
+	return array_values( array_intersect( papelito_vendor_pending_registration_allowed_fields(), array_unique( $pending ) ) );
+}
+
+/**
+ * Coleta campos empresariais pendentes do step 3.
+ *
+ * @param array $step3 Dados do step 3.
+ * @return array<int, string>
+ */
+function papelito_collect_vendor_pending_company_fields( array $step3 ): array {
+	$pending          = array();
 	$company_name     = sanitize_text_field( (string) ( $step3['companyName'] ?? '' ) );
 	$trading_name     = sanitize_text_field( (string) ( $step3['tradingName'] ?? '' ) );
 	$corporation_type = sanitize_text_field( (string) ( $step3['corporationType'] ?? '' ) );
@@ -456,19 +478,26 @@ function papelito_collect_vendor_pending_registration_fields( array $step3 ): ar
 	if ( '' === $corporation_type ) {
 		$pending[] = 'corporationType';
 	}
-	if ( 1 !== preg_match( '/^\d{4}\-\d{2}\-\d{2}$/', $founding_date ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_DATE_PATTERN, $founding_date ) ) {
 		$pending[] = 'foundingDate';
 	}
 	if ( ! is_numeric( $annual_revenue ) || (float) $annual_revenue <= 0 ) {
 		$pending[] = 'annualRevenue';
 	}
 
-	$partner = isset( $step3['managingPartners'][0] ) && is_array( $step3['managingPartners'][0] )
-		? $step3['managingPartners'][0]
-		: array();
-	$partner_address = isset( $partner['address'] ) && is_array( $partner['address'] )
-		? $partner['address']
-		: array();
+	return $pending;
+}
+
+/**
+ * Coleta campos do socio administrador pendentes do step 3.
+ *
+ * @param array $step3 Dados do step 3.
+ * @return array<int, string>
+ */
+function papelito_collect_vendor_pending_partner_fields( array $step3 ): array {
+	$pending = array();
+	$partner = isset( $step3['managingPartners'][0] ) && is_array( $step3['managingPartners'][0] ) ? $step3['managingPartners'][0] : array();
+	$address = isset( $partner['address'] ) && is_array( $partner['address'] ) ? $partner['address'] : array();
 
 	if ( '' === sanitize_text_field( (string) ( $partner['name'] ?? '' ) ) ) {
 		$pending[] = 'partner.name';
@@ -476,13 +505,13 @@ function papelito_collect_vendor_pending_registration_fields( array $step3 ): ar
 	if ( ! is_email( sanitize_email( (string) ( $partner['email'] ?? '' ) ) ) ) {
 		$pending[] = 'partner.email';
 	}
-if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' ) ) ) {
+	if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' ) ) ) {
 		$pending[] = 'partner.document';
 	}
 	if ( '' === sanitize_text_field( (string) ( $partner['motherName'] ?? '' ) ) ) {
 		$pending[] = 'partner.motherName';
 	}
-	if ( 1 !== preg_match( '/^\d{4}\-\d{2}\-\d{2}$/', sanitize_text_field( (string) ( $partner['birthdate'] ?? '' ) ) ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_DATE_PATTERN, sanitize_text_field( (string) ( $partner['birthdate'] ?? '' ) ) ) ) {
 		$pending[] = 'partner.birthdate';
 	}
 
@@ -494,56 +523,59 @@ if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' )
 		$pending[] = 'partner.professionalOccupation';
 	}
 
-	$zip = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $partner_address['zipCode'] ?? '' ) ) : '';
+	$zip = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $address['zipCode'] ?? '' ) ) : '';
 	if ( '' === $zip ) {
 		$pending[] = 'partner.address.zipCode';
 	}
-	if ( '' === sanitize_text_field( (string) ( $partner_address['street'] ?? '' ) ) ) {
-		$pending[] = 'partner.address.street';
-	}
-	if ( '' === sanitize_text_field( (string) ( $partner_address['streetNumber'] ?? '' ) ) ) {
-		$pending[] = 'partner.address.streetNumber';
-	}
-	if ( '' === sanitize_text_field( (string) ( $partner_address['neighborhood'] ?? '' ) ) ) {
-		$pending[] = 'partner.address.neighborhood';
-	}
-	if ( '' === sanitize_text_field( (string) ( $partner_address['city'] ?? '' ) ) ) {
-		$pending[] = 'partner.address.city';
+	foreach ( array( 'street', 'streetNumber', 'neighborhood', 'city' ) as $field ) {
+		if ( '' === sanitize_text_field( (string) ( $address[ $field ] ?? '' ) ) ) {
+			$pending[] = 'partner.address.' . $field;
+		}
 	}
 
-	$partner_state = sanitize_text_field( (string) ( $partner_address['state'] ?? '' ) );
-	if ( '' === $partner_state || ! array_key_exists( $partner_state, papelito_brazilian_states() ) ) {
+	$state = sanitize_text_field( (string) ( $address['state'] ?? '' ) );
+	if ( '' === $state || ! array_key_exists( $state, papelito_brazilian_states() ) ) {
 		$pending[] = 'partner.address.state';
 	}
 
-	$bank_account    = isset( $step3['bankAccount'] ) && is_array( $step3['bankAccount'] ) ? $step3['bankAccount'] : array();
-	$holder_type     = sanitize_text_field( (string) ( $bank_account['holderType'] ?? '' ) );
+	return $pending;
+}
+
+/**
+ * Coleta campos bancarios pendentes do step 3.
+ *
+ * @param array $step3 Dados do step 3.
+ * @return array<int, string>
+ */
+function papelito_collect_vendor_pending_bank_fields( array $step3 ): array {
+	$pending        = array();
+	$bank_account   = isset( $step3['bankAccount'] ) && is_array( $step3['bankAccount'] ) ? $step3['bankAccount'] : array();
+	$holder_type    = sanitize_text_field( (string) ( $bank_account['holderType'] ?? '' ) );
 	$holder_document = (string) ( $bank_account['holderDocument'] ?? '' );
 
 	if ( '' === sanitize_text_field( (string) ( $bank_account['holderName'] ?? '' ) ) ) {
 		$pending[] = 'bankAccount.holderName';
 	}
-	if ( 'individual' === $holder_type ) {
-if ( ! papelito_revendedor_validate_cpf( $holder_document ) ) {
-			$pending[] = 'bankAccount.holderDocument';
-		}
-	} elseif ( 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $holder_document ) ) {
+	$document_valid = 'individual' === $holder_type
+		? papelito_revendedor_validate_cpf( $holder_document )
+		: 1 === preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $holder_document );
+	if ( ! $document_valid ) {
 		$pending[] = 'bankAccount.holderDocument';
 	}
-	if ( 1 !== preg_match( '/^\d{3}$/', sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ) ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_BANK_CODE_PATTERN, sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ) ) ) {
 		$pending[] = 'bankAccount.bankCode';
 	}
-	if ( 1 !== preg_match( '/^\d+$/', sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ) ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_DIGITS_PATTERN, sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ) ) ) {
 		$pending[] = 'bankAccount.branchNumber';
 	}
-	if ( 1 !== preg_match( '/^\d+$/', sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ) ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_DIGITS_PATTERN, sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ) ) ) {
 		$pending[] = 'bankAccount.accountNumber';
 	}
-	if ( 1 !== preg_match( '/^[0-9A-Za-z]+$/', sanitize_text_field( (string) ( $bank_account['accountCheckDigit'] ?? '' ) ) ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_ACCOUNT_CHECK_DIGIT_PATTERN, sanitize_text_field( (string) ( $bank_account['accountCheckDigit'] ?? '' ) ) ) ) {
 		$pending[] = 'bankAccount.accountCheckDigit';
 	}
 
-	return array_values( array_intersect( papelito_vendor_pending_registration_allowed_fields(), array_unique( $pending ) ) );
+	return $pending;
 }
 
 /**
@@ -815,95 +847,9 @@ function papelito_update_vendor_pending_registration_rest( int $user_id, array $
 	$draft_input = isset( $step3['draft'] ) && is_array( $step3['draft'] ) ? $step3['draft'] : $step3;
 
 	if ( is_array( $application ) ) {
-		$step1 = isset( $application['step1'] ) && is_array( $application['step1'] ) ? $application['step1'] : array();
-		$step2 = isset( $application['step2'] ) && is_array( $application['step2'] ) ? $application['step2'] : array();
-
-		$email = sanitize_email( (string) ( $step1['email'] ?? '' ) );
-		$cnpj  = sanitize_text_field( (string) ( $step1['cnpj'] ?? '' ) );
-
-		if ( '' === $email || ! is_email( $email ) ) {
-			return new WP_Error( 'papelito_vendor_invalid_email', 'Informe um e-mail valido.', array( 'status' => 422 ) );
-		}
-
-		$existing_user = get_user_by( 'email', $email );
-		if ( $existing_user instanceof WP_User && (int) $existing_user->ID !== $user_id ) {
-			return new WP_Error( 'papelito_vendor_email_exists', 'Ja existe uma conta com este e-mail.', array( 'status' => 409 ) );
-		}
-
-		if ( 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $cnpj ) ) {
-			return new WP_Error( 'papelito_vendor_invalid_cnpj', 'Informe um CNPJ valido.', array( 'status' => 422 ) );
-		}
-
-		if ( papelito_admin_vendors_cnpj_exists( $cnpj, $user_id ) ) {
-			return new WP_Error( 'papelito_vendor_cnpj_exists', 'Ja existe uma conta com este CNPJ.', array( 'status' => 409 ) );
-		}
-
-		$ranges = papelito_admin_vendors_normalize_coverage_ranges( $application['coverageRanges'] ?? null );
-		if ( is_wp_error( $ranges ) ) {
-			return $ranges;
-		}
-
-		$street       = sanitize_text_field( (string) ( $step2['street'] ?? '' ) );
-		$number       = sanitize_text_field( (string) ( $step2['number'] ?? '' ) );
-		$neighborhood = sanitize_text_field( (string) ( $step2['neighborhood'] ?? '' ) );
-		$state        = sanitize_text_field( (string) ( $step2['state'] ?? '' ) );
-		$city         = sanitize_text_field( (string) ( $step2['city'] ?? '' ) );
-		$store_name   = sanitize_text_field( (string) ( $step1['storeName'] ?? '' ) );
-		$first_name   = sanitize_text_field( (string) ( $step1['firstName'] ?? '' ) );
-		$last_name    = sanitize_text_field( (string) ( $step1['lastName'] ?? '' ) );
-		$display_name = trim( $first_name . ' ' . $last_name );
-
-		if ( '' === $display_name ) {
-			$display_name = '' !== $store_name ? $store_name : $email;
-		}
-
-		if ( '' === $store_name ) {
-			return new WP_Error( 'papelito_vendor_missing_store_name', 'Informe o nome da loja.', array( 'status' => 422 ) );
-		}
-
-		if ( '' === $street || '' === $number || '' === $neighborhood || '' === $city || '' === $state ) {
-			return new WP_Error( 'papelito_vendor_incomplete_address', 'Informe o endereco comercial completo do vendor.', array( 'status' => 422 ) );
-		}
-
-		$user_update = wp_update_user(
-			array(
-				'ID'           => $user_id,
-				'user_email'   => $email,
-				'first_name'   => $first_name,
-				'last_name'    => $last_name,
-				'display_name' => $display_name,
-			)
-		);
-
-		if ( is_wp_error( $user_update ) ) {
-			return $user_update;
-		}
-
-		update_user_meta( $user_id, 'store_name', $store_name );
-		update_user_meta( $user_id, 'phone_number', papelito_auth_format_phone( (string) ( $step1['phone'] ?? '' ) ) );
-		update_user_meta( $user_id, 'cnpj', $cnpj );
-		update_user_meta( $user_id, 'instagram', sanitize_text_field( ltrim( (string) ( $step1['instagram'] ?? '' ), '@' ) ) );
-		update_user_meta( $user_id, 'state', $state );
-		update_user_meta( $user_id, 'city', $city );
-		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STREET_META, $street );
-		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NUMBER_META, $number );
-		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META, sanitize_text_field( (string) ( $step2['complement'] ?? '' ) ) );
-		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, $neighborhood );
-		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META, sanitize_text_field( (string) ( $step1['discoveryChannel'] ?? '' ) ) );
-		update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, sanitize_text_field( (string) ( $step1['hasSoldPapelito'] ?? '' ) ) );
-
-		$cep_base = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $step2['cep'] ?? '' ) ) : '';
-		update_user_meta( $user_id, 'cep', $cep_base );
-
-		delete_user_meta( $user_id, 'min_cep' );
-		delete_user_meta( $user_id, 'max_cep' );
-		foreach ( $ranges as $range ) {
-			add_user_meta( $user_id, 'min_cep', $range['minCep'], false );
-			add_user_meta( $user_id, 'max_cep', $range['maxCep'], false );
-		}
-
-		if ( function_exists( 'papelito_apply_vendor_geo' ) && '' !== $cep_base ) {
-			papelito_apply_vendor_geo( $user_id, $cep_base );
+		$application_result = papelito_apply_vendor_pending_registration_application( $user_id, $application );
+		if ( is_wp_error( $application_result ) ) {
+			return $application_result;
 		}
 	}
 
@@ -941,6 +887,100 @@ function papelito_update_vendor_pending_registration_rest( int $user_id, array $
 	papelito_sync_vendor_recipient_after_registration_update( $user_id, $pending_fields );
 
 	return papelito_get_vendor_pending_registration_rest_response( $user_id );
+}
+
+/**
+ * Atualiza os dados cadastrais enviados junto do onboarding financeiro.
+ *
+ * @param int   $user_id Usuario.
+ * @param array $application Aplicacao aninhada.
+ * @return true|WP_Error
+ */
+function papelito_apply_vendor_pending_registration_application( int $user_id, array $application ) {
+	$step1 = isset( $application['step1'] ) && is_array( $application['step1'] ) ? $application['step1'] : array();
+	$step2 = isset( $application['step2'] ) && is_array( $application['step2'] ) ? $application['step2'] : array();
+	$email = sanitize_email( (string) ( $step1['email'] ?? '' ) );
+	$cnpj  = sanitize_text_field( (string) ( $step1['cnpj'] ?? '' ) );
+
+	if ( '' === $email || ! is_email( $email ) ) {
+		return new WP_Error( 'papelito_vendor_invalid_email', 'Informe um e-mail valido.', array( 'status' => 422 ) );
+	}
+
+	$existing_user = get_user_by( 'email', $email );
+	if ( $existing_user instanceof WP_User && (int) $existing_user->ID !== $user_id ) {
+		return new WP_Error( 'papelito_vendor_email_exists', 'Ja existe uma conta com este e-mail.', array( 'status' => 409 ) );
+	}
+	if ( 1 !== preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $cnpj ) ) {
+		return new WP_Error( 'papelito_vendor_invalid_cnpj', 'Informe um CNPJ valido.', array( 'status' => 422 ) );
+	}
+	if ( papelito_admin_vendors_cnpj_exists( $cnpj, $user_id ) ) {
+		return new WP_Error( 'papelito_vendor_cnpj_exists', 'Ja existe uma conta com este CNPJ.', array( 'status' => 409 ) );
+	}
+
+	$ranges = papelito_admin_vendors_normalize_coverage_ranges( $application['coverageRanges'] ?? null );
+	if ( is_wp_error( $ranges ) ) {
+		return $ranges;
+	}
+
+	$street       = sanitize_text_field( (string) ( $step2['street'] ?? '' ) );
+	$number       = sanitize_text_field( (string) ( $step2['number'] ?? '' ) );
+	$neighborhood = sanitize_text_field( (string) ( $step2['neighborhood'] ?? '' ) );
+	$state        = sanitize_text_field( (string) ( $step2['state'] ?? '' ) );
+	$city         = sanitize_text_field( (string) ( $step2['city'] ?? '' ) );
+	$store_name   = sanitize_text_field( (string) ( $step1['storeName'] ?? '' ) );
+	$first_name   = sanitize_text_field( (string) ( $step1['firstName'] ?? '' ) );
+	$last_name    = sanitize_text_field( (string) ( $step1['lastName'] ?? '' ) );
+	$display_name = trim( $first_name . ' ' . $last_name );
+
+	if ( '' === $display_name ) {
+		$display_name = '' !== $store_name ? $store_name : $email;
+	}
+	if ( '' === $store_name ) {
+		return new WP_Error( 'papelito_vendor_missing_store_name', PAPELITO_VENDOR_MISSING_STORE_NAME_MESSAGE, array( 'status' => 422 ) );
+	}
+	if ( '' === $street || '' === $number || '' === $neighborhood || '' === $city || '' === $state ) {
+		return new WP_Error( 'papelito_vendor_incomplete_address', 'Informe o endereco comercial completo do vendor.', array( 'status' => 422 ) );
+	}
+
+	$user_update = wp_update_user(
+		array(
+			'ID'           => $user_id,
+			'user_email'   => $email,
+			'first_name'   => $first_name,
+			'last_name'    => $last_name,
+			'display_name' => $display_name,
+		)
+	);
+	if ( is_wp_error( $user_update ) ) {
+		return $user_update;
+	}
+
+	update_user_meta( $user_id, 'store_name', $store_name );
+	update_user_meta( $user_id, 'phone_number', papelito_auth_format_phone( (string) ( $step1['phone'] ?? '' ) ) );
+	update_user_meta( $user_id, 'cnpj', $cnpj );
+	update_user_meta( $user_id, 'instagram', sanitize_text_field( ltrim( (string) ( $step1['instagram'] ?? '' ), '@' ) ) );
+	update_user_meta( $user_id, 'state', $state );
+	update_user_meta( $user_id, 'city', $city );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STREET_META, $street );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NUMBER_META, $number );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META, sanitize_text_field( (string) ( $step2['complement'] ?? '' ) ) );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, $neighborhood );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META, sanitize_text_field( (string) ( $step1['discoveryChannel'] ?? '' ) ) );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, sanitize_text_field( (string) ( $step1['hasSoldPapelito'] ?? '' ) ) );
+
+	$cep_base = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $step2['cep'] ?? '' ) ) : '';
+	update_user_meta( $user_id, 'cep', $cep_base );
+	delete_user_meta( $user_id, 'min_cep' );
+	delete_user_meta( $user_id, 'max_cep' );
+	foreach ( $ranges as $range ) {
+		add_user_meta( $user_id, 'min_cep', $range['minCep'], false );
+		add_user_meta( $user_id, 'max_cep', $range['maxCep'], false );
+	}
+	if ( function_exists( 'papelito_apply_vendor_geo' ) && '' !== $cep_base ) {
+		papelito_apply_vendor_geo( $user_id, $cep_base );
+	}
+
+	return true;
 }
 
 /**
@@ -1021,6 +1061,21 @@ function papelito_calculate_cpf_digit( string $value, int $weight ): int {
  */
 function papelito_validate_vendor_pagarme_step3( array $step3 ) {
 	$errors = new WP_Error();
+	papelito_validate_vendor_pagarme_company_fields( $step3, $errors );
+	papelito_validate_vendor_pagarme_partner_fields( $step3, $errors );
+	papelito_validate_vendor_pagarme_bank_fields( $step3, $errors );
+
+	return $errors->has_errors() ? $errors : null;
+}
+
+/**
+ * Valida os dados empresariais do step 3.
+ *
+ * @param array    $step3 Dados do step 3.
+ * @param WP_Error $errors Acumulador de erros.
+ * @return void
+ */
+function papelito_validate_vendor_pagarme_company_fields( array $step3, WP_Error $errors ): void {
 
 	$company_name     = sanitize_text_field( (string) ( $step3['companyName'] ?? '' ) );
 	$trading_name     = sanitize_text_field( (string) ( $step3['tradingName'] ?? '' ) );
@@ -1037,13 +1092,22 @@ function papelito_validate_vendor_pagarme_step3( array $step3 ) {
 	if ( '' === $corporation_type ) {
 		$errors->add( 'corporationType', 'Informe a natureza jurídica.' );
 	}
-	if ( 1 !== preg_match( '/^\d{4}\-\d{2}\-\d{2}$/', $founding_date ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_DATE_PATTERN, $founding_date ) ) {
 		$errors->add( 'foundingDate', 'Informe uma data de fundacao válida.' );
 	}
 	if ( ! is_numeric( $annual_revenue ) || (float) $annual_revenue <= 0 ) {
 		$errors->add( 'annualRevenue', 'Informe o faturamento anual.' );
 	}
+}
 
+/**
+ * Valida os dados do socio administrador do step 3.
+ *
+ * @param array    $step3 Dados do step 3.
+ * @param WP_Error $errors Acumulador de erros.
+ * @return void
+ */
+function papelito_validate_vendor_pagarme_partner_fields( array $step3, WP_Error $errors ): void {
 	$partners = isset( $step3['managingPartners'] ) && is_array( $step3['managingPartners'] ) ? $step3['managingPartners'] : array();
 	if ( empty( $partners ) ) {
 		$errors->add( 'managingPartners', 'Informe ao menos um socio administrador.' );
@@ -1062,7 +1126,7 @@ if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' )
 		if ( '' === sanitize_text_field( (string) ( $partner['motherName'] ?? '' ) ) ) {
 			$errors->add( 'partnerMotherName', 'Informe o nome da mae do socio.' );
 		}
-		if ( 1 !== preg_match( '/^\d{4}\-\d{2}\-\d{2}$/', sanitize_text_field( (string) ( $partner['birthdate'] ?? '' ) ) ) ) {
+		if ( 1 !== preg_match( PAPELITO_VENDOR_DATE_PATTERN, sanitize_text_field( (string) ( $partner['birthdate'] ?? '' ) ) ) ) {
 			$errors->add( 'partnerBirthdate', 'Informe a data de nascimento do socio.' );
 		}
 
@@ -1098,7 +1162,16 @@ if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' )
 			$errors->add( 'partnerState', 'Selecione um estado válido para o socio.' );
 		}
 	}
+}
 
+/**
+ * Valida os dados bancarios do step 3.
+ *
+ * @param array    $step3 Dados do step 3.
+ * @param WP_Error $errors Acumulador de erros.
+ * @return void
+ */
+function papelito_validate_vendor_pagarme_bank_fields( array $step3, WP_Error $errors ): void {
 	$bank_account = isset( $step3['bankAccount'] ) && is_array( $step3['bankAccount'] ) ? $step3['bankAccount'] : array();
 	$holder_type  = sanitize_text_field( (string) ( $bank_account['holderType'] ?? '' ) );
 
@@ -1111,24 +1184,22 @@ if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' )
 if ( ! papelito_revendedor_validate_cpf( $holder_document ) ) {
 			$errors->add( 'bankHolderDocument', 'Informe um CPF válido para o titular.' );
 		}
-	} elseif ( 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $holder_document ) ) {
+	} elseif ( 1 !== preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $holder_document ) ) {
 		$errors->add( 'bankHolderDocument', 'Informe um CNPJ válido para o titular.' );
 	}
 
-	if ( 1 !== preg_match( '/^\d{3}$/', sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ) ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_BANK_CODE_PATTERN, sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ) ) ) {
 		$errors->add( 'bankCode', 'Informe um código bancário com 3 digitos.' );
 	}
-	if ( 1 !== preg_match( '/^\d+$/', sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ) ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_DIGITS_PATTERN, sanitize_text_field( (string) ( $bank_account['branchNumber'] ?? '' ) ) ) ) {
 		$errors->add( 'branchNumber', 'Informe uma agência válida.' );
 	}
-	if ( 1 !== preg_match( '/^\d+$/', sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ) ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_DIGITS_PATTERN, sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ) ) ) {
 		$errors->add( 'accountNumber', 'Informe uma conta válida.' );
 	}
-	if ( 1 !== preg_match( '/^[0-9A-Za-z]+$/', sanitize_text_field( (string) ( $bank_account['accountCheckDigit'] ?? '' ) ) ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_ACCOUNT_CHECK_DIGIT_PATTERN, sanitize_text_field( (string) ( $bank_account['accountCheckDigit'] ?? '' ) ) ) ) {
 		$errors->add( 'accountCheckDigit', 'Informe o digito da conta.' );
 	}
-
-	return $errors->has_errors() ? $errors : null;
 }
 
 /**
@@ -1199,37 +1270,6 @@ function papelito_submit_vendor_application_rest( int $user_id, array $payload )
 		'O autocadastro de vendors foi removido.',
 		array( 'status' => 410 )
 	);
-
-	$step3 = isset( $payload['step3'] ) && is_array( $payload['step3'] ) ? $payload['step3'] : array();
-	$step2 = isset( $payload['step2'] ) && is_array( $payload['step2'] ) ? $payload['step2'] : array();
-
-	$step2_validation = papelito_validate_vendor_address_step2( $step2 );
-	if ( $step2_validation instanceof WP_Error ) {
-		$step2_validation->add_data( array( 'status' => 422 ) );
-		return $step2_validation;
-	}
-
-	$step3_validation = papelito_validate_vendor_pagarme_step3( $step3 );
-	if ( $step3_validation instanceof WP_Error ) {
-		$step3_validation->add_data( array( 'status' => 422 ) );
-		return $step3_validation;
-	}
-
-	$legacy_input = papelito_flatten_vendor_application_payload( $payload );
-	$result       = papelito_submit_seller_application( $user_id, $legacy_input );
-
-	if ( is_wp_error( $result ) ) {
-		return $result;
-	}
-
-	papelito_save_seller_application_address_data( $user_id, $step2 );
-	papelito_save_vendor_pagarme_recipient_draft( $user_id, $step3 );
-	papelito_refresh_vendor_pending_registration_state( $user_id, papelito_sanitize_vendor_pagarme_step3_partial( $step3 ) );
-
-	$response            = papelito_get_vendor_application_rest_response( $user_id );
-	$response['message'] = 'Triagem enviada com sucesso. Nosso time vai analisar seus dados.';
-
-	return $response;
 }
 
 /**
@@ -1240,9 +1280,27 @@ function papelito_submit_vendor_application_rest( int $user_id, array $payload )
  */
 function papelito_validate_seller_application_input( array $input ) {
 	$errors = new WP_Error();
+	papelito_validate_seller_required_fields( $input, $errors );
+	papelito_validate_seller_identity_fields( $input, $errors );
+	$coverage_error = papelito_validate_seller_coverage_fields( $input, $errors );
+	if ( is_wp_error( $coverage_error ) ) {
+		return $coverage_error;
+	}
+
+	return $errors->has_errors() ? $errors : null;
+}
+
+/**
+ * Valida a presenca dos campos obrigatorios da triagem.
+ *
+ * @param array    $input Payload.
+ * @param WP_Error $errors Acumulador de erros.
+ * @return void
+ */
+function papelito_validate_seller_required_fields( array $input, WP_Error $errors ): void {
 
 	$required_fields = array(
-		'storeName'       => 'Informe o nome da loja.',
+		'storeName'       => PAPELITO_VENDOR_MISSING_STORE_NAME_MESSAGE,
 		'firstName'       => 'Informe o nome do responsável.',
 		'lastName'        => 'Informe o sobrenome.',
 		'email'           => 'Informe um e-mail válido.',
@@ -1262,7 +1320,16 @@ function papelito_validate_seller_application_input( array $input ) {
 			$errors->add( $field, $message );
 		}
 	}
+}
 
+/**
+ * Valida identidade, contato e estado da triagem.
+ *
+ * @param array    $input Payload.
+ * @param WP_Error $errors Acumulador de erros.
+ * @return void
+ */
+function papelito_validate_seller_identity_fields( array $input, WP_Error $errors ): void {
 	$email = isset( $input['email'] ) ? sanitize_email( (string) $input['email'] ) : '';
 	if ( '' === $email || ! is_email( $email ) ) {
 		$errors->add( 'email', 'Informe um e-mail válido.' );
@@ -1274,7 +1341,7 @@ function papelito_validate_seller_application_input( array $input ) {
 	}
 
 	$cnpj = isset( $input['cnpj'] ) ? (string) $input['cnpj'] : '';
-	if ( ! preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $cnpj ) ) {
+	if ( ! preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $cnpj ) ) {
 		$errors->add( 'cnpj', 'Informe um CNPJ válido.' );
 	}
 
@@ -1282,7 +1349,16 @@ function papelito_validate_seller_application_input( array $input ) {
 	if ( '' !== $state && ! array_key_exists( $state, papelito_brazilian_states() ) ) {
 		$errors->add( 'state', 'Selecione um estado válido.' );
 	}
+}
 
+/**
+ * Valida a cobertura e os CEPs da triagem.
+ *
+ * @param array    $input Payload.
+ * @param WP_Error $errors Acumulador de erros.
+ * @return WP_Error|null
+ */
+function papelito_validate_seller_coverage_fields( array $input, WP_Error $errors ) {
 	$coverage_ranges = isset( $input['coverageRanges'] ) && is_array( $input['coverageRanges'] ) ? $input['coverageRanges'] : null;
 	if ( is_array( $coverage_ranges ) && ! empty( $coverage_ranges ) ) {
 		$normalized_ranges = papelito_admin_vendors_normalize_coverage_ranges( $coverage_ranges );
@@ -1316,7 +1392,7 @@ function papelito_validate_seller_application_input( array $input ) {
 		$errors->add( 'maxCep', 'O CEP final precisa ser maior ou igual ao CEP inicial.' );
 	}
 
-	return $errors->has_errors() ? $errors : null;
+	return null;
 }
 
 /**
@@ -1420,225 +1496,124 @@ function papelito_submit_seller_application( int $user_id, array $input ) {
 		'O autocadastro de vendors foi removido.',
 		array( 'status' => 410 )
 	);
+}
 
-	$status = papelito_get_seller_application_status( $user_id );
+add_action( 'rest_api_init', 'papelito_register_vendor_application_routes' );
 
-	if ( 'pending' === $status ) {
-		return new WP_Error(
-			'papelito_application_pending',
-			'Sua triagem já foi enviada e esta em análise.',
-			array( 'status' => 409 )
-		);
-	}
-
-	if ( 'approved' === $status ) {
-		return new WP_Error(
-			'papelito_application_approved',
-			'Sua conta já foi aprovada para o programa de revendedores.',
-			array( 'status' => 409 )
-		);
-	}
-
-	$validation = papelito_validate_seller_application_input( $input );
-	if ( $validation instanceof WP_Error ) {
-		return $validation;
-	}
-
-	$current_user = get_userdata( $user_id );
-	if ( ! $current_user instanceof WP_User ) {
-		return new WP_Error( 'papelito_user_not_found', 'Usuario nao encontrado.', array( 'status' => 404 ) );
-	}
-
-	$email = sanitize_email( (string) $input['email'] );
-	if ( $email !== $current_user->user_email && email_exists( $email ) ) {
-		return new WP_Error( 'papelito_email_exists', 'Ja existe uma conta com este e-mail.', array( 'status' => 409 ) );
-	}
-
-	$result = wp_update_user(
+/**
+ * Registra as rotas REST do onboarding de vendors.
+ *
+ * @return void
+ */
+function papelito_register_vendor_application_routes(): void {
+	register_rest_route(
+		'papelito/v1',
+		'/vendor/recipient-draft',
 		array(
-			'ID'         => $user_id,
-			'user_email' => $email,
-			'first_name' => sanitize_text_field( (string) $input['firstName'] ),
-			'last_name'  => sanitize_text_field( (string) $input['lastName'] ),
+			array(
+				'methods'             => 'GET',
+				'permission_callback' => 'papelito_vendor_application_require_seller',
+				'callback'            => 'papelito_get_vendor_recipient_draft_rest',
+			),
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => 'papelito_vendor_application_require_seller',
+				'callback'            => 'papelito_update_vendor_recipient_draft_rest_callback',
+			),
 		)
 	);
 
-	if ( is_wp_error( $result ) ) {
-		return $result;
-	}
-
-	update_user_meta( $user_id, 'store_name', sanitize_text_field( (string) $input['storeName'] ) );
-	update_user_meta( $user_id, 'phone_number', papelito_auth_format_phone( (string) $input['phoneNumber'] ) );
-	update_user_meta( $user_id, 'cnpj', sanitize_text_field( (string) $input['cnpj'] ) );
-	update_user_meta( $user_id, 'instagram', sanitize_text_field( ltrim( (string) $input['instagram'], '@' ) ) );
-	update_user_meta( $user_id, 'state', sanitize_text_field( (string) $input['state'] ) );
-	update_user_meta( $user_id, 'city', sanitize_text_field( (string) $input['city'] ) );
-
-	$cep_base = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['cep'] ?? '' ) ) : '';
-	$min_cep  = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['minCep'] ?? '' ) ) : '';
-	$max_cep  = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['maxCep'] ?? '' ) ) : '';
-	$coverage_ranges_input = isset( $input['coverageRanges'] ) && is_array( $input['coverageRanges'] ) ? $input['coverageRanges'] : array();
-	$normalized_coverage_ranges = array();
-
-	if ( ! empty( $coverage_ranges_input ) ) {
-		$coverage_ranges_result = papelito_admin_vendors_normalize_coverage_ranges( $coverage_ranges_input );
-		if ( ! is_wp_error( $coverage_ranges_result ) ) {
-			$normalized_coverage_ranges = $coverage_ranges_result;
-		}
-	}
-
-	if ( empty( $normalized_coverage_ranges ) && '' !== $min_cep && '' !== $max_cep ) {
-		$normalized_coverage_ranges[] = array(
-			'minCep' => $min_cep,
-			'maxCep' => $max_cep,
-		);
-	}
-
-	update_user_meta( $user_id, 'cep', $cep_base );
-	delete_user_meta( $user_id, 'min_cep' );
-	delete_user_meta( $user_id, 'max_cep' );
-
-	foreach ( $normalized_coverage_ranges as $range ) {
-		add_user_meta( $user_id, 'min_cep', $range['minCep'], false );
-		add_user_meta( $user_id, 'max_cep', $range['maxCep'], false );
-	}
-
-	if ( function_exists( 'papelito_apply_vendor_geo' ) ) {
-		papelito_apply_vendor_geo( $user_id, $cep_base );
-	}
-
-	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META, sanitize_text_field( (string) ( $input['discoveryChannel'] ?? '' ) ) );
-	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, sanitize_text_field( (string) $input['hasSoldPapelito'] ) );
-	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_SUBMITTED_AT_META, papelito_current_utc_mysql() );
-
-	papelito_reset_vendor_application_review( $user_id );
-
-	$application = papelito_get_seller_application_data( $user_id );
-
-	papelito_notify_seller_application( $application );
-	papelito_notify_seller_application_received( $application );
-	do_action( 'papelito_vendor_application_submitted', $user_id );
-
-	return array(
-		'success'     => true,
-		'message'     => 'Triagem enviada com sucesso. Nosso time vai analisar seus dados.',
-		'application' => $application,
+	register_rest_route(
+		'papelito/v1',
+		'/vendor/registration-pending',
+		array(
+			array(
+				'methods'             => 'GET',
+				'permission_callback' => 'papelito_vendor_application_require_seller',
+				'callback'            => 'papelito_get_vendor_pending_registration_rest',
+			),
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => 'papelito_vendor_application_require_seller',
+				'callback'            => 'papelito_update_vendor_pending_registration_rest_callback',
+			),
+		)
 	);
 }
 
-add_action(
-	'rest_api_init',
-	static function (): void {
-		register_rest_route(
-			'papelito/v1',
-			'/vendor/recipient-draft',
-			array(
-				array(
-					'methods'             => 'GET',
-					'permission_callback' => static function () {
-						$check = function_exists( 'papelito_vendor_dashboard_require_seller' )
-							? papelito_vendor_dashboard_require_seller()
-							: false;
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function () {
-						$user_id = get_current_user_id();
+/**
+ * Autoriza o dashboard de vendor nas rotas de onboarding.
+ *
+ * @return bool|WP_Error
+ */
+function papelito_vendor_application_require_seller() {
+	$check = function_exists( 'papelito_vendor_dashboard_require_seller' ) ? papelito_vendor_dashboard_require_seller() : false;
+	return is_wp_error( $check ) ? $check : true;
+}
 
-						if ( $user_id <= 0 ) {
-							return new WP_Error( 'papelito_not_authenticated', 'Usuario nao autenticado.', array( 'status' => 401 ) );
-						}
-
-						return new WP_REST_Response(
-							array(
-								'draft' => papelito_get_vendor_pagarme_recipient_draft( $user_id ),
-							),
-							200
-						);
-					},
-				),
-				array(
-					'methods'             => 'POST',
-					'permission_callback' => static function () {
-						$check = function_exists( 'papelito_vendor_dashboard_require_seller' )
-							? papelito_vendor_dashboard_require_seller()
-							: false;
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function ( WP_REST_Request $request ) {
-						$user_id = get_current_user_id();
-
-						if ( $user_id <= 0 ) {
-							return new WP_Error( 'papelito_not_authenticated', 'Usuario nao autenticado.', array( 'status' => 401 ) );
-						}
-
-						$payload = $request->get_json_params();
-						if ( ! is_array( $payload ) ) {
-							return new WP_Error( 'papelito_invalid_payload', 'Payload invalido.', array( 'status' => 400 ) );
-						}
-
-						$result = papelito_update_vendor_pagarme_recipient_draft_rest( $user_id, $payload );
-
-						if ( is_wp_error( $result ) ) {
-							return $result;
-						}
-
-						return new WP_REST_Response( $result, 200 );
-					},
-				),
-			)
-		);
-
-		register_rest_route(
-			'papelito/v1',
-			'/vendor/registration-pending',
-			array(
-				array(
-					'methods'             => 'GET',
-					'permission_callback' => static function () {
-						$check = function_exists( 'papelito_vendor_dashboard_require_seller' )
-							? papelito_vendor_dashboard_require_seller()
-							: false;
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function () {
-						$user_id = get_current_user_id();
-
-						if ( $user_id <= 0 ) {
-							return new WP_Error( 'papelito_not_authenticated', 'Usuario nao autenticado.', array( 'status' => 401 ) );
-						}
-
-						return new WP_REST_Response( papelito_get_vendor_pending_registration_rest_response( $user_id ), 200 );
-					},
-				),
-				array(
-					'methods'             => 'POST',
-					'permission_callback' => static function () {
-						$check = function_exists( 'papelito_vendor_dashboard_require_seller' )
-							? papelito_vendor_dashboard_require_seller()
-							: false;
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function ( WP_REST_Request $request ) {
-						$user_id = get_current_user_id();
-
-						if ( $user_id <= 0 ) {
-							return new WP_Error( 'papelito_not_authenticated', 'Usuario nao autenticado.', array( 'status' => 401 ) );
-						}
-
-						$payload = $request->get_json_params();
-						if ( ! is_array( $payload ) ) {
-							return new WP_Error( 'papelito_invalid_payload', 'Payload invalido.', array( 'status' => 400 ) );
-						}
-
-						$result = papelito_update_vendor_pending_registration_rest( $user_id, $payload );
-
-						return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
-					},
-				),
-			)
-		);
+/**
+ * Retorna o draft financeiro atual.
+ *
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_get_vendor_recipient_draft_rest() {
+	$user_id = get_current_user_id();
+	if ( $user_id <= 0 ) {
+		return new WP_Error( 'papelito_not_authenticated', PAPELITO_VENDOR_UNAUTHENTICATED_MESSAGE, array( 'status' => 401 ) );
 	}
-);
+	return new WP_REST_Response( array( 'draft' => papelito_get_vendor_pagarme_recipient_draft( $user_id ) ), 200 );
+}
+
+/**
+ * Atualiza o draft financeiro.
+ *
+ * @param WP_REST_Request $request Requisicao REST.
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_update_vendor_recipient_draft_rest_callback( WP_REST_Request $request ) {
+	$user_id = get_current_user_id();
+	if ( $user_id <= 0 ) {
+		return new WP_Error( 'papelito_not_authenticated', PAPELITO_VENDOR_UNAUTHENTICATED_MESSAGE, array( 'status' => 401 ) );
+	}
+	$payload = $request->get_json_params();
+	if ( ! is_array( $payload ) ) {
+		return new WP_Error( 'papelito_invalid_payload', PAPELITO_VENDOR_INVALID_PAYLOAD_MESSAGE, array( 'status' => 400 ) );
+	}
+	$result = papelito_update_vendor_pagarme_recipient_draft_rest( $user_id, $payload );
+	return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+}
+
+/**
+ * Retorna os campos pendentes do onboarding.
+ *
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_get_vendor_pending_registration_rest() {
+	$user_id = get_current_user_id();
+	if ( $user_id <= 0 ) {
+		return new WP_Error( 'papelito_not_authenticated', PAPELITO_VENDOR_UNAUTHENTICATED_MESSAGE, array( 'status' => 401 ) );
+	}
+	return new WP_REST_Response( papelito_get_vendor_pending_registration_rest_response( $user_id ), 200 );
+}
+
+/**
+ * Atualiza os campos pendentes do onboarding.
+ *
+ * @param WP_REST_Request $request Requisicao REST.
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_update_vendor_pending_registration_rest_callback( WP_REST_Request $request ) {
+	$user_id = get_current_user_id();
+	if ( $user_id <= 0 ) {
+		return new WP_Error( 'papelito_not_authenticated', PAPELITO_VENDOR_UNAUTHENTICATED_MESSAGE, array( 'status' => 401 ) );
+	}
+	$payload = $request->get_json_params();
+	if ( ! is_array( $payload ) ) {
+		return new WP_Error( 'papelito_invalid_payload', PAPELITO_VENDOR_INVALID_PAYLOAD_MESSAGE, array( 'status' => 400 ) );
+	}
+	$result = papelito_update_vendor_pending_registration_rest( $user_id, $payload );
+	return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+}
 
 /**
  * Retorna o detalhe completo da triagem para o painel admin.
@@ -1650,11 +1625,11 @@ function papelito_get_vendor_application_detail( int $user_id ) {
 	$user = get_userdata( $user_id );
 
 	if ( ! $user instanceof WP_User ) {
-		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_vendor_not_found', PAPELITO_VENDOR_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
 	if ( ! papelito_user_has_role( $user, 'seller' ) ) {
-		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_vendor_not_found', PAPELITO_VENDOR_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
 	$base = papelito_get_seller_application_data( $user_id );
@@ -1820,42 +1795,53 @@ function papelito_admin_vendors_query_rows( array $filters ): array {
 	$rows     = array();
 
 	foreach ( $raw_rows as $raw_row ) {
-		$display_name = isset( $raw_row['display_name'] ) ? trim( (string) $raw_row['display_name'] ) : '';
-		$first_name   = isset( $raw_row['first_name'] ) ? trim( (string) $raw_row['first_name'] ) : '';
-		$last_name    = isset( $raw_row['last_name'] ) ? trim( (string) $raw_row['last_name'] ) : '';
-		$name         = $display_name;
-
-		if ( '' === $name ) {
-			$name = trim( $first_name . ' ' . $last_name );
-		}
-
-		if ( '' === $name ) {
-			$name = isset( $raw_row['user_email'] ) ? (string) $raw_row['user_email'] : 'Usuário sem nome';
-		}
-
-		$role = function_exists( 'papelito_admin_reports_detect_role' )
-			? papelito_admin_reports_detect_role( isset( $raw_row['capabilities'] ) ? (string) $raw_row['capabilities'] : '' )
-			: 'other';
-
-		$rows[] = array(
-			'id'                     => isset( $raw_row['id'] ) ? (int) $raw_row['id'] : 0,
-			'name'                   => $name,
-			'email'                  => isset( $raw_row['user_email'] ) ? (string) $raw_row['user_email'] : '',
-			'role'                   => $role,
-			'roleLabel'              => function_exists( 'papelito_admin_reports_role_label' ) ? papelito_admin_reports_role_label( $role ) : ucfirst( $role ),
-			'storeName'              => isset( $raw_row['store_name'] ) ? (string) $raw_row['store_name'] : '',
-			'phoneNumber'            => isset( $raw_row['phone_number'] ) ? (string) $raw_row['phone_number'] : '',
-			'cnpj'                   => isset( $raw_row['cnpj'] ) ? (string) $raw_row['cnpj'] : '',
-			'state'                  => isset( $raw_row['state'] ) ? (string) $raw_row['state'] : '',
-			'city'                   => isset( $raw_row['city'] ) ? (string) $raw_row['city'] : '',
-			'registeredAt'           => isset( $raw_row['user_registered'] ) ? (string) $raw_row['user_registered'] : '',
-			'coverageSummary'        => 'Sem cobertura',
-		);
+		$rows[] = papelito_admin_vendors_build_row( $raw_row );
 	}
 
-	return function_exists( 'papelito_admin_reports_attach_coverage_summary' )
-		? papelito_admin_reports_attach_coverage_summary( $rows )
-		: $rows;
+	if ( function_exists( 'papelito_admin_reports_attach_coverage_summary' ) ) {
+		return papelito_admin_reports_attach_coverage_summary( $rows );
+	}
+
+	return $rows;
+}
+
+/**
+ * Converte uma linha SQL em um item da fila admin.
+ *
+ * @param array<string, mixed> $raw_row Linha bruta.
+ * @return array<string, mixed>
+ */
+function papelito_admin_vendors_build_row( array $raw_row ): array {
+	$display_name = isset( $raw_row['display_name'] ) ? trim( (string) $raw_row['display_name'] ) : '';
+	$first_name   = isset( $raw_row['first_name'] ) ? trim( (string) $raw_row['first_name'] ) : '';
+	$last_name    = isset( $raw_row['last_name'] ) ? trim( (string) $raw_row['last_name'] ) : '';
+	$name         = '' !== $display_name ? $display_name : trim( $first_name . ' ' . $last_name );
+	if ( '' === $name ) {
+		$name = isset( $raw_row['user_email'] ) ? (string) $raw_row['user_email'] : 'Usuário sem nome';
+	}
+
+	$role = 'other';
+	if ( function_exists( 'papelito_admin_reports_detect_role' ) ) {
+		$role = papelito_admin_reports_detect_role( (string) ( $raw_row['capabilities'] ?? '' ) );
+	}
+	$role_label = function_exists( 'papelito_admin_reports_role_label' )
+		? papelito_admin_reports_role_label( $role )
+		: ucfirst( $role );
+
+	return array(
+		'id'              => isset( $raw_row['id'] ) ? (int) $raw_row['id'] : 0,
+		'name'            => $name,
+		'email'           => isset( $raw_row['user_email'] ) ? (string) $raw_row['user_email'] : '',
+		'role'            => $role,
+		'roleLabel'       => $role_label,
+		'storeName'       => isset( $raw_row['store_name'] ) ? (string) $raw_row['store_name'] : '',
+		'phoneNumber'     => isset( $raw_row['phone_number'] ) ? (string) $raw_row['phone_number'] : '',
+		'cnpj'            => isset( $raw_row['cnpj'] ) ? (string) $raw_row['cnpj'] : '',
+		'state'           => isset( $raw_row['state'] ) ? (string) $raw_row['state'] : '',
+		'city'             => isset( $raw_row['city'] ) ? (string) $raw_row['city'] : '',
+		'registeredAt'    => isset( $raw_row['user_registered'] ) ? (string) $raw_row['user_registered'] : '',
+		'coverageSummary' => 'Sem cobertura',
+	);
 }
 
 /**
@@ -2099,23 +2085,23 @@ function papelito_admin_vendors_normalize_bank_account( $bank_account ) {
 if ( ! papelito_revendedor_validate_cpf( $normalized['holderDocument'] ) ) {
 			$errors->add( 'bankHolderDocument', 'Informe um CPF válido para o titular.' );
 		}
-	} elseif ( 'company' === $holder_type && 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $normalized['holderDocument'] ) ) {
+	} elseif ( 'company' === $holder_type && 1 !== preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $normalized['holderDocument'] ) ) {
 		$errors->add( 'bankHolderDocument', 'Informe um CNPJ válido para o titular.' );
 	}
 
-	if ( 1 !== preg_match( '/^\d{3}$/', $normalized['bankCode'] ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_BANK_CODE_PATTERN, $normalized['bankCode'] ) ) {
 		$errors->add( 'bankCode', 'Informe um código bancário com 3 digitos.' );
 	}
 
-	if ( 1 !== preg_match( '/^\d+$/', $normalized['branchNumber'] ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_DIGITS_PATTERN, $normalized['branchNumber'] ) ) {
 		$errors->add( 'branchNumber', 'Informe uma agência válida.' );
 	}
 
-	if ( 1 !== preg_match( '/^\d+$/', $normalized['accountNumber'] ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_DIGITS_PATTERN, $normalized['accountNumber'] ) ) {
 		$errors->add( 'accountNumber', 'Informe uma conta válida.' );
 	}
 
-	if ( 1 !== preg_match( '/^[0-9A-Za-z]+$/', $normalized['accountCheckDigit'] ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_ACCOUNT_CHECK_DIGIT_PATTERN, $normalized['accountCheckDigit'] ) ) {
 		$errors->add( 'accountCheckDigit', 'Informe o digito da conta.' );
 	}
 
@@ -2172,6 +2158,91 @@ function papelito_admin_vendors_build_pagarme_draft( array $bank_account, array 
  * @return array<string, mixed>|WP_Error
  */
 function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewer_id ) {
+	$prepared = papelito_admin_vendors_prepare_direct_vendor( $input, $reviewer_id );
+	if ( is_wp_error( $prepared ) ) {
+		return $prepared;
+	}
+
+	$user_id = papelito_admin_vendors_persist_direct_vendor( $prepared );
+	if ( is_wp_error( $user_id ) ) {
+		return $user_id;
+	}
+
+	$closed_application = papelito_pre_account_application_reject_open_for_vendor( $prepared['email'], $reviewer_id );
+	if ( is_wp_error( $closed_application ) ) {
+		return $closed_application;
+	}
+
+	return papelito_get_vendor_application_detail( $user_id );
+}
+
+/**
+ * Resolve a conta customer existente para promocao direta.
+ *
+ * @param string $email E-mail informado.
+ * @param int    $source_user_id Usuario de origem.
+ * @return WP_User|null|WP_Error
+ */
+function papelito_admin_vendors_resolve_direct_source( string $email, int $source_user_id ) {
+	if ( $source_user_id > 0 ) {
+		$source_user = get_userdata( $source_user_id );
+		if ( ! $source_user instanceof WP_User || ! papelito_admin_vendors_is_convertible_customer( $source_user ) ) {
+			return new WP_Error( 'papelito_admin_vendor_invalid_source_customer', 'O customer selecionado nao esta disponivel para promocao.', array( 'status' => 409 ) );
+		}
+		$email_owner = get_user_by( 'email', $email );
+		if ( $email_owner instanceof WP_User && (int) $email_owner->ID !== $source_user_id ) {
+			return new WP_Error( 'papelito_admin_vendor_email_exists', 'Ja existe outra conta com este e-mail.', array( 'status' => 409 ) );
+		}
+		return $source_user;
+	}
+
+	if ( get_user_by( 'email', $email ) instanceof WP_User ) {
+		return new WP_Error( 'papelito_admin_vendor_source_customer_required', 'Este e-mail já pertence a uma conta. Selecione o customer pelo painel para promove-lo.', array( 'status' => 409 ) );
+	}
+
+	return null;
+}
+
+/**
+ * Normaliza os dados de perfil e endereco do vendor.
+ *
+ * @param array  $input Dados recebidos.
+ * @param string $email E-mail normalizado.
+ * @return array<string, string>|WP_Error
+ */
+function papelito_admin_vendors_normalize_direct_profile( array $input, string $email ) {
+	$profile = array(
+		'street'       => sanitize_text_field( (string) ( $input['street'] ?? '' ) ),
+		'number'       => sanitize_text_field( (string) ( $input['number'] ?? '' ) ),
+		'neighborhood' => sanitize_text_field( (string) ( $input['neighborhood'] ?? '' ) ),
+		'state'        => sanitize_text_field( (string) ( $input['state'] ?? '' ) ),
+		'city'         => sanitize_text_field( (string) ( $input['city'] ?? '' ) ),
+		'firstName'    => sanitize_text_field( (string) ( $input['firstName'] ?? '' ) ),
+		'lastName'     => sanitize_text_field( (string) ( $input['lastName'] ?? '' ) ),
+		'storeName'    => sanitize_text_field( (string) ( $input['storeName'] ?? '' ) ),
+	);
+	$profile['displayName'] = trim( $profile['firstName'] . ' ' . $profile['lastName'] );
+	if ( '' === $profile['displayName'] ) {
+		$profile['displayName'] = '' !== $profile['storeName'] ? $profile['storeName'] : $email;
+	}
+	if ( '' === $profile['storeName'] ) {
+		return new WP_Error( 'papelito_admin_vendor_missing_store_name', PAPELITO_VENDOR_MISSING_STORE_NAME_MESSAGE, array( 'status' => 422 ) );
+	}
+	if ( '' === $profile['street'] || '' === $profile['number'] || '' === $profile['neighborhood'] || '' === $profile['city'] || '' === $profile['state'] ) {
+		return new WP_Error( 'papelito_admin_vendor_incomplete_address', 'Informe o endereço comercial completo do vendor.', array( 'status' => 422 ) );
+	}
+
+	return $profile;
+}
+
+/**
+ * Valida e normaliza os dados para criacao direta de vendor.
+ *
+ * @param array $input Dados recebidos.
+ * @param int   $reviewer_id Admin responsavel.
+ * @return array<string, mixed>|WP_Error
+ */
+function papelito_admin_vendors_prepare_direct_vendor( array $input, int $reviewer_id ) {
 	if ( ! current_user_can( 'manage_options' ) || get_current_user_id() !== $reviewer_id ) {
 		return new WP_Error( 'papelito_admin_forbidden', 'Apenas administradores podem criar vendors.', array( 'status' => 403 ) );
 	}
@@ -2179,44 +2250,20 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 	$email          = sanitize_email( (string) ( $input['email'] ?? '' ) );
 	$cnpj           = sanitize_text_field( (string) ( $input['cnpj'] ?? '' ) );
 	$source_user_id = absint( $input['sourceUserId'] ?? 0 );
-
 	if ( '' === $email || ! is_email( $email ) ) {
 		return new WP_Error( 'papelito_admin_vendor_invalid_email', 'Informe um e-mail valido.', array( 'status' => 422 ) );
 	}
 
-	$existing_user = null;
-	if ( $source_user_id > 0 ) {
-		$source_user = get_userdata( $source_user_id );
-		if ( ! $source_user instanceof WP_User || ! papelito_admin_vendors_is_convertible_customer( $source_user ) ) {
-			return new WP_Error( 'papelito_admin_vendor_invalid_source_customer', 'O customer selecionado nao esta disponivel para promocao.', array( 'status' => 409 ) );
-		}
-
-		$email_owner = get_user_by( 'email', $email );
-		if ( $email_owner instanceof WP_User && (int) $email_owner->ID !== $source_user_id ) {
-			return new WP_Error( 'papelito_admin_vendor_email_exists', 'Ja existe outra conta com este e-mail.', array( 'status' => 409 ) );
-		}
-
-		$existing_user = $source_user;
-	} else {
-		$email_owner = get_user_by( 'email', $email );
-		if ( $email_owner instanceof WP_User ) {
-			return new WP_Error(
-				'papelito_admin_vendor_source_customer_required',
-				'Este e-mail já pertence a uma conta. Selecione o customer pelo painel para promove-lo.',
-				array( 'status' => 409 )
-			);
-		}
+	$existing_user = papelito_admin_vendors_resolve_direct_source( $email, $source_user_id );
+	if ( is_wp_error( $existing_user ) ) {
+		return $existing_user;
 	}
 
-	if ( ! $existing_user instanceof WP_User && '' === trim( (string) ( $input['temporaryPassword'] ?? '' ) ) ) {
-		return new WP_Error(
-			'papelito_admin_vendor_missing_temporary_password',
-			'Informe uma senha temporária para a nova conta vendor.',
-			array( 'status' => 422 )
-		);
+	$temporary_password = isset( $input['temporaryPassword'] ) ? (string) $input['temporaryPassword'] : '';
+	if ( ! $existing_user instanceof WP_User && '' === trim( $temporary_password ) ) {
+		return new WP_Error( 'papelito_admin_vendor_missing_temporary_password', 'Informe uma senha temporária para a nova conta vendor.', array( 'status' => 422 ) );
 	}
-
-	if ( 1 !== preg_match( '/^\d{2}(\.\d{3}){2}\/\d{4}\-\d{2}$/', $cnpj ) ) {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $cnpj ) ) {
 		return new WP_Error( 'papelito_admin_vendor_invalid_cnpj', 'Informe um CNPJ valido.', array( 'status' => 422 ) );
 	}
 
@@ -2224,155 +2271,124 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 	if ( papelito_admin_vendors_cnpj_exists( $cnpj, $existing_user_id ) ) {
 		return new WP_Error( 'papelito_admin_vendor_cnpj_exists', 'Ja existe uma conta com este CNPJ.', array( 'status' => 409 ) );
 	}
-
 	$ranges = papelito_admin_vendors_normalize_coverage_ranges( $input['coverageRanges'] ?? null );
 	if ( is_wp_error( $ranges ) ) {
 		return $ranges;
 	}
 
-	$street       = sanitize_text_field( (string) ( $input['street'] ?? '' ) );
-	$number       = sanitize_text_field( (string) ( $input['number'] ?? '' ) );
-	$neighborhood = sanitize_text_field( (string) ( $input['neighborhood'] ?? '' ) );
-	$state        = sanitize_text_field( (string) ( $input['state'] ?? '' ) );
-	$city         = sanitize_text_field( (string) ( $input['city'] ?? '' ) );
-
-	$first_name   = sanitize_text_field( (string) ( $input['firstName'] ?? '' ) );
-	$last_name    = sanitize_text_field( (string) ( $input['lastName'] ?? '' ) );
-	$store_name   = sanitize_text_field( (string) ( $input['storeName'] ?? '' ) );
-	$display_name = trim( $first_name . ' ' . $last_name );
-
-	if ( '' === $display_name ) {
-		$display_name = '' !== $store_name ? $store_name : $email;
-	}
-
-	if ( '' === $store_name ) {
-		return new WP_Error( 'papelito_admin_vendor_missing_store_name', 'Informe o nome da loja.', array( 'status' => 422 ) );
-	}
-
-	if ( '' === $street || '' === $number || '' === $neighborhood || '' === $city || '' === $state ) {
-		return new WP_Error(
-			'papelito_admin_vendor_incomplete_address',
-			'Informe o endereço comercial completo do vendor.',
-			array( 'status' => 422 )
-		);
+	$profile = papelito_admin_vendors_normalize_direct_profile( $input, $email );
+	if ( is_wp_error( $profile ) ) {
+		return $profile;
 	}
 
 	$raw_pagarme_draft = isset( $input['pagarmeDraft'] ) && is_array( $input['pagarmeDraft'] ) ? $input['pagarmeDraft'] : array();
 	$pagarme_draft     = papelito_sanitize_vendor_pagarme_step3_partial(
 		$raw_pagarme_draft,
 		array(
-			'storeName'    => $store_name,
+			'storeName'    => $profile['storeName'],
 			'email'        => $email,
 			'cnpj'         => $cnpj,
 			'cep'          => (string) ( $input['cep'] ?? '' ),
-			'street'       => $street,
-			'number'       => $number,
+			'street'       => $profile['street'],
+			'number'       => $profile['number'],
 			'complement'   => (string) ( $input['complement'] ?? '' ),
-			'neighborhood' => $neighborhood,
-			'city'         => $city,
-			'state'        => $state,
-			'firstName'    => $first_name,
-			'lastName'     => $last_name,
+			'neighborhood' => $profile['neighborhood'],
+			'city'         => $profile['city'],
+			'state'        => $profile['state'],
+			'firstName'    => $profile['firstName'],
+			'lastName'     => $profile['lastName'],
 		)
 	);
 	$pagarme_draft['companyName'] = sanitize_text_field( (string) ( $raw_pagarme_draft['companyName'] ?? '' ) );
 	$pagarme_draft['tradingName'] = sanitize_text_field( (string) ( $raw_pagarme_draft['tradingName'] ?? '' ) );
 
-	$temporary_password = isset( $input['temporaryPassword'] ) ? (string) $input['temporaryPassword'] : '';
+	return array(
+		'input'           => $input,
+		'email'           => $email,
+		'cnpj'            => $cnpj,
+		'ranges'          => $ranges,
+		'existingUser'    => $existing_user,
+		'existingUserId'  => $existing_user_id,
+		'temporaryPassword' => $temporary_password,
+		'firstName'       => $profile['firstName'],
+		'lastName'        => $profile['lastName'],
+		'displayName'     => $profile['displayName'],
+		'storeName'       => $profile['storeName'],
+		'street'          => $profile['street'],
+		'number'          => $profile['number'],
+		'neighborhood'    => $profile['neighborhood'],
+		'state'           => $profile['state'],
+		'city'            => $profile['city'],
+		'pagarmeDraft'    => $pagarme_draft,
+	);
+}
 
-	$is_new_user = ! $existing_user instanceof WP_User;
-	$user_id     = $is_new_user
-		? wp_insert_user(
-			array(
-				'user_login'   => $email,
-				'user_email'   => $email,
-				'user_pass'    => '' !== $temporary_password ? $temporary_password : wp_generate_password( 32, true, true ),
-				'first_name'   => $first_name,
-				'last_name'    => $last_name,
-				'display_name' => $display_name,
-				'role'         => 'seller',
-			)
-		)
-		: wp_update_user(
-			array(
-				'ID'           => $existing_user_id,
-				'user_email'   => $email,
-				'first_name'   => $first_name,
-				'last_name'    => $last_name,
-				'display_name' => $display_name,
-			)
-		);
-
+/**
+ * Persiste a conta e as metas de um vendor criado pelo admin.
+ *
+ * @param array<string, mixed> $vendor Dados normalizados.
+ * @return int|WP_Error
+ */
+function papelito_admin_vendors_persist_direct_vendor( array $vendor ) {
+	$existing_user      = $vendor['existingUser'];
+	$is_new_user        = ! $existing_user instanceof WP_User;
+	$temporary_password = (string) $vendor['temporaryPassword'];
+	$password           = '' !== $temporary_password ? $temporary_password : wp_generate_password( 32, true, true );
+	$user_id            = $is_new_user
+		? wp_insert_user( array( 'user_login' => $vendor['email'], 'user_email' => $vendor['email'], 'user_pass' => $password, 'first_name' => $vendor['firstName'], 'last_name' => $vendor['lastName'], 'display_name' => $vendor['displayName'], 'role' => 'seller' ) )
+		: wp_update_user( array( 'ID' => $vendor['existingUserId'], 'user_email' => $vendor['email'], 'first_name' => $vendor['firstName'], 'last_name' => $vendor['lastName'], 'display_name' => $vendor['displayName'] ) );
 	if ( is_wp_error( $user_id ) ) {
 		return $user_id;
 	}
-
 	$user_id = (int) $user_id;
-
-	// Conta nova nasce `pending`: sem a usermeta,
-	// `papelito_auth_requires_email_verification()` a trataria como conta legada ja verificada.
 	if ( $is_new_user ) {
 		papelito_auth_mark_email_pending( $user_id );
 	}
-
 	$user = get_userdata( $user_id );
-
 	if ( ! $user instanceof WP_User ) {
-		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_vendor_not_found', PAPELITO_VENDOR_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
 	$user->set_role( 'seller' );
-
-	update_user_meta( $user_id, 'store_name', $store_name );
+	$input = $vendor['input'];
+	update_user_meta( $user_id, 'store_name', $vendor['storeName'] );
 	update_user_meta( $user_id, 'phone_number', papelito_auth_format_phone( (string) ( $input['phoneNumber'] ?? '' ) ) );
-	update_user_meta( $user_id, 'cnpj', $cnpj );
+	update_user_meta( $user_id, 'cnpj', $vendor['cnpj'] );
 	update_user_meta( $user_id, 'instagram', sanitize_text_field( ltrim( (string) ( $input['instagram'] ?? '' ), '@' ) ) );
-	update_user_meta( $user_id, 'state', $state );
-	update_user_meta( $user_id, 'city', $city );
-	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STREET_META, $street );
-	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NUMBER_META, $number );
+	update_user_meta( $user_id, 'state', $vendor['state'] );
+	update_user_meta( $user_id, 'city', $vendor['city'] );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STREET_META, $vendor['street'] );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NUMBER_META, $vendor['number'] );
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META, sanitize_text_field( (string) ( $input['complement'] ?? '' ) ) );
-	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, $neighborhood );
+	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, $vendor['neighborhood'] );
 
 	$cep_base = function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['cep'] ?? '' ) ) : '';
 	update_user_meta( $user_id, 'cep', $cep_base );
-
 	delete_user_meta( $user_id, 'min_cep' );
 	delete_user_meta( $user_id, 'max_cep' );
-	foreach ( $ranges as $range ) {
+	foreach ( $vendor['ranges'] as $range ) {
 		add_user_meta( $user_id, 'min_cep', $range['minCep'], false );
 		add_user_meta( $user_id, 'max_cep', $range['maxCep'], false );
 	}
 
 	$discovery_channel = sanitize_text_field( (string) ( $input['discoveryChannel'] ?? '' ) );
-	if ( '' === $discovery_channel ) {
-		$discovery_channel = PAPELITO_ADMIN_VENDOR_DISCOVERY_CHANNEL_DEFAULT;
-	}
-
+	$discovery_channel = '' !== $discovery_channel ? $discovery_channel : PAPELITO_ADMIN_VENDOR_DISCOVERY_CHANNEL_DEFAULT;
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_DISCOVERY_CHANNEL_META, $discovery_channel );
 	$has_sold = sanitize_text_field( (string) ( $input['hasSoldPapelito'] ?? '' ) );
-	if ( '' === $has_sold ) {
-		$has_sold = PAPELITO_ADMIN_VENDOR_HAS_SOLD_PAPELITO_DEFAULT;
-	}
+	$has_sold = '' !== $has_sold ? $has_sold : PAPELITO_ADMIN_VENDOR_HAS_SOLD_PAPELITO_DEFAULT;
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_HAS_SOLD_PAPELITO_META, $has_sold );
 	update_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_SUBMITTED_AT_META, papelito_current_utc_mysql() );
 	delete_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REJECTION_REASON_META );
-
-	papelito_save_vendor_pagarme_recipient_draft(
-		$user_id,
-		$pagarme_draft
-	);
-	$pending_fields = papelito_refresh_vendor_pending_registration_state( $user_id, $pagarme_draft );
+	papelito_save_vendor_pagarme_recipient_draft( $user_id, $vendor['pagarmeDraft'] );
+	$pending_fields = papelito_refresh_vendor_pending_registration_state( $user_id, $vendor['pagarmeDraft'] );
 	papelito_sync_vendor_pending_registration_status( $user_id, $pending_fields );
 	delete_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STATUS_META );
 	delete_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REJECTION_REASON_META );
 	delete_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_AT_META );
 	delete_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_REVIEWED_BY_META );
-
 	if ( function_exists( 'papelito_apply_vendor_geo' ) && '' !== $cep_base ) {
 		papelito_apply_vendor_geo( $user_id, $cep_base );
 	}
-
 	if ( $is_new_user ) {
 		papelito_admin_vendors_dispatch_first_access_emails( $user, '' !== $temporary_password );
 	}
@@ -2381,7 +2397,7 @@ function papelito_admin_vendors_create_direct_vendor( array $input, int $reviewe
 		do_action( 'papelito_vendor_pending_registration_created', $user_id, $pending_fields );
 	}
 
-	return papelito_get_vendor_application_detail( $user_id );
+	return $user_id;
 }
 
 /**
@@ -2450,7 +2466,7 @@ function papelito_admin_vendors_handle_create( WP_REST_Request $request ) {
 	$payload = $request->get_json_params();
 
 	if ( ! is_array( $payload ) ) {
-		return new WP_Error( 'papelito_invalid_payload', 'Payload invalido.', array( 'status' => 400 ) );
+		return new WP_Error( 'papelito_invalid_payload', PAPELITO_VENDOR_INVALID_PAYLOAD_MESSAGE, array( 'status' => 400 ) );
 	}
 
 	$result = papelito_admin_vendors_create_direct_vendor( $payload, get_current_user_id() );
