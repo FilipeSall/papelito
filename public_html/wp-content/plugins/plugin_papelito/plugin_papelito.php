@@ -17,6 +17,7 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/user_registration.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/products_filter.php';
 require_once __DIR__ . '/includes/rest_api.php';
 require_once __DIR__ . '/includes/frontend_links.php';
+require_once __DIR__ . '/includes/contact_config.php';
 require_once __DIR__ . '/includes/auth_endpoints.php';
 require_once __DIR__ . '/includes/product_taxonomy.php';
 require_once __DIR__ . '/includes/product_taxonomy_rest.php';
