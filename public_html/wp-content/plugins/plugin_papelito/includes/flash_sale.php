@@ -936,33 +936,41 @@ function papelito_flash_sale_build_home_products( array $campaign ): array {
 	return $products;
 }
 
+/**
+ * Payload do estado "nenhuma campanha para anunciar".
+ *
+ * Sai como 200, não como 404: o Data Cache do Next só grava resposta 200
+ * (`patch-fetch`), então um 404 nunca substitui a última campanha ativa
+ * cacheada e a vitrine continuaria exibindo o preço promocional por tempo
+ * indeterminado, enquanto o carrinho cobra o preço cheio.
+ *
+ * @return WP_REST_Response
+ */
+function papelito_flash_sale_empty_home_response(): WP_REST_Response {
+	return new WP_REST_Response(
+		array(
+			'campaign' => null,
+			'products' => array(),
+		),
+		200
+	);
+}
+
 function papelito_flash_sale_home_response(): WP_REST_Response {
 	if ( papelito_flash_sale_current_user_is_seller() ) {
-		return new WP_REST_Response( (object) array(), 200 );
+		return papelito_flash_sale_empty_home_response();
 	}
 
 	$campaign = papelito_flash_sale_normalize_campaign( papelito_flash_sale_get_raw_campaign() );
 
 	if ( null === $campaign || 'active' !== $campaign['status'] ) {
-		return new WP_REST_Response(
-			array(
-				'code'    => 'papelito_flash_sale_not_active',
-				'message' => 'Nenhuma campanha ativa no momento.',
-			),
-			404
-		);
+		return papelito_flash_sale_empty_home_response();
 	}
 
 	$products = papelito_flash_sale_build_home_products( $campaign );
 
 	if ( empty( $products ) ) {
-		return new WP_REST_Response(
-			array(
-				'code'    => 'papelito_flash_sale_no_valid_products',
-				'message' => 'Nenhum produto válido na campanha.',
-			),
-			404
-		);
+		return papelito_flash_sale_empty_home_response();
 	}
 
 	return new WP_REST_Response(

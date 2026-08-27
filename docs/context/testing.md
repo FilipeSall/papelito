@@ -42,6 +42,7 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Faixas da Home | `test-home-assets-rich-text.php` (whitelist de formatos e tokens, referência de produto sem snapshot, compat com texto puro), `test-home-assets-free-shipping-placeholder.php` (migração dos textos legados) |
 | Frete grátis | `test-shipping-free-shipping-threshold.php` (default, persistência, validação, autorização) |
 | Benefícios do produto | `test-product-benefits.php` (validação e precedência), `test-product-benefits-db.php` (**WP-CLI**: schema, índices e writers) |
+| Campanha relâmpago | `test-flash-sale-home-response.php` (**estrutural**: estado vazio sai como `200` com `campaign: null` — um `404` não substitui a campanha cacheada no Data Cache do Next e a vitrine congela no preço promocional), `test-flash-sale-extreme-discount.php`, `test-flash-sale-products.php`, `test-flash-sale-promotion-context.php`, `test-catalog-search-campaign-price.php` |
 
 As invariantes que essas suítes protegem estão catalogadas em [context/business-rules.md](business-rules.md).
 
