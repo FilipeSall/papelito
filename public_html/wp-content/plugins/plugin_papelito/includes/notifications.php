@@ -154,6 +154,13 @@ function papelito_notification_allowed_types() {
  * @return bool
  */
 function papelito_product_has_valid_weight( WC_Product $product ) {
+	if ( function_exists( 'papelito_kit_get_by_product' ) ) {
+		$kit = papelito_kit_get_by_product( (int) $product->get_id() );
+		if ( $kit ) {
+			return ! is_wp_error( papelito_kit_calculate_weight_grams( (int) $kit['id'] ) );
+		}
+	}
+
 	$weight = (float) wc_format_decimal( $product->get_weight( 'edit' ) );
 
 	if ( $weight > 0 ) {
@@ -1439,10 +1446,16 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 	if ( $product_id <= 0 || ! $product instanceof WC_Product ) {
 		return;
 	}
+	if ( function_exists( 'papelito_kits_should_skip_product_notification' ) && papelito_kits_should_skip_product_notification() ) {
+		return;
+	}
 
+	$kit              = function_exists( 'papelito_kit_get_by_product' ) ? papelito_kit_get_by_product( $product_id ) : null;
+	$is_kit           = is_array( $kit );
 	$missing_weight   = ! papelito_product_has_valid_weight( $product );
 	$missing_price    = ! papelito_product_has_valid_price( $product );
-	$missing_category = ! function_exists( 'papelito_product_get_category' ) || null === papelito_product_get_category( $product_id );
+	$missing_category = ! $is_kit && ( ! function_exists( 'papelito_product_get_category' ) || null === papelito_product_get_category( $product_id ) );
+	$missing_dimensions = $is_kit && null === papelito_kit_package_dimensions( $kit );
 
 	foreach ( is_array( $admins ) ? $admins : array() as $admin_id ) {
 		$admin_id = absint( $admin_id );
@@ -1451,7 +1464,7 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 			continue;
 		}
 
-		if ( 'publish' !== $product->get_status() || ( ! $missing_weight && ! $missing_price && ! $missing_category ) ) {
+		if ( 'publish' !== $product->get_status() || ( ! $missing_weight && ! $missing_price && ! $missing_category && ! $missing_dimensions ) ) {
 			papelito_resolve_product_data_notifications( $admin_id, $product_id );
 			continue;
 		}
@@ -1459,9 +1472,11 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 		$payload = array_merge(
 			papelito_notification_product_payload( $product_id ),
 			array(
+				'entity_type'      => $is_kit ? 'kit' : 'product',
 				'missing_category' => $missing_category,
 				'missing_price'  => $missing_price,
 				'missing_weight' => $missing_weight,
+				'missing_dimensions' => $missing_dimensions,
 			)
 		);
 		$rows       = papelito_get_product_data_notification_rows( $admin_id, $product_id );
@@ -1489,8 +1504,9 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 			$current_category = ! empty( $current_payload['missing_category'] );
 			$current_price    = ! empty( $current_payload['missing_price'] );
 			$current_weight   = ! empty( $current_payload['missing_weight'] );
+			$current_dimensions = ! empty( $current_payload['missing_dimensions'] );
 
-			if ( $current_category === $missing_category && $current_price === $missing_price && $current_weight === $missing_weight ) {
+			if ( $current_category === $missing_category && $current_price === $missing_price && $current_weight === $missing_weight && $current_dimensions === $missing_dimensions ) {
 				continue;
 			}
 
@@ -1517,6 +1533,19 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 }
 add_action( 'woocommerce_new_product', 'papelito_sync_product_data_notification', 20, 2 );
 add_action( 'woocommerce_update_product', 'papelito_sync_product_data_notification', 20, 2 );
+add_action(
+	'woocommerce_update_product',
+	static function ( $product_id ): void {
+		if ( ! function_exists( 'papelito_kits_using_component' ) ) {
+			return;
+		}
+		foreach ( papelito_kits_using_component( absint( $product_id ) ) as $kit_product_id ) {
+			papelito_sync_product_data_notification( $kit_product_id );
+		}
+	},
+	30,
+	1
+);
 add_action(
 	'papelito_product_taxonomy_changed',
 	static function ( $scope, $product_id ): void {

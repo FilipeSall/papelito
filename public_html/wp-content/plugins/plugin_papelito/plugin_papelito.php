@@ -88,7 +88,7 @@ require_once __DIR__ . '/includes/billing_email_sync.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.31.0' );
+	define( 'PAPELITO_DB_VERSION', '1.32.0' );
 }
 
 /**

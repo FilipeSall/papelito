@@ -19,6 +19,7 @@ function current_user_can( $capability ) { return 'manage_options' === $capabili
 function get_current_user_id() { return 0; }
 function get_transient() { return 0; }
 function set_transient() { return true; }
+function wp_salt( $scheme = 'auth' ) { return 'shipping-test-salt-' . $scheme; }
 function papelito_auth_rate_limit() { ++$GLOBALS['pap_auth_rate_limit_calls']; return true; }
 function sanitize_text_field( $value ) { return trim( (string) $value ); }
 function absint( $value ) { return abs( (int) $value ); }
@@ -61,6 +62,7 @@ function papelito_assert( $label, $expected, $actual ) {
 
 require __DIR__ . '/../includes/shipping.php';
 
+papelito_assert( 'uses an HMAC fingerprint for cache keys', hash_hmac( 'sha256', 'buyer-42', wp_salt( 'auth' ) ), papelito_shipping_cache_fingerprint( 'buyer-42' ) );
 papelito_assert( 'uses the default minimum', 9900, papelito_shipping_get_free_shipping_minimum_cents() );
 $updated = papelito_shipping_update_free_shipping_minimum_cents( 12550 );
 papelito_assert( 'accepts integer cents', 12550, $updated['minimumOrderCents'] );

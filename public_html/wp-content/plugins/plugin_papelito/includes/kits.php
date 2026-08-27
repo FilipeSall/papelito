@@ -4,6 +4,12 @@ defined( 'ABSPATH' ) || exit;
 
 const PAPELITO_KIT_PRODUCT_META  = '_papelito_kit_id';
 const PAPELITO_KIT_DEFAULT_IMAGE = '/images/categorias/icons/kit.webp';
+const PAPELITO_KIT_PACKAGE_MIN_LENGTH = 11.0;
+const PAPELITO_KIT_PACKAGE_MIN_WIDTH  = 6.0;
+const PAPELITO_KIT_PACKAGE_MIN_HEIGHT = 0.4;
+const PAPELITO_KIT_PACKAGE_MAX_DIMENSION = 100.0;
+const PAPELITO_KIT_PACKAGE_MAX_SUM       = 200.0;
+const PAPELITO_KIT_PACKAGE_MAX_WEIGHT_G  = 30000.0;
 const PAPELITO_KIT_IMAGE_PRESETS = array(
 	'fallback' => '/images/categorias/icons/kit.webp',
 	'kit'      => '/images/categorias/kit.webp',
@@ -33,6 +39,9 @@ function papelito_kits_install_tables(): void {
   product_id BIGINT UNSIGNED NOT NULL,
   image_source VARCHAR(24) NOT NULL DEFAULT 'fallback',
   image_attachment_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  package_length DECIMAL(12,2) NOT NULL DEFAULT 0,
+  package_width DECIMAL(12,2) NOT NULL DEFAULT 0,
+  package_height DECIMAL(12,2) NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY  (id),
@@ -107,11 +116,105 @@ function papelito_kit_items( int $kit_id ): array {
 	return is_array( $rows ) ? $rows : array();
 }
 
+function papelito_kits_using_component( int $component_id ): array {
+	global $wpdb;
+	$tables = papelito_kits_table_names();
+	$rows = $wpdb->get_col(
+		$wpdb->prepare(
+			"SELECT k.product_id FROM {$tables['kits']} k INNER JOIN {$tables['items']} i ON i.kit_id = k.id WHERE i.product_id = %d",
+			$component_id
+		)
+	);
+
+	return array_values( array_unique( array_filter( array_map( 'absint', is_array( $rows ) ? $rows : array() ) ) ) );
+}
+
 function papelito_kit_merchandise( int $kit_id ): array {
 	global $wpdb;
 	$tables = papelito_kits_table_names();
 	$rows   = $wpdb->get_results( $wpdb->prepare( "SELECT id, name, image_attachment_id, quantity, weight, length, width, height FROM {$tables['merchandise']} WHERE kit_id = %d ORDER BY id ASC", $kit_id ), ARRAY_A );
 	return is_array( $rows ) ? $rows : array();
+}
+
+function papelito_kit_package_dimensions( array $kit ): ?array {
+	$dimensions = array(
+		'length' => (float) ( $kit['package_length'] ?? 0 ),
+		'width'  => (float) ( $kit['package_width'] ?? 0 ),
+		'height' => (float) ( $kit['package_height'] ?? 0 ),
+	);
+
+	return min( $dimensions ) > 0 ? $dimensions : null;
+}
+
+function papelito_kit_validate_package_dimensions( ?array $dimensions ) {
+	if ( null === $dimensions ) {
+		return new WP_Error( 'papelito_kit_package_dimensions_missing', 'Informe as dimensões da embalagem final do Kit para cotar frete.', array( 'status' => 422 ) );
+	}
+
+	if (
+		$dimensions['length'] < PAPELITO_KIT_PACKAGE_MIN_LENGTH
+		|| $dimensions['width'] < PAPELITO_KIT_PACKAGE_MIN_WIDTH
+		|| $dimensions['height'] < PAPELITO_KIT_PACKAGE_MIN_HEIGHT
+		|| max( $dimensions ) > PAPELITO_KIT_PACKAGE_MAX_DIMENSION
+		|| array_sum( $dimensions ) > PAPELITO_KIT_PACKAGE_MAX_SUM
+	) {
+		return new WP_Error( 'papelito_kit_package_dimensions_invalid', 'As dimensões da embalagem do Kit estão fora dos limites aceitos pelos Correios.', array( 'status' => 422 ) );
+	}
+
+	return true;
+}
+
+function papelito_kit_calculate_weight_grams( int $kit_id, int $kit_quantity = 1 ) {
+	$kit_quantity = max( 1, $kit_quantity );
+	$total_weight = 0.0;
+
+	foreach ( papelito_kit_items( $kit_id ) as $item ) {
+		$product = wc_get_product( absint( $item['product_id'] ?? 0 ) );
+		if ( ! $product instanceof WC_Product ) {
+			return new WP_Error( 'papelito_kit_component_invalid', 'Todo componente do Kit precisa ser um produto disponível.', array( 'status' => 422 ) );
+		}
+		$weight = (float) $product->get_weight( 'edit' );
+		if ( $weight <= 0 ) {
+			return new WP_Error( 'papelito_kit_component_weight_missing', sprintf( 'O produto "%s" precisa de peso para compor o Kit.', $product->get_name() ), array( 'status' => 422 ) );
+		}
+		$total_weight += (float) wc_get_weight( $weight, 'g' ) * absint( $item['quantity'] ?? 0 ) * $kit_quantity;
+	}
+
+	foreach ( papelito_kit_merchandise( $kit_id ) as $item ) {
+		$weight = (float) ( $item['weight'] ?? 0 );
+		if ( $weight <= 0 ) {
+			return new WP_Error( 'papelito_kit_merchandise_weight_missing', 'Todo brinde físico do Kit precisa de peso.', array( 'status' => 422 ) );
+		}
+		$total_weight += (float) wc_get_weight( $weight, 'g' ) * absint( $item['quantity'] ?? 0 ) * $kit_quantity;
+	}
+
+	if ( $total_weight <= 0 || $total_weight > PAPELITO_KIT_PACKAGE_MAX_WEIGHT_G ) {
+		return new WP_Error( 'papelito_kit_weight_invalid', 'O peso total do Kit está fora dos limites aceitos pelos Correios.', array( 'status' => 422 ) );
+	}
+
+	return round( $total_weight, 2 );
+}
+
+function papelito_kit_logistics( int $kit_product_id, int $kit_quantity = 1 ) {
+	$kit = papelito_kit_get_by_product( $kit_product_id );
+	if ( ! $kit ) {
+		return new WP_Error( 'papelito_kit_not_found', 'Kit não encontrado.', array( 'status' => 404 ) );
+	}
+	$weight = papelito_kit_calculate_weight_grams( (int) $kit['id'], $kit_quantity );
+	if ( is_wp_error( $weight ) ) {
+		return $weight;
+	}
+	$dimensions = papelito_kit_package_dimensions( $kit );
+	$valid      = papelito_kit_validate_package_dimensions( $dimensions );
+	if ( is_wp_error( $valid ) ) {
+		return $valid;
+	}
+
+	return array_merge( array( 'weight' => $weight ), $dimensions );
+}
+
+function papelito_kits_should_skip_product_notification(): bool {
+	return ! empty( $GLOBALS['papelito_kits_skip_product_notification'] );
 }
 
 function papelito_kit_expand_requirements( int $kit_product_id, int $kit_qty ): array|WP_Error {
@@ -420,9 +523,50 @@ function papelito_kit_response( array $kit ): array {
 		'salePrice'           => $product ? (string) $product->get_sale_price() : '',
 		'imageUrl'            => papelito_kit_image_url( $kit ),
 		'imageSource'         => sanitize_key( (string) $kit['image_source'] ),
+		'shortDescription'    => $product ? wp_kses_post( $product->get_short_description() ) : '',
+		'description'         => $product ? wp_kses_post( $product->get_description() ) : '',
+		'packageDimensions'   => papelito_kit_package_dimensions( $kit ),
 		'items'               => $items,
 		'merchandise'         => $merchandise,
 		'referencePriceCents' => $reference_cents,
+	);
+}
+
+function papelito_kit_public_detail_response( array $kit ): array {
+	$product = wc_get_product( (int) $kit['product_id'] );
+	if ( ! $product || 'publish' !== $product->get_status() ) {
+		return array();
+	}
+
+	$gallery = array(
+		array(
+			'id'    => 'kit:' . (int) $kit['id'],
+			'name'  => sanitize_text_field( $product->get_name() ),
+			'image' => papelito_kit_image_url( $kit ),
+		),
+	);
+	foreach ( papelito_kit_items( (int) $kit['id'] ) as $item ) {
+		$component = wc_get_product( absint( $item['product_id'] ?? 0 ) );
+		if ( ! $component ) {
+			continue;
+		}
+		$gallery[] = array(
+			'id'    => 'product:' . (int) $component->get_id(),
+			'name'  => sanitize_text_field( $component->get_name() ),
+			'image' => (string) wp_get_attachment_image_url( $component->get_image_id(), 'medium' ),
+		);
+	}
+
+	return array(
+		'productId'         => (int) $kit['product_id'],
+		'name'              => sanitize_text_field( $product->get_name() ),
+		'slug'              => sanitize_title( $product->get_slug() ),
+		'price'             => (string) $product->get_regular_price(),
+		'salePrice'         => $product->is_on_sale() ? (string) $product->get_price() : '',
+		'imageUrl'          => papelito_kit_image_url( $kit ),
+		'shortDescription'  => wp_kses_post( $product->get_short_description() ),
+		'description'       => wp_kses_post( $product->get_description() ),
+		'galleryImages'     => $gallery,
 	);
 }
 
@@ -465,8 +609,9 @@ function papelito_kit_write( array $payload, ?int $kit_id = null ) {
 	foreach ( $items as $item ) {
 		$component_id = absint( $item['productId'] ?? 0 );
 		$quantity     = absint( $item['quantity'] ?? 0 );
-		if ( $component_id <= 0 || $quantity <= 0 || isset( $seen_component_ids[ $component_id ] ) || ! wc_get_product( $component_id ) || papelito_kit_is_product( $component_id ) ) {
-			return new WP_Error( 'papelito_kit_component_invalid', 'Os produtos do Kit precisam ser produtos comuns, únicos e com quantidade positiva.', array( 'status' => 422 ) );
+		$component    = $component_id > 0 ? wc_get_product( $component_id ) : null;
+		if ( $component_id <= 0 || $quantity <= 0 || isset( $seen_component_ids[ $component_id ] ) || ! $component instanceof WC_Product || papelito_kit_is_product( $component_id ) ) {
+			return new WP_Error( 'papelito_kit_component_invalid', 'Os produtos do Kit precisam existir, ser únicos e ter quantidade positiva.', array( 'status' => 422 ) );
 		}
 		$seen_component_ids[ $component_id ] = true;
 	}
@@ -485,6 +630,7 @@ function papelito_kit_write( array $payload, ?int $kit_id = null ) {
 	if ( ! $product ) {
 		return new WP_Error( 'papelito_kit_product_missing', 'Produto comercial do Kit não encontrado.', array( 'status' => 409 ) );
 	}
+	$GLOBALS['papelito_kits_skip_product_notification'] = true;
 	try {
 		$product->set_name( $name );
 		$product->set_slug( sanitize_title( (string) ( $payload['slug'] ?? $name ) ) );
@@ -492,24 +638,47 @@ function papelito_kit_write( array $payload, ?int $kit_id = null ) {
 		$product->set_catalog_visibility( 'hidden' );
 		$product->set_regular_price( $regular_price );
 		$product->set_sale_price( wc_format_decimal( (string) ( $payload['salePrice'] ?? '' ) ) );
+		$product->set_short_description( wp_kses_post( (string) ( $payload['shortDescription'] ?? '' ) ) );
+		$product->set_description( wp_kses_post( (string) ( $payload['description'] ?? '' ) ) );
 		$product_id = $product->save();
 	} catch ( Throwable $exception ) {
+		$GLOBALS['papelito_kits_skip_product_notification'] = false;
 		return new WP_Error( 'papelito_kit_product_invalid', 'Não foi possível salvar o produto comercial do Kit.', array( 'status' => 422 ) );
 	}
+	$GLOBALS['papelito_kits_skip_product_notification'] = false;
 	if ( $product_id <= 0 ) {
 		return new WP_Error( 'papelito_kit_product_write_failed', 'Não foi possível salvar o produto comercial do Kit.', array( 'status' => 500 ) );
 	}
 	$tables        = papelito_kits_table_names();
+	$package_input = is_array( $payload['packageDimensions'] ?? null ) ? $payload['packageDimensions'] : array();
+	$package       = array(
+		'length' => (float) wc_format_decimal( (string) ( $package_input['length'] ?? 0 ) ),
+		'width'  => (float) wc_format_decimal( (string) ( $package_input['width'] ?? 0 ) ),
+		'height' => (float) wc_format_decimal( (string) ( $package_input['height'] ?? 0 ) ),
+	);
+	$package_is_blank = 0.0 === max( $package );
+	if ( ! $package_is_blank && min( $package ) <= 0 ) {
+		return new WP_Error( 'papelito_kit_package_dimensions_invalid', 'Informe todas as dimensões da embalagem do Kit ou deixe os campos vazios para completar depois.', array( 'status' => 422 ) );
+	}
+	if ( ! $package_is_blank ) {
+		$package_valid = papelito_kit_validate_package_dimensions( $package );
+		if ( is_wp_error( $package_valid ) ) {
+			return $package_valid;
+		}
+	}
 	$source        = sanitize_key( (string) ( $payload['imageSource'] ?? 'fallback' ) );
 	$source        = array_key_exists( $source, PAPELITO_KIT_IMAGE_PRESETS ) || 'custom' === $source ? $source : 'fallback';
 	$attachment_id = absint( $payload['imageAttachmentId'] ?? 0 );
 	if ( 'custom' === $source && $attachment_id > 0 ) {
+		$GLOBALS['papelito_kits_skip_product_notification'] = true;
 		try {
 			$product->set_image_id( $attachment_id );
 			$product->save();
 		} catch ( Throwable $exception ) {
+			$GLOBALS['papelito_kits_skip_product_notification'] = false;
 			return new WP_Error( 'papelito_kit_image_invalid', 'Não foi possível salvar a imagem do Kit.', array( 'status' => 422 ) );
 		}
+		$GLOBALS['papelito_kits_skip_product_notification'] = false;
 	}
 	$wpdb->query( 'START TRANSACTION' );
 	if ( $kit ) {
@@ -518,9 +687,12 @@ function papelito_kit_write( array $payload, ?int $kit_id = null ) {
 			array(
 				'image_source'        => $source,
 				'image_attachment_id' => $attachment_id,
+				'package_length'      => $package['length'],
+				'package_width'       => $package['width'],
+				'package_height'      => $package['height'],
 			),
 			array( 'id' => $kit_id ),
-			array( '%s', '%d' ),
+			array( '%s', '%d', '%f', '%f', '%f' ),
 			array( '%d' )
 		);
 	} else {
@@ -530,8 +702,11 @@ function papelito_kit_write( array $payload, ?int $kit_id = null ) {
 				'product_id'          => $product_id,
 				'image_source'        => $source,
 				'image_attachment_id' => $attachment_id,
+				'package_length'      => $package['length'],
+				'package_width'       => $package['width'],
+				'package_height'      => $package['height'],
 			),
-			array( '%d', '%s', '%d' )
+			array( '%d', '%s', '%d', '%f', '%f', '%f' )
 		);
 		$kit_id = (int) $wpdb->insert_id;
 		$product->update_meta_data( PAPELITO_KIT_PRODUCT_META, $kit_id );
@@ -541,9 +716,10 @@ function papelito_kit_write( array $payload, ?int $kit_id = null ) {
 	foreach ( $items as $item ) {
 		$product_id = absint( $item['productId'] ?? 0 );
 		$quantity   = absint( $item['quantity'] ?? 0 );
-		if ( $product_id <= 0 || $product_id === (int) $product->get_id() || $quantity <= 0 || ! wc_get_product( $product_id ) || papelito_kit_is_product( $product_id ) ) {
+		$component = $product_id > 0 ? wc_get_product( $product_id ) : null;
+		if ( $product_id <= 0 || $product_id === (int) $product->get_id() || $quantity <= 0 || ! $component instanceof WC_Product || papelito_kit_is_product( $product_id ) ) {
 			$wpdb->query( 'ROLLBACK' );
-			return new WP_Error( 'papelito_kit_component_invalid', 'Os produtos do Kit precisam ser produtos comuns, únicos e com quantidade positiva.', array( 'status' => 422 ) );
+			return new WP_Error( 'papelito_kit_component_invalid', 'Os produtos do Kit precisam existir, ser únicos e ter quantidade positiva.', array( 'status' => 422 ) );
 		}
 		$normalized_items[ $product_id ] = $quantity;
 	}
@@ -616,6 +792,9 @@ function papelito_kit_write( array $payload, ?int $kit_id = null ) {
 	}
 	$wpdb->query( 'COMMIT' );
 	papelito_kits_invalidate_public_cache();
+	if ( function_exists( 'papelito_sync_product_data_notification' ) ) {
+		papelito_sync_product_data_notification( (int) $product->get_id(), $product );
+	}
 	return papelito_kit_get( $kit_id );
 }
 
@@ -680,6 +859,29 @@ add_action(
 					$payload = array( 'items' => array_values( array_filter( array_map( 'papelito_kit_public_response', is_array( $rows ) ? $rows : array() ) ) ) );
 					set_transient( 'papelito_kits_public', $payload, MINUTE_IN_SECONDS );
 					return new WP_REST_Response( $payload, 200 );
+				},
+			)
+		);
+		register_rest_route(
+			'papelito/v1',
+			'/kits/(?P<slug>[a-z0-9-]+)',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => '__return_true',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					global $wpdb;
+					$tables = papelito_kits_table_names();
+					$kit = $wpdb->get_row(
+						$wpdb->prepare(
+							"SELECT k.* FROM {$tables['kits']} k INNER JOIN {$wpdb->posts} p ON p.ID = k.product_id WHERE p.post_status = 'publish' AND p.post_name = %s LIMIT 1",
+							sanitize_title( (string) $request['slug'] )
+						),
+						ARRAY_A
+					);
+					$payload = is_array( $kit ) ? papelito_kit_public_detail_response( $kit ) : array();
+					return empty( $payload )
+						? new WP_Error( 'papelito_kit_not_found', 'Kit não encontrado.', array( 'status' => 404 ) )
+						: new WP_REST_Response( $payload, 200 );
 				},
 			)
 		);
