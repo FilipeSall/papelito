@@ -33,6 +33,7 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Pagamento | `test-pagarme-*.php`, incluindo `test-pagarme-simulator.php` |
 | Correios | `test-correios-prepostage.php`, `test-correios-idempotency.php`, `test-correios-reconciliation.php`, `test-correios-tracking-map.php` |
 | Pedido | `test-order-receipt-pdf.php`, `test-receipts-snapshot.php`, `test-receipts-backfill.php` |
+| Analytics | `test-analytics-ga4.php` (validação estrita dos ids do navegador, payload do Measurement Protocol, idempotência do webhook reemitido) |
 | Documento fiscal | `test-fiscal-documents.php`, `test-fiscal-xml.php` (exige SimpleXML) |
 | Administração | `test-admin-activate-email.php` |
 | E-mail de faturamento | `test-billing-email-rules.php` (tabela de decisão), `test-billing-email-sync.php` (cascata e backfill), `test-billing-email-token.php`, `test-pre-account-email-verification.php` (**estrutural**: nenhum `wp_insert_user()` pode ficar sem gravar o estado de verificação) |

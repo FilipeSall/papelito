@@ -198,6 +198,7 @@ mu-plugins carregam automaticamente e **não podem ser desativados pela interfac
 | `COOKIE_DOMAIN` | produção | domínio do cookie |
 | `PAPELITO_FRONT_PROXY_TOKEN` | recomendado em produção | segredo compartilhado com o Next; permite rate limit de frete por comprador sem confiar em header público |
 | `PAGARME_SECRET_KEY`, `PAGARME_WEBHOOK_USER`, `PAGARME_WEBHOOK_PASS`, `PAGARME_BASE_URL` | quando pagamento ligado | ver [operations/pagarme-environment.md](../operations/pagarme-environment.md) |
+| `GA4_MEASUREMENT_ID`, `GA4_API_SECRET` | quando a atribuição de campanha estiver ligada | envio do `purchase` ao GA4 na confirmação do pagamento. Sem elas o pedido segue normal e nenhum evento é enviado. Ver [analytics-and-attribution.md](../../../docs/analytics-and-attribution.md) |
 | `PAPELITO_PAGARME_SIMULATION_ENABLED`, `PAPELITO_PAGARME_SIMULATION_TOKEN` | só local/teste | simulador de webhook |
 | `PAPELITO_CORREIOS_*` | frete | ver [context/correios-integration.md](correios-integration.md) |
 | `PAPELITO_PII_LOOKUP_KEY`, `PAPELITO_PII_ENCRYPTION_KEY`, `PAPELITO_PII_KEY_VERSION` | B2B | ver [context/data-model.md](data-model.md#criptografia-de-pii) |

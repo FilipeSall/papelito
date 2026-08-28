@@ -42,6 +42,10 @@ function papelito_order_routing_sort_payload( $value ) {
 
 function papelito_order_routing_checkout_request_hash( array $payload ): string {
 	$normalized = $payload;
+	// Os ids de analytics ficam de fora da impressao digital da tentativa: o `session_id` do GA4
+	// expira sozinho, e uma nova tentativa do mesmo checkout com sessao renovada seria recusada
+	// como `papelito_checkout_attempt_payload_conflict` sem que nada do pedido tenha mudado.
+	unset( $normalized['analytics'] );
 	if ( isset( $normalized['payment']['card_token_id'] ) ) {
 		$normalized['payment']['card_token_id'] = hash_hmac( 'sha256', (string) $normalized['payment']['card_token_id'], wp_salt( 'papelito_checkout_attempt' ) );
 	}
@@ -1122,6 +1126,10 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 			'Não foi possível recuperar o pedido recem-criado.',
 			array( 'status' => 500 )
 		);
+	}
+
+	if ( function_exists( 'papelito_ga4_store_order_identifiers' ) && isset( $payload['analytics'] ) && is_array( $payload['analytics'] ) ) {
+		papelito_ga4_store_order_identifiers( $order, $payload['analytics'] );
 	}
 
 	$reserved = papelito_pagarme_reserve_order_stock( $order, $lines );

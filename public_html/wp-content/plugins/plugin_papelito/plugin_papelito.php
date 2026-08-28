@@ -38,6 +38,7 @@ require_once __DIR__ . '/includes/image_validation.php';
 require_once __DIR__ . '/includes/direct_uploads.php';
 require_once __DIR__ . '/includes/admin_media_cleanup.php';
 require_once __DIR__ . '/includes/admin_reports.php';
+require_once __DIR__ . '/includes/analytics_ga4.php';
 require_once __DIR__ . '/includes/admin_users.php';
 require_once __DIR__ . '/includes/shipping.php';
 require_once __DIR__ . '/includes/correios_prepostage.php';
@@ -66,6 +67,7 @@ require_once __DIR__ . '/includes/vendor_processing_alerts.php';
 require_once __DIR__ . '/includes/company_flags.php';
 require_once __DIR__ . '/includes/cnpj_validation.php';
 require_once __DIR__ . '/includes/customer_identity.php';
+require_once __DIR__ . '/includes/integration_secrets.php';
 require_once __DIR__ . '/includes/company_schema.php';
 require_once __DIR__ . '/includes/company_onboarding.php';
 require_once __DIR__ . '/includes/company_repository.php';
@@ -88,7 +90,7 @@ require_once __DIR__ . '/includes/billing_email_sync.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.32.0' );
+	define( 'PAPELITO_DB_VERSION', '1.33.0' );
 }
 
 /**
@@ -171,6 +173,10 @@ function papelito_maybe_migrate_db() {
 
 		if ( function_exists( 'papelito_product_taxonomy_install_tables' ) ) {
 			papelito_product_taxonomy_install_tables();
+		}
+
+		if ( function_exists( 'papelito_integration_secret_install_tables' ) ) {
+			papelito_integration_secret_install_tables();
 		}
 
 		if (
