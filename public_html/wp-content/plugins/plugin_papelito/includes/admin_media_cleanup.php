@@ -5,6 +5,10 @@ defined( 'ABSPATH' ) || exit;
 function papelito_admin_media_cleanup_referenced( int $attachment_id ): bool {
 	global $wpdb;
 
+	$attachment = get_post( $attachment_id );
+	if ( $attachment && (int) $attachment->post_parent > 0 && get_post( (int) $attachment->post_parent ) ) {
+		return true;
+	}
 	$attachment_url = wp_get_attachment_url( $attachment_id );
 	$id_like        = '%' . $wpdb->esc_like( (string) $attachment_id ) . '%';
 	$url_like       = is_string( $attachment_url ) && '' !== $attachment_url ? '%' . $wpdb->esc_like( $attachment_url ) . '%' : '';
@@ -20,6 +24,18 @@ function papelito_admin_media_cleanup_referenced( int $attachment_id ): bool {
 	$tables = function_exists( 'papelito_kits_table_names' ) ? papelito_kits_table_names() : array();
 	foreach ( array( 'kits', 'merchandise' ) as $key ) {
 		if ( isset( $tables[ $key ] ) && $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$tables[ $key ]} WHERE image_attachment_id = %d LIMIT 1", $attachment_id ) ) ) {
+			return true;
+		}
+	}
+	if ( function_exists( 'papelito_product_taxonomy_table_names' ) ) {
+		$taxonomy_tables = papelito_product_taxonomy_table_names();
+		if ( $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$taxonomy_tables['categories']} WHERE icon_attachment_id = %d LIMIT 1", $attachment_id ) ) ) {
+			return true;
+		}
+	}
+	if ( function_exists( 'papelito_product_benefits_table_names' ) ) {
+		$benefit_tables = papelito_product_benefits_table_names();
+		if ( $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$benefit_tables['items']} WHERE icon_attachment_id = %d LIMIT 1", $attachment_id ) ) ) {
 			return true;
 		}
 	}

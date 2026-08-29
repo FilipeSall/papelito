@@ -60,6 +60,8 @@ docker compose exec web wp --allow-root eval-file \
 
 `test-fiscal-documents-db.php` cobre a semântica de NULL nos índices únicos: uma corrente por `(pedido, vendor)` com N históricos, um arquivo ativo por papel, e chave de acesso duplicada aceita pelo banco.
 
+`test-product-taxonomy-integrity-db.php` cobre o recorte de `papelito_category_integrity_report()`: produto publicado sem categoria é sinalizado, rascunho e produto classificado não são, e **o produto comercial de um Kit não entra em `publishedWithoutCategory`** — ele é `catalog_visibility=hidden` e nunca recebe categoria, então contá-lo virava alerta que ninguém conseguia resolver pela aba Produtos, que exclui kits.
+
 > **Armadilha do `wp eval-file`**: o arquivo roda **dentro de uma função**, então variável de topo **não é global**. Um `$failures = 0;` no topo com `global $failures;` dentro do assert cria duas variáveis diferentes — o teste imprime `FAIL` e mesmo assim sai com código 0. Os três testes de banco declaram `global $wpdb, $failures;` no topo por isso. Ao criar um teste novo nesse formato, verifique o exit code injetando uma falha proposital.
 
 ### Testes que precisam de extensão XML

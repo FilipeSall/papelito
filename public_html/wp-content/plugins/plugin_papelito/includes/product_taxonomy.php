@@ -419,11 +419,10 @@ function papelito_category_create( array $data ) {
 }
 
 /**
- * Atualiza campos de uma categoria. Só o que vier em `$data` é tocado.
+ * Extrai o nome da categoria do payload, exigindo que não seja vazio.
  *
- * @param int                 $category_id Id da categoria.
- * @param array<string,mixed> $data        Campos a atualizar.
- * @return true|WP_Error
+ * @param array<string,mixed> $data Campos a atualizar.
+ * @return array<string,mixed>|WP_Error
  */
 function papelito_category_update_name_field( array $data ) {
 	if ( ! array_key_exists( 'name', $data ) ) {
@@ -439,6 +438,13 @@ function papelito_category_update_name_field( array $data ) {
 	return array( 'name' => $name );
 }
 
+/**
+ * Extrai o slug da categoria, garantindo unicidade contra as demais.
+ *
+ * @param array<string,mixed> $category Categoria sendo editada.
+ * @param array<string,mixed> $data     Campos a atualizar.
+ * @return array<string,mixed>|WP_Error
+ */
 function papelito_category_update_slug_field( array $category, array $data ) {
 	if ( ! array_key_exists( 'slug', $data ) ) {
 		return array();
@@ -463,6 +469,12 @@ function papelito_category_update_slug_field( array $category, array $data ) {
 	return array( 'slug' => $slug );
 }
 
+/**
+ * Extrai os campos opcionais da categoria (descrição, SEO, ícone, ordem).
+ *
+ * @param array<string,mixed> $data Campos a atualizar.
+ * @return array<string,mixed>
+ */
 function papelito_category_update_optional_fields( array $data ) {
 	$fields = array();
 
@@ -489,6 +501,13 @@ function papelito_category_update_optional_fields( array $data ) {
 	return $fields;
 }
 
+/**
+ * Extrai o estado ativo, barrando a desativação de categoria ainda em uso.
+ *
+ * @param array<string,mixed> $category Categoria sendo editada.
+ * @param array<string,mixed> $data     Campos a atualizar.
+ * @return array<string,mixed>|WP_Error
+ */
 function papelito_category_update_active_field( array $category, array $data ) {
 	if ( ! array_key_exists( 'isActive', $data ) ) {
 		return array();
@@ -501,6 +520,13 @@ function papelito_category_update_active_field( array $category, array $data ) {
 	return array( 'is_active' => $data['isActive'] ? 1 : 0 );
 }
 
+/**
+ * Atualiza campos de uma categoria. Só o que vier em `$data` é tocado.
+ *
+ * @param int                 $category_id Id da categoria.
+ * @param array<string,mixed> $data        Campos a atualizar.
+ * @return true|WP_Error
+ */
 function papelito_category_update( $category_id, array $data ) {
 	global $wpdb;
 
@@ -835,14 +861,10 @@ function papelito_subcategory_create( array $data ) {
 }
 
 /**
- * Atualiza campos de uma subcategoria. `categoryId` é imutável.
+ * Extrai o nome da subcategoria do payload, exigindo que não seja vazio.
  *
- * Mover subcategoria entre categorias invalidaria os vínculos de produto já
- * existentes: quem precisa disso cria a subcategoria nova e reclassifica.
- *
- * @param int                 $subcategory_id Id da subcategoria.
- * @param array<string,mixed> $data           Campos a atualizar.
- * @return true|WP_Error
+ * @param array<string,mixed> $data Campos a atualizar.
+ * @return array<string,mixed>|WP_Error
  */
 function papelito_subcategory_update_name_field( array $data ) {
 	if ( ! array_key_exists( 'name', $data ) ) {
@@ -858,6 +880,13 @@ function papelito_subcategory_update_name_field( array $data ) {
 	return array( 'name' => $name );
 }
 
+/**
+ * Extrai o slug da subcategoria, garantindo unicidade dentro da categoria.
+ *
+ * @param array<string,mixed> $subcategory Subcategoria sendo editada.
+ * @param array<string,mixed> $data        Campos a atualizar.
+ * @return array<string,mixed>|WP_Error
+ */
 function papelito_subcategory_update_slug_field( array $subcategory, array $data ) {
 	if ( ! array_key_exists( 'slug', $data ) ) {
 		return array();
@@ -882,6 +911,12 @@ function papelito_subcategory_update_slug_field( array $subcategory, array $data
 	return array( 'slug' => $slug );
 }
 
+/**
+ * Extrai os campos opcionais da subcategoria (faceta e ordem).
+ *
+ * @param array<string,mixed> $data Campos a atualizar.
+ * @return array<string,mixed>
+ */
 function papelito_subcategory_update_optional_fields( array $data ) {
 	$fields = array();
 
@@ -901,6 +936,13 @@ function papelito_subcategory_update_optional_fields( array $data ) {
 	return $fields;
 }
 
+/**
+ * Extrai o estado ativo, barrando a desativação de subcategoria ainda em uso.
+ *
+ * @param array<string,mixed> $subcategory Subcategoria sendo editada.
+ * @param array<string,mixed> $data        Campos a atualizar.
+ * @return array<string,mixed>|WP_Error
+ */
 function papelito_subcategory_update_active_field( array $subcategory, array $data ) {
 	if ( ! array_key_exists( 'isActive', $data ) ) {
 		return array();
@@ -913,6 +955,16 @@ function papelito_subcategory_update_active_field( array $subcategory, array $da
 	return array( 'is_active' => $data['isActive'] ? 1 : 0 );
 }
 
+/**
+ * Atualiza campos de uma subcategoria. `categoryId` é imutável.
+ *
+ * Mover subcategoria entre categorias invalidaria os vínculos de produto já
+ * existentes: quem precisa disso cria a subcategoria nova e reclassifica.
+ *
+ * @param int                 $subcategory_id Id da subcategoria.
+ * @param array<string,mixed> $data           Campos a atualizar.
+ * @return true|WP_Error
+ */
 function papelito_subcategory_update( $subcategory_id, array $data ) {
 	global $wpdb;
 
@@ -1036,16 +1088,11 @@ function papelito_subcategories_reorder( $category_id, array $ordered_ids ) {
 // ------------------------------------------------------------------
 
 /**
- * Substitui, em uma única transação, os vínculos de taxonomia enviados para
- * um produto. Valida tudo antes de apagar qualquer vínculo existente.
+ * Resolve a categoria principal do payload, preservando a atual se ausente.
  *
- * As chaves ausentes são preservadas; uma troca de categoria sem
- * `subcategoryIds` limpa as subcategorias, pois elas pertencem à categoria
- * anterior. Essa é a operação usada pela API de edição completa.
- *
- * @param int                 $product_id Id do produto.
- * @param array<string,mixed> $data       categoryId, subcategoryIds e collections opcionais.
- * @return true|WP_Error
+ * @param array<string,mixed>|null $current_category Categoria já vinculada.
+ * @param array<string,mixed>      $data             Payload da edição.
+ * @return array<string,mixed>|WP_Error|null
  */
 function papelito_product_taxonomy_resolve_category( $current_category, array $data ) {
 	if ( ! array_key_exists( 'categoryId', $data ) ) {
@@ -1065,6 +1112,14 @@ function papelito_product_taxonomy_resolve_category( $current_category, array $d
 	return $category;
 }
 
+/**
+ * Resolve as subcategorias do payload, exigindo que pertençam à categoria.
+ *
+ * @param array<string,mixed>|null $category                Categoria resolvida.
+ * @param int[]                    $current_subcategory_ids Vínculos atuais.
+ * @param array<string,mixed>      $data                    Payload da edição.
+ * @return int[]|WP_Error
+ */
 function papelito_product_taxonomy_resolve_subcategory_ids( $category, array $current_subcategory_ids, array $data ) {
 	if ( ! array_key_exists( 'subcategoryIds', $data ) ) {
 		return array();
@@ -1095,6 +1150,12 @@ function papelito_product_taxonomy_resolve_subcategory_ids( $category, array $cu
 	return $subcategory_ids;
 }
 
+/**
+ * Resolve as coleções curadas do payload.
+ *
+ * @param array<string,mixed> $data Payload da edição.
+ * @return string[]|WP_Error
+ */
 function papelito_product_taxonomy_resolve_collections( array $data ) {
 	if ( ! array_key_exists( 'collections', $data ) ) {
 		return array();
@@ -1125,6 +1186,15 @@ function papelito_product_taxonomy_resolve_collections( array $data ) {
 	return $collections;
 }
 
+/**
+ * Grava o vínculo de categoria principal. Só escreve se a categoria mudou.
+ *
+ * @param int                      $product_id       Id do produto.
+ * @param array<string,string>     $tables           Nomes das tabelas.
+ * @param array<string,mixed>|null $category         Categoria resolvida.
+ * @param bool                     $category_changed Se a categoria mudou.
+ * @return bool
+ */
 function papelito_product_taxonomy_replace_category_link( $product_id, array $tables, $category, $category_changed ) {
 	global $wpdb;
 
@@ -1142,6 +1212,16 @@ function papelito_product_taxonomy_replace_category_link( $product_id, array $ta
 	);
 }
 
+/**
+ * Regrava os vínculos de subcategoria. Trocar de categoria limpa os antigos.
+ *
+ * @param int                  $product_id        Id do produto.
+ * @param array<string,string> $tables            Nomes das tabelas.
+ * @param bool                 $category_changed  Se a categoria mudou.
+ * @param bool                 $has_subcategories Se o payload trouxe a chave.
+ * @param int[]                $subcategory_ids   Subcategorias resolvidas.
+ * @return bool
+ */
 function papelito_product_taxonomy_replace_subcategory_links( $product_id, array $tables, $category_changed, $has_subcategories, array $subcategory_ids ) {
 	global $wpdb;
 
@@ -1172,6 +1252,15 @@ function papelito_product_taxonomy_replace_subcategory_links( $product_id, array
 	return true;
 }
 
+/**
+ * Regrava os vínculos de coleção curada.
+ *
+ * @param int                  $product_id      Id do produto.
+ * @param array<string,string> $tables          Nomes das tabelas.
+ * @param bool                 $has_collections Se o payload trouxe a chave.
+ * @param string[]             $collections     Coleções resolvidas.
+ * @return bool
+ */
 function papelito_product_taxonomy_replace_collection_links( $product_id, array $tables, $has_collections, array $collections ) {
 	global $wpdb;
 
@@ -1198,18 +1287,38 @@ function papelito_product_taxonomy_replace_collection_links( $product_id, array 
 	return true;
 }
 
-function papelito_product_taxonomy_replace_write( $product_id, array $tables, $category, $category_changed, $has_subcategories, array $subcategory_ids, $has_collections, array $collections ) {
-	if ( ! papelito_product_taxonomy_replace_category_link( $product_id, $tables, $category, $category_changed ) ) {
+/**
+ * Executa as três gravações do plano, abortando na primeira que falhar.
+ *
+ * @param int                  $product_id Id do produto.
+ * @param array<string,string> $tables     Nomes das tabelas.
+ * @param array<string,mixed>  $plan       Categoria, subcategorias e coleções já resolvidas.
+ * @return bool
+ */
+function papelito_product_taxonomy_replace_write( $product_id, array $tables, array $plan ) {
+	if ( ! papelito_product_taxonomy_replace_category_link( $product_id, $tables, $plan['category'], $plan['categoryChanged'] ) ) {
 		return false;
 	}
 
-	if ( ! papelito_product_taxonomy_replace_subcategory_links( $product_id, $tables, $category_changed, $has_subcategories, $subcategory_ids ) ) {
+	if ( ! papelito_product_taxonomy_replace_subcategory_links( $product_id, $tables, $plan['categoryChanged'], $plan['hasSubcategories'], $plan['subcategoryIds'] ) ) {
 		return false;
 	}
 
-	return papelito_product_taxonomy_replace_collection_links( $product_id, $tables, $has_collections, $collections );
+	return papelito_product_taxonomy_replace_collection_links( $product_id, $tables, $plan['hasCollections'], $plan['collections'] );
 }
 
+/**
+ * Substitui, em uma única transação, os vínculos de taxonomia enviados para
+ * um produto. Valida tudo antes de apagar qualquer vínculo existente.
+ *
+ * As chaves ausentes são preservadas; uma troca de categoria sem
+ * `subcategoryIds` limpa as subcategorias, pois elas pertencem à categoria
+ * anterior. Essa é a operação usada pela API de edição completa.
+ *
+ * @param int                 $product_id Id do produto.
+ * @param array<string,mixed> $data       categoryId, subcategoryIds e collections opcionais.
+ * @return true|WP_Error
+ */
 function papelito_product_replace_taxonomy( $product_id, array $data ) {
 	global $wpdb;
 
@@ -1242,14 +1351,25 @@ function papelito_product_replace_taxonomy( $product_id, array $data ) {
 	$has_category      = array_key_exists( 'categoryId', $data );
 	$has_subcategories = array_key_exists( 'subcategoryIds', $data );
 	$has_collections   = array_key_exists( 'collections', $data );
-	$category_changed  = $has_category && ( null === $current_category || $current_category['id'] !== $category['id'] );
+	$category_changed  = $has_category && is_array( $category ) && ( null === $current_category || $current_category['id'] !== $category['id'] );
 	$tables            = papelito_product_taxonomy_table_names();
 
 	if ( false === $wpdb->query( 'START TRANSACTION' ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		return new WP_Error( 'papelito_product_taxonomy_failed', 'Não foi possível iniciar a gravação da taxonomia.', array( 'status' => 500 ) );
 	}
 
-	$written = papelito_product_taxonomy_replace_write( $product_id, $tables, $category, $category_changed, $has_subcategories, $subcategory_ids, $has_collections, $collections );
+	$written = papelito_product_taxonomy_replace_write(
+		$product_id,
+		$tables,
+		array(
+			'category'         => $category,
+			'categoryChanged'  => $category_changed,
+			'collections'      => $collections,
+			'hasCollections'   => $has_collections,
+			'hasSubcategories' => $has_subcategories,
+			'subcategoryIds'   => $subcategory_ids,
+		)
+	);
 
 	if ( ! $written || false === $wpdb->query( 'COMMIT' ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
@@ -1572,14 +1692,22 @@ function papelito_subcategory_product_counts( $category_id = 0 ) {
  * que não existe mais, subcategoria de outra categoria, e categoria inativa
  * ainda segurando produto publicado.
  *
+ * Kits ficam de fora de `publishedWithoutCategory`: o produto comercial deles é
+ * oculto do catálogo por decisão de produto e não se classifica.
+ *
  * @return array<string,mixed>
  */
 function papelito_category_integrity_report() {
 	global $wpdb;
 
-	$tables = papelito_product_taxonomy_table_names();
+	$tables      = papelito_product_taxonomy_table_names();
+	$kits_tables = papelito_kits_table_names();
 
-	$sql              = "SELECT p.ID FROM {$wpdb->posts} p LEFT JOIN {$tables['product_category']} pc ON pc.product_id = p.ID WHERE p.post_type = 'product' AND p.post_status = 'publish' AND pc.product_id IS NULL ORDER BY p.ID ASC"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	// O produto comercial de um Kit nasce `catalog_visibility=hidden` e nunca
+	// recebe categoria: ele não entra na vitrine por classificação. Contá-lo aqui
+	// vira alerta permanente que ninguém consegue resolver, porque a aba Produtos
+	// exclui kits — eles se editam na aba Kits.
+	$sql              = "SELECT p.ID FROM {$wpdb->posts} p LEFT JOIN {$tables['product_category']} pc ON pc.product_id = p.ID LEFT JOIN {$kits_tables['kits']} k ON k.product_id = p.ID WHERE p.post_type = 'product' AND p.post_status = 'publish' AND pc.product_id IS NULL AND k.product_id IS NULL ORDER BY p.ID ASC"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	$missing_category = $wpdb->get_col( $sql ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared
 
 	$sql               = "SELECT pc.product_id FROM {$tables['product_category']} pc LEFT JOIN {$tables['categories']} c ON c.id = pc.category_id WHERE c.id IS NULL ORDER BY pc.product_id ASC"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
