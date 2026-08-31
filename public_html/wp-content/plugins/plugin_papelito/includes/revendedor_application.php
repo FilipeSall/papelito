@@ -9,6 +9,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+if ( ! function_exists( 'papelito_validate_cnpj' ) ) {
+	require_once __DIR__ . '/cnpj_validation.php';
+}
+
 const PAPELITO_VENDOR_APPLICATION_STATUS_META             = 'application_status';
 const PAPELITO_VENDOR_APPLICATION_INCOMPLETE_STATUS       = 'incomplete';
 const PAPELITO_VENDOR_APPLICATION_REJECTION_REASON_META   = 'application_rejection_reason';
@@ -574,9 +578,9 @@ function papelito_collect_vendor_pending_partner_fields( array $step3 ): array {
  * @return array<int, string>
  */
 function papelito_collect_vendor_pending_bank_fields( array $step3 ): array {
-	$pending        = array();
-	$bank_account   = isset( $step3['bankAccount'] ) && is_array( $step3['bankAccount'] ) ? $step3['bankAccount'] : array();
-	$holder_type    = sanitize_text_field( (string) ( $bank_account['holderType'] ?? '' ) );
+	$pending         = array();
+	$bank_account    = isset( $step3['bankAccount'] ) && is_array( $step3['bankAccount'] ) ? $step3['bankAccount'] : array();
+	$holder_type     = sanitize_text_field( (string) ( $bank_account['holderType'] ?? '' ) );
 	$holder_document = (string) ( $bank_account['holderDocument'] ?? '' );
 
 	if ( '' === sanitize_text_field( (string) ( $bank_account['holderName'] ?? '' ) ) ) {
@@ -584,7 +588,7 @@ function papelito_collect_vendor_pending_bank_fields( array $step3 ): array {
 	}
 	$document_valid = 'individual' === $holder_type
 		? papelito_revendedor_validate_cpf( $holder_document )
-		: 1 === preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $holder_document );
+		: papelito_revendedor_validate_cnpj( $holder_document );
 	if ( ! $document_valid ) {
 		$pending[] = 'bankAccount.holderDocument';
 	}
@@ -934,7 +938,7 @@ function papelito_validate_vendor_pending_registration_account( int $user_id, ar
 	}
 
 	$cnpj = sanitize_text_field( (string) ( $step1['cnpj'] ?? '' ) );
-	if ( 1 !== preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $cnpj ) ) {
+	if ( ! papelito_revendedor_validate_cnpj( $cnpj ) ) {
 		return new WP_Error( 'papelito_vendor_invalid_cnpj', 'Informe um CNPJ valido.', array( 'status' => 422 ) );
 	}
 	if ( papelito_admin_vendors_cnpj_exists( $cnpj, $user_id ) ) {
@@ -1107,6 +1111,20 @@ function papelito_sanitize_vendor_pagarme_draft( $value ) {
 	}
 
 	return $sanitized;
+}
+
+/**
+ * Valida CNPJ do vendor: mascara obrigatoria e dígitos verificadores oficiais.
+ *
+ * @param string $value CNPJ mascarado (00.000.000/0000-00).
+ * @return bool
+ */
+function papelito_revendedor_validate_cnpj( string $value ): bool {
+	if ( 1 !== preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $value ) ) {
+		return false;
+	}
+
+	return papelito_validate_cnpj( $value );
 }
 
 /**
@@ -1292,17 +1310,16 @@ function papelito_validate_vendor_pagarme_partner_fields( array $step3, WP_Error
 function papelito_validate_vendor_pagarme_bank_fields( array $step3, WP_Error $errors ): void {
 	$bank_account = isset( $step3['bankAccount'] ) && is_array( $step3['bankAccount'] ) ? $step3['bankAccount'] : array();
 	$holder_type  = sanitize_text_field( (string) ( $bank_account['holderType'] ?? '' ) );
-
 	if ( '' === sanitize_text_field( (string) ( $bank_account['holderName'] ?? '' ) ) ) {
 		$errors->add( 'bankHolderName', 'Informe o titular da conta.' );
 	}
 
 	$holder_document = (string) ( $bank_account['holderDocument'] ?? '' );
 	if ( 'individual' === $holder_type ) {
-if ( ! papelito_revendedor_validate_cpf( $holder_document ) ) {
+		if ( ! papelito_revendedor_validate_cpf( $holder_document ) ) {
 			$errors->add( 'bankHolderDocument', 'Informe um CPF válido para o titular.' );
 		}
-	} elseif ( 1 !== preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $holder_document ) ) {
+	} elseif ( ! papelito_revendedor_validate_cnpj( $holder_document ) ) {
 		$errors->add( 'bankHolderDocument', 'Informe um CNPJ válido para o titular.' );
 	}
 
@@ -1459,7 +1476,7 @@ function papelito_validate_seller_identity_fields( array $input, WP_Error $error
 	}
 
 	$cnpj = isset( $input['cnpj'] ) ? (string) $input['cnpj'] : '';
-	if ( ! preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $cnpj ) ) {
+	if ( ! papelito_revendedor_validate_cnpj( $cnpj ) ) {
 		$errors->add( 'cnpj', 'Informe um CNPJ válido.' );
 	}
 
@@ -2270,10 +2287,10 @@ function papelito_admin_vendors_normalize_bank_account( $bank_account ) {
 	}
 
 	if ( 'individual' === $holder_type ) {
-if ( ! papelito_revendedor_validate_cpf( $normalized['holderDocument'] ) ) {
+		if ( ! papelito_revendedor_validate_cpf( $normalized['holderDocument'] ) ) {
 			$errors->add( 'bankHolderDocument', 'Informe um CPF válido para o titular.' );
 		}
-	} elseif ( 'company' === $holder_type && 1 !== preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $normalized['holderDocument'] ) ) {
+	} elseif ( 'company' === $holder_type && ! papelito_revendedor_validate_cnpj( $normalized['holderDocument'] ) ) {
 		$errors->add( 'bankHolderDocument', 'Informe um CNPJ válido para o titular.' );
 	}
 
@@ -2451,7 +2468,7 @@ function papelito_admin_vendors_prepare_direct_vendor( array $input, int $review
 	if ( ! $existing_user instanceof WP_User && '' === trim( $temporary_password ) ) {
 		return new WP_Error( 'papelito_admin_vendor_missing_temporary_password', 'Informe uma senha temporária para a nova conta vendor.', array( 'status' => 422 ) );
 	}
-	if ( 1 !== preg_match( PAPELITO_VENDOR_CNPJ_PATTERN, $cnpj ) ) {
+	if ( ! papelito_revendedor_validate_cnpj( $cnpj ) ) {
 		return new WP_Error( 'papelito_admin_vendor_invalid_cnpj', 'Informe um CNPJ valido.', array( 'status' => 422 ) );
 	}
 

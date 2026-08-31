@@ -12,6 +12,13 @@ if ( ! defined( 'PAPELITO_MESSAGE_THREADS_TABLE' ) ) {
 	define( 'PAPELITO_MESSAGES_TABLE', 'papelito_messages' );
 	define( 'PAPELITO_MESSAGE_READS_TABLE', 'papelito_message_reads' );
 	define( 'PAPELITO_MESSAGES_DEFAULT_PER_PAGE', 20 );
+	define( 'PAPELITO_MESSAGE_ORDER_NOT_FOUND', 'Pedido nao encontrado.' );
+	define( 'PAPELITO_MESSAGE_THREAD_START_FAILED', 'Nao foi possivel iniciar a conversa.' );
+	define( 'PAPELITO_MESSAGE_THREAD_NOT_FOUND', 'Conversa nao encontrada.' );
+}
+
+if ( ! defined( 'PAPELITO_REST_NAMESPACE' ) ) {
+	define( 'PAPELITO_REST_NAMESPACE', 'papelito/v1' );
 }
 
 // Custom table identifiers below are derived exclusively from the trusted WordPress table prefix.
@@ -43,14 +50,17 @@ function papelito_messaging_install_tables(): void {
 
 	$threads_sql = "CREATE TABLE {$tables['threads']} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  order_id BIGINT UNSIGNED NOT NULL,
+  order_id BIGINT UNSIGNED NULL DEFAULT NULL,
   customer_id BIGINT UNSIGNED NOT NULL,
   vendor_id BIGINT UNSIGNED NOT NULL,
+  context VARCHAR(64) NOT NULL DEFAULT 'order',
+  support_key VARCHAR(100) NULL DEFAULT NULL,
   escalated_at DATETIME NULL DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY  (id),
   UNIQUE KEY uniq_order (order_id),
+  UNIQUE KEY uniq_support_key (support_key),
   KEY idx_customer_updated (customer_id, updated_at),
   KEY idx_vendor_updated (vendor_id, updated_at),
   KEY idx_escalated_updated (escalated_at, updated_at)
@@ -79,6 +89,8 @@ function papelito_messaging_install_tables(): void {
 	dbDelta( $threads_sql );
 	dbDelta( $messages_sql );
 	dbDelta( $reads_sql );
+
+	$wpdb->query( "ALTER TABLE {$tables['threads']} MODIFY order_id BIGINT UNSIGNED NULL DEFAULT NULL" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 }
 
 /**
@@ -106,7 +118,7 @@ function papelito_messaging_rate_limit( int $user_id, string $bucket, int $max =
 	$ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
 
 	if ( '' !== $ip ) {
-		$identity = 'ip_' . md5( $ip );
+		$identity = 'ip_' . hash( 'sha256', $ip );
 	} elseif ( $user_id > 0 ) {
 		$identity = 'user_' . $user_id;
 	} else {
@@ -135,7 +147,7 @@ function papelito_messaging_order( int $order_id ) {
 	$order = function_exists( 'wc_get_order' ) ? wc_get_order( $order_id ) : null;
 
 	if ( ! is_object( $order ) || ! is_a( $order, 'WC_Order' ) ) {
-		return new WP_Error( 'papelito_message_order_not_found', 'Pedido nao encontrado.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_message_order_not_found', PAPELITO_MESSAGE_ORDER_NOT_FOUND, array( 'status' => 404 ) );
 	}
 
 	return $order;
@@ -177,7 +189,7 @@ function papelito_messaging_get_thread( int $thread_id ): ?array {
 	$table = papelito_messaging_tables()['threads'];
 	$row   = $wpdb->get_row(
 		$wpdb->prepare(
-			"SELECT id, order_id, customer_id, vendor_id, escalated_at, created_at, updated_at FROM {$table} WHERE id = %d",
+			"SELECT id, order_id, customer_id, vendor_id, context, support_key, escalated_at, created_at, updated_at FROM {$table} WHERE id = %d",
 			$thread_id
 		),
 		ARRAY_A
@@ -198,8 +210,30 @@ function papelito_messaging_get_thread_by_order( int $order_id ): ?array {
 	$table = papelito_messaging_tables()['threads'];
 	$row   = $wpdb->get_row(
 		$wpdb->prepare(
-			"SELECT id, order_id, customer_id, vendor_id, escalated_at, created_at, updated_at FROM {$table} WHERE order_id = %d",
+			"SELECT id, order_id, customer_id, vendor_id, context, support_key, escalated_at, created_at, updated_at FROM {$table} WHERE order_id = %d",
 			$order_id
+		),
+		ARRAY_A
+	);
+
+	return is_array( $row ) ? $row : null;
+}
+
+/**
+ * Return a vendor's idempotent Pagar.me bank-account support thread.
+ *
+ * @param int $vendor_id Vendor identifier.
+ * @return array<string,mixed>|null
+ */
+function papelito_messaging_get_pagarme_bank_account_support_thread( int $vendor_id ): ?array {
+	global $wpdb;
+
+	$table       = papelito_messaging_tables()['threads'];
+	$support_key = 'vendor-pagarme-bank-account:' . $vendor_id;
+	$row         = $wpdb->get_row(
+		$wpdb->prepare(
+			"SELECT id, order_id, customer_id, vendor_id, context, support_key, escalated_at, created_at, updated_at FROM {$table} WHERE support_key = %s",
+			$support_key
 		),
 		ARRAY_A
 	);
@@ -373,7 +407,8 @@ function papelito_messaging_map_thread_summary( array $thread, int $viewer_id ):
 
 	$thread_id      = absint( $thread['id'] ?? 0 );
 	$order_id       = absint( $thread['order_id'] ?? 0 );
-	$order          = papelito_messaging_order( $order_id );
+	$context        = (string) ( $thread['context'] ?? 'order' );
+	$order          = 'order' === $context ? papelito_messaging_order( $order_id ) : null;
 	$messages_table = papelito_messaging_tables()['messages'];
 	$message        = $wpdb->get_row(
 		$wpdb->prepare(
@@ -385,8 +420,15 @@ function papelito_messaging_map_thread_summary( array $thread, int $viewer_id ):
 	$role           = papelito_messaging_access_role( $thread, $viewer_id );
 	$customer       = papelito_messaging_user_name( absint( $thread['customer_id'] ?? 0 ) );
 	$vendor         = papelito_messaging_user_name( absint( $thread['vendor_id'] ?? 0 ) );
+	$order_number   = '';
 
-	if ( 'seller' === $role ) {
+	if ( 'order' === $context ) {
+		$order_number = is_wp_error( $order ) ? (string) $order_id : (string) $order->get_order_number();
+	}
+
+	if ( 'pagarme_bank_account_update' === $context ) {
+		$counterpart = 'Suporte Papelito';
+	} elseif ( 'seller' === $role ) {
 		$counterpart = $customer;
 	} elseif ( 'administrator' === $role ) {
 		$counterpart = sprintf( '%s / %s', $customer, $vendor );
@@ -396,8 +438,9 @@ function papelito_messaging_map_thread_summary( array $thread, int $viewer_id ):
 
 	return array(
 		'thread_id'        => $thread_id,
+		'context'          => $context,
 		'order_id'         => $order_id,
-		'order_number'     => is_wp_error( $order ) ? (string) $order_id : (string) $order->get_order_number(),
+		'order_number'     => $order_number,
 		'counterpart_name' => $counterpart,
 		'last_message'     => is_array( $message ) ? papelito_messaging_map_message( $message, $viewer_id ) : null,
 		'updated_at'       => (string) ( $thread['updated_at'] ?? '' ),
@@ -440,24 +483,109 @@ function papelito_messaging_thread_detail( array $thread, int $viewer_id ) {
 }
 
 /**
- * Insert one message and emit the notification event.
+ * Start or return the dedicated Pagar.me bank-account authorization conversation.
  *
- * @param array<string,mixed> $thread Thread row.
- * @param int                 $sender_id Sender identifier.
- * @param string              $body Sanitized message body.
- * @return int|WP_Error
+ * @return WP_REST_Response|WP_Error
  */
-function papelito_messaging_insert_message( array $thread, int $sender_id, string $body ) {
+function papelito_messaging_handle_create_pagarme_bank_account_support( WP_REST_Request $request ) {
+	$vendor_id = get_current_user_id();
+
+	if ( 'seller' !== papelito_messaging_user_role( $vendor_id ) ) {
+		return new WP_Error( 'papelito_message_support_forbidden', 'Acesso negado ao atendimento.', array( 'status' => 403 ) );
+	}
+
+	if ( ! papelito_messaging_rate_limit( $vendor_id, 'pagarme_bank_account_support', 5, 60 ) ) {
+		return new WP_Error( 'papelito_message_rate_limited', 'Aguarde alguns instantes antes de iniciar outra conversa.', array( 'status' => 429 ) );
+	}
+
+	$existing = papelito_messaging_get_pagarme_bank_account_support_thread( $vendor_id );
+	if ( null !== $existing ) {
+		return new WP_REST_Response( papelito_messaging_thread_detail( $existing, $vendor_id ), 200 );
+	}
+
+	$created_at  = current_time( 'mysql', true );
+	$support_key = 'vendor-pagarme-bank-account:' . $vendor_id;
+	$message     = 'Olá, preciso de ajuda para atualizar a conta bancária do meu recebedor Pagar.me. A Pagar.me informou que é necessária uma autorização adicional para concluir a atualização. Podem verificar e orientar a liberação?';
+	$created     = papelito_messaging_create_thread_with_initial_message(
+		array(
+			'order_id'     => null,
+			'customer_id'  => 0,
+			'vendor_id'    => $vendor_id,
+			'context'      => 'pagarme_bank_account_update',
+			'support_key'  => $support_key,
+			'escalated_at' => $created_at,
+			'created_at'   => $created_at,
+			'updated_at'   => $created_at,
+		),
+		array( '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%s' ),
+		$vendor_id,
+		$message
+	);
+
+	if ( is_wp_error( $created ) ) {
+		$existing = papelito_messaging_get_pagarme_bank_account_support_thread( $vendor_id );
+		if ( null !== $existing ) {
+			return new WP_REST_Response( papelito_messaging_thread_detail( $existing, $vendor_id ), 200 );
+		}
+		return $created;
+	}
+
+	$thread = papelito_messaging_get_thread( $created['thread_id'] );
+	if ( null === $thread ) {
+		return new WP_Error( 'papelito_message_thread_insert_failed', PAPELITO_MESSAGE_THREAD_START_FAILED, array( 'status' => 500 ) );
+	}
+
+	papelito_messaging_after_message_insert( $created['thread_id'], $vendor_id, $created['message_id'] );
+
+	return new WP_REST_Response( papelito_messaging_thread_detail( $thread, $vendor_id ), 201 );
+}
+
+/**
+ * Cria uma conversa e a primeira mensagem na mesma transação.
+ *
+ * @param array<string,mixed> $thread_data Dados da nova conversa.
+ * @param array<int,string>   $thread_format Formato de cada campo da conversa.
+ * @return array{thread_id:int,message_id:int}|WP_Error
+ */
+function papelito_messaging_create_thread_with_initial_message( array $thread_data, array $thread_format, int $sender_id, string $body ) {
 	global $wpdb;
 
-	$tables     = papelito_messaging_tables();
-	$thread_id  = absint( $thread['id'] ?? 0 );
-	$created_at = current_time( 'mysql', true );
+	$tables = papelito_messaging_tables();
 
 	$wpdb->query( 'START TRANSACTION' );
 
+	$inserted = $wpdb->insert( $tables['threads'], $thread_data, $thread_format );
+	if ( false === $inserted ) {
+		$wpdb->query( 'ROLLBACK' );
+		return new WP_Error( 'papelito_message_thread_insert_failed', PAPELITO_MESSAGE_THREAD_START_FAILED, array( 'status' => 500 ) );
+	}
+
+	$thread_id  = (int) $wpdb->insert_id;
+	$message_id = papelito_messaging_insert_message_row( $thread_id, $sender_id, $body, (string) $thread_data['created_at'] );
+
+	if ( is_wp_error( $message_id ) ) {
+		$wpdb->query( 'ROLLBACK' );
+		return $message_id;
+	}
+
+	$wpdb->query( 'COMMIT' );
+
+	return array(
+		'thread_id'  => $thread_id,
+		'message_id' => $message_id,
+	);
+}
+
+/**
+ * Insere uma mensagem sem abrir ou finalizar transação.
+ *
+ * @return int|WP_Error
+ */
+function papelito_messaging_insert_message_row( int $thread_id, int $sender_id, string $body, string $created_at ) {
+	global $wpdb;
+
 	$inserted = $wpdb->insert(
-		$tables['messages'],
+		papelito_messaging_tables()['messages'],
 		array(
 			'thread_id'  => $thread_id,
 			'sender_id'  => $sender_id,
@@ -468,14 +596,44 @@ function papelito_messaging_insert_message( array $thread, int $sender_id, strin
 	);
 
 	if ( false === $inserted ) {
-		$wpdb->query( 'ROLLBACK' );
 		return new WP_Error( 'papelito_message_insert_failed', 'Nao foi possivel enviar a mensagem.', array( 'status' => 500 ) );
 	}
 
-	$message_id = (int) $wpdb->insert_id;
+	return (int) $wpdb->insert_id;
+}
+
+/**
+ * Atualiza a leitura e dispara notificações após a confirmação da transação.
+ */
+function papelito_messaging_after_message_insert( int $thread_id, int $sender_id, int $message_id ): void {
+	papelito_messaging_mark_read( $thread_id, $sender_id, $message_id );
+	do_action( 'papelito_support_message_sent', $thread_id, $message_id, $sender_id );
+}
+
+/**
+ * Insert one message and emit the notification event.
+ *
+ * @param array<string,mixed> $thread Thread row.
+ * @param int                 $sender_id Sender identifier.
+ * @param string              $body Sanitized message body.
+ * @return int|WP_Error
+ */
+function papelito_messaging_insert_message( array $thread, int $sender_id, string $body ) {
+	global $wpdb;
+
+	$thread_id  = absint( $thread['id'] ?? 0 );
+	$created_at = current_time( 'mysql', true );
+
+	$wpdb->query( 'START TRANSACTION' );
+
+	$message_id = papelito_messaging_insert_message_row( $thread_id, $sender_id, $body, $created_at );
+	if ( is_wp_error( $message_id ) ) {
+		$wpdb->query( 'ROLLBACK' );
+		return $message_id;
+	}
 
 	$updated = $wpdb->update(
-		$tables['threads'],
+		papelito_messaging_tables()['threads'],
 		array( 'updated_at' => $created_at ),
 		array( 'id' => $thread_id ),
 		array( '%s' ),
@@ -489,8 +647,7 @@ function papelito_messaging_insert_message( array $thread, int $sender_id, strin
 
 	$wpdb->query( 'COMMIT' );
 
-	papelito_messaging_mark_read( $thread_id, $sender_id, $message_id );
-	do_action( 'papelito_support_message_sent', $thread_id, $message_id, $sender_id );
+	papelito_messaging_after_message_insert( $thread_id, $sender_id, $message_id );
 
 	return $message_id;
 }
@@ -543,6 +700,7 @@ function papelito_messaging_notification_payload( int $thread_id, int $sender_id
 	return array(
 		'thread_id'   => $thread_id,
 		'order_id'    => null === $thread ? 0 : absint( $thread['order_id'] ?? 0 ),
+		'context'     => null === $thread ? 'order' : (string) ( $thread['context'] ?? 'order' ),
 		'sender_name' => papelito_messaging_user_name( $sender_id ),
 		'sender_role' => papelito_messaging_user_role( $sender_id ),
 	);
@@ -639,7 +797,7 @@ function papelito_messaging_handle_list_threads( WP_REST_Request $request ) {
 	if ( $order_id > 0 ) {
 		$order = papelito_messaging_order( $order_id );
 		if ( is_wp_error( $order ) || (int) $order->get_customer_id() !== $user_id ) {
-			return new WP_Error( 'papelito_message_order_forbidden', 'Pedido nao encontrado.', array( 'status' => 404 ) );
+			return new WP_Error( 'papelito_message_order_forbidden', PAPELITO_MESSAGE_ORDER_NOT_FOUND, array( 'status' => 404 ) );
 		}
 
 		$thread = papelito_messaging_get_thread_by_order( $order_id );
@@ -674,7 +832,7 @@ function papelito_messaging_handle_list_threads( WP_REST_Request $request ) {
 	$query_params[] = ( $page - 1 ) * $per_page;
 	$rows           = $wpdb->get_results(
 		$wpdb->prepare(
-			"SELECT id, order_id, customer_id, vendor_id, escalated_at, created_at, updated_at
+			"SELECT id, order_id, customer_id, vendor_id, context, support_key, escalated_at, created_at, updated_at
 			 FROM {$table} WHERE {$where_sql} ORDER BY updated_at DESC, id DESC LIMIT %d OFFSET %d",
 			$query_params
 		),
@@ -701,8 +859,6 @@ function papelito_messaging_handle_list_threads( WP_REST_Request $request ) {
  * POST /messages/threads — cliente ou vendor do pedido abre uma nova conversa.
  */
 function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
-	global $wpdb;
-
 	$user_id = get_current_user_id();
 
 	if ( ! papelito_messaging_rate_limit( $user_id, 'create_thread', 10, 60 ) ) {
@@ -713,14 +869,14 @@ function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
 	$order    = papelito_messaging_order( $order_id );
 
 	if ( is_wp_error( $order ) ) {
-		return new WP_Error( 'papelito_message_order_forbidden', 'Pedido nao encontrado.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_message_order_forbidden', PAPELITO_MESSAGE_ORDER_NOT_FOUND, array( 'status' => 404 ) );
 	}
 
 	$customer_id = (int) $order->get_customer_id();
 	$vendor_id   = papelito_messaging_order_vendor_id( $order );
 
 	if ( $user_id !== $customer_id && $user_id !== $vendor_id ) {
-		return new WP_Error( 'papelito_message_order_forbidden', 'Pedido nao encontrado.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_message_order_forbidden', PAPELITO_MESSAGE_ORDER_NOT_FOUND, array( 'status' => 404 ) );
 	}
 
 	$existing = papelito_messaging_get_thread_by_order( $order_id );
@@ -738,8 +894,7 @@ function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
 	}
 
 	$created_at = current_time( 'mysql', true );
-	$inserted   = $wpdb->insert(
-		papelito_messaging_tables()['threads'],
+	$created    = papelito_messaging_create_thread_with_initial_message(
 		array(
 			'order_id'    => $order_id,
 			'customer_id' => $customer_id,
@@ -747,27 +902,26 @@ function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
 			'created_at'  => $created_at,
 			'updated_at'  => $created_at,
 		),
-		array( '%d', '%d', '%d', '%s', '%s' )
+		array( '%d', '%d', '%d', '%s', '%s' ),
+		$user_id,
+		$body
 	);
 
-	if ( false === $inserted ) {
+	if ( is_wp_error( $created ) ) {
 		$thread = papelito_messaging_get_thread_by_order( $order_id );
 		if ( null !== $thread ) {
 			return new WP_Error( 'papelito_message_thread_exists', 'A conversa deste pedido ja foi iniciada.', array( 'status' => 409 ) );
 		}
 
-		return new WP_Error( 'papelito_message_thread_insert_failed', 'Nao foi possivel iniciar a conversa.', array( 'status' => 500 ) );
+		return $created;
 	}
 
-	$thread = papelito_messaging_get_thread( (int) $wpdb->insert_id );
+	$thread = papelito_messaging_get_thread( $created['thread_id'] );
 	if ( null === $thread ) {
-		return new WP_Error( 'papelito_message_thread_insert_failed', 'Nao foi possivel iniciar a conversa.', array( 'status' => 500 ) );
+		return new WP_Error( 'papelito_message_thread_insert_failed', PAPELITO_MESSAGE_THREAD_START_FAILED, array( 'status' => 500 ) );
 	}
 
-	$message_id = papelito_messaging_insert_message( $thread, $user_id, $body );
-	if ( is_wp_error( $message_id ) ) {
-		return $message_id;
-	}
+	papelito_messaging_after_message_insert( $created['thread_id'], $user_id, $created['message_id'] );
 
 	return new WP_REST_Response( papelito_messaging_thread_detail( $thread, $user_id ), 201 );
 }
@@ -778,7 +932,7 @@ function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
 function papelito_messaging_handle_get_thread( WP_REST_Request $request ) {
 	$thread = papelito_messaging_get_thread( absint( $request->get_param( 'id' ) ) );
 	if ( null === $thread ) {
-		return new WP_Error( 'papelito_message_thread_not_found', 'Conversa nao encontrada.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_message_thread_not_found', PAPELITO_MESSAGE_THREAD_NOT_FOUND, array( 'status' => 404 ) );
 	}
 
 	$detail = papelito_messaging_thread_detail( $thread, get_current_user_id() );
@@ -798,7 +952,7 @@ function papelito_messaging_handle_post_message( WP_REST_Request $request ) {
 
 	$thread = papelito_messaging_get_thread( absint( $request->get_param( 'id' ) ) );
 	if ( null === $thread ) {
-		return new WP_Error( 'papelito_message_thread_not_found', 'Conversa nao encontrada.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_message_thread_not_found', PAPELITO_MESSAGE_THREAD_NOT_FOUND, array( 'status' => 404 ) );
 	}
 
 	$role = papelito_messaging_access_role( $thread, $user_id );
@@ -828,7 +982,7 @@ function papelito_messaging_handle_mark_read( WP_REST_Request $request ) {
 	$user_id = get_current_user_id();
 	$thread  = papelito_messaging_get_thread( absint( $request->get_param( 'id' ) ) );
 	if ( null === $thread ) {
-		return new WP_Error( 'papelito_message_thread_not_found', 'Conversa nao encontrada.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_message_thread_not_found', PAPELITO_MESSAGE_THREAD_NOT_FOUND, array( 'status' => 404 ) );
 	}
 
 	$role = papelito_messaging_access_role( $thread, $user_id );
@@ -855,7 +1009,7 @@ function papelito_messaging_handle_escalate( WP_REST_Request $request ) {
 
 	$thread = papelito_messaging_get_thread( absint( $request->get_param( 'id' ) ) );
 	if ( null === $thread ) {
-		return new WP_Error( 'papelito_message_thread_not_found', 'Conversa nao encontrada.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_message_thread_not_found', PAPELITO_MESSAGE_THREAD_NOT_FOUND, array( 'status' => 404 ) );
 	}
 
 	if ( absint( $thread['customer_id'] ?? 0 ) !== $user_id ) {
@@ -885,7 +1039,7 @@ add_action(
 	'rest_api_init',
 	static function (): void {
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_REST_NAMESPACE,
 			'/messages/threads',
 			array(
 				array(
@@ -902,7 +1056,17 @@ add_action(
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_REST_NAMESPACE,
+			'/messages/support/pagarme-bank-account',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'permission_callback' => 'papelito_messaging_require_auth',
+				'callback'            => 'papelito_messaging_handle_create_pagarme_bank_account_support',
+			)
+		);
+
+		register_rest_route(
+			PAPELITO_REST_NAMESPACE,
 			'/messages/threads/(?P<id>\d+)',
 			array(
 				array(
@@ -919,7 +1083,7 @@ add_action(
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_REST_NAMESPACE,
 			'/messages/threads/(?P<id>\d+)/read',
 			array(
 				'methods'             => WP_REST_Server::EDITABLE,
@@ -929,7 +1093,7 @@ add_action(
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_REST_NAMESPACE,
 			'/messages/threads/(?P<id>\d+)/escalate',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,

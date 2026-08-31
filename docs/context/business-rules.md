@@ -11,7 +11,7 @@ Todos os arquivos em `public_html/wp-content/plugins/plugin_papelito/includes/`.
 | Cadastro BR | `auth_endpoints.php` — `papelito_auth_validate_register_payload`, `_seller_register_payload`, `papelito_auth_create_registered_user`/`_seller` | WP |
 | Verificação de e-mail | `auth_endpoints.php` — token sha256, expiração de 24 h, rate limit, bloqueio de login por `wp_authenticate_user` | WP |
 | Google OAuth | `auth_endpoints.php` — `papelito_auth_verify_google_id_token`, `papelito_auth_find_or_create_google_user` | mock HTTP + WP |
-| Validações puras | `papelito_auth_is_valid_cep`, `papelito_auth_normalize_phone`, `papelito_auth_format_phone`; `papelito_validate_cpf` / `papelito_calculate_cpf_digit` (`revendedor_application.php`); `cnpj_validation.php` | puro |
+| Validações puras | `papelito_auth_is_valid_cep`, `papelito_auth_normalize_phone`, `papelito_auth_format_phone`; `papelito_validate_cpf` / `papelito_calculate_cpf_digit` / `papelito_revendedor_validate_cnpj` (`revendedor_application.php`); `cnpj_validation.php` | puro |
 | Cobertura por CEP | `rest_api.php` — `papelito_sellers_by_cep`, `papelito_coverage_vendors`, `papelito_coverage_products`; `products_filter.php` — `papelito_matching_vendor_ids` | puro (regra de faixa) + WP |
 | Estoque | `vendor_stock.php` — `papelito_get/set/adjust_vendor_stock`, `papelito_vendors_with_stock`, `papelito_vendor_stock_query` | WP, SQL real |
 | Vendor ativo | `active_vendor.php` — `papelito_validate_active_vendor`, `papelito_set_active_vendor`, `papelito_resolve_default_vendor_id`, `papelito_available_vendors_for_user` | WP |
@@ -39,7 +39,7 @@ Todos os arquivos em `public_html/wp-content/plugins/plugin_papelito/includes/`.
 4. `papelito_validate_cpf` valida pelos dígitos verificadores (pesos 10 e 11); rejeita comprimento ≠ 11 e sequências repetidas.
 5. `papelito_normalize_cep` extrai 8 dígitos ou devolve `''`.
 6. `papelito_normalize_cnpj` faz uppercase e mantém `[A-Z0-9]` em 14 posições — **nunca usa `\D`**, o que quebraria CNPJ alfanumérico.
-7. `papelito_validate_cnpj` calcula o DV oficial para numérico **e** alfanumérico, com peso sobre o valor `ASCII − 48`. **Independe de feature flag**: validade estrutural ≠ aceitação.
+7. `papelito_validate_cnpj` calcula o DV oficial para numérico **e** alfanumérico, com peso sobre o valor `ASCII − 48`. **Independe de feature flag**: validade estrutural ≠ aceitação. **Todo gate de CNPJ do fluxo de revendedor/vendor passa por ele**, via `papelito_revendedor_validate_cnpj` (`revendedor_application.php`), que exige a máscara `00.000.000/0000-00` e delega o DV. Nenhum endpoint de vendor pode voltar a validar só o formato — `PAPELITO_VENDOR_CNPJ_PATTERN` só pode ser referenciado dentro desse helper, e `test-vendor-cnpj-validation.php` falha se outro ponto o usar.
 8. `papelito_cnpj_is_alphanumeric` apenas classifica; não decide aceitação.
 9. `papelito_validate_cep_format` verifica **só formato**. Existência remota é separada, com três estados distintos: `cep_invalid`, `cep_not_found`, `cep_provider_unavailable`.
 

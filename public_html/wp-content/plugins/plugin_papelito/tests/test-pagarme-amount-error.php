@@ -72,6 +72,11 @@ $http_422 = papelito_pagarme_request( 'POST', 'orders', array( 'items' => array(
 papelito_assert_same( 'unrelated HTTP 422 remains generic', 'papelito_pagarme_request_failed', $http_422->get_error_code() );
 papelito_assert_same( 'HTTP 422 status is preserved', 422, $http_422->get_error_data()['status'] ?? null );
 papelito_assert_same(
+	'HTTP 422 preserves a safe validation diagnostic',
+	array( 'details' => array( 'request.customer.email: is invalid' ) ),
+	$http_422->get_error_data()['pagarme_body'] ?? null
+);
+papelito_assert_same(
 	'field amount error is detected',
 	true,
 	papelito_pagarme_is_amount_error(
@@ -84,6 +89,22 @@ papelito_assert_same(
 	papelito_pagarme_is_amount_error(
 		array( 'errors' => array( 'request.customer.email' => array( 'is invalid' ) ) )
 	)
+);
+
+$papelito_test_http_response = array(
+	'status' => 412,
+	'body'   => json_encode( array( 'message' => 'Request denied. Second authentication factor is necessary.' ) ),
+);
+$http_412 = papelito_pagarme_request( 'PATCH', 'recipients/re_example/default-bank-account', array( 'bank_account' => array() ) );
+papelito_assert_same(
+	'bank account update requiring second authentication has its own code',
+	'papelito_pagarme_bank_account_update_auth_required',
+	$http_412->get_error_code()
+);
+papelito_assert_same(
+	'bank account update keeps a safe actionable message',
+	'A Pagar.me exige uma autorização adicional para atualizar a conta bancária do recebedor.',
+	$http_412->get_error_message()
 );
 
 if ( $failures > 0 ) {

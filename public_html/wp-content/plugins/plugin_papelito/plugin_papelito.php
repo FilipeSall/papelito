@@ -91,7 +91,7 @@ require_once __DIR__ . '/includes/billing_email_sync.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.34.0' );
+	define( 'PAPELITO_DB_VERSION', '1.35.0' );
 }
 
 /**
@@ -124,90 +124,71 @@ function papelito_maybe_migrate_db() {
 			return;
 		}
 
-		if ( function_exists( 'papelito_vendor_stock_install_tables' ) ) {
-			papelito_vendor_stock_install_tables();
-		}
+		papelito_run_optional_db_migrations(
+			array(
+				'papelito_vendor_stock_install_tables',
+				'papelito_kits_install_tables',
+				'papelito_kits_remove_legacy_collection',
+				'papelito_notifications_install_tables',
+				'papelito_tracking_install_tables',
+				'papelito_messaging_install_tables',
+				'papelito_vendor_interests_install_table',
+				'papelito_vendor_interests_backfill_legacy',
+				'papelito_company_install_tables',
+				'papelito_pre_account_application_backfill_pending_notifications',
+				'papelito_receipts_install_tables',
+				'papelito_fiscal_documents_install_tables',
+				'papelito_product_taxonomy_install_tables',
+				'papelito_integration_secret_install_tables',
+			)
+		);
 
-		if ( function_exists( 'papelito_kits_install_tables' ) ) {
-			papelito_kits_install_tables();
-		}
-
-		if ( function_exists( 'papelito_kits_remove_legacy_collection' ) ) {
-			papelito_kits_remove_legacy_collection();
-		}
-
-		if ( function_exists( 'papelito_notifications_install_tables' ) ) {
-			papelito_notifications_install_tables();
-		}
-
-		if ( function_exists( 'papelito_tracking_install_tables' ) ) {
-			papelito_tracking_install_tables();
-		}
-
-		if ( function_exists( 'papelito_messaging_install_tables' ) ) {
-			papelito_messaging_install_tables();
-		}
-
-		if ( function_exists( 'papelito_vendor_interests_install_table' ) ) {
-			papelito_vendor_interests_install_table();
-		}
-
-		if ( function_exists( 'papelito_vendor_interests_backfill_legacy' ) ) {
-			papelito_vendor_interests_backfill_legacy();
-		}
-
-		if ( function_exists( 'papelito_company_install_tables' ) ) {
-			papelito_company_install_tables();
-		}
-
-		if ( function_exists( 'papelito_pre_account_application_backfill_pending_notifications' ) ) {
-			papelito_pre_account_application_backfill_pending_notifications();
-		}
-
-		if ( function_exists( 'papelito_receipts_install_tables' ) ) {
-			papelito_receipts_install_tables();
-		}
-
-		if ( function_exists( 'papelito_fiscal_documents_install_tables' ) ) {
-			papelito_fiscal_documents_install_tables();
-		}
-
-		if ( function_exists( 'papelito_product_taxonomy_install_tables' ) ) {
-			papelito_product_taxonomy_install_tables();
-		}
-
-		if ( function_exists( 'papelito_integration_secret_install_tables' ) ) {
-			papelito_integration_secret_install_tables();
-		}
-
-		if (
-			function_exists( 'papelito_product_benefits_install_tables' ) &&
-			! papelito_product_benefits_install_tables()
-		) {
+		if ( ! papelito_install_product_benefits_tables() ) {
 			return;
 		}
 
-		if ( function_exists( 'papelito_product_benefits_seed_global' ) ) {
-			papelito_product_benefits_seed_global();
-		}
-
-		if ( function_exists( 'papelito_home_assets_seed_promo_marquee' ) ) {
-			papelito_home_assets_seed_promo_marquee();
-		}
-
-		if ( function_exists( 'papelito_home_assets_seed_features' ) ) {
-			papelito_home_assets_seed_features();
-		}
-
-		if ( function_exists( 'papelito_home_assets_migrate_free_shipping_placeholder' ) ) {
-			papelito_home_assets_migrate_free_shipping_placeholder();
-		}
+		papelito_run_optional_db_migrations(
+			array(
+				'papelito_product_benefits_seed_global',
+				'papelito_home_assets_seed_promo_marquee',
+				'papelito_home_assets_seed_features',
+				'papelito_home_assets_migrate_free_shipping_placeholder',
+			)
+		);
 
 		update_option( 'papelito_db_version', PAPELITO_DB_VERSION, true );
 	} finally {
 		$wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 	}
 }
+
+/**
+ * Run database migration callbacks that may not exist in every deployment.
+ *
+ * @param string[] $callbacks Migration callback names.
+ * @return void
+ */
+function papelito_run_optional_db_migrations( array $callbacks ): void {
+	foreach ( $callbacks as $callback ) {
+		if ( function_exists( $callback ) ) {
+			$callback();
+		}
+	}
+}
+
+/**
+ * Install the product benefits tables when that module is available.
+ *
+ * @return bool Whether the migration may continue.
+ */
+function papelito_install_product_benefits_tables(): bool {
+	if ( ! function_exists( 'papelito_product_benefits_install_tables' ) ) {
+		return true;
+	}
+
+	return (bool) papelito_product_benefits_install_tables();
+}
+
 add_action( 'plugins_loaded', 'papelito_maybe_migrate_db', 5 );
 register_activation_hook( __FILE__, 'papelito_maybe_migrate_db' );
 

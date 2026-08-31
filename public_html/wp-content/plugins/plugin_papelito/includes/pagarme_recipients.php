@@ -13,6 +13,7 @@ if ( ! defined( 'PAPELITO_PAGARME_RECIPIENT_ID_META' ) ) {
 	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META', 'papelito_pagarme_recipient_last_sync_at' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META', 'papelito_pagarme_recipient_last_error' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META', 'papelito_pagarme_recipient_last_error_detail' );
+	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META', 'papelito_pagarme_recipient_last_error_code' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_KYC_URL_META', 'papelito_pagarme_recipient_kyc_url' );
 }
 
@@ -55,6 +56,7 @@ function papelito_pagarme_save_vendor_recipient_state( int $user_id, array $reci
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, papelito_current_utc_mysql() );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, '' );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, '' );
+	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META, '' );
 
 	if ( '' !== $kyc_url ) {
 		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_URL_META, $kyc_url );
@@ -66,8 +68,8 @@ function papelito_pagarme_save_vendor_recipient_state( int $user_id, array $reci
 /**
  * Persiste ultimo erro de sincronizacao do recebedor.
  *
- * Quando recebe o WP_Error completo, guarda tambem os detalhes crus de
- * validacao do Pagar.me (`pagarme_body`) num meta separado para diagnostico.
+ * Quando recebe o WP_Error completo, guarda tambem um diagnostico sanitizado
+ * da validacao da Pagar.me (`pagarme_body`) num meta separado para suporte.
  *
  * @param int             $user_id Usuario.
  * @param WP_Error|string $error   Erro ou mensagem.
@@ -77,6 +79,11 @@ function papelito_pagarme_save_vendor_recipient_error( int $user_id, $error ): v
 
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, papelito_current_utc_mysql() );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, sanitize_text_field( $message ) );
+	update_user_meta(
+		$user_id,
+		PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META,
+		$error instanceof WP_Error ? sanitize_key( (string) $error->get_error_code() ) : ''
+	);
 
 	$detail = '';
 
@@ -96,9 +103,9 @@ function papelito_pagarme_save_vendor_recipient_error( int $user_id, $error ): v
  * Monta a resposta REST de erro do recebedor sem vazar detalhe tecnico.
  *
  * So retorna o codigo estavel do erro (usado pelo front para mapear uma
- * mensagem amigavel) e o status HTTP. O corpo cru do gateway (`response_body`,
- * `pagarme_body`) e os detalhes de validacao (`agencia | Value too long`, etc.)
- * ficam apenas nos logs / no meta `last_error_detail`, nunca na resposta REST.
+ * mensagem amigavel) e o status HTTP. O corpo cru do gateway (`response_body`)
+ * nunca sai do backend; somente um diagnostico sanitizado (`pagarme_body`) fica
+ * no meta `last_error_detail`, nunca na resposta REST.
  *
  * @param WP_Error $error Erro original.
  * @return WP_Error
@@ -121,11 +128,12 @@ function papelito_pagarme_recipient_error_response( WP_Error $error ): WP_Error 
  */
 function papelito_pagarme_get_vendor_recipient_state( int $user_id ): array {
 	return array(
-		'recipient_id' => papelito_pagarme_get_vendor_recipient_id( $user_id ),
-		'status'       => papelito_pagarme_get_vendor_recipient_status( $user_id ),
-		'last_sync_at' => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, true ) ),
-		'kyc_url'      => sanitize_url( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_URL_META, true ) ),
-		'last_error'   => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, true ) ),
+		'recipient_id'    => papelito_pagarme_get_vendor_recipient_id( $user_id ),
+		'status'          => papelito_pagarme_get_vendor_recipient_status( $user_id ),
+		'last_sync_at'    => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, true ) ),
+		'kyc_url'         => sanitize_url( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_URL_META, true ) ),
+		'last_error'      => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, true ) ),
+		'last_error_code' => sanitize_key( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META, true ) ),
 	);
 }
 
@@ -424,6 +432,18 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 }
 
 /**
+ * Emite o evento de dominio que aciona a notificacao centralizada do vendor.
+ *
+ * @param int $user_id Usuario vendor.
+ * @return void
+ */
+function papelito_pagarme_signal_vendor_sync_pending( int $user_id ): void {
+	if ( $user_id > 0 && ! papelito_pagarme_vendor_recipient_is_active( $user_id ) ) {
+		do_action( 'papelito_vendor_pagarme_sync_pending', $user_id );
+	}
+}
+
+/**
  * Monta o payload da conta bancaria do recebedor.
  *
  * @return array<string,string>|WP_Error
@@ -495,6 +515,7 @@ function papelito_pagarme_sync_vendor_recipient( int $user_id ) {
 
 	if ( is_wp_error( $result ) ) {
 		papelito_pagarme_save_vendor_recipient_error( $user_id, $result );
+		papelito_pagarme_signal_vendor_sync_pending( $user_id );
 		return $result;
 	}
 
@@ -544,6 +565,7 @@ function papelito_pagarme_upsert_vendor_recipient( int $user_id, bool $refresh_k
 
 	if ( is_wp_error( $payload ) ) {
 		papelito_pagarme_save_vendor_recipient_error( $user_id, $payload );
+		papelito_pagarme_signal_vendor_sync_pending( $user_id );
 		return $payload;
 	}
 
@@ -563,6 +585,7 @@ function papelito_pagarme_upsert_vendor_recipient( int $user_id, bool $refresh_k
 
 	if ( is_wp_error( $result ) ) {
 		papelito_pagarme_save_vendor_recipient_error( $user_id, $result );
+		papelito_pagarme_signal_vendor_sync_pending( $user_id );
 		return $result;
 	}
 
@@ -571,11 +594,18 @@ function papelito_pagarme_upsert_vendor_recipient( int $user_id, bool $refresh_k
 
 		if ( is_wp_error( $bank_update ) ) {
 			papelito_pagarme_save_vendor_recipient_error( $user_id, $bank_update );
+			papelito_pagarme_signal_vendor_sync_pending( $user_id );
 			return $bank_update;
 		}
 	}
 
 	$state = papelito_pagarme_save_vendor_recipient_state( $user_id, $result );
+
+	if ( papelito_pagarme_vendor_recipient_is_active( $user_id ) ) {
+		do_action( 'papelito_vendor_pagarme_sync_completed', $user_id );
+	} else {
+		papelito_pagarme_signal_vendor_sync_pending( $user_id );
+	}
 
 	if ( $refresh_kyc && '' !== papelito_pagarme_get_vendor_recipient_id( $user_id ) ) {
 		$kyc_state = papelito_pagarme_refresh_vendor_kyc_link( $user_id );
@@ -593,11 +623,6 @@ function papelito_pagarme_upsert_vendor_recipient( int $user_id, bool $refresh_k
  */
 function papelito_pagarme_handle_vendor_approved( int $user_id ): void {
 	if ( $user_id <= 0 || ! papelito_pagarme_is_configured() ) {
-		return;
-	}
-
-	$payload = papelito_pagarme_build_recipient_payload( $user_id );
-	if ( is_wp_error( $payload ) ) {
 		return;
 	}
 
@@ -628,6 +653,8 @@ add_action(
 							if ( ! is_wp_error( $synced ) ) {
 								$state = $synced;
 							}
+						} else {
+							papelito_pagarme_signal_vendor_sync_pending( get_current_user_id() );
 						}
 
 						return new WP_REST_Response( $state, 200 );

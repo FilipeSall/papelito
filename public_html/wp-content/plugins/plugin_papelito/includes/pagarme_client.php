@@ -198,6 +198,30 @@ function papelito_pagarme_collect_error_details( array $body ): array {
 }
 
 /**
+ * Mantem somente diagnostico seguro da resposta externa para suporte local.
+ *
+ * @param array<string,mixed> $body Corpo decodificado da Pagar.me.
+ * @return array<string,mixed>
+ */
+function papelito_pagarme_error_diagnostic( array $body ): array {
+	$diagnostic = array();
+	$message    = sanitize_text_field( (string) ( $body['message'] ?? '' ) );
+	$details    = papelito_pagarme_collect_error_details( $body );
+
+	if ( '' !== $message ) {
+		$diagnostic['message'] = $message;
+	}
+	if ( ! empty( $details ) ) {
+		$diagnostic['details'] = $details;
+	}
+	if ( isset( $body['request_id'] ) && is_scalar( $body['request_id'] ) ) {
+		$diagnostic['request_id'] = sanitize_text_field( (string) $body['request_id'] );
+	}
+
+	return $diagnostic;
+}
+
+/**
  * Detecta rejeições de valor/mínimo sem depender do formato exato da v5.
  *
  * @param array<string,mixed> $body Corpo decodificado.
@@ -219,6 +243,23 @@ function papelito_pagarme_is_amount_error( array $body ): bool {
 	}
 
 	return false;
+}
+
+/**
+ * Detecta a protecao adicional exigida pela Pagar.me ao trocar a conta
+ * bancaria de um recebedor existente.
+ *
+ * @param string $method  Metodo HTTP.
+ * @param string $path    Caminho relativo da API.
+ * @param int    $status  Status HTTP.
+ * @param string $message Mensagem normalizada da resposta.
+ * @return bool
+ */
+function papelito_pagarme_is_bank_account_update_auth_error( string $method, string $path, int $status, string $message ): bool {
+	return 412 === $status
+		&& 'PATCH' === strtoupper( $method )
+		&& false !== strpos( $path, '/default-bank-account' )
+		&& false !== stripos( $message, 'second authentication factor' );
 }
 
 /**
@@ -296,15 +337,19 @@ function papelito_pagarme_request( string $method, string $path, ?array $body = 
 				substr( sanitize_text_field( $message ), 0, 500 )
 			)
 		);
-		$is_amount_error = is_array( $decoded ) && papelito_pagarme_is_amount_error( $decoded );
+		$is_amount_error           = is_array( $decoded ) && papelito_pagarme_is_amount_error( $decoded );
+		$is_bank_update_auth_error = papelito_pagarme_is_bank_account_update_auth_error( $method, $path, $status, $message );
 
 		return new WP_Error(
-			$is_amount_error ? 'papelito_pagarme_amount_rejected' : 'papelito_pagarme_request_failed',
+			$is_amount_error
+				? 'papelito_pagarme_amount_rejected'
+				: ( $is_bank_update_auth_error ? 'papelito_pagarme_bank_account_update_auth_required' : 'papelito_pagarme_request_failed' ),
 			$is_amount_error
 				? 'O Pagar.me rejeitou o valor desta cobrança. Revise o total e a quantidade de parcelas.'
-				: $message,
+				: ( $is_bank_update_auth_error ? 'A Pagar.me exige uma autorização adicional para atualizar a conta bancária do recebedor.' : $message ),
 			array(
-				'status' => $status,
+				'status'       => $status,
+				'pagarme_body' => is_array( $decoded ) ? papelito_pagarme_error_diagnostic( $decoded ) : array(),
 			)
 		);
 	}

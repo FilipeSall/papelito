@@ -26,7 +26,7 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 
 | Área | Suítes |
 |---|---|
-| Documentos e cripto | `test-cnpj-validation.php`, `test-customer-identity-crypto.php`, `test-cnpj-providers.php` |
+| Documentos e cripto | `test-cnpj-validation.php`, `test-vendor-cnpj-validation.php` (**estrutural**: nenhum gate do fluxo de vendor pode validar CNPJ só pela máscara), `test-customer-identity-crypto.php`, `test-cnpj-providers.php` |
 | Arquivo privado | `test-private-files.php` (mecanismo genérico), `test-company-owner-document-validation.php` (spec da candidatura) |
 | Empresa / B2B | `test-company-authz-matrix.php`, `test-company-active-context.php`, `test-company-invitations.php`, `test-company-idempotency.php`, `test-company-ownership-transfer.php`, `test-company-onboarding.php`, `tests/test-company-purchase-gate.php` (raiz) |
 | Legados | `test-legacy-migration.php` |

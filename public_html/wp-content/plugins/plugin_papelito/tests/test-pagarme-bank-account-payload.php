@@ -84,6 +84,18 @@ papelito_assert( 'holder_name falls back to store name', 'Loja Fallback', $paylo
 papelito_assert( 'holder_type default company', 'company', $payload['holder_type'] );
 papelito_assert( 'type default checking', 'checking', $payload['type'] );
 
+echo "Scenario 5: PJ recipient accepts a CPF bank account holder\n";
+$payload = papelito_pagarme_bank_account_payload(
+	array(
+		'holderType'     => 'individual',
+		'holderDocument' => '123.456.789-09',
+	),
+	'Loja',
+	'65.326.368/0001-90'
+);
+papelito_assert( 'individual holder type is preserved', 'individual', $payload['holder_type'] );
+papelito_assert( 'CPF holder document is preserved', '12345678909', $payload['holder_document'] );
+
 echo "\n";
 if ( $failures > 0 ) {
 	echo "RESULT: {$failures} assertion(s) FAILED\n";

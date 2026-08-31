@@ -445,13 +445,69 @@ function papelito_vendor_stock_is_operational_vendor( $user ): bool {
  * Retorna thumbnail pequena do produto para o painel admin.
  */
 function papelito_vendor_stock_product_image_url( int $product_id ): string {
-	$thumbnail_id = (int) get_post_thumbnail_id( $product_id );
-	if ( $thumbnail_id <= 0 ) {
-		return '';
+	$images = papelito_vendor_stock_product_image_urls( array( $product_id ) );
+
+	return $images[ $product_id ] ?? '';
+}
+
+/**
+ * Retorna thumbnails de produtos em lote para evitar uma consulta de metadados
+ * por item nas listagens de estoque.
+ *
+ * @param int[] $product_ids Produtos cujas imagens devem ser resolvidas.
+ * @return array<int,string> Indexado pelo ID do produto.
+ */
+function papelito_vendor_stock_product_image_urls( array $product_ids ): array {
+	global $wpdb;
+
+	$product_ids = array_values( array_unique( array_filter( array_map( 'absint', $product_ids ) ) ) );
+	if ( empty( $product_ids ) ) {
+		return array();
 	}
 
-	$url = wp_get_attachment_image_url( $thumbnail_id, 'thumbnail' );
-	return is_string( $url ) ? $url : '';
+	$placeholders = implode( ',', array_fill( 0, count( $product_ids ), '%d' ) );
+
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$rows = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_thumbnail_id' AND post_id IN ({$placeholders})",
+			$product_ids
+		),
+		ARRAY_A
+	);
+
+	$thumbnail_by_product = array();
+	$thumbnail_ids        = array();
+
+	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		$product_id   = absint( $row['post_id'] ?? 0 );
+		$thumbnail_id = absint( $row['meta_value'] ?? 0 );
+
+		if ( $product_id <= 0 || $thumbnail_id <= 0 ) {
+			continue;
+		}
+
+		$thumbnail_by_product[ $product_id ] = $thumbnail_id;
+		$thumbnail_ids[]                     = $thumbnail_id;
+	}
+
+	if ( empty( $thumbnail_by_product ) ) {
+		return array();
+	}
+
+	if ( function_exists( 'update_meta_cache' ) ) {
+		update_meta_cache( 'post', array_values( array_unique( $thumbnail_ids ) ) );
+	}
+
+	$images = array();
+	foreach ( $thumbnail_by_product as $product_id => $thumbnail_id ) {
+		$url = wp_get_attachment_image_url( $thumbnail_id, 'thumbnail' );
+		if ( is_string( $url ) ) {
+			$images[ $product_id ] = $url;
+		}
+	}
+
+	return $images;
 }
 
 /**
@@ -578,6 +634,221 @@ function papelito_vendor_stock_recent_logs( int $vendor_id, array $product_ids, 
 }
 
 /**
+ * Coleções curadas normalizadas, no formato aceito pelo filtro do estoque.
+ *
+ * @return string[]
+ */
+function papelito_vendor_stock_curated_collections(): array {
+	if ( ! function_exists( 'papelito_curated_collections' ) ) {
+		return array();
+	}
+
+	return array_values(
+		array_unique(
+			array_filter( array_map( 'sanitize_title', papelito_curated_collections() ) )
+		)
+	);
+}
+
+/**
+ * Coleções curadas com o total de produtos publicados em cada uma.
+ *
+ * @return array<int, array{slug:string,name:string,count:int}>
+ */
+function papelito_vendor_stock_collections(): array {
+	global $wpdb;
+
+	$slugs = papelito_vendor_stock_curated_collections();
+
+	if ( empty( $slugs ) || ! function_exists( 'papelito_product_taxonomy_table_names' ) ) {
+		return array();
+	}
+
+	$tables       = papelito_product_taxonomy_table_names();
+	$placeholders = implode( ',', array_fill( 0, count( $slugs ), '%s' ) );
+
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$rows = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT pc.collection_slug, COUNT(DISTINCT pc.product_id) AS total
+			FROM {$tables['product_collection']} pc
+			INNER JOIN {$wpdb->posts} p ON p.ID = pc.product_id AND p.post_type = 'product' AND p.post_status = 'publish'
+			WHERE pc.collection_slug IN ({$placeholders})
+			GROUP BY pc.collection_slug",
+			$slugs
+		),
+		ARRAY_A
+	);
+
+	$counts = array();
+
+	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		$counts[ (string) ( $row['collection_slug'] ?? '' ) ] = (int) ( $row['total'] ?? 0 );
+	}
+
+	$collections = array();
+
+	foreach ( $slugs as $slug ) {
+		$collections[] = array(
+			'slug'  => $slug,
+			'name'  => ucwords( str_replace( '-', ' ', $slug ) ),
+			'count' => (int) ( $counts[ $slug ] ?? 0 ),
+		);
+	}
+
+	return $collections;
+}
+
+/**
+ * Composição dos kits presentes na página, em consultas de lote.
+ *
+ * O kit entra na listagem como produto comercial qualquer, mas a
+ * disponibilidade dele não sai da própria linha de estoque: vem dos itens que o
+ * compõem. Carregar os itens kit a kit criaria N+1 na listagem, então tudo aqui
+ * é resolvido em consultas fixas para a página inteira.
+ *
+	 * A quantidade montável aplica a mesma fórmula da cobertura: o menor quociente
+	 * inteiro entre estoque do componente e quantidade exigida pelo kit.
+ *
+ * @param int   $vendor_id   Vendor dono do estoque.
+ * @param int[] $product_ids Produtos da página.
+ * @return array<int, array<string, mixed>> Indexado pelo product_id do kit.
+ */
+function papelito_vendor_stock_kit_compositions( int $vendor_id, array $product_ids ): array {
+	global $wpdb;
+
+	$product_ids = array_values( array_unique( array_filter( array_map( 'absint', $product_ids ) ) ) );
+
+	if ( $vendor_id <= 0 || empty( $product_ids ) || ! function_exists( 'papelito_kits_table_names' ) ) {
+		return array();
+	}
+
+	$tables       = papelito_kits_table_names();
+	$placeholders = implode( ',', array_fill( 0, count( $product_ids ), '%d' ) );
+
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$kits = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT k.id, k.product_id, p.post_name AS slug
+			FROM {$tables['kits']} k
+			INNER JOIN {$wpdb->posts} p ON p.ID = k.product_id
+			WHERE k.product_id IN ({$placeholders})",
+			$product_ids
+		),
+		ARRAY_A
+	);
+
+	if ( ! is_array( $kits ) || empty( $kits ) ) {
+		return array();
+	}
+
+	$kit_ids          = array_map( static fn( array $kit ): int => (int) $kit['id'], $kits );
+	$kit_placeholders = implode( ',', array_fill( 0, count( $kit_ids ), '%d' ) );
+
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$rows = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT kit_id, product_id, quantity FROM {$tables['items']} WHERE kit_id IN ({$kit_placeholders}) ORDER BY kit_id ASC, product_id ASC",
+			$kit_ids
+		),
+		ARRAY_A
+	);
+
+	$rows = is_array( $rows ) ? $rows : array();
+
+	$component_ids = array_values(
+		array_unique(
+			array_filter( array_map( static fn( array $row ): int => (int) ( $row['product_id'] ?? 0 ), $rows ) )
+		)
+	);
+
+	$components      = array();
+	$component_stock = array();
+
+	if ( ! empty( $component_ids ) ) {
+		$component_placeholders = implode( ',', array_fill( 0, count( $component_ids ), '%d' ) );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$component_rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT p.ID, p.post_title, sku.meta_value AS sku
+				FROM {$wpdb->posts} p
+				LEFT JOIN {$wpdb->postmeta} sku ON sku.post_id = p.ID AND sku.meta_key = '_sku'
+				WHERE p.ID IN ({$component_placeholders})",
+				$component_ids
+			),
+			ARRAY_A
+		);
+
+		foreach ( is_array( $component_rows ) ? $component_rows : array() as $component_row ) {
+			$components[ (int) ( $component_row['ID'] ?? 0 ) ] = array(
+				'name' => (string) ( $component_row['post_title'] ?? '' ),
+				'sku'  => (string) ( $component_row['sku'] ?? '' ),
+			);
+		}
+
+		$stock_tables = papelito_vendor_stock_table_names();
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$stock_rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT product_id, qty FROM {$stock_tables['stock']} WHERE vendor_id = %d AND product_id IN ({$component_placeholders})",
+				array_merge( array( $vendor_id ), $component_ids )
+			),
+			ARRAY_A
+		);
+
+		foreach ( is_array( $stock_rows ) ? $stock_rows : array() as $stock_row ) {
+			$component_stock[ (int) ( $stock_row['product_id'] ?? 0 ) ] = (int) ( $stock_row['qty'] ?? 0 );
+		}
+	}
+
+	$items_by_kit = array();
+	$assemblable  = array();
+	$image_urls   = papelito_vendor_stock_product_image_urls( $component_ids );
+
+	foreach ( $rows as $row ) {
+		$component_id = (int) ( $row['product_id'] ?? 0 );
+		$stock        = (int) ( $component_stock[ $component_id ] ?? 0 );
+		$kit_id       = (int) ( $row['kit_id'] ?? 0 );
+		$quantity     = (int) ( $row['quantity'] ?? 0 );
+		$possible      = $quantity > 0 ? (int) floor( $stock / $quantity ) : 0;
+
+		if ( ! isset( $assemblable[ $kit_id ] ) ) {
+			$assemblable[ $kit_id ] = $possible;
+		} else {
+			$assemblable[ $kit_id ] = min( $assemblable[ $kit_id ], $possible );
+		}
+
+		$items_by_kit[ $kit_id ][] = array(
+			'product_id'   => $component_id,
+			'product_name' => (string) ( $components[ $component_id ]['name'] ?? '' ),
+			'sku'          => (string) ( $components[ $component_id ]['sku'] ?? '' ),
+			'image_url'    => $image_urls[ $component_id ] ?? '',
+			'quantity'     => $quantity,
+			'qty'          => $stock,
+			'is_zeroed'    => $stock <= 0,
+		);
+	}
+
+	$compositions = array();
+
+	foreach ( $kits as $kit ) {
+		$kit_id         = (int) $kit['id'];
+		$kit_product_id = (int) $kit['product_id'];
+
+		$compositions[ $kit_product_id ] = array(
+			'kit_id'          => $kit_id,
+			'slug'            => (string) ( $kit['slug'] ?? '' ),
+			'assemblable_qty' => (int) ( $assemblable[ $kit_id ] ?? 0 ),
+			'items'           => $items_by_kit[ $kit_id ] ?? array(),
+		);
+	}
+
+	return $compositions;
+}
+
+/**
  * Lista paginada de estoque de um vendor com busca opcional por nome/SKU.
  *
  * @param int   $vendor_id Vendor alvo.
@@ -587,6 +858,7 @@ function papelito_vendor_stock_recent_logs( int $vendor_id, array $product_ids, 
  *                         category (int: term_id com a flag off, id da categoria
  *                         Papelito com ela ligada), subcategories (csv|array de
  *                         id de subcategoria Papelito), tags (csv|array de term_id),
+ *                         collection (slug de coleção curada), type (products|kits),
  *                         paginate (bool), include_history (bool).
  * @return array{items:array,total:int,page:int,per_page:int}
  */
@@ -605,8 +877,8 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	$sort_map = array(
 		'name_asc'     => 'p.post_title ASC, p.ID ASC',
 		'name_desc'    => 'p.post_title DESC, p.ID ASC',
-		'qty_desc'     => 'COALESCE(vs.qty, 0) DESC, p.ID ASC',
-		'qty_asc'      => 'COALESCE(vs.qty, 0) ASC, p.ID ASC',
+		'qty_desc'      => '',
+		'qty_asc'       => '',
 		'updated_desc' => 'vs.updated_at IS NULL, vs.updated_at DESC, p.ID ASC',
 	);
 	if ( ! isset( $sort_map[ $sort ] ) ) {
@@ -647,17 +919,28 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 		$filter = 'all';
 	}
 
-	$tables   = papelito_vendor_stock_table_names();
-	$posts    = $wpdb->posts;
-	$postmeta = $wpdb->postmeta;
+	$tables                 = papelito_vendor_stock_table_names();
+	$posts                  = $wpdb->posts;
+	$postmeta               = $wpdb->postmeta;
+	$kit_availability_sql    = 'COALESCE(vs.qty, 0)';
+	$kit_availability_params = array();
+
+	if ( function_exists( 'papelito_kits_table_names' ) ) {
+		$kits_tables          = papelito_kits_table_names();
+		$kit_exists           = "EXISTS ( SELECT 1 FROM {$kits_tables['kits']} papelito_stock_kit WHERE papelito_stock_kit.product_id = p.ID )";
+		$kit_availability_sql = "CASE WHEN {$kit_exists} THEN COALESCE((SELECT MIN(FLOOR(COALESCE(papelito_stock_component.qty, 0) / papelito_stock_item.quantity)) FROM {$kits_tables['items']} papelito_stock_item LEFT JOIN {$tables['stock']} papelito_stock_component ON papelito_stock_component.product_id = papelito_stock_item.product_id AND papelito_stock_component.vendor_id = %d WHERE papelito_stock_item.kit_id = (SELECT id FROM {$kits_tables['kits']} papelito_stock_kit_id WHERE papelito_stock_kit_id.product_id = p.ID LIMIT 1) AND papelito_stock_item.quantity > 0), 0) ELSE COALESCE(vs.qty, 0) END";
+		$kit_availability_params = array( $vendor_id );
+	}
 
 	$where  = array( 'p.post_type IN (%s, %s)', 'p.post_status = %s' );
 	$params = array( 'product', 'product_variation', 'publish' );
 
 	if ( 'with_stock' === $filter ) {
-		$where[] = 'COALESCE(vs.qty, 0) > 0';
+		$where[] = "{$kit_availability_sql} > 0";
+		$params  = array_merge( $params, $kit_availability_params );
 	} elseif ( 'zeroed_only' === $filter ) {
-		$where[] = 'COALESCE(vs.qty, 0) = 0';
+		$where[] = "{$kit_availability_sql} = 0";
+		$params  = array_merge( $params, $kit_availability_params );
 	}
 
 	if ( '' !== $search ) {
@@ -687,6 +970,39 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 		$where_sql = implode( ' AND ', $where );
 	}
 
+	// Coleção é recorte comercial que atravessa categoria: entra como mais um AND,
+	// nunca substituindo os outros filtros. Slug fora da curadoria falha fechado.
+	$collection = sanitize_title( (string) ( $args['collection'] ?? '' ) );
+
+	if ( '' !== $collection ) {
+		if ( in_array( $collection, papelito_vendor_stock_curated_collections(), true ) ) {
+			$taxonomy_tables = papelito_product_taxonomy_table_names();
+			$where[]         = "EXISTS ( SELECT 1 FROM {$taxonomy_tables['product_collection']} papelito_collection WHERE papelito_collection.product_id = {$effective_id} AND papelito_collection.collection_slug = %s )"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			$params[]        = $collection;
+		} else {
+			$where[] = '1 = 0';
+		}
+
+		$where_sql = implode( ' AND ', $where );
+	}
+
+	// Kit é entidade própria (`papelito_kits`), não taxonomia: filtrar por coleção
+	// legada devolveria vínculo histórico que a entidade nova nem consulta.
+	$type = (string) ( $args['type'] ?? 'products' );
+	if ( ! in_array( $type, array( 'products', 'kits' ), true ) ) {
+		$type = 'products';
+	}
+
+	if ( function_exists( 'papelito_kits_table_names' ) ) {
+		$kits_tables = papelito_kits_table_names();
+		$exists      = "EXISTS ( SELECT 1 FROM {$kits_tables['kits']} papelito_kit WHERE papelito_kit.product_id = p.ID )";
+
+		// `p.ID` e não `$effective_id`: variação não é kit, e o produto comercial do
+		// kit é sempre simples. Herdar do pai marcaria variações como kit.
+		$where[]   = 'kits' === $type ? $exists : "NOT {$exists}";
+		$where_sql = implode( ' AND ', $where );
+	}
+
 	if ( ! empty( $tag_ids ) ) {
 		$placeholders = implode( ',', array_fill( 0, count( $tag_ids ), '%d' ) );
 		$tax_joins   .= " INNER JOIN {$wpdb->term_relationships} tag_tr ON tag_tr.object_id = {$effective_id}";
@@ -707,7 +1023,14 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 
 	$total = (int) $wpdb->get_var( $wpdb->prepare( $count_sql, $count_params ) );
 
-	$group_sql = $need_group ? ' GROUP BY p.ID' : '';
+	$group_sql   = $need_group ? ' GROUP BY p.ID' : '';
+	$sort_sql     = $sort_map[ $sort ];
+	$sort_params = array();
+
+	if ( 'qty_desc' === $sort || 'qty_asc' === $sort ) {
+		$sort_sql    = sprintf( '%s %s, p.ID ASC', $kit_availability_sql, 'qty_desc' === $sort ? 'DESC' : 'ASC' );
+		$sort_params = $kit_availability_params;
+	}
 
 	$select_sql = "SELECT p.ID AS product_id, COALESCE(vs.qty, 0) AS qty, vs.updated_at, vs.notified_zero_at,
 				p.post_title AS product_name, sku.meta_value AS sku, {$effective_id} AS effective_id
@@ -717,9 +1040,9 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 			{$tax_joins}
 			WHERE {$where_sql}
 			{$group_sql}
-			ORDER BY {$sort_map[ $sort ]}";
+			ORDER BY {$sort_sql}";
 
-	$select_params = array_merge( array( $vendor_id ), $tax_params, $params );
+	$select_params = array_merge( array( $vendor_id ), $tax_params, $params, $sort_params );
 
 	if ( $paginate ) {
 		$offset          = ( $page - 1 ) * $per_page;
@@ -732,6 +1055,9 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	$product_ids   = array();
 	$effective_ids = array();
 	$items         = array();
+	$image_urls    = papelito_vendor_stock_product_image_urls(
+		array_map( static fn( array $row ): int => (int) ( $row['product_id'] ?? 0 ), is_array( $rows ) ? $rows : array() )
+	);
 
 	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
 		$product_id      = (int) ( $row['product_id'] ?? 0 );
@@ -747,12 +1073,13 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 			'qty'                  => (int) ( $row['qty'] ?? 0 ),
 			'updated_at'           => (string) ( $row['updated_at'] ?? '' ),
 			'is_zeroed'            => 0 === (int) ( $row['qty'] ?? 0 ),
-			'image_url'            => papelito_vendor_stock_product_image_url( $product_id ),
+			'image_url'            => $image_urls[ $product_id ] ?? '',
 			'history'              => array(),
 			'effective_id'         => $effective,
 			'categories'           => array(),
 			'subcategories'        => array(),
 			'tags'                 => array(),
+			'kit'                  => null,
 		);
 	}
 
@@ -811,6 +1138,15 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 		unset( $item );
 	}
 
+	if ( ! empty( $product_ids ) ) {
+		$kit_compositions = papelito_vendor_stock_kit_compositions( $vendor_id, $product_ids );
+
+		foreach ( $items as &$item ) {
+			$item['kit'] = $kit_compositions[ (int) $item['product_id'] ] ?? null;
+		}
+		unset( $item );
+	}
+
 	if ( $history && ! empty( $product_ids ) ) {
 		$history_lookup = papelito_vendor_stock_recent_logs( $vendor_id, $product_ids, 5 );
 
@@ -830,15 +1166,15 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 }
 
 /**
- * Lista categorias e subcategorias da taxonomia Papelito, mais as tags do
- * WooCommerce, para popular o drawer de filtros do estoque.
+ * Lista categorias, subcategorias e coleções curadas da taxonomia Papelito, mais
+ * as tags do WooCommerce, para popular o drawer de filtros do estoque.
  * para popular o drawer de filtros do estoque. Cache curto por transient.
  */
 function papelito_vendor_stock_taxonomies() {
 	// A versão entra na CHAVE: qualquer escrita na taxonomia torna a chave anterior
 	// inalcançável. O transient global e não versionado da versão antiga fazia
 	// categoria nova sumir do drawer por até 10 minutos.
-	$cache_key = 'papelito_vendor_stock_taxonomies_v2_' . papelito_product_taxonomy_version();
+	$cache_key = 'papelito_vendor_stock_taxonomies_v3_' . papelito_product_taxonomy_version();
 	$cached    = get_transient( $cache_key );
 	if ( is_array( $cached ) ) {
 		return $cached;
@@ -846,6 +1182,7 @@ function papelito_vendor_stock_taxonomies() {
 
 	$out = array(
 		'categories'    => array(),
+		'collections'   => papelito_vendor_stock_collections(),
 		'subcategories' => array(),
 		'tags'          => array(),
 	);
@@ -1011,6 +1348,26 @@ add_action(
 							return implode( ',', array_unique( $ids ) );
 						},
 					),
+					'collection'    => array(
+						'type'              => 'string',
+						'default'           => '',
+						// Closure e não `sanitize_title` direto: o REST chama o callback com
+						// ( $value, $request, $param ), e o 2º argumento de `sanitize_title()` é
+						// o fallback devolvido quando o valor é vazio — o request viraria o valor
+						// do parâmetro em toda requisição sem coleção.
+						'sanitize_callback' => static function ( $value ) {
+							return sanitize_title( (string) $value );
+						},
+					),
+					'type'          => array(
+						'type'              => 'string',
+						'default'           => 'products',
+						'sanitize_callback' => static function ( $value ) {
+							$value = strtolower( trim( (string) $value ) );
+
+							return in_array( $value, array( 'products', 'kits' ), true ) ? $value : 'products';
+						},
+					),
 					'sort'          => array(
 						'type'    => 'string',
 						'default' => 'name_asc',
@@ -1030,6 +1387,8 @@ add_action(
 							'category'      => (int) $request->get_param( 'category' ),
 							'subcategories' => (string) $request->get_param( 'subcategories' ),
 							'tags'          => (string) $request->get_param( 'tags' ),
+							'collection'    => (string) $request->get_param( 'collection' ),
+							'type'          => (string) $request->get_param( 'type' ),
 							'sort'          => (string) $request->get_param( 'sort' ),
 						)
 					);
@@ -1152,6 +1511,26 @@ add_action(
 							return implode( ',', array_unique( $ids ) );
 						},
 					),
+					'collection'    => array(
+						'type'              => 'string',
+						'default'           => '',
+						// Closure e não `sanitize_title` direto: o REST chama o callback com
+						// ( $value, $request, $param ), e o 2º argumento de `sanitize_title()` é
+						// o fallback devolvido quando o valor é vazio — o request viraria o valor
+						// do parâmetro em toda requisição sem coleção.
+						'sanitize_callback' => static function ( $value ) {
+							return sanitize_title( (string) $value );
+						},
+					),
+					'type'          => array(
+						'type'              => 'string',
+						'default'           => 'products',
+						'sanitize_callback' => static function ( $value ) {
+							$value = strtolower( trim( (string) $value ) );
+
+							return in_array( $value, array( 'products', 'kits' ), true ) ? $value : 'products';
+						},
+					),
 					'sort'          => array(
 						'type'    => 'string',
 						'default' => 'name_asc',
@@ -1176,6 +1555,8 @@ add_action(
 							'category'        => (int) $request->get_param( 'category' ),
 							'subcategories'   => (string) $request->get_param( 'subcategories' ),
 							'tags'            => (string) $request->get_param( 'tags' ),
+							'collection'      => (string) $request->get_param( 'collection' ),
+							'type'            => (string) $request->get_param( 'type' ),
 							'sort'            => (string) $request->get_param( 'sort' ),
 							'include_history' => true,
 						)

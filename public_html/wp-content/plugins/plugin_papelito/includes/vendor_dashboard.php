@@ -7,6 +7,14 @@
 
 defined( 'ABSPATH' ) || exit;
 
+if ( ! defined( 'PAPELITO_REST_NAMESPACE' ) ) {
+	define( 'PAPELITO_REST_NAMESPACE', 'papelito/v1' );
+}
+
+if ( ! defined( 'PAPELITO_VENDOR_DEFAULT_LEAD_TIME_DAYS' ) ) {
+	define( 'PAPELITO_VENDOR_DEFAULT_LEAD_TIME_DAYS', 2 );
+}
+
 if ( ! defined( 'PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT' ) ) {
 	define( 'PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT', 'aguardando_pagamento' );
 	define( 'PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT', 'aguardando_envio' );
@@ -456,6 +464,64 @@ function papelito_vendor_dashboard_bucket( $order, string $interval ): string {
 }
 
 /**
+ * Return KPI data for one order when it contributes to the requested period.
+ *
+ * @return array<string,mixed>|null
+ */
+function papelito_vendor_dashboard_kpi_order_data( $order, int $vendor_id, array $period, array $sale_statuses ): ?array {
+	if ( ! papelito_vendor_dashboard_in_period( $order, $period['from'], $period['to'] ) ) {
+		return null;
+	}
+
+	$status = papelito_vendor_dashboard_order_status( $order );
+
+	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $status ) {
+		return null;
+	}
+
+	if ( ! papelito_vendor_dashboard_order_is_paid( $order ) ) {
+		return array( 'awaiting_payment' => true );
+	}
+
+	if ( ! in_array( $status, $sale_statuses, true ) ) {
+		return null;
+	}
+
+	$total = (float) $order->get_total();
+
+	return array(
+		'awaiting_payment' => false,
+		'total'            => $total,
+		'pending'          => in_array( $status, array( PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT, PAPELITO_VENDOR_STATUS_PICKING ), true ),
+		'bucket'           => papelito_vendor_dashboard_bucket( $order, $period['interval'] ),
+		'items'            => papelito_vendor_dashboard_items( $order, $vendor_id ),
+	);
+}
+
+/**
+ * Add one order's line items to the top-products accumulator.
+ *
+ * @param array<int,array<string,mixed>> $products Product accumulator.
+ * @param array<int,array<string,mixed>> $items    Order items.
+ */
+function papelito_vendor_dashboard_accumulate_products( array &$products, array $items ): void {
+	foreach ( $items as $item ) {
+		$product_id = (int) $item['product_id'];
+		if ( ! isset( $products[ $product_id ] ) ) {
+			$products[ $product_id ] = array(
+				'product_id' => $product_id,
+				'name'       => (string) $item['name'],
+				'qty'        => 0,
+				'revenue'    => 0.0,
+			);
+		}
+
+		$products[ $product_id ]['qty'] += (int) $item['qty'];
+		$products[ $product_id ]['revenue'] += (float) $item['total'];
+	}
+}
+
+/**
  * Build seller KPI response.
  *
  * @return array<string,mixed>
@@ -471,52 +537,30 @@ function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array 
 	$sale_statuses          = papelito_vendor_dashboard_sale_statuses();
 
 	foreach ( $orders as $order ) {
-		if ( ! papelito_vendor_dashboard_in_period( $order, $period['from'], $period['to'] ) ) {
+		$data = papelito_vendor_dashboard_kpi_order_data( $order, $vendor_id, $period, $sale_statuses );
+		if ( null === $data ) {
 			continue;
 		}
 
-		$status = papelito_vendor_dashboard_order_status( $order );
-
-		if ( PAPELITO_VENDOR_STATUS_CANCELLED === $status ) {
-			continue;
-		}
-
-		if ( ! papelito_vendor_dashboard_order_is_paid( $order ) ) {
+		if ( $data['awaiting_payment'] ) {
 			++$awaiting_payment_count;
 			continue;
 		}
 
-		if ( ! in_array( $status, $sale_statuses, true ) ) {
-			continue;
-		}
-
-		$total          = (float) $order->get_total();
+		$total          = (float) $data['total'];
 		$gross_revenue += $total;
 		++$orders_count;
 
-		if ( in_array( $status, array( PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT, PAPELITO_VENDOR_STATUS_PICKING ), true ) ) {
+		if ( $data['pending'] ) {
 			++$pending_orders;
 		}
 
-		$bucket = papelito_vendor_dashboard_bucket( $order, $period['interval'] );
+		$bucket = (string) $data['bucket'];
 		if ( '' !== $bucket ) {
 			$series[ $bucket ] = ( $series[ $bucket ] ?? 0.0 ) + $total;
 		}
 
-		foreach ( papelito_vendor_dashboard_items( $order, $vendor_id ) as $item ) {
-			$product_id = (int) $item['product_id'];
-			if ( ! isset( $products[ $product_id ] ) ) {
-				$products[ $product_id ] = array(
-					'product_id' => $product_id,
-					'name'       => (string) $item['name'],
-					'qty'        => 0,
-					'revenue'    => 0.0,
-				);
-			}
-
-			$products[ $product_id ]['qty'] += (int) $item['qty'];
-			$products[ $product_id ]['revenue'] += (float) $item['total'];
-		}
+		papelito_vendor_dashboard_accumulate_products( $products, $data['items'] );
 	}
 
 	ksort( $series );
@@ -715,13 +759,16 @@ function papelito_vendor_dashboard_admin_vendor_user( int $vendor_id ) {
 /**
  * Read seller operational settings.
  *
- * @return array{shipping_lead_time_days:int}
+ * @return array{shipping_lead_time_days:int,shipping_lead_time_configured:bool}
  */
 function papelito_vendor_dashboard_settings( int $vendor_id ): array {
-	$lead_time = (int) get_user_meta( $vendor_id, 'shipping_lead_time_days', true );
+	$stored     = get_user_meta( $vendor_id, 'shipping_lead_time_days', true );
+	$lead_time  = (int) $stored;
+	$configured = '' !== $stored && $lead_time >= 1 && $lead_time <= 30;
 
 	return array(
-		'shipping_lead_time_days' => $lead_time >= 1 && $lead_time <= 30 ? $lead_time : 2,
+		'shipping_lead_time_days'       => $configured ? $lead_time : PAPELITO_VENDOR_DEFAULT_LEAD_TIME_DAYS,
+		'shipping_lead_time_configured' => $configured,
 	);
 }
 
@@ -970,336 +1017,426 @@ function papelito_vendor_dashboard_customer_order( int $order_id, int $customer_
 	return $order;
 }
 
-add_action(
-	'rest_api_init',
-	static function (): void {
-		register_rest_route(
-			'papelito/v1',
-			'/vendor/me/kpis',
+/**
+ * REST callback for vendor KPIs.
+ */
+function papelito_vendor_dashboard_handle_kpis( WP_REST_Request $request ) {
+	return new WP_REST_Response(
+		papelito_vendor_dashboard_kpis( get_current_user_id(), papelito_vendor_dashboard_period( $request ) ),
+		200
+	);
+}
+
+/**
+ * REST callback for the vendor order list.
+ */
+function papelito_vendor_dashboard_handle_vendor_orders( WP_REST_Request $request ) {
+	return new WP_REST_Response(
+		papelito_vendor_dashboard_list_orders( get_current_user_id(), $request ),
+		200
+	);
+}
+
+/**
+ * REST callback for the admin vendor order list.
+ */
+function papelito_vendor_dashboard_handle_admin_vendor_orders( WP_REST_Request $request ) {
+	$vendor_id = absint( $request->get_param( 'id' ) );
+	$user      = papelito_vendor_dashboard_admin_vendor_user( $vendor_id );
+
+	if ( is_wp_error( $user ) ) {
+		return $user;
+	}
+
+	return new WP_REST_Response(
+		papelito_vendor_dashboard_list_orders( $vendor_id, $request ),
+		200
+	);
+}
+
+/**
+ * REST callback for a vendor order detail.
+ */
+function papelito_vendor_dashboard_handle_vendor_order( WP_REST_Request $request ) {
+	$order = papelito_vendor_dashboard_vendor_order( absint( $request->get_param( 'id' ) ), get_current_user_id() );
+
+	if ( is_wp_error( $order ) ) {
+		return $order;
+	}
+
+	return new WP_REST_Response( papelito_vendor_dashboard_map_order( $order, get_current_user_id(), true ), 200 );
+}
+
+/**
+ * REST callback for a vendor order status update.
+ */
+function papelito_vendor_dashboard_handle_vendor_order_status( WP_REST_Request $request ) {
+	$result = papelito_vendor_dashboard_update_order_status(
+		absint( $request->get_param( 'id' ) ),
+		get_current_user_id(),
+		$request->get_param( 'status' )
+	);
+
+	return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+}
+
+/**
+ * REST callback for a vendor status update with a reason.
+ */
+function papelito_vendor_dashboard_handle_vendor_order_status_with_reason( WP_REST_Request $request ) {
+	$result = papelito_vendor_dashboard_update_order_status(
+		absint( $request->get_param( 'id' ) ),
+		get_current_user_id(),
+		$request->get_param( 'status' ),
+		(string) $request->get_param( 'reason' )
+	);
+
+	return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+}
+
+/**
+ * REST callback for reading vendor settings.
+ */
+function papelito_vendor_dashboard_handle_get_settings() {
+	return new WP_REST_Response( papelito_vendor_dashboard_settings( get_current_user_id() ), 200 );
+}
+
+/**
+ * REST callback for updating vendor settings.
+ */
+function papelito_vendor_dashboard_handle_update_settings( WP_REST_Request $request ) {
+	$raw       = $request->get_param( 'shipping_lead_time_days' );
+	$lead_time = is_numeric( $raw ) ? (float) $raw : 0.0;
+
+	if ( floor( $lead_time ) !== $lead_time || $lead_time < 1 || $lead_time > 30 ) {
+		return new WP_Error( 'papelito_vendor_invalid_lead_time', 'Informe um prazo inteiro entre 1 e 30 dias uteis.', array( 'status' => 422 ) );
+	}
+
+	update_user_meta( get_current_user_id(), 'shipping_lead_time_days', (int) $lead_time );
+
+	return new WP_REST_Response( papelito_vendor_dashboard_settings( get_current_user_id() ), 200 );
+}
+
+/**
+ * REST callback for reading coverage ranges.
+ */
+function papelito_vendor_dashboard_handle_get_coverage_ranges() {
+	return new WP_REST_Response(
+		array( 'items' => papelito_vendor_dashboard_coverage_ranges( get_current_user_id() ) ),
+		200
+	);
+}
+
+/**
+ * REST callback for adding a coverage range.
+ */
+function papelito_vendor_dashboard_handle_add_coverage_range( WP_REST_Request $request ) {
+	$payload = $request->get_json_params();
+	$result  = papelito_vendor_dashboard_add_coverage_range(
+		get_current_user_id(),
+		is_array( $payload ) ? $payload : array()
+	);
+
+	return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'items' => $result ), 201 );
+}
+
+/**
+ * REST callback for updating a coverage range.
+ */
+function papelito_vendor_dashboard_handle_update_coverage_range( WP_REST_Request $request ) {
+	$payload = $request->get_json_params();
+	$result  = papelito_vendor_dashboard_update_coverage_range(
+		get_current_user_id(),
+		absint( $request->get_param( 'id' ) ),
+		is_array( $payload ) ? $payload : array()
+	);
+
+	return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'items' => $result ), 200 );
+}
+
+/**
+ * REST callback for deleting a coverage range.
+ */
+function papelito_vendor_dashboard_handle_delete_coverage_range( WP_REST_Request $request ) {
+	$result = papelito_vendor_dashboard_delete_coverage_range(
+		get_current_user_id(),
+		absint( $request->get_param( 'id' ) )
+	);
+
+	return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'items' => $result ), 200 );
+}
+
+/**
+ * Validate a coverage range identifier.
+ */
+function papelito_vendor_dashboard_validate_coverage_id( $value ): bool {
+	return is_numeric( $value ) && (int) $value > 0;
+}
+
+/**
+ * REST callback for the customer's order list.
+ */
+function papelito_vendor_dashboard_handle_customer_orders( WP_REST_Request $request ) {
+	if ( ! function_exists( 'wc_get_orders' ) ) {
+		return new WP_Error( 'papelito_woocommerce_unavailable', 'WooCommerce nao esta disponivel.', array( 'status' => 500 ) );
+	}
+
+	$page     = max( 1, (int) $request->get_param( 'page' ) );
+	$per_page = min( 100, max( 1, (int) $request->get_param( 'per_page' ) ?: 20 ) );
+	$query    = wc_get_orders(
+		array(
+			'customer_id' => get_current_user_id(),
+			'limit'       => $per_page,
+			'page'        => $page,
+			'paginate'    => true,
+			'orderby'     => 'date',
+			'order'       => 'DESC',
+		)
+	);
+	$query_data  = is_object( $query ) ? get_object_vars( $query ) : array();
+	$orders      = isset( $query_data['orders'] ) && is_array( $query_data['orders'] ) ? array_values(
+		array_filter(
+			$query_data['orders'],
+			static fn( $order ): bool => papelito_vendor_dashboard_is_wc_instance( $order, 'WC_Order' )
+		)
+	) : array();
+	$total       = isset( $query_data['total'] ) ? (int) $query_data['total'] : 0;
+	$total_pages = isset( $query_data['max_num_pages'] ) ? (int) $query_data['max_num_pages'] : 1;
+
+	return new WP_REST_Response(
+		array(
+			'items'       => array_map(
+				static fn( $order ): array => papelito_vendor_dashboard_map_order( $order, null, true ),
+				$orders
+			),
+			'total'       => $total,
+			'page'        => $page,
+			'per_page'    => $per_page,
+			'total_pages' => max( 1, $total_pages ),
+		),
+		200
+	);
+}
+
+/**
+ * REST callback for a customer order detail.
+ */
+function papelito_vendor_dashboard_handle_customer_order( WP_REST_Request $request ) {
+	$order = papelito_vendor_dashboard_customer_order( absint( $request->get_param( 'id' ) ), get_current_user_id() );
+
+	if ( is_wp_error( $order ) ) {
+		return $order;
+	}
+
+	if ( function_exists( 'papelito_pagarme_maybe_reconcile_checkout_order' ) ) {
+		papelito_pagarme_maybe_reconcile_checkout_order( $order );
+	}
+
+	return new WP_REST_Response( papelito_vendor_dashboard_map_order( $order, null, true, true ), 200 );
+}
+
+/**
+ * Return the seller permission result expected by REST.
+ *
+ * @return true|WP_Error
+ */
+function papelito_vendor_dashboard_permission_seller() {
+	$check = papelito_vendor_dashboard_require_seller();
+
+	return is_wp_error( $check ) ? $check : true;
+}
+
+/**
+ * Return the profile permission result expected by REST.
+ *
+ * @return true|WP_Error
+ */
+function papelito_vendor_dashboard_permission_profile_user() {
+	$check = papelito_vendor_dashboard_require_profile_user();
+
+	return is_wp_error( $check ) ? $check : true;
+}
+
+/**
+ * Register KPI and vendor order routes.
+ */
+function papelito_vendor_dashboard_register_kpi_routes(): void {
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/kpis',
+		array(
+			'methods'             => WP_REST_Server::READABLE,
+			'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+			'callback'            => 'papelito_vendor_dashboard_handle_kpis',
+		)
+	);
+
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/orders',
+		array(
+			'methods'             => WP_REST_Server::READABLE,
+			'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+			'callback'            => 'papelito_vendor_dashboard_handle_vendor_orders',
+		)
+	);
+
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/admin/vendors/(?P<id>\d+)/orders',
+		array(
+			'methods'             => WP_REST_Server::READABLE,
+			'permission_callback' => 'papelito_vendor_dashboard_require_admin',
+			'callback'            => 'papelito_vendor_dashboard_handle_admin_vendor_orders',
+		)
+	);
+
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/orders/(?P<id>\d+)',
+		array(
 			array(
 				'methods'             => WP_REST_Server::READABLE,
-				'permission_callback' => static function () {
-					$check = papelito_vendor_dashboard_require_seller();
-					return is_wp_error( $check ) ? $check : true;
-				},
-				'callback'            => static function ( WP_REST_Request $request ) {
-					return new WP_REST_Response(
-						papelito_vendor_dashboard_kpis( get_current_user_id(), papelito_vendor_dashboard_period( $request ) ),
-						200
-					);
-				},
-			)
-		);
-
-		register_rest_route(
-			'papelito/v1',
-			'/vendor/me/orders',
-			array(
-				'methods'             => WP_REST_Server::READABLE,
-				'permission_callback' => static function () {
-					$check = papelito_vendor_dashboard_require_seller();
-					return is_wp_error( $check ) ? $check : true;
-				},
-				'callback'            => static function ( WP_REST_Request $request ) {
-					return new WP_REST_Response(
-						papelito_vendor_dashboard_list_orders( get_current_user_id(), $request ),
-						200
-					);
-				},
-			)
-		);
-
-		register_rest_route(
-			'papelito/v1',
-			'/admin/vendors/(?P<id>\d+)/orders',
-			array(
-				'methods'             => WP_REST_Server::READABLE,
-				'permission_callback' => static function () {
-					return current_user_can( 'manage_options' );
-				},
-				'callback'            => static function ( WP_REST_Request $request ) {
-					$vendor_id = absint( $request->get_param( 'id' ) );
-					$user      = papelito_vendor_dashboard_admin_vendor_user( $vendor_id );
-
-					if ( is_wp_error( $user ) ) {
-						return $user;
-					}
-
-					return new WP_REST_Response(
-						papelito_vendor_dashboard_list_orders( $vendor_id, $request ),
-						200
-					);
-				},
-			)
-		);
-
-		register_rest_route(
-			'papelito/v1',
-			'/vendor/me/orders/(?P<id>\d+)',
-			array(
-				array(
-					'methods'             => WP_REST_Server::READABLE,
-					'permission_callback' => static function () {
-						$check = papelito_vendor_dashboard_require_seller();
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function ( WP_REST_Request $request ) {
-						$order = papelito_vendor_dashboard_vendor_order( absint( $request->get_param( 'id' ) ), get_current_user_id() );
-						if ( is_wp_error( $order ) ) {
-							return $order;
-						}
-
-						return new WP_REST_Response( papelito_vendor_dashboard_map_order( $order, get_current_user_id(), true ), 200 );
-					},
-				),
-				array(
-					'methods'             => WP_REST_Server::EDITABLE,
-					'permission_callback' => static function () {
-						$check = papelito_vendor_dashboard_require_seller();
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function ( WP_REST_Request $request ) {
-						$result = papelito_vendor_dashboard_update_order_status(
-							absint( $request->get_param( 'id' ) ),
-							get_current_user_id(),
-							$request->get_param( 'status' )
-						);
-
-						return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
-					},
-					'args'                => array(
-						'status' => array( 'type' => 'string', 'required' => true ),
-					),
-				),
-			)
-		);
-
-		register_rest_route(
-			'papelito/v1',
-			'/vendor/me/orders/(?P<id>\d+)/status',
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'callback'            => 'papelito_vendor_dashboard_handle_vendor_order',
+			),
 			array(
 				'methods'             => WP_REST_Server::EDITABLE,
-				'permission_callback' => static function () {
-					$check = papelito_vendor_dashboard_require_seller();
-					return is_wp_error( $check ) ? $check : true;
-				},
-				'callback'            => static function ( WP_REST_Request $request ) {
-					$result = papelito_vendor_dashboard_update_order_status(
-						absint( $request->get_param( 'id' ) ),
-						get_current_user_id(),
-						$request->get_param( 'status' ),
-						(string) $request->get_param( 'reason' )
-					);
-
-					return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
-				},
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'callback'            => 'papelito_vendor_dashboard_handle_vendor_order_status',
 				'args'                => array(
 					'status' => array( 'type' => 'string', 'required' => true ),
-					'reason' => array( 'type' => 'string', 'required' => false ),
 				),
-			)
-		);
+			),
+		)
+	);
 
-		register_rest_route(
-			'papelito/v1',
-			'/vendor/me/settings',
-			array(
-				array(
-					'methods'             => WP_REST_Server::READABLE,
-					'permission_callback' => static function () {
-						$check = papelito_vendor_dashboard_require_seller();
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function () {
-						return new WP_REST_Response( papelito_vendor_dashboard_settings( get_current_user_id() ), 200 );
-					},
-				),
-				array(
-					'methods'             => WP_REST_Server::EDITABLE,
-					'permission_callback' => static function () {
-						$check = papelito_vendor_dashboard_require_seller();
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function ( WP_REST_Request $request ) {
-						$raw       = $request->get_param( 'shipping_lead_time_days' );
-						$lead_time = is_numeric( $raw ) ? (float) $raw : 0.0;
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/orders/(?P<id>\d+)/status',
+		array(
+			'methods'             => WP_REST_Server::EDITABLE,
+			'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+			'callback'            => 'papelito_vendor_dashboard_handle_vendor_order_status_with_reason',
+			'args'                => array(
+				'status' => array( 'type' => 'string', 'required' => true ),
+				'reason' => array( 'type' => 'string', 'required' => false ),
+			),
+		)
+	);
+}
 
-						if ( floor( $lead_time ) !== $lead_time || $lead_time < 1 || $lead_time > 30 ) {
-							return new WP_Error( 'papelito_vendor_invalid_lead_time', 'Informe um prazo inteiro entre 1 e 30 dias uteis.', array( 'status' => 422 ) );
-						}
-
-						update_user_meta( get_current_user_id(), 'shipping_lead_time_days', (int) $lead_time );
-
-						return new WP_REST_Response( papelito_vendor_dashboard_settings( get_current_user_id() ), 200 );
-					},
-				),
-			)
-		);
-
-		register_rest_route(
-			'papelito/v1',
-			'/vendor/me/coverage-ranges',
-			array(
-				array(
-					'methods'             => WP_REST_Server::READABLE,
-					'permission_callback' => static function () {
-						$check = papelito_vendor_dashboard_require_seller();
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function () {
-						return new WP_REST_Response(
-							array( 'items' => papelito_vendor_dashboard_coverage_ranges( get_current_user_id() ) ),
-							200
-						);
-					},
-				),
-				array(
-					'methods'             => WP_REST_Server::CREATABLE,
-					'permission_callback' => static function () {
-						$check = papelito_vendor_dashboard_require_seller();
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function ( WP_REST_Request $request ) {
-						$payload = $request->get_json_params();
-						$result  = papelito_vendor_dashboard_add_coverage_range(
-							get_current_user_id(),
-							is_array( $payload ) ? $payload : array()
-						);
-
-						return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'items' => $result ), 201 );
-					},
-				),
-			)
-		);
-
-		register_rest_route(
-			'papelito/v1',
-			'/vendor/me/coverage-ranges/(?P<id>\d+)',
-			array(
-				array(
-					'methods'             => WP_REST_Server::EDITABLE,
-					'permission_callback' => static function () {
-						$check = papelito_vendor_dashboard_require_seller();
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function ( WP_REST_Request $request ) {
-						$payload = $request->get_json_params();
-						$result  = papelito_vendor_dashboard_update_coverage_range(
-							get_current_user_id(),
-							absint( $request->get_param( 'id' ) ),
-							is_array( $payload ) ? $payload : array()
-						);
-
-						return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'items' => $result ), 200 );
-					},
-					'args'                => array(
-						'id' => array(
-							'validate_callback' => static function ( $value ): bool {
-								return is_numeric( $value ) && (int) $value > 0;
-							},
-						),
-					),
-				),
-				array(
-					'methods'             => WP_REST_Server::DELETABLE,
-					'permission_callback' => static function () {
-						$check = papelito_vendor_dashboard_require_seller();
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function ( WP_REST_Request $request ) {
-						$result = papelito_vendor_dashboard_delete_coverage_range(
-							get_current_user_id(),
-							absint( $request->get_param( 'id' ) )
-						);
-
-						return is_wp_error( $result ) ? $result : new WP_REST_Response( array( 'items' => $result ), 200 );
-					},
-					'args'                => array(
-						'id' => array(
-							'validate_callback' => static function ( $value ): bool {
-								return is_numeric( $value ) && (int) $value > 0;
-							},
-						),
-					),
-				),
-			)
-		);
-
-		register_rest_route(
-			'papelito/v1',
-			'/profile/me/orders',
+/**
+ * Register vendor settings routes.
+ */
+function papelito_vendor_dashboard_register_settings_routes(): void {
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/settings',
+		array(
 			array(
 				'methods'             => WP_REST_Server::READABLE,
-				'permission_callback' => static function () {
-					$check = papelito_vendor_dashboard_require_profile_user();
-					return is_wp_error( $check ) ? $check : true;
-				},
-					'callback'            => static function ( WP_REST_Request $request ) {
-						if ( ! function_exists( 'wc_get_orders' ) ) {
-							return new WP_Error( 'papelito_woocommerce_unavailable', 'WooCommerce nao esta disponivel.', array( 'status' => 500 ) );
-						}
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'callback'            => 'papelito_vendor_dashboard_handle_get_settings',
+			),
+			array(
+				'methods'             => WP_REST_Server::EDITABLE,
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'callback'            => 'papelito_vendor_dashboard_handle_update_settings',
+			),
+		)
+	);
+}
 
-						$page     = max( 1, (int) $request->get_param( 'page' ) );
-						$per_page = min( 100, max( 1, (int) $request->get_param( 'per_page' ) ?: 20 ) );
-						$query    = wc_get_orders(
-							array(
-								'customer_id' => get_current_user_id(),
-								'limit'       => $per_page,
-							'page'        => $page,
-							'paginate'    => true,
-							'orderby'     => 'date',
-								'order'       => 'DESC',
-							)
-						);
-						$query_data = is_object( $query ) ? get_object_vars( $query ) : array();
-						$orders     = isset( $query_data['orders'] ) && is_array( $query_data['orders'] ) ? array_values(
-							array_filter(
-								$query_data['orders'],
-								static fn( $order ): bool => papelito_vendor_dashboard_is_wc_instance( $order, 'WC_Order' )
-							)
-						) : array();
-						$total      = isset( $query_data['total'] ) ? (int) $query_data['total'] : 0;
-						$total_pages = isset( $query_data['max_num_pages'] ) ? (int) $query_data['max_num_pages'] : 1;
-
-						return new WP_REST_Response(
-							array(
-								'items'       => array_map(
-									static fn( $order ): array => papelito_vendor_dashboard_map_order( $order, null, true ),
-									$orders
-								),
-								'total'       => $total,
-								'page'        => $page,
-								'per_page'    => $per_page,
-								'total_pages' => max( 1, $total_pages ),
-							),
-							200
-						);
-				},
-			)
-		);
-
-		register_rest_route(
-			'papelito/v1',
-			'/profile/me/orders/(?P<id>\d+)',
+/**
+ * Register vendor coverage routes.
+ */
+function papelito_vendor_dashboard_register_coverage_routes(): void {
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/coverage-ranges',
+		array(
 			array(
 				'methods'             => WP_REST_Server::READABLE,
-				'permission_callback' => static function () {
-					$check = papelito_vendor_dashboard_require_profile_user();
-					return is_wp_error( $check ) ? $check : true;
-				},
-				'callback'            => static function ( WP_REST_Request $request ) {
-					$order = papelito_vendor_dashboard_customer_order( absint( $request->get_param( 'id' ) ), get_current_user_id() );
-					if ( is_wp_error( $order ) ) {
-						return $order;
-					}
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'callback'            => 'papelito_vendor_dashboard_handle_get_coverage_ranges',
+			),
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'callback'            => 'papelito_vendor_dashboard_handle_add_coverage_range',
+			),
+		)
+	);
 
-					if ( function_exists( 'papelito_pagarme_maybe_reconcile_checkout_order' ) ) {
-						papelito_pagarme_maybe_reconcile_checkout_order( $order );
-					}
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/coverage-ranges/(?P<id>\d+)',
+		array(
+			array(
+				'methods'             => WP_REST_Server::EDITABLE,
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'callback'            => 'papelito_vendor_dashboard_handle_update_coverage_range',
+				'args'                => array(
+					'id' => array(
+						'validate_callback' => 'papelito_vendor_dashboard_validate_coverage_id',
+					),
+				),
+			),
+			array(
+				'methods'             => WP_REST_Server::DELETABLE,
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'callback'            => 'papelito_vendor_dashboard_handle_delete_coverage_range',
+				'args'                => array(
+					'id' => array(
+						'validate_callback' => 'papelito_vendor_dashboard_validate_coverage_id',
+					),
+				),
+			),
+		)
+	);
+}
 
-					return new WP_REST_Response( papelito_vendor_dashboard_map_order( $order, null, true, true ), 200 );
-				},
-			)
-		);
-	}
-);
+/**
+ * Register customer order routes.
+ */
+function papelito_vendor_dashboard_register_customer_order_routes(): void {
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/profile/me/orders',
+		array(
+			'methods'             => WP_REST_Server::READABLE,
+			'permission_callback' => 'papelito_vendor_dashboard_permission_profile_user',
+			'callback'            => 'papelito_vendor_dashboard_handle_customer_orders',
+		)
+	);
+
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/profile/me/orders/(?P<id>\d+)',
+		array(
+			'methods'             => WP_REST_Server::READABLE,
+			'permission_callback' => 'papelito_vendor_dashboard_permission_profile_user',
+			'callback'            => 'papelito_vendor_dashboard_handle_customer_order',
+		)
+	);
+}
+
+/**
+ * Require administrator capabilities for admin-only routes.
+ */
+function papelito_vendor_dashboard_require_admin(): bool {
+	return current_user_can( 'manage_options' );
+}
+
+/**
+ * Register all vendor dashboard REST routes.
+ */
+function papelito_vendor_dashboard_register_routes(): void {
+	papelito_vendor_dashboard_register_kpi_routes();
+	papelito_vendor_dashboard_register_settings_routes();
+	papelito_vendor_dashboard_register_coverage_routes();
+	papelito_vendor_dashboard_register_customer_order_routes();
+}
+
+add_action( 'rest_api_init', 'papelito_vendor_dashboard_register_routes' );

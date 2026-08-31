@@ -42,6 +42,7 @@ if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_NEW_PURCHASE', 'new_purchase' );
 	define( 'PAPELITO_NOTIF_PROCESSING_OVERDUE', 'vendor_processing_overdue' );
 	define( 'PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING', 'vendor_registration_pending' );
+	define( 'PAPELITO_NOTIF_VENDOR_PAGARME_SYNC_PENDING', 'vendor_pagarme_sync_pending' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_POSTED', 'shipment_posted' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED', 'shipment_tracking_updated' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_OUT_FOR_DELIVERY', 'shipment_out_for_delivery' );
@@ -133,6 +134,7 @@ function papelito_notification_allowed_types() {
 		PAPELITO_NOTIF_NEW_PURCHASE,
 		PAPELITO_NOTIF_PROCESSING_OVERDUE,
 		PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING,
+		PAPELITO_NOTIF_VENDOR_PAGARME_SYNC_PENDING,
 		PAPELITO_NOTIF_SHIPMENT_POSTED,
 		PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED,
 		PAPELITO_NOTIF_SHIPMENT_OUT_FOR_DELIVERY,
@@ -956,6 +958,50 @@ function papelito_handle_vendor_pending_registration_notification( $vendor_user_
 	}
 }
 add_action( 'papelito_vendor_pending_registration_created', 'papelito_handle_vendor_pending_registration_notification', 10, 2 );
+
+/**
+ * Mantem uma unica notificacao aberta enquanto o recebedor Pagar.me nao esta ativo.
+ *
+ * @param int $vendor_user_id Usuario vendor.
+ * @return void
+ */
+function papelito_handle_vendor_pagarme_sync_pending_notification( int $vendor_user_id ): void {
+	if ( $vendor_user_id <= 0 ) {
+		return;
+	}
+
+	papelito_dispatch_notification(
+		$vendor_user_id,
+		PAPELITO_NOTIF_VENDOR_PAGARME_SYNC_PENDING,
+		array( 'href' => '/vendor/configuracoes' ),
+		'vendor-pagarme-sync-pending:' . $vendor_user_id
+	);
+}
+add_action( 'papelito_vendor_pagarme_sync_pending', 'papelito_handle_vendor_pagarme_sync_pending_notification', 10, 1 );
+
+/**
+ * Arquiva o alerta pendente quando a Pagar.me confirma o recebedor ativo.
+ *
+ * @param int $vendor_user_id Usuario vendor.
+ * @return void
+ */
+function papelito_handle_vendor_pagarme_sync_completed_notification( int $vendor_user_id ): void {
+	global $wpdb;
+
+	if ( $vendor_user_id <= 0 ) {
+		return;
+	}
+
+	$wpdb->query(
+		$wpdb->prepare(
+			'UPDATE ' . papelito_notifications_table_name() . ' SET read_at = %s WHERE user_id = %d AND type = %s AND read_at IS NULL',
+			current_time( 'mysql', true ),
+			$vendor_user_id,
+			PAPELITO_NOTIF_VENDOR_PAGARME_SYNC_PENDING
+		)
+	);
+}
+add_action( 'papelito_vendor_pagarme_sync_completed', 'papelito_handle_vendor_pagarme_sync_completed_notification', 10, 1 );
 
 /**
  * Notifica vendor quando estoque zera.
