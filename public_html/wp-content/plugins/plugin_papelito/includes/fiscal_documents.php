@@ -74,7 +74,7 @@ function papelito_fiscal_documents_install_tables(): void {
   doc_type VARCHAR(16) NOT NULL DEFAULT 'nfe',
   doc_status VARCHAR(24) NOT NULL DEFAULT 'recebida',
   validation_level TINYINT UNSIGNED NOT NULL DEFAULT 1,
-  access_key CHAR(44) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL,
+  access_key CHAR(44) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL DEFAULT NULL,
   access_key_status VARCHAR(16) NOT NULL DEFAULT 'ausente',
   doc_number VARCHAR(20) NULL DEFAULT NULL,
   doc_series VARCHAR(10) NULL DEFAULT NULL,
@@ -108,11 +108,11 @@ function papelito_fiscal_documents_install_tables(): void {
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   fiscal_document_id BIGINT UNSIGNED NOT NULL,
   role VARCHAR(16) NOT NULL DEFAULT 'other',
-  storage_key VARCHAR(96) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  storage_key VARCHAR(96) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   original_name VARCHAR(191) NOT NULL DEFAULT '',
   mime VARCHAR(64) NOT NULL DEFAULT '',
   size_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '',
+  sha256 CHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
   is_active TINYINT UNSIGNED NULL DEFAULT 1,
   uploaded_by BIGINT UNSIGNED NOT NULL DEFAULT 0,
   deleted_by BIGINT UNSIGNED NULL DEFAULT NULL,
@@ -142,6 +142,29 @@ function papelito_fiscal_documents_install_tables(): void {
 	dbDelta( $documents_sql );
 	dbDelta( $files_sql );
 	dbDelta( $events_sql );
+
+	papelito_db_align_binary_columns(
+		$tables['documents'],
+		array(
+			'access_key' => array(
+				'type'       => 'CHAR(44)',
+				'attributes' => 'NULL DEFAULT NULL',
+			),
+		)
+	);
+	papelito_db_align_binary_columns(
+		$tables['files'],
+		array(
+			'storage_key' => array(
+				'type'       => 'VARCHAR(96)',
+				'attributes' => 'NOT NULL',
+			),
+			'sha256'      => array(
+				'type'       => 'CHAR(64)',
+				'attributes' => "NOT NULL DEFAULT ''",
+			),
+		)
+	);
 }
 
 /**

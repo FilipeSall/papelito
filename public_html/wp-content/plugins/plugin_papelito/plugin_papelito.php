@@ -13,6 +13,7 @@ const PAPELITO_DIGITS_REGEX = '/\\D+/';
 
 require_once __DIR__ . '/includes/support.php';
 require_once __DIR__ . '/includes/private_files.php';
+require_once __DIR__ . '/includes/db_collation.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/user_registration.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/products_filter.php';
 require_once __DIR__ . '/includes/rest_api.php';
@@ -90,7 +91,7 @@ require_once __DIR__ . '/includes/billing_email_sync.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.33.0' );
+	define( 'PAPELITO_DB_VERSION', '1.34.0' );
 }
 
 /**

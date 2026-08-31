@@ -785,6 +785,10 @@ function papelito_pre_account_application_reject_open_for_vendor( string $email,
 			)
 		); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
+		if ( false === $updated ) {
+			return new WP_Error( 'papelito_pre_account_vendor_decision_failed', 'Não foi possível fechar a candidatura empresarial aberta para este e-mail.', array( 'status' => 500 ) );
+		}
+
 		if ( 1 !== $updated ) {
 			return new WP_Error( 'papelito_pre_account_vendor_decision_conflict', PAPELITO_PRE_ACCOUNT_DECISION_CONFLICT_MESSAGE, array( 'status' => 409 ) );
 		}

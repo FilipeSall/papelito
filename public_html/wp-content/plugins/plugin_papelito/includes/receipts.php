@@ -20,6 +20,11 @@ if ( ! defined( 'PAPELITO_RECEIPT_ISSUE_MAX_ATTEMPTS' ) ) {
 }
 
 /**
+ * Falha de gravacao do recibo, capturada pelo rollback da transacao de emissao.
+ */
+class PapelitoReceiptPersistenceException extends RuntimeException {}
+
+/**
  * Nomes das tabelas do recibo, já com o prefixo do $wpdb.
  *
  * @return array<string,string>
@@ -49,7 +54,7 @@ function papelito_receipts_install_tables(): void {
 
 	$receipts_sql = "CREATE TABLE {$tables['receipts']} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  receipt_number VARCHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  receipt_number VARCHAR(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   sequence_year SMALLINT UNSIGNED NOT NULL,
   sequence_number BIGINT UNSIGNED NOT NULL,
   order_id BIGINT UNSIGNED NOT NULL,
@@ -90,7 +95,7 @@ function papelito_receipts_install_tables(): void {
   vendor_id BIGINT UNSIGNED NOT NULL,
   vendor_name VARCHAR(255) NOT NULL DEFAULT '',
   part_ordinal SMALLINT UNSIGNED NOT NULL DEFAULT 1,
-  part_number VARCHAR(40) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  part_number VARCHAR(40) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   subtotal_cents BIGINT NOT NULL DEFAULT 0,
   discount_cents BIGINT NOT NULL DEFAULT 0,
   shipping_cents BIGINT NOT NULL DEFAULT 0,
@@ -107,6 +112,25 @@ function papelito_receipts_install_tables(): void {
 	dbDelta( $sequences_sql );
 	dbDelta( $receipts_sql );
 	dbDelta( $vendor_parts_sql );
+
+	papelito_db_align_binary_columns(
+		$tables['receipts'],
+		array(
+			'receipt_number' => array(
+				'type'       => 'VARCHAR(32)',
+				'attributes' => 'NOT NULL',
+			),
+		)
+	);
+	papelito_db_align_binary_columns(
+		$tables['vendor_parts'],
+		array(
+			'part_number' => array(
+				'type'       => 'VARCHAR(40)',
+				'attributes' => 'NOT NULL',
+			),
+		)
+	);
 }
 
 function papelito_receipt_format_number( int $year, int $sequence ): string {
@@ -165,12 +189,97 @@ function papelito_receipt_item_cents( object $item, string $meta_key, float $fal
 		: max( 0, (int) round( $fallback * 100 ) );
 }
 
+/**
+ * Converte uma data do WooCommerce em datetime MySQL UTC.
+ *
+ * @param mixed $date Objeto de data do pedido, ou null.
+ * @return string|null
+ */
 function papelito_receipt_mysql_date( $date ): ?string {
 	if ( is_object( $date ) && method_exists( $date, 'getTimestamp' ) ) {
 		return gmdate( 'Y-m-d H:i:s', $date->getTimestamp() );
 	}
 
 	return null;
+}
+
+/**
+ * Balde zerado de um vendor no snapshot.
+ *
+ * @param int    $vendor_id   Id do vendor.
+ * @param string $vendor_name Nome do vendor no momento da emissao.
+ * @return array<string,mixed>
+ */
+function papelito_receipt_new_vendor_bucket( int $vendor_id, string $vendor_name ): array {
+	return array(
+		'vendor_id'      => $vendor_id,
+		'vendor_name'    => $vendor_name,
+		'subtotal_cents' => 0,
+		'discount_cents' => 0,
+		'shipping_cents' => 0,
+		'total_cents'    => 0,
+		'items'          => array(),
+	);
+}
+
+/**
+ * Converte uma linha do pedido no item do snapshot, ou null quando nao e item utilizavel.
+ *
+ * @param mixed  $item              Linha do pedido vinda do WooCommerce.
+ * @param int    $order_vendor_id   Vendor do pedido, usado quando a linha nao tem o proprio.
+ * @param string $order_vendor_name Nome do vendor do pedido, usado no mesmo fallback.
+ * @return array<string,mixed>|null
+ */
+function papelito_receipt_build_item_line( $item, int $order_vendor_id, string $order_vendor_name ): ?array {
+	if ( ! is_object( $item ) || ! method_exists( $item, 'get_name' ) ) {
+		return null;
+	}
+
+	$item_vendor_id   = (int) $item->get_meta( '_vendor_id', true );
+	$item_vendor_name = sanitize_text_field( (string) $item->get_meta( '_vendor_name', true ) );
+	$quantity         = max( 1, (int) $item->get_quantity() );
+
+	$item_subtotal   = papelito_receipt_item_cents( $item, '_papelito_subtotal_cents', (float) $item->get_subtotal() );
+	$item_total      = papelito_receipt_item_cents( $item, '_papelito_total_cents', (float) $item->get_total() );
+	$stored_discount = $item->get_meta( '_papelito_discount_cents', true );
+	$item_discount   = is_numeric( $stored_discount )
+		? max( 0, (int) $stored_discount )
+		: max( 0, $item_subtotal - $item_total );
+
+	return array(
+		'name'             => sanitize_text_field( (string) $item->get_name() ),
+		'quantity'         => $quantity,
+		'unit_price_cents' => (int) round( $item_subtotal / $quantity ),
+		'subtotal_cents'   => $item_subtotal,
+		'discount_cents'   => $item_discount,
+		'total_cents'      => $item_total,
+		'discount_source'  => sanitize_key( (string) $item->get_meta( '_papelito_discount_source', true ) ),
+		'vendor_id'        => $item_vendor_id > 0 ? $item_vendor_id : $order_vendor_id,
+		'vendor_name'      => '' !== $item_vendor_name ? $item_vendor_name : $order_vendor_name,
+	);
+}
+
+/**
+ * Reparte o frete entre os vendors e fecha o total de cada um.
+ *
+ * @param array<int,array<string,mixed>> $vendors        Baldes por vendor.
+ * @param int                            $shipping_cents Frete total em centavos.
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_receipt_apply_shipping_shares( array $vendors, int $shipping_cents ): array {
+	$weights = array();
+	foreach ( $vendors as $vendor_id => $vendor ) {
+		$weights[ $vendor_id ] = max( 0, $vendor['subtotal_cents'] - $vendor['discount_cents'] );
+	}
+
+	foreach ( papelito_receipt_allocate_cents( $shipping_cents, $weights ) as $vendor_id => $share ) {
+		$vendors[ $vendor_id ]['shipping_cents'] = $share;
+		$vendors[ $vendor_id ]['total_cents']    = $vendors[ $vendor_id ]['subtotal_cents']
+			- $vendors[ $vendor_id ]['discount_cents']
+			+ $share;
+	}
+
+	return $vendors;
 }
 
 /**
@@ -198,83 +307,35 @@ function papelito_receipt_build_snapshot( object $order ): array {
 	$discount_cents = 0;
 
 	foreach ( $order->get_items( 'line_item' ) as $item ) {
-		if ( ! is_object( $item ) || ! method_exists( $item, 'get_name' ) ) {
+		$line = papelito_receipt_build_item_line( $item, $order_vendor_id, $order_vendor_name );
+		if ( null === $line ) {
 			continue;
 		}
 
-		$item_vendor_id   = (int) $item->get_meta( '_vendor_id', true );
-		$item_vendor_name = sanitize_text_field( (string) $item->get_meta( '_vendor_name', true ) );
-		$vendor_id        = $item_vendor_id > 0 ? $item_vendor_id : $order_vendor_id;
-		$vendor_name      = '' !== $item_vendor_name ? $item_vendor_name : $order_vendor_name;
-		$quantity         = max( 1, (int) $item->get_quantity() );
-
-		$item_subtotal   = papelito_receipt_item_cents( $item, '_papelito_subtotal_cents', (float) $item->get_subtotal() );
-		$item_total      = papelito_receipt_item_cents( $item, '_papelito_total_cents', (float) $item->get_total() );
-		$stored_discount = $item->get_meta( '_papelito_discount_cents', true );
-		$item_discount   = is_numeric( $stored_discount )
-			? max( 0, (int) $stored_discount )
-			: max( 0, $item_subtotal - $item_total );
-
-		$line = array(
-			'name'             => sanitize_text_field( (string) $item->get_name() ),
-			'quantity'         => $quantity,
-			'unit_price_cents' => (int) round( $item_subtotal / $quantity ),
-			'subtotal_cents'   => $item_subtotal,
-			'discount_cents'   => $item_discount,
-			'total_cents'      => $item_total,
-			'discount_source'  => sanitize_key( (string) $item->get_meta( '_papelito_discount_source', true ) ),
-			'vendor_id'        => $vendor_id,
-			'vendor_name'      => $vendor_name,
-		);
+		$vendor_id = $line['vendor_id'];
 
 		$items[]         = $line;
-		$subtotal_cents += $item_subtotal;
-		$discount_cents += $item_discount;
+		$subtotal_cents += $line['subtotal_cents'];
+		$discount_cents += $line['discount_cents'];
 
 		if ( ! isset( $vendors[ $vendor_id ] ) ) {
-			$vendors[ $vendor_id ] = array(
-				'vendor_id'      => $vendor_id,
-				'vendor_name'    => $vendor_name,
-				'subtotal_cents' => 0,
-				'discount_cents' => 0,
-				'shipping_cents' => 0,
-				'total_cents'    => 0,
-				'items'          => array(),
-			);
+			$vendors[ $vendor_id ] = papelito_receipt_new_vendor_bucket( $vendor_id, $line['vendor_name'] );
 		}
 
-		$vendors[ $vendor_id ]['subtotal_cents'] += $item_subtotal;
-		$vendors[ $vendor_id ]['discount_cents'] += $item_discount;
+		$vendors[ $vendor_id ]['subtotal_cents'] += $line['subtotal_cents'];
+		$vendors[ $vendor_id ]['discount_cents'] += $line['discount_cents'];
 		$vendors[ $vendor_id ]['items'][]         = $line;
 	}
 
 	if ( empty( $vendors ) ) {
-		$vendors[ $order_vendor_id ] = array(
-			'vendor_id'      => $order_vendor_id,
-			'vendor_name'    => $order_vendor_name,
-			'subtotal_cents' => 0,
-			'discount_cents' => 0,
-			'shipping_cents' => 0,
-			'total_cents'    => 0,
-			'items'          => array(),
-		);
+		$vendors[ $order_vendor_id ] = papelito_receipt_new_vendor_bucket( $order_vendor_id, $order_vendor_name );
 	}
 
 	$shipping_cents = function_exists( 'papelito_pricing_to_cents' )
 		? papelito_pricing_to_cents( (float) $order->get_shipping_total() )
 		: max( 0, (int) round( (float) $order->get_shipping_total() * 100 ) );
 
-	$weights = array();
-	foreach ( $vendors as $vendor_id => $vendor ) {
-		$weights[ $vendor_id ] = max( 0, $vendor['subtotal_cents'] - $vendor['discount_cents'] );
-	}
-
-	foreach ( papelito_receipt_allocate_cents( $shipping_cents, $weights ) as $vendor_id => $share ) {
-		$vendors[ $vendor_id ]['shipping_cents'] = $share;
-		$vendors[ $vendor_id ]['total_cents']    = $vendors[ $vendor_id ]['subtotal_cents']
-			- $vendors[ $vendor_id ]['discount_cents']
-			+ $share;
-	}
+	$vendors = papelito_receipt_apply_shipping_shares( $vendors, $shipping_cents );
 
 	$total_cents         = $subtotal_cents - $discount_cents + $shipping_cents;
 	$authoritative_cents = (int) $order->get_meta( '_papelito_authoritative_total_cents', true );
@@ -395,7 +456,7 @@ function papelito_receipt_sequence_year( array $snapshot ): int {
 /**
  * Aloca o próximo sequencial do ano. Deve rodar dentro da transação do chamador.
  *
- * @throws RuntimeException Quando a linha anual não pode ser lida ou incrementada.
+ * @throws PapelitoReceiptPersistenceException Quando a linha anual não pode ser lida ou incrementada.
  */
 function papelito_receipt_claim_sequence( int $year ): int {
 	global $wpdb;
@@ -420,7 +481,7 @@ function papelito_receipt_claim_sequence( int $year ): int {
 	}
 
 	if ( ! is_array( $row ) ) {
-		throw new RuntimeException( 'receipt_sequence_unavailable' );
+		throw new PapelitoReceiptPersistenceException( 'receipt_sequence_unavailable' );
 	}
 
 	$sequence = max( 1, (int) $row['next_sequence'] );
@@ -430,23 +491,19 @@ function papelito_receipt_claim_sequence( int $year ): int {
 	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
 	if ( false === $updated ) {
-		throw new RuntimeException( 'receipt_sequence_update_failed' );
+		throw new PapelitoReceiptPersistenceException( 'receipt_sequence_update_failed' );
 	}
 
 	return $sequence;
 }
 
 /**
- * Emite o recibo de um pedido pago. Idempotente por `order_id`.
+ * Carrega o pedido e exige pagamento confirmado antes de qualquer emissao.
  *
- * @return array<string,mixed>|WP_Error
+ * @param int $order_id Id do pedido.
+ * @return object|WP_Error
  */
-function papelito_receipt_issue_for_order( int $order_id, string $origin = 'payment' ) {
-	$existing = papelito_receipt_get_by_order( $order_id );
-	if ( $existing ) {
-		return $existing;
-	}
-
+function papelito_receipt_resolve_paid_order( int $order_id ) {
 	if ( ! function_exists( 'wc_get_order' ) ) {
 		return new WP_Error( 'papelito_receipt_woocommerce_missing', 'WooCommerce indisponivel.', array( 'status' => 500 ) );
 	}
@@ -464,9 +521,18 @@ function papelito_receipt_issue_for_order( int $order_id, string $origin = 'paym
 		return new WP_Error( 'papelito_receipt_payment_not_confirmed', 'O recibo so e emitido apos a confirmacao do pagamento.', array( 'status' => 409 ) );
 	}
 
-	$snapshot = papelito_receipt_build_snapshot( $order );
-	$origin   = in_array( $origin, array( 'payment', 'backfill' ), true ) ? $origin : 'payment';
+	return $order;
+}
 
+/**
+ * Persiste o recibo tolerando conflito de concorrencia, ate o limite de tentativas.
+ *
+ * @param int                 $order_id Id do pedido.
+ * @param array<string,mixed> $snapshot Snapshot imutavel.
+ * @param string              $origin   Origem da emissao.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_receipt_persist_with_retry( int $order_id, array $snapshot, string $origin ) {
 	for ( $attempt = 1; $attempt <= PAPELITO_RECEIPT_ISSUE_MAX_ATTEMPTS; $attempt++ ) {
 		$issued = papelito_receipt_persist( $order_id, $snapshot, $origin );
 
@@ -492,12 +558,136 @@ function papelito_receipt_issue_for_order( int $order_id, string $origin = 'paym
 }
 
 /**
+ * Emite o recibo de um pedido pago. Idempotente por `order_id`.
+ *
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_receipt_issue_for_order( int $order_id, string $origin = 'payment' ) {
+	$existing = papelito_receipt_get_by_order( $order_id );
+	if ( $existing ) {
+		return $existing;
+	}
+
+	$order = papelito_receipt_resolve_paid_order( $order_id );
+	if ( is_wp_error( $order ) ) {
+		return $order;
+	}
+
+	$snapshot = papelito_receipt_build_snapshot( $order );
+	$origin   = in_array( $origin, array( 'payment', 'backfill' ), true ) ? $origin : 'payment';
+
+	return papelito_receipt_persist_with_retry( $order_id, $snapshot, $origin );
+}
+
+/**
+ * Linha do recibo pronta para o insert.
+ *
+ * @param int                 $order_id Id do pedido.
+ * @param array<string,mixed> $snapshot Snapshot imutavel.
+ * @param string              $origin   Origem da emissao.
+ * @param string              $number   Numero do recibo ja formatado.
+ * @param int                 $year     Ano da numeracao.
+ * @param int                 $sequence Sequencial anual alocado.
+ * @param string              $now      Datetime UTC da emissao.
+ * @return array<string,mixed>
+ */
+function papelito_receipt_row_for_insert( int $order_id, array $snapshot, string $origin, string $number, int $year, int $sequence, string $now ): array {
+	$company = is_array( $snapshot['company'] ?? null ) ? $snapshot['company'] : null;
+
+	return array(
+		'receipt_number'       => $number,
+		'sequence_year'        => $year,
+		'sequence_number'      => $sequence,
+		'order_id'             => $order_id,
+		'customer_user_id'     => (int) ( $snapshot['buyer']['user_id'] ?? 0 ),
+		'buyer_label'          => (string) ( $snapshot['buyer']['label'] ?? '' ),
+		'company_id'           => $company ? (int) $company['id'] : null,
+		'company_cnpj'         => $company && '' !== (string) $company['cnpj'] ? (string) $company['cnpj'] : null,
+		'company_legal_name'   => $company ? (string) $company['legal_name'] : null,
+		'payment_method'       => (string) ( $snapshot['payment']['method'] ?? '' ),
+		'payment_method_title' => (string) ( $snapshot['payment']['method_title'] ?? '' ),
+		'payment_state'        => (string) ( $snapshot['payment']['state'] ?? '' ),
+		'order_status'         => (string) ( $snapshot['order']['status'] ?? '' ),
+		'currency'             => substr( (string) ( $snapshot['order']['currency'] ?? 'BRL' ), 0, 3 ),
+		'subtotal_cents'       => (int) $snapshot['totals']['subtotal_cents'],
+		'discount_cents'       => (int) $snapshot['totals']['discount_cents'],
+		'shipping_cents'       => (int) $snapshot['totals']['shipping_cents'],
+		'total_cents'          => (int) $snapshot['totals']['total_cents'],
+		'snapshot_json'        => wp_json_encode( $snapshot ),
+		'snapshot_version'     => (int) ( $snapshot['version'] ?? PAPELITO_RECEIPT_SNAPSHOT_VERSION ),
+		'origin'               => $origin,
+		'ordered_at'           => $snapshot['order']['ordered_at'] ?? null,
+		'paid_at'              => $snapshot['order']['paid_at'] ?? null,
+		'issued_at'            => $now,
+		'created_at'           => $now,
+		'updated_at'           => $now,
+	);
+}
+
+/**
+ * Grava uma parcela por vendor do recibo.
+ *
+ * @param array<string,string> $tables     Tabelas do recibo.
+ * @param int                  $receipt_id Id do recibo recem-gravado.
+ * @param array<string,mixed>  $snapshot   Snapshot imutavel.
+ * @param string               $number     Numero do recibo ja formatado.
+ * @param string               $now        Datetime UTC da emissao.
+ * @return void
+ * @throws PapelitoReceiptPersistenceException Quando a gravacao de uma parcela falha.
+ */
+function papelito_receipt_insert_vendor_parts( array $tables, int $receipt_id, array $snapshot, string $number, string $now ): void {
+	global $wpdb;
+
+	$ordinal = 0;
+
+	foreach ( (array) ( $snapshot['vendors'] ?? array() ) as $vendor ) {
+		++$ordinal;
+		$part_inserted = $wpdb->insert(
+			$tables['vendor_parts'],
+			array(
+				'receipt_id'     => $receipt_id,
+				'vendor_id'      => (int) $vendor['vendor_id'],
+				'vendor_name'    => (string) $vendor['vendor_name'],
+				'part_ordinal'   => $ordinal,
+				'part_number'    => $number . '-' . $ordinal,
+				'subtotal_cents' => (int) $vendor['subtotal_cents'],
+				'discount_cents' => (int) $vendor['discount_cents'],
+				'shipping_cents' => (int) $vendor['shipping_cents'],
+				'total_cents'    => (int) $vendor['total_cents'],
+				'items_json'     => wp_json_encode( $vendor['items'] ?? array() ),
+				'created_at'     => $now,
+			)
+		); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+		if ( false === $part_inserted ) {
+			throw new PapelitoReceiptPersistenceException( 'receipt_part_insert_failed' );
+		}
+	}
+}
+
+/**
+ * Traduz a falha da transacao em erro retentavel ou definitivo.
+ *
+ * @param string $last_error Ultimo erro reportado pelo $wpdb.
+ * @return WP_Error
+ */
+function papelito_receipt_persist_failure( string $last_error ): WP_Error {
+	$last = strtolower( $last_error );
+
+	if ( false !== strpos( $last, 'duplicate' ) || false !== strpos( $last, 'deadlock' ) || false !== strpos( $last, 'lock wait' ) ) {
+		return new WP_Error( 'papelito_receipt_retryable', 'Conflito de concorrencia ao emitir o recibo.', array( 'status' => 409 ) );
+	}
+
+	return new WP_Error( 'papelito_receipt_persist_failed', 'Nao foi possivel gravar o recibo.', array( 'status' => 500 ) );
+}
+
+/**
  * Transação única: confere, aloca sequencial, grava recibo e parcelas.
  *
  * @param array<string,mixed> $snapshot Snapshot imutável.
  * @return array<string,mixed>|WP_Error
  * @throws DomainException Quando outro processo já emitiu o recibo do pedido.
- * @throws RuntimeException Quando a gravação do recibo ou de uma parcela falha.
+ * @throws PapelitoReceiptPersistenceException Quando a gravação do recibo ou de uma parcela falha.
  */
 function papelito_receipt_persist( int $order_id, array $snapshot, string $origin ) {
 	global $wpdb;
@@ -520,70 +710,17 @@ function papelito_receipt_persist( int $order_id, array $snapshot, string $origi
 
 		$sequence = papelito_receipt_claim_sequence( $year );
 		$number   = papelito_receipt_format_number( $year, $sequence );
-		$company  = is_array( $snapshot['company'] ?? null ) ? $snapshot['company'] : null;
 
 		$inserted = $wpdb->insert(
 			$tables['receipts'],
-			array(
-				'receipt_number'       => $number,
-				'sequence_year'        => $year,
-				'sequence_number'      => $sequence,
-				'order_id'             => $order_id,
-				'customer_user_id'     => (int) ( $snapshot['buyer']['user_id'] ?? 0 ),
-				'buyer_label'          => (string) ( $snapshot['buyer']['label'] ?? '' ),
-				'company_id'           => $company ? (int) $company['id'] : null,
-				'company_cnpj'         => $company && '' !== (string) $company['cnpj'] ? (string) $company['cnpj'] : null,
-				'company_legal_name'   => $company ? (string) $company['legal_name'] : null,
-				'payment_method'       => (string) ( $snapshot['payment']['method'] ?? '' ),
-				'payment_method_title' => (string) ( $snapshot['payment']['method_title'] ?? '' ),
-				'payment_state'        => (string) ( $snapshot['payment']['state'] ?? '' ),
-				'order_status'         => (string) ( $snapshot['order']['status'] ?? '' ),
-				'currency'             => substr( (string) ( $snapshot['order']['currency'] ?? 'BRL' ), 0, 3 ),
-				'subtotal_cents'       => (int) $snapshot['totals']['subtotal_cents'],
-				'discount_cents'       => (int) $snapshot['totals']['discount_cents'],
-				'shipping_cents'       => (int) $snapshot['totals']['shipping_cents'],
-				'total_cents'          => (int) $snapshot['totals']['total_cents'],
-				'snapshot_json'        => wp_json_encode( $snapshot ),
-				'snapshot_version'     => (int) ( $snapshot['version'] ?? PAPELITO_RECEIPT_SNAPSHOT_VERSION ),
-				'origin'               => $origin,
-				'ordered_at'           => $snapshot['order']['ordered_at'] ?? null,
-				'paid_at'              => $snapshot['order']['paid_at'] ?? null,
-				'issued_at'            => $now,
-				'created_at'           => $now,
-				'updated_at'           => $now,
-			)
+			papelito_receipt_row_for_insert( $order_id, $snapshot, $origin, $number, $year, $sequence, $now )
 		); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
 		if ( false === $inserted ) {
-			throw new RuntimeException( 'receipt_insert_failed' );
+			throw new PapelitoReceiptPersistenceException( 'receipt_insert_failed' );
 		}
 
-		$receipt_id = (int) $wpdb->insert_id;
-		$ordinal    = 0;
-
-		foreach ( (array) ( $snapshot['vendors'] ?? array() ) as $vendor ) {
-			++$ordinal;
-			$part_inserted = $wpdb->insert(
-				$tables['vendor_parts'],
-				array(
-					'receipt_id'     => $receipt_id,
-					'vendor_id'      => (int) $vendor['vendor_id'],
-					'vendor_name'    => (string) $vendor['vendor_name'],
-					'part_ordinal'   => $ordinal,
-					'part_number'    => $number . '-' . $ordinal,
-					'subtotal_cents' => (int) $vendor['subtotal_cents'],
-					'discount_cents' => (int) $vendor['discount_cents'],
-					'shipping_cents' => (int) $vendor['shipping_cents'],
-					'total_cents'    => (int) $vendor['total_cents'],
-					'items_json'     => wp_json_encode( $vendor['items'] ?? array() ),
-					'created_at'     => $now,
-				)
-			); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-
-			if ( false === $part_inserted ) {
-				throw new RuntimeException( 'receipt_part_insert_failed' );
-			}
-		}
+		papelito_receipt_insert_vendor_parts( $tables, (int) $wpdb->insert_id, $snapshot, $number, $now );
 
 		$wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 	} catch ( DomainException $error ) {
@@ -592,13 +729,8 @@ function papelito_receipt_persist( int $order_id, array $snapshot, string $origi
 		return new WP_Error( 'papelito_receipt_retryable', 'Recibo ja emitido por outro processo.', array( 'status' => 409 ) );
 	} catch ( Throwable $error ) {
 		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-		$last = strtolower( (string) $wpdb->last_error );
 
-		if ( false !== strpos( $last, 'duplicate' ) || false !== strpos( $last, 'deadlock' ) || false !== strpos( $last, 'lock wait' ) ) {
-			return new WP_Error( 'papelito_receipt_retryable', 'Conflito de concorrencia ao emitir o recibo.', array( 'status' => 409 ) );
-		}
-
-		return new WP_Error( 'papelito_receipt_persist_failed', 'Nao foi possivel gravar o recibo.', array( 'status' => 500 ) );
+		return papelito_receipt_persist_failure( (string) $wpdb->last_error );
 	}
 
 	$receipt = papelito_receipt_get_by_order( $order_id );
@@ -611,6 +743,9 @@ function papelito_receipt_persist( int $order_id, array $snapshot, string $origi
  *
  * Não é listener de notificação: é regra do próprio domínio de recibo, por isso
  * vive aqui e não em notifications.php.
+ *
+ * @param mixed $order Pedido entregue pelo evento de dominio.
+ * @return void
  */
 function papelito_receipt_issue_on_payment_confirmed( $order ): void {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_id' ) ) {
@@ -624,6 +759,9 @@ add_action( 'papelito_order_payment_confirmed', 'papelito_receipt_issue_on_payme
 /**
  * Rede de segurança para pedidos que chegam a processing por outro caminho.
  * O gate de pagamento continua sendo papelito_receipt_issue_for_order().
+ *
+ * @param mixed $order_id Id do pedido entregue pelo hook do WooCommerce.
+ * @return void
  */
 function papelito_receipt_issue_on_processing( $order_id ): void {
 	papelito_receipt_issue_for_order( absint( $order_id ) );

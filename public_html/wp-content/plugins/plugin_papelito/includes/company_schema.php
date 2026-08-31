@@ -52,6 +52,10 @@ if ( ! defined( 'PAPELITO_COMPANY_PRE_ACCOUNT_APPLICATIONS_TABLE' ) ) {
 	define( 'PAPELITO_COMPANY_PRE_ACCOUNT_APPLICATIONS_TABLE', 'papelito_company_pre_account_applications' );
 }
 
+if ( ! defined( 'PAPELITO_COMPANY_CNPJ_COLUMN_TYPE' ) ) {
+	define( 'PAPELITO_COMPANY_CNPJ_COLUMN_TYPE', 'CHAR(14)' );
+}
+
 /**
  * Resolve os nomes completos (com prefixo) das tabelas do modelo B2B.
  *
@@ -75,17 +79,13 @@ function papelito_company_table_names(): array {
 }
 
 /**
- * Cria/atualiza as tabelas do modelo B2B via dbDelta.
+ * CREATE TABLE das tabelas de identidade, empresa e vinculo.
  *
- * Chamado pelo bootstrap de migration em plugin_papelito.php quando papelito_db_version for
- * inferior à versão atual. Idempotente (dbDelta é declarativo).
+ * @param array<string,string> $tables          Nomes de tabela ja prefixados.
+ * @param string               $charset_collate Sufixo de charset do $wpdb.
+ * @return array<int,string>
  */
-function papelito_company_install_tables(): void {
-	global $wpdb;
-
-	$tables          = papelito_company_table_names();
-	$charset_collate = $wpdb->get_charset_collate();
-
+function papelito_company_identity_schema_sql( array $tables, string $charset_collate ): array {
 	$profiles_sql = "CREATE TABLE {$tables['profiles']} (
   user_id BIGINT UNSIGNED NOT NULL,
   cpf_hmac CHAR(64) NOT NULL,
@@ -104,7 +104,7 @@ function papelito_company_install_tables(): void {
 
 	$companies_sql = "CREATE TABLE {$tables['companies']} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  cnpj CHAR(14) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  cnpj CHAR(14) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   legal_name VARCHAR(255) NOT NULL,
   trade_name VARCHAR(255) NULL DEFAULT NULL,
   billing_email VARCHAR(191) NOT NULL,
@@ -206,6 +206,17 @@ function papelito_company_install_tables(): void {
   KEY idx_email_status (invited_email, invitation_status)
 ) {$charset_collate};";
 
+	return array( $profiles_sql, $companies_sql, $members_sql, $invitations_sql );
+}
+
+/**
+ * CREATE TABLE das tabelas de operacao: auditoria, idempotencia, onboarding e log legado.
+ *
+ * @param array<string,string> $tables          Nomes de tabela ja prefixados.
+ * @param string               $charset_collate Sufixo de charset do $wpdb.
+ * @return array<int,string>
+ */
+function papelito_company_operations_schema_sql( array $tables, string $charset_collate ): array {
 	$audit_sql = "CREATE TABLE {$tables['audit']} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   company_id BIGINT UNSIGNED NOT NULL,
@@ -235,7 +246,7 @@ function papelito_company_install_tables(): void {
 	$onboarding_sql = "CREATE TABLE {$tables['onboarding']} (
   user_id BIGINT UNSIGNED NOT NULL,
   onboarding_type VARCHAR(32) NOT NULL,
-  target_cnpj CHAR(14) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL,
+  target_cnpj CHAR(14) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL DEFAULT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'pending_email',
   company_id BIGINT UNSIGNED NULL DEFAULT NULL,
   membership_id BIGINT UNSIGNED NULL DEFAULT NULL,
@@ -269,6 +280,17 @@ function papelito_company_install_tables(): void {
   KEY idx_campaign_status (campaign, status)
 ) {$charset_collate};";
 
+	return array( $audit_sql, $idempotency_sql, $onboarding_sql, $legacy_email_log_sql );
+}
+
+/**
+ * CREATE TABLE das tabelas de candidatura: dono de empresa e pre-conta.
+ *
+ * @param array<string,string> $tables          Nomes de tabela ja prefixados.
+ * @param string               $charset_collate Sufixo de charset do $wpdb.
+ * @return array<int,string>
+ */
+function papelito_company_applications_schema_sql( array $tables, string $charset_collate ): array {
 	$owner_applications_sql = "CREATE TABLE {$tables['owner_applications']} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   company_id BIGINT UNSIGNED NOT NULL,
@@ -312,7 +334,7 @@ function papelito_company_install_tables(): void {
   birth_date_ciphertext LONGTEXT NOT NULL,
   address_ciphertext LONGTEXT NOT NULL,
   password_hash VARCHAR(255) NULL DEFAULT NULL,
-  canonical_cnpj CHAR(14) CHARACTER SET ascii COLLATE ascii_bin NULL DEFAULT NULL,
+  canonical_cnpj CHAR(14) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL DEFAULT NULL,
   legal_name_ciphertext LONGTEXT NULL DEFAULT NULL,
   review_path VARCHAR(24) NULL DEFAULT NULL,
   application_status VARCHAR(32) NOT NULL DEFAULT 'draft',
@@ -346,17 +368,53 @@ function papelito_company_install_tables(): void {
   KEY idx_status_expires (application_status, expires_at)
 ) {$charset_collate};";
 
-	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-	dbDelta( $profiles_sql );
-	dbDelta( $companies_sql );
-	dbDelta( $members_sql );
-	dbDelta( $invitations_sql );
-	dbDelta( $audit_sql );
-	dbDelta( $idempotency_sql );
-	dbDelta( $onboarding_sql );
-	dbDelta( $legacy_email_log_sql );
-	dbDelta( $owner_applications_sql );
-	dbDelta( $pre_account_applications_sql );
+	return array( $owner_applications_sql, $pre_account_applications_sql );
+}
+
+/**
+ * Realinha as colunas de CNPJ canonico que ficaram fora do charset da tabela.
+ *
+ * @param array<string,string> $tables Nomes de tabela ja prefixados.
+ * @return void
+ */
+function papelito_company_align_cnpj_columns( array $tables ): void {
+	papelito_db_align_binary_columns(
+		$tables['companies'],
+		array(
+			'cnpj' => array(
+				'type'       => PAPELITO_COMPANY_CNPJ_COLUMN_TYPE,
+				'attributes' => 'NOT NULL',
+			),
+		)
+	);
+	papelito_db_align_binary_columns(
+		$tables['onboarding'],
+		array(
+			'target_cnpj' => array(
+				'type'       => PAPELITO_COMPANY_CNPJ_COLUMN_TYPE,
+				'attributes' => 'NULL DEFAULT NULL',
+			),
+		)
+	);
+	papelito_db_align_binary_columns(
+		$tables['pre_account_applications'],
+		array(
+			'canonical_cnpj' => array(
+				'type'       => PAPELITO_COMPANY_CNPJ_COLUMN_TYPE,
+				'attributes' => 'NULL DEFAULT NULL',
+			),
+		)
+	);
+}
+
+/**
+ * Revoga convites pendentes presos a CPF, aposentados pela politica atual.
+ *
+ * @param array<string,string> $tables Nomes de tabela ja prefixados.
+ * @return void
+ */
+function papelito_company_revoke_cpf_invitations( array $tables ): void {
+	global $wpdb;
 
 	// Convites pendentes que foram presos a CPF não podem ser aceitos sob a nova política.
 	// Mantemos o histórico e exigimos um novo convite, sem CPF, em vez de apagar dados.
@@ -369,4 +427,32 @@ function papelito_company_install_tables(): void {
 			'pending'
 		)
 	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+}
+
+/**
+ * Cria/atualiza as tabelas do modelo B2B via dbDelta.
+ *
+ * Chamado pelo bootstrap de migration em plugin_papelito.php quando papelito_db_version for
+ * inferior à versão atual. Idempotente (dbDelta é declarativo).
+ */
+function papelito_company_install_tables(): void {
+	global $wpdb;
+
+	$tables          = papelito_company_table_names();
+	$charset_collate = $wpdb->get_charset_collate();
+
+	$statements = array_merge(
+		papelito_company_identity_schema_sql( $tables, $charset_collate ),
+		papelito_company_operations_schema_sql( $tables, $charset_collate ),
+		papelito_company_applications_schema_sql( $tables, $charset_collate )
+	);
+
+	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+	foreach ( $statements as $statement ) {
+		dbDelta( $statement );
+	}
+
+	papelito_company_align_cnpj_columns( $tables );
+	papelito_company_revoke_cpf_invitations( $tables );
 }
