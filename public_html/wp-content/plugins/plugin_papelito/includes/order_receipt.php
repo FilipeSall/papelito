@@ -7,6 +7,10 @@
 
 defined( 'ABSPATH' ) || exit;
 
+const PAPELITO_RECEIPT_LABEL_AWAITING_CONFIRMATION = 'Aguardando confirmação';
+const PAPELITO_RECEIPT_LABEL_NOT_INFORMED          = 'Não informado';
+const PAPELITO_RECEIPT_LABEL_PROCESSING            = 'Em processamento';
+
 function papelito_receipt_order_for_current_user( int $order_id ) {
 	$order = papelito_vendor_dashboard_customer_order( $order_id, get_current_user_id() );
 
@@ -65,9 +69,9 @@ function papelito_receipt_payment_state_label( string $state ): string {
 		'paid'               => 'Pago',
 		'captured'           => 'Pago',
 		'authorized'         => 'Autorizado',
-		'pending'            => 'Aguardando confirmação',
-		'processing'         => 'Aguardando confirmação',
-		'waiting_payment'    => 'Aguardando confirmação',
+		'pending'            => PAPELITO_RECEIPT_LABEL_AWAITING_CONFIRMATION,
+		'processing'         => PAPELITO_RECEIPT_LABEL_AWAITING_CONFIRMATION,
+		'waiting_payment'    => PAPELITO_RECEIPT_LABEL_AWAITING_CONFIRMATION,
 		'refunded'           => 'Reembolsado',
 		'partially_refunded' => 'Reembolsado parcialmente',
 	);
@@ -80,7 +84,7 @@ function papelito_receipt_payment_state_label( string $state ): string {
 		return 'Não confirmado';
 	}
 
-	return '' === $state ? 'Não informado' : 'Em processamento';
+	return '' === $state ? PAPELITO_RECEIPT_LABEL_NOT_INFORMED : PAPELITO_RECEIPT_LABEL_PROCESSING;
 }
 
 /**
@@ -104,7 +108,7 @@ function papelito_receipt_order_status_label( object $order ): string {
 	$status    = method_exists( $order, 'get_status' ) ? sanitize_key( (string) $order->get_status() ) : '';
 	$wc_labels = array(
 		'pending'    => 'Aguardando pagamento',
-		'processing' => 'Em processamento',
+		'processing' => PAPELITO_RECEIPT_LABEL_PROCESSING,
 		'on-hold'    => 'Em espera',
 		'completed'  => 'Concluído',
 		'cancelled'  => 'Cancelado',
@@ -112,7 +116,7 @@ function papelito_receipt_order_status_label( object $order ): string {
 		'failed'     => 'Pagamento não concluído',
 	);
 
-	return $wc_labels[ $status ] ?? 'Em processamento';
+	return $wc_labels[ $status ] ?? PAPELITO_RECEIPT_LABEL_PROCESSING;
 }
 
 /**
@@ -170,29 +174,36 @@ function papelito_receipt_public_summary( object $order ): array {
 }
 
 /**
- * Blocos de itens por vendor: identificacao e totais vem das parcelas, os itens
- * vem do snapshot imutavel.
+ * Itens do snapshot agrupados por vendor.
  *
- * @param array<string,mixed>            $receipt Linha do recibo.
- * @param array<int,array<string,mixed>> $parts   Parcelas por vendor.
- * @return array<int,array{vendor_name:string,total_cents:int,items:array<int,array<string,mixed>>}>
+ * @param array<string,mixed> $snapshot Snapshot do recibo.
+ * @return array<int,array<int,array<string,mixed>>>
  */
-function papelito_receipt_pdf_vendor_blocks( array $receipt, array $parts ): array {
-	$snapshot = json_decode( (string) ( $receipt['snapshot_json'] ?? '' ), true );
-	$snapshot = is_array( $snapshot ) ? $snapshot : array();
-
+function papelito_receipt_pdf_items_by_vendor( array $snapshot ): array {
 	$items_by_vendor = array();
+
 	foreach ( (array) ( $snapshot['items'] ?? array() ) as $item ) {
 		if ( is_array( $item ) ) {
 			$items_by_vendor[ (int) ( $item['vendor_id'] ?? 0 ) ][] = $item;
 		}
 	}
 
+	return $items_by_vendor;
+}
+
+/**
+ * Blocos vindos das parcelas por vendor; o items_json da parcela e a reserva
+ * quando o snapshot nao tem itens daquele vendor.
+ *
+ * @param array<int,array<string,mixed>>            $parts           Parcelas por vendor.
+ * @param array<int,array<int,array<string,mixed>>> $items_by_vendor Itens agrupados.
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_receipt_pdf_blocks_from_parts( array $parts, array $items_by_vendor ): array {
 	$blocks = array();
 
 	foreach ( $parts as $part ) {
-		$vendor_id = (int) ( $part['vendor_id'] ?? 0 );
-		$items     = $items_by_vendor[ $vendor_id ] ?? null;
+		$items = $items_by_vendor[ (int) ( $part['vendor_id'] ?? 0 ) ] ?? null;
 
 		if ( null === $items ) {
 			$decoded = json_decode( (string) ( $part['items_json'] ?? '' ), true );
@@ -206,16 +217,47 @@ function papelito_receipt_pdf_vendor_blocks( array $receipt, array $parts ): arr
 		);
 	}
 
-	if ( empty( $blocks ) ) {
-		foreach ( (array) ( $snapshot['vendors'] ?? array() ) as $vendor ) {
-			if ( is_array( $vendor ) ) {
-				$blocks[] = array(
-					'vendor_name' => sanitize_text_field( (string) ( $vendor['vendor_name'] ?? '' ) ),
-					'total_cents' => (int) ( $vendor['total_cents'] ?? 0 ),
-					'items'       => is_array( $vendor['items'] ?? null ) ? $vendor['items'] : array(),
-				);
-			}
+	return $blocks;
+}
+
+/**
+ * Blocos reconstruidos do proprio snapshot, quando nao ha parcelas por vendor.
+ *
+ * @param array<string,mixed> $snapshot Snapshot do recibo.
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_receipt_pdf_blocks_from_snapshot( array $snapshot ): array {
+	$blocks = array();
+
+	foreach ( (array) ( $snapshot['vendors'] ?? array() ) as $vendor ) {
+		if ( is_array( $vendor ) ) {
+			$blocks[] = array(
+				'vendor_name' => sanitize_text_field( (string) ( $vendor['vendor_name'] ?? '' ) ),
+				'total_cents' => (int) ( $vendor['total_cents'] ?? 0 ),
+				'items'       => is_array( $vendor['items'] ?? null ) ? $vendor['items'] : array(),
+			);
 		}
+	}
+
+	return $blocks;
+}
+
+/**
+ * Blocos de itens por vendor: identificacao e totais vem das parcelas, os itens
+ * vem do snapshot imutavel.
+ *
+ * @param array<string,mixed>            $receipt Linha do recibo.
+ * @param array<int,array<string,mixed>> $parts   Parcelas por vendor.
+ * @return array<int,array{vendor_name:string,total_cents:int,items:array<int,array<string,mixed>>}>
+ */
+function papelito_receipt_pdf_vendor_blocks( array $receipt, array $parts ): array {
+	$snapshot = json_decode( (string) ( $receipt['snapshot_json'] ?? '' ), true );
+	$snapshot = is_array( $snapshot ) ? $snapshot : array();
+
+	$blocks = papelito_receipt_pdf_blocks_from_parts( $parts, papelito_receipt_pdf_items_by_vendor( $snapshot ) );
+
+	if ( empty( $blocks ) ) {
+		$blocks = papelito_receipt_pdf_blocks_from_snapshot( $snapshot );
 	}
 
 	if ( empty( $blocks ) ) {
@@ -267,6 +309,46 @@ function papelito_receipt_document_item( array $item ): array {
 }
 
 /**
+ * Blocos de vendor do documento, ja rotulados, com a marca de que alguma linha
+ * teve desconto.
+ *
+ * @param array<int,array<string,mixed>> $blocks Blocos crus por vendor.
+ * @return array{blocks:array<int,array<string,mixed>>,has_discount:bool}
+ */
+function papelito_receipt_document_vendor_blocks( array $blocks ): array {
+	$vendor_blocks = array();
+	$has_discount  = false;
+
+	foreach ( $blocks as $block ) {
+		$items = array();
+
+		foreach ( $block['items'] as $item ) {
+			if ( ! is_array( $item ) ) {
+				continue;
+			}
+
+			$line    = papelito_receipt_document_item( $item );
+			$items[] = $line;
+
+			if ( $line['discount_cents'] > 0 ) {
+				$has_discount = true;
+			}
+		}
+
+		$vendor_blocks[] = array(
+			'vendor_name' => '' !== $block['vendor_name'] ? sanitize_text_field( (string) $block['vendor_name'] ) : 'Papelito',
+			'total_cents' => (int) $block['total_cents'],
+			'items'       => $items,
+		);
+	}
+
+	return array(
+		'blocks'       => $vendor_blocks,
+		'has_discount' => $has_discount,
+	);
+}
+
+/**
  * Documento do recibo: tudo que o PDF imprime, ja rotulado e formatado.
  *
  * Os valores financeiros e os identificadores da compra saem do recibo
@@ -295,31 +377,9 @@ function papelito_receipt_document( object $order ) {
 	$buyer_label        = sanitize_text_field( (string) $receipt['buyer_label'] );
 	$company_legal_name = sanitize_text_field( (string) ( $receipt['company_legal_name'] ?? '' ) );
 
-	$vendor_blocks = array();
-	$has_discount  = (int) $receipt['discount_cents'] > 0;
-
-	foreach ( $blocks as $block ) {
-		$items = array();
-
-		foreach ( $block['items'] as $item ) {
-			if ( ! is_array( $item ) ) {
-				continue;
-			}
-
-			$line    = papelito_receipt_document_item( $item );
-			$items[] = $line;
-
-			if ( $line['discount_cents'] > 0 ) {
-				$has_discount = true;
-			}
-		}
-
-		$vendor_blocks[] = array(
-			'vendor_name' => '' !== $block['vendor_name'] ? sanitize_text_field( (string) $block['vendor_name'] ) : 'Papelito',
-			'total_cents' => (int) $block['total_cents'],
-			'items'       => $items,
-		);
-	}
+	$formatted     = papelito_receipt_document_vendor_blocks( $blocks );
+	$vendor_blocks = $formatted['blocks'];
+	$has_discount  = (int) $receipt['discount_cents'] > 0 || $formatted['has_discount'];
 
 	return array(
 		'receipt_number' => sanitize_text_field( (string) $receipt['receipt_number'] ),
@@ -327,14 +387,14 @@ function papelito_receipt_document( object $order ) {
 		'issued_at'      => papelito_receipt_datetime_label( $receipt['issued_at'] ?? '' ),
 		'generated_at'   => wp_date( 'd/m/Y H:i', time() ),
 		'buyer'          => array(
-			'label'      => '' !== $buyer_label ? $buyer_label : 'Não informado',
+			'label'      => '' !== $buyer_label ? $buyer_label : PAPELITO_RECEIPT_LABEL_NOT_INFORMED,
 			'legal_name' => $company_legal_name,
 			'cnpj'       => papelito_receipt_cnpj_label( (string) ( $receipt['company_cnpj'] ?? '' ) ),
 		),
 		'order'          => array(
 			'ordered_at'     => papelito_receipt_datetime_label( $receipt['ordered_at'] ?? '' ),
 			'paid_at'        => papelito_receipt_datetime_label( $receipt['paid_at'] ?? '' ),
-			'payment_method' => '' !== $method_title ? $method_title : 'Não informado',
+			'payment_method' => '' !== $method_title ? $method_title : PAPELITO_RECEIPT_LABEL_NOT_INFORMED,
 			'payment_state'  => papelito_receipt_payment_state_label( (string) $receipt['payment_state'] ),
 			'order_status'   => papelito_receipt_order_status_label( $order ),
 			'vendor'         => count( $vendor_blocks ) === 1 ? $vendor_blocks[0]['vendor_name'] : 'Vários vendors',
@@ -361,11 +421,23 @@ function papelito_receipt_document( object $order ) {
 function papelito_receipt_pdf_font_widths(): array {
 	static $widths = null;
 
-	if ( null !== $widths ) {
-		return $widths;
+	if ( null === $widths ) {
+		$widths = array(
+			'regular' => papelito_receipt_pdf_font_widths_regular(),
+			'bold'    => papelito_receipt_pdf_font_widths_bold(),
+		);
 	}
 
-	$regular = array_combine(
+	return $widths;
+}
+
+/**
+ * Larguras da Helvetica regular, em milesimos de em.
+ *
+ * @return array<string,int>
+ */
+function papelito_receipt_pdf_font_widths_regular(): array {
+	return array_combine(
 		str_split( ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~' ),
 		array(
 			278,
@@ -465,8 +537,15 @@ function papelito_receipt_pdf_font_widths(): array {
 			584,
 		)
 	);
+}
 
-	$bold = array_combine(
+/**
+ * Larguras da Helvetica bold, em milesimos de em.
+ *
+ * @return array<string,int>
+ */
+function papelito_receipt_pdf_font_widths_bold(): array {
+	return array_combine(
 		str_split( ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~' ),
 		array(
 			278,
@@ -566,13 +645,6 @@ function papelito_receipt_pdf_font_widths(): array {
 			584,
 		)
 	);
-
-	$widths = array(
-		'regular' => $regular,
-		'bold'    => $bold,
-	);
-
-	return $widths;
 }
 
 /**
@@ -637,6 +709,32 @@ function papelito_receipt_pdf_text_width( string $encoded, float $size, bool $bo
 }
 
 /**
+ * Fatia uma palavra larga demais para caber sozinha na linha.
+ *
+ * @return array{lines:array<int,string>,rest:string} Fatias cheias e o resto.
+ */
+function papelito_receipt_pdf_split_long_word( string $word, float $max_width, float $size, bool $bold ): array {
+	$lines       = array();
+	$word_length = strlen( $word );
+
+	while ( $word_length > 1 && papelito_receipt_pdf_text_width( $word, $size, $bold ) > $max_width ) {
+		$cut = $word_length;
+
+		while ( $cut > 1 && papelito_receipt_pdf_text_width( substr( $word, 0, $cut ), $size, $bold ) > $max_width ) {
+			--$cut;
+		}
+
+		$lines[] = substr( $word, 0, $cut );
+		$word    = (string) substr( $word, $cut );
+	}
+
+	return array(
+		'lines' => $lines,
+		'rest'  => $word,
+	);
+}
+
+/**
  * Quebra o texto na largura disponivel, preservando palavras e cortando
  * palavras longas demais para caber sozinhas.
  *
@@ -665,18 +763,9 @@ function papelito_receipt_pdf_wrap( string $text, float $max_width, float $size,
 			$current = '';
 		}
 
-		$word_length = strlen( $word );
-
-		while ( $word_length > 1 && papelito_receipt_pdf_text_width( $word, $size, $bold ) > $max_width ) {
-			$cut = $word_length;
-			while ( $cut > 1 && papelito_receipt_pdf_text_width( substr( $word, 0, $cut ), $size, $bold ) > $max_width ) {
-				--$cut;
-			}
-			$lines[] = substr( $word, 0, $cut );
-			$word    = (string) substr( $word, $cut );
-		}
-
-		$current = $word;
+		$split   = papelito_receipt_pdf_split_long_word( $word, $max_width, $size, $bold );
+		$lines   = array_merge( $lines, $split['lines'] );
+		$current = $split['rest'];
 	}
 
 	if ( '' !== $current ) {
@@ -1589,7 +1678,7 @@ function papelito_receipt_email_recipient( object $order ) {
 }
 
 function papelito_receipt_claim_email_attempt( int $order_id, int $user_id ) {
-	$key      = 'papelito_receipt_email_' . md5( $order_id . ':' . $user_id );
+	$key      = sprintf( 'papelito_receipt_email_%d_%d', $order_id, $user_id );
 	$now      = time();
 	$attempts = get_transient( $key );
 	$attempts = is_array( $attempts ) ? array_values( array_filter( $attempts, static fn( $timestamp ): bool => is_numeric( $timestamp ) && (int) $timestamp > $now - HOUR_IN_SECONDS ) ) : array();
@@ -1605,6 +1694,35 @@ function papelito_receipt_claim_email_attempt( int $order_id, int $user_id ) {
 }
 
 /**
+ * Nome do arquivo do recibo, igual no download e no anexo do e-mail.
+ *
+ * @param object $order Pedido do recibo.
+ */
+function papelito_receipt_filename( object $order ): string {
+	return 'recibo-pedido-' . absint( $order->get_id() ) . '.pdf';
+}
+
+/**
+ * Arquivo temporario com o recibo, para anexar no e-mail.
+ *
+ * O envio roda em requisicao REST, onde wp-admin/includes/file.php nao esta
+ * carregado e wp_tempnam() nao existe; por isso o temporario e escrito aqui.
+ *
+ * @param int    $order_id Identificador do pedido.
+ * @param string $pdf      Bytes do recibo ja renderizado.
+ * @return string|WP_Error Caminho do temporario, ou erro ao prepara-lo.
+ */
+function papelito_receipt_email_attachment_file( int $order_id, string $pdf ) {
+	$path = trailingslashit( get_temp_dir() ) . sprintf( 'recibo-pedido-%d-%s.pdf', $order_id, wp_generate_password( 12, false ) );
+
+	if ( file_exists( $path ) || strlen( $pdf ) !== file_put_contents( $path, $pdf, LOCK_EX ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+		return new WP_Error( 'papelito_receipt_email_attachment_failed', 'Nao foi possivel preparar o recibo.', array( 'status' => 500 ) );
+	}
+
+	return $path;
+}
+
+/**
  * Resposta de download do recibo, com os headers de arquivo privado.
  *
  * @return WP_REST_Response|WP_Error
@@ -1616,7 +1734,7 @@ function papelito_receipt_download_response( object $order ) {
 		return $pdf;
 	}
 
-	$filename = 'recibo-pedido-' . absint( $order->get_id() ) . '.pdf';
+	$filename = papelito_receipt_filename( $order );
 	$response = new WP_REST_Response( $pdf, 200 );
 	$response->header( 'Content-Type', 'application/pdf' );
 	$response->header( 'Content-Disposition', 'attachment; filename="' . $filename . '"' );
@@ -1643,9 +1761,9 @@ function papelito_receipt_send_email( object $order ) {
 		return $rate_limit;
 	}
 
-	$temp_file = wp_tempnam( 'papelito-receipt-' . absint( $order->get_id() ) );
-	if ( ! is_string( $temp_file ) || '' === $temp_file || false === file_put_contents( $temp_file, $pdf, LOCK_EX ) ) { // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-		return new WP_Error( 'papelito_receipt_email_attachment_failed', 'Nao foi possivel preparar o recibo.', array( 'status' => 500 ) );
+	$temp_file = papelito_receipt_email_attachment_file( (int) $order->get_id(), $pdf );
+	if ( is_wp_error( $temp_file ) ) {
+		return $temp_file;
 	}
 
 	$sent = wp_mail(
@@ -1653,7 +1771,7 @@ function papelito_receipt_send_email( object $order ) {
 		sprintf( 'Recibo do pedido #%s', sanitize_text_field( (string) $order->get_order_number() ) ),
 		"Ola,\n\nSegue em anexo o recibo do seu pedido.\n",
 		array( 'Content-Type: text/plain; charset=UTF-8' ),
-		array( $temp_file )
+		array( papelito_receipt_filename( $order ) => $temp_file )
 	);
 	wp_delete_file( $temp_file );
 

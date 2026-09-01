@@ -4,7 +4,7 @@
 
 **Não existe harness PHPUnit no `plugin_papelito`.** Não há `phpunit.xml`, nem `require-dev`, nem `bin/install-wp-tests.sh`, nem PSR-4 de teste. Quem procurar por isso não vai achar.
 
-O que existe: **69 scripts PHP standalone** em `public_html/wp-content/plugins/plugin_papelito/tests/`, mais um na raiz do repositório (`tests/test-company-purchase-gate.php`). Cada script:
+O que existe: **109 scripts PHP standalone** em `public_html/wp-content/plugins/plugin_papelito/tests/`, mais um na raiz do repositório (`tests/test-company-purchase-gate.php`). Cada script:
 
 - declara `ABSPATH` por conta própria;
 - stuba inline as funções do WordPress que o código sob teste chama (`add_filter`, `register_rest_route`, `get_user_meta`, ...);
@@ -32,7 +32,7 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Legados | `test-legacy-migration.php` |
 | Pagamento | `test-pagarme-*.php`, incluindo `test-pagarme-simulator.php` |
 | Correios | `test-correios-prepostage.php`, `test-correios-idempotency.php`, `test-correios-reconciliation.php`, `test-correios-tracking-map.php` |
-| Pedido | `test-order-receipt-pdf.php`, `test-receipts-snapshot.php`, `test-receipts-backfill.php` |
+| Pedido | `test-order-receipt-pdf.php`, `test-receipts-snapshot.php`, `test-receipts-backfill.php`, `test-receipt-email-attachment.php` (**estrutural**: o envio do recibo roda em REST e não pode chamar função que só existe em `wp-admin/includes/file.php`) |
 | Analytics | `test-analytics-ga4.php` (validação estrita dos ids do navegador, payload do Measurement Protocol, idempotência do webhook reemitido) |
 | Documento fiscal | `test-fiscal-documents.php`, `test-fiscal-xml.php` (exige SimpleXML) |
 | Administração | `test-admin-activate-email.php` |
