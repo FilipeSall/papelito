@@ -690,12 +690,23 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 			}
 		}
 
+		// O frete grátis abate a modalidade escolhida: o item de frete guarda o valor
+		// efetivamente cobrado, e o preço cheio fica no meta para auditoria e recibo.
+		$shipping_price_cents    = papelito_pricing_to_cents( (float) ( $shipping['price'] ?? 0 ) );
+		$shipping_discount_cents = min(
+			$shipping_price_cents,
+			max( 0, papelito_pricing_to_cents( (float) ( $shipping['discount'] ?? 0 ) ) )
+		);
+		$shipping_charged_cents  = $shipping_price_cents - $shipping_discount_cents;
+
 		$shipping_item_class = 'WC_Order_Item_Shipping';
 		$shipping_item       = new $shipping_item_class();
 		$shipping_item->set_method_id( 'papelito_correios_' . strtolower( sanitize_key( (string) ( $shipping['service'] ?? 'shipping' ) ) ) );
 		$shipping_item->set_method_title( sanitize_text_field( (string) ( $shipping['name'] ?? $shipping['service'] ?? 'Correios' ) ) );
-		$shipping_item->set_total( (float) ( $shipping['price'] ?? 0 ) );
+		$shipping_item->set_total( papelito_pricing_from_cents( $shipping_charged_cents ) );
 		$shipping_item->add_meta_data( '_papelito_shipping_service_code', sanitize_text_field( (string) ( $shipping['code'] ?? '' ) ), true );
+		$shipping_item->add_meta_data( '_papelito_shipping_price_cents', $shipping_price_cents, true );
+		$shipping_item->add_meta_data( '_papelito_shipping_discount_cents', $shipping_discount_cents, true );
 		$order->add_item( $shipping_item );
 
 		if ( null !== $coupon ) {
@@ -707,6 +718,8 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 		$order->update_meta_data( '_papelito_shipping_service_code', sanitize_text_field( (string) ( $shipping['code'] ?? '' ) ) );
 		$order->update_meta_data( '_papelito_shipping_service_name', sanitize_text_field( (string) ( $shipping['name'] ?? $shipping['service'] ?? '' ) ) );
 		$order->update_meta_data( '_papelito_shipping_delivery_time', absint( $shipping['delivery_time'] ?? 0 ) );
+		$order->update_meta_data( '_papelito_shipping_price_cents', $shipping_price_cents );
+		$order->update_meta_data( '_papelito_shipping_discount_cents', $shipping_discount_cents );
 		// WooCommerce nao possui campo nativo de bairro; preserve o snapshot para expedicao.
 		$order->update_meta_data( '_papelito_shipping_neighborhood', sanitize_text_field( (string) ( $address['neighborhood'] ?? '' ) ) );
 		$order->update_meta_data( '_papelito_stock_decremented', '0' );
@@ -719,7 +732,7 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 			$order->update_meta_data( PAPELITO_CHECKOUT_ATTEMPT_HASH_META, $request_hash );
 		}
 
-		$authoritative_total_cents = papelito_pricing_to_cents( (float) ( $shipping['price'] ?? 0 ) );
+		$authoritative_total_cents = $shipping_charged_cents;
 		foreach ( $lines as $line ) {
 			$authoritative_total_cents += max( 0, (int) ( $line['total_cents'] ?? 0 ) );
 		}
@@ -1087,8 +1100,13 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		return $pricing;
 	}
 
-	$lines   = (array) $pricing['lines'];
-	$coupon  = isset( $pricing['coupon_data'] ) && is_array( $pricing['coupon_data'] ) ? $pricing['coupon_data'] : null;
+	$lines  = (array) $pricing['lines'];
+	$coupon = isset( $pricing['coupon_data'] ) && is_array( $pricing['coupon_data'] ) ? $pricing['coupon_data'] : null;
+
+	$shipping['discount'] = papelito_pricing_from_cents(
+		max( 0, (int) ( $pricing['totals']['shippingDiscountCents'] ?? 0 ) )
+	);
+
 	$payment = papelito_order_routing_normalize_payment( $payload['payment'] ?? null, $address );
 	if ( is_wp_error( $payment ) ) {
 		return $payment;

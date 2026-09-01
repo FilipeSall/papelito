@@ -233,6 +233,22 @@ papelito_assert( 'discounted line remains positive', 2, $payload_items[0]['amoun
 papelito_assert( 'zero-value lines are omitted', array(), array_values( array_filter( $payload_items, static fn( array $item ): bool => (int) $item['amount'] <= 0 ) ) );
 papelito_assert( 'payload sum remains exact', 3, papelito_pagarme_items_total_cents( $payload_items ) );
 
+echo "Scenario 10: free shipping never reaches Pagar.me as a charged item\n";
+$free_shipping_items = papelito_pagarme_order_items_payload(
+	array(
+		array(
+			'product'     => $product,
+			'product_id'  => 11776,
+			'qty'         => 1,
+			'total'       => 121.0,
+			'total_cents' => 12100,
+		),
+	),
+	array( 'price' => 16.27, 'discount' => 16.27 )
+);
+papelito_assert( 'fully discounted shipping is omitted', 1, count( $free_shipping_items ) );
+papelito_assert( 'payment payload charges only the products', 12100, papelito_pagarme_items_total_cents( $free_shipping_items ) );
+
 echo "\n";
 if ( $failures > 0 ) {
 	echo "RESULT: {$failures} assertion(s) FAILED\n";

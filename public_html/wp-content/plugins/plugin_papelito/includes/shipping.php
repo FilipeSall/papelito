@@ -43,7 +43,6 @@ function papelito_shipping_get_free_shipping_minimum_cents(): int {
 		?? PAPELITO_SHIPPING_DEFAULT_FREE_SHIPPING_MINIMUM_CENTS;
 }
 
-// TODO(frete-gratis): definir estratégia de concessão do benefício após atingir o valor mínimo configurado. Avaliar geração automática de cupom versus fluxo manual via admin/vendor.
 function papelito_shipping_get_free_shipping_threshold_snapshot(): array {
 	return array(
 		'minimumOrderCents' => papelito_shipping_get_free_shipping_minimum_cents(),

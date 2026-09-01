@@ -153,6 +153,49 @@ function papelito_cnpj_dev_fixtures(): array {
 				),
 			),
 		),
+
+		// Cenario 3 - QSA completo com endereco fiscal em Brasilia (SIA, Zona Industrial). Digite
+		// CPF 111.444.777-35, nascimento 1975-05-22 e nome "Marcos Stub de Oliveira" para cair em
+		// review_path = qsa_review com CEP do DF.
+		'99999003000148' => array(
+			'cnpj'                         => '99999003000148',
+			'razao_social'                 => 'CERRADO PAPEIS E SUPRIMENTOS LTDA',
+			'nome_fantasia'                => 'CERRADO PAPEIS',
+			'descricao_situacao_cadastral' => 'ATIVA',
+			'data_situacao_cadastral'      => '2012-08-14',
+			'codigo_natureza_juridica'     => '2062',
+			'natureza_juridica'            => 'Sociedade Empresaria Limitada',
+			'porte'                        => 'DEMAIS',
+			'opcao_pelo_mei'               => false,
+			'opcao_pelo_simples'           => false,
+			'data_inicio_atividade'        => '2012-08-14',
+			'cnae_fiscal'                  => 4647801,
+			'cnae_fiscal_descricao'        => 'Comercio atacadista de artigos de escritorio e de papelaria',
+			'cep'                          => '71200030',
+			'uf'                           => 'DF',
+			'municipio'                    => 'BRASILIA',
+			'bairro'                       => 'ZONA INDUSTRIAL',
+			'logradouro'                   => 'SIA TRECHO 3',
+			'numero'                       => '625',
+			'complemento'                  => 'GALPAO 2',
+			'ddd_telefone_1'               => '6140028922',
+			'email'                        => 'contato@cerradopapeis.fixture.test',
+			'capital_social'               => 400000,
+			'qsa'                          => array(
+				array(
+					'nome_socio'             => 'MARCOS STUB DE OLIVEIRA',
+					'cnpj_cpf_do_socio'      => '***444777**',
+					'qualificacao_socio'     => '49-Socio-Administrador',
+					// Nascimento 1975-05-22: faixa 6 (51 a 60 anos). Vira 7 em 22/05/2036.
+					'codigo_faixa_etaria'    => 6,
+					'faixa_etaria'           => 'entre 51 a 60 anos',
+					'data_entrada_sociedade' => '2012-08-14',
+					'identificador_de_socio' => 2,
+					'pais'                   => null,
+					'codigo_pais'            => null,
+				),
+			),
+		),
 	);
 }
 

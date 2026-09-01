@@ -405,41 +405,104 @@ function papelito_pricing_apply_discounts( array $resolved, string $coupon_code,
 		);
 	}
 
+	$shipping_cents          = max( 0, $shipping_cents );
+	$is_free_shipping_coupon = is_array( $coupon ) && ! empty( $coupon['free_shipping'] );
+	$shipping_discount_cents = 0;
+	$free_shipping_message   = '';
+	$minimum_cents           = papelito_pricing_free_shipping_minimum_cents();
+
+	// O mínimo configurado concede o benefício automaticamente assim que existe
+	// uma modalidade válida. O cupom de frete grátis continua compatível, mas não
+	// é necessário para que um pedido elegível tenha o frete integralmente abatido.
+	if (
+		$minimum_cents > 0 &&
+		$subtotal_cents >= $minimum_cents &&
+		$shipping_cents > 0
+	) {
+		$shipping_discount_cents = $shipping_cents;
+	}
+
+	if ( $is_free_shipping_coupon ) {
+		if ( $subtotal_cents < $minimum_cents ) {
+			$free_shipping_message = sprintf(
+				'O frete grátis exige um subtotal mínimo de %s.',
+				papelito_pricing_money_label( $minimum_cents )
+			);
+		} elseif ( $shipping_cents <= 0 ) {
+			$free_shipping_message = 'Escolha uma modalidade de entrega para o frete grátis ser aplicado.';
+		} else {
+			$shipping_discount_cents = $shipping_cents;
+		}
+
+		if ( '' !== $free_shipping_message ) {
+			$adjustments[] = array(
+				'type'    => 'free_shipping_not_applied',
+				'code'    => (string) $coupon['code'],
+				'message' => $free_shipping_message,
+			);
+		}
+	}
+
 	$coupon_response = null;
 	if ( is_array( $coupon ) ) {
+		$coupon_applied  = $effective_coupon_cents > 0 || $shipping_discount_cents > 0;
 		$coupon_response = array(
 			'code'               => (string) $coupon['code'],
 			'discountType'       => (string) $coupon['discount_type'],
 			'discountValueCents' => $effective_coupon_cents,
+			'freeShipping'       => $is_free_shipping_coupon,
 			'appliedProductIds'  => array_map( 'intval', (array) $coupon['applied_product_ids'] ),
-			'applied'            => $effective_coupon_cents > 0,
+			'applied'            => $coupon_applied,
 		);
-		if ( 0 === $effective_coupon_cents ) {
+		if ( $is_free_shipping_coupon ) {
+			if ( '' !== $free_shipping_message ) {
+				$coupon_response['message'] = $free_shipping_message;
+			}
+		} elseif ( 0 === $effective_coupon_cents ) {
 			$coupon_response['message'] = 'A oferta relâmpago já concede um desconto maior; o cupom não reduziu o total.';
 			$adjustments[] = array( 'type' => 'coupon_no_additional_discount', 'message' => $coupon_response['message'] );
 		}
 		$coupon['discount_value'] = papelito_pricing_from_cents( $effective_coupon_cents );
 	}
 
-	$shipping_cents = max( 0, $shipping_cents );
-	$total_cents    = $items_total_cents + $shipping_cents;
+	$total_cents = $items_total_cents + $shipping_cents - $shipping_discount_cents;
 
 	return array(
 		'vendor_id'   => (int) ( $resolved['vendor_id'] ?? 0 ),
 		'vendor_name' => (string) ( $resolved['vendor_name'] ?? '' ),
 		'lines'       => $priced_lines,
-		'coupon_data' => $effective_coupon_cents > 0 ? $coupon : null,
+		'coupon_data' => ( $effective_coupon_cents > 0 || $shipping_discount_cents > 0 ) ? $coupon : null,
 		'coupon'      => $coupon_response,
 		'adjustments' => $adjustments,
 		'totals'      => array(
-			'subtotalCents' => $subtotal_cents,
-			'discountCents' => $discount_cents,
-			'itemsCents'    => $items_total_cents,
-			'shippingCents' => $shipping_cents,
-			'totalCents'    => $total_cents,
+			'subtotalCents'         => $subtotal_cents,
+			'discountCents'         => $discount_cents,
+			'itemsCents'            => $items_total_cents,
+			'shippingCents'         => $shipping_cents,
+			'shippingDiscountCents' => $shipping_discount_cents,
+			'totalCents'            => $total_cents,
 		),
 		'paymentRestrictions' => papelito_pricing_payment_restrictions( $total_cents ),
 	);
+}
+
+/**
+ * Subtotal mínimo, em centavos, para o frete grátis automático valer. Mesma
+ * configuração administrativa que alimenta a mensagem de elegibilidade.
+ */
+function papelito_pricing_free_shipping_minimum_cents(): int {
+	return function_exists( 'papelito_shipping_get_free_shipping_minimum_cents' )
+		? max( 0, (int) papelito_shipping_get_free_shipping_minimum_cents() )
+		: 0;
+}
+
+/**
+ * Valor em reais para mensagem ao comprador.
+ *
+ * @param int $cents Valor em centavos.
+ */
+function papelito_pricing_money_label( int $cents ): string {
+	return 'R$ ' . number_format( $cents / 100, 2, ',', '.' );
 }
 
 /**

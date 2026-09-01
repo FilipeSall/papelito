@@ -162,12 +162,67 @@ function assert_receipt_pdf_true( string $label, bool $condition ): void {
 }
 
 /**
- * Achata as linhas do PDF em texto, para assercao de conteudo.
+ * Achata o documento do recibo em texto, para assercao de conteudo.
  *
- * @param array<int,array<string,mixed>> $lines Linhas do PDF.
+ * @param array<string,mixed> $doc Documento do recibo.
  */
-function receipt_lines_text( array $lines ): string {
-	return implode( "\n", array_column( $lines, 'text' ) );
+function receipt_document_text( array $doc ): string {
+	$parts = array(
+		$doc['receipt_number'],
+		'#' . $doc['order_number'],
+		$doc['issued_at'],
+		$doc['buyer']['label'],
+		$doc['buyer']['legal_name'],
+		$doc['buyer']['cnpj'],
+	);
+
+	foreach ( $doc['order'] as $value ) {
+		$parts[] = (string) $value;
+	}
+
+	foreach ( $doc['blocks'] as $block ) {
+		$parts[] = 'Vendor: ' . $block['vendor_name'];
+		$parts[] = 'Total do vendor: ' . papelito_receipt_money_cents( $block['total_cents'] );
+
+		foreach ( $block['items'] as $item ) {
+			$parts[] = sprintf(
+				'%dx %s | unit %s | desc %s | total %s',
+				$item['quantity'],
+				$item['name'],
+				papelito_receipt_money_cents( $item['unit_price_cents'] ),
+				papelito_receipt_money_cents( $item['discount_cents'] ),
+				papelito_receipt_money_cents( $item['total_cents'] )
+			);
+		}
+	}
+
+	foreach ( $doc['totals'] as $key => $cents ) {
+		$parts[] = $key . ': ' . papelito_receipt_money_cents( (int) $cents );
+	}
+
+	return implode( "\n", $parts );
+}
+
+/**
+ * Texto extraido do PDF renderizado, ou null quando o pdftotext nao esta disponivel.
+ */
+function receipt_pdf_text( string $pdf ): ?string {
+	$pdf_file  = tempnam( sys_get_temp_dir(), 'papelito-receipt-' );
+	$text_file = tempnam( sys_get_temp_dir(), 'papelito-receipt-text-' );
+
+	if ( false === $pdf_file || false === $text_file || false === file_put_contents( $pdf_file, $pdf ) ) {
+		return null;
+	}
+
+	$output    = array();
+	$exit_code = 0;
+	exec( 'pdftotext -enc UTF-8 -layout ' . escapeshellarg( $pdf_file ) . ' ' . escapeshellarg( $text_file ) . ' 2>/dev/null', $output, $exit_code );
+	$text = ( 0 === $exit_code && is_file( $text_file ) ) ? file_get_contents( $text_file ) : false;
+
+	unlink( $pdf_file );
+	unlink( $text_file );
+
+	return is_string( $text ) ? $text : null;
 }
 
 $receipt_store[4242] = receipt_fixture( 4242, 'PPL-2026-000482' );
@@ -181,57 +236,60 @@ $vendor_parts[4242]  = array(
 );
 
 $paid_order = new ReceiptTestOrder();
-$lines      = papelito_receipt_pdf_lines( $paid_order );
+$document   = papelito_receipt_document( $paid_order );
 
-assert_receipt_pdf_true( 'linhas do recibo persistido sao geradas', is_array( $lines ) );
+assert_receipt_pdf_true( 'documento do recibo persistido e gerado', is_array( $document ) );
 
-$text = receipt_lines_text( $lines );
+$text = receipt_document_text( $document );
 foreach ( array(
-	'Recibo PPL-2026-000482',
-	'Pedido #4242',
-	'Data da compra: 01/07/2026 12:00',
-	'Data do pagamento: 03/07/2026 09:30',
-	'Comprador: Papelaria São José LTDA',
-	'CNPJ: 12.345.678/0001-90',
+	'PPL-2026-000482',
+	'#4242',
+	'01/07/2026 12:00',
+	'03/07/2026 09:30',
+	'Papelaria São José LTDA',
+	'12.345.678/0001-90',
 	'Vendor: Açúcar & Cia',
-	'Pagamento: Cartão de crédito',
-	'Situação do pagamento: Pago',
-	'Situação do pedido: Em separação',
-	'2x Caderno 10 matérias — R$ 45,00',
-	'Subtotal: R$ 51,00',
-	'Descontos: -R$ 6,00',
-	'Frete: R$ 9,90',
-	'Total pago: R$ 54,90',
-	'Emitido por Papelito',
+	'Cartão de crédito',
+	'Pago',
+	'Em separação',
+	'2x Caderno 10 matérias | unit R$ 25,50 | desc R$ 6,00 | total R$ 45,00',
+	'subtotal_cents: R$ 51,00',
+	'discount_cents: R$ 6,00',
+	'shipping_cents: R$ 9,90',
+	'total_cents: R$ 54,90',
 ) as $expected_line ) {
-	assert_receipt_pdf_true( "linha presente: {$expected_line}", false !== strpos( $text, $expected_line ) );
+	assert_receipt_pdf_true( "conteudo presente: {$expected_line}", false !== strpos( $text, $expected_line ) );
 }
 
-$footer = (string) end( $lines )['text'];
+assert_receipt_pdf( 'emissao do recibo vem da linha persistida', '03/07/2026 09:31', $document['issued_at'] );
 assert_receipt_pdf_true(
-	'rodape com numero do recibo e data de geracao',
-	1 === preg_match( '#^Recibo PPL-2026-000482 · PDF gerado em \d{2}/\d{2}/\d{4} \d{2}:\d{2}$#u', $footer )
+	'data de geracao do PDF acompanha o relogio',
+	1 === preg_match( '#^\d{2}/\d{2}/\d{4} \d{2}:\d{2}$#', $document['generated_at'] )
 );
+assert_receipt_pdf( 'desconto de item liga a coluna de desconto', true, $document['has_discount'] );
 
-// O PDF le o snapshot: mutar o pedido ao vivo nao muda valor, item nem comprador.
-$before = array_slice( papelito_receipt_pdf_lines( $paid_order ), 0, -1 );
+// O documento le o snapshot: mutar o pedido ao vivo nao muda valor, item nem comprador.
+$before = papelito_receipt_document( $paid_order );
+unset( $before['generated_at'], $before['order']['order_status'] );
 $paid_order->set_meta( '_papelito_vendor_name', 'Vendor Trocado' );
 $paid_order->set_meta( '_papelito_company_cnpj', '99999999999999' );
 $paid_order->set_meta( '_papelito_company_legal_name', 'Empresa Trocada' );
-$after = array_slice( papelito_receipt_pdf_lines( $paid_order ), 0, -1 );
-assert_receipt_pdf( 'mutacao do pedido nao altera o conteudo financeiro do PDF', $before, $after );
+$after = papelito_receipt_document( $paid_order );
+unset( $after['generated_at'], $after['order']['order_status'] );
+assert_receipt_pdf( 'mutacao do pedido nao altera o conteudo financeiro do documento', $before, $after );
 
 // A situacao do pedido e informativa e acompanha o pedido ao vivo.
 $paid_order->set_meta( '_papelito_vendor_status', 'entregue' );
-$live = receipt_lines_text( papelito_receipt_pdf_lines( $paid_order ) );
-assert_receipt_pdf_true( 'situacao do pedido acompanha o pedido ao vivo', false !== strpos( $live, 'Situação do pedido: Entregue' ) );
-assert_receipt_pdf_true( 'situacao do pagamento continua vindo do recibo', false !== strpos( $live, 'Situação do pagamento: Pago' ) );
+$live = papelito_receipt_document( $paid_order );
+assert_receipt_pdf( 'situacao do pedido acompanha o pedido ao vivo', 'Entregue', $live['order']['order_status'] );
+assert_receipt_pdf( 'situacao do pagamento continua vindo do recibo', 'Pago', $live['order']['payment_state'] );
 $paid_order->set_meta( '_papelito_vendor_status', 'em_separacao' );
 
-// Multivendor: uma parcela por vendor, com total proprio.
+// Multivendor: uma parcela por vendor, com total proprio. O valor unitario e
+// derivado quando o snapshot antigo nao o traz.
 $multi_items         = array(
 	array( 'name' => 'Papel A4', 'quantity' => 1, 'total_cents' => 30000, 'vendor_id' => 1, 'vendor_name' => 'Vendor A' ),
-	array( 'name' => 'Caneta', 'quantity' => 1, 'total_cents' => 25000, 'vendor_id' => 2, 'vendor_name' => 'Vendor B' ),
+	array( 'name' => 'Caneta', 'quantity' => 2, 'total_cents' => 25000, 'vendor_id' => 2, 'vendor_name' => 'Vendor B' ),
 );
 $receipt_store[7777] = receipt_fixture(
 	7777,
@@ -244,15 +302,26 @@ $vendor_parts[7777]  = array(
 	array( 'vendor_id' => 2, 'vendor_name' => 'Vendor B', 'total_cents' => 25455, 'items_json' => wp_json_encode( array() ) ),
 );
 
-$multi_text = receipt_lines_text( papelito_receipt_pdf_lines( new ReceiptTestOrder( 7777 ) ) );
-foreach ( array( 'Vendor: Vendor A', 'Vendor: Vendor B', '1x Papel A4 — R$ 300,00', '1x Caneta — R$ 250,00', 'Total do vendor: R$ 305,46', 'Total do vendor: R$ 254,55', 'Total pago: R$ 560,01' ) as $expected_line ) {
+$multi_document = papelito_receipt_document( new ReceiptTestOrder( 7777 ) );
+$multi_text     = receipt_document_text( $multi_document );
+assert_receipt_pdf( 'multivendor e sinalizado no documento', true, $multi_document['multivendor'] );
+assert_receipt_pdf( 'multivendor nao aponta um unico vendor', 'Vários vendors', $multi_document['order']['vendor'] );
+foreach ( array(
+	'Vendor: Vendor A',
+	'Vendor: Vendor B',
+	'1x Papel A4 | unit R$ 300,00 | desc R$ 0,00 | total R$ 300,00',
+	'2x Caneta | unit R$ 125,00 | desc R$ 0,00 | total R$ 250,00',
+	'Total do vendor: R$ 305,46',
+	'Total do vendor: R$ 254,55',
+	'total_cents: R$ 560,01',
+) as $expected_line ) {
 	assert_receipt_pdf_true( "multivendor: {$expected_line}", false !== strpos( $multi_text, $expected_line ) );
 }
 
 // Pedido pago sem recibo: emite de forma idempotente e segue.
-$fallback = papelito_receipt_pdf_lines( new ReceiptTestOrder( 5555 ) );
+$fallback = papelito_receipt_document( new ReceiptTestOrder( 5555 ) );
 assert_receipt_pdf_true( 'pedido sem recibo dispara emissao idempotente', in_array( 5555, $issued_orders, true ) );
-assert_receipt_pdf_true( 'pedido sem recibo gera o PDF apos a emissao', is_array( $fallback ) && false !== strpos( receipt_lines_text( $fallback ), 'Recibo PPL-2026-000900' ) );
+assert_receipt_pdf( 'pedido sem recibo gera o documento apos a emissao', 'PPL-2026-000900', is_array( $fallback ) ? $fallback['receipt_number'] : null );
 
 // Recibo impossivel: erro controlado, nunca fatal.
 $unavailable = papelito_receipt_pdf( new ReceiptTestOrder( 6666 ) );
@@ -266,9 +335,10 @@ $receipt_store[8888]['company_cnpj']       = null;
 $receipt_store[8888]['company_legal_name'] = null;
 $receipt_store[8888]['buyer_label']        = 'Maria de Souza';
 $vendor_parts[8888]                        = $vendor_parts[4242];
-$individual                                = receipt_lines_text( papelito_receipt_pdf_lines( new ReceiptTestOrder( 8888 ) ) );
-assert_receipt_pdf_true( 'compra individual nao exibe CNPJ', false === strpos( $individual, 'CNPJ:' ) );
-assert_receipt_pdf_true( 'compra individual exibe o comprador', false !== strpos( $individual, 'Comprador: Maria de Souza' ) );
+$individual                                = papelito_receipt_document( new ReceiptTestOrder( 8888 ) );
+assert_receipt_pdf( 'compra individual nao exibe CNPJ', '', $individual['buyer']['cnpj'] );
+assert_receipt_pdf( 'compra individual nao inventa razao social', '', $individual['buyer']['legal_name'] );
+assert_receipt_pdf( 'compra individual exibe o comprador', 'Maria de Souza', $individual['buyer']['label'] );
 
 // Resumo para o payload de detalhe do pedido: informa, nao emite.
 $summary = papelito_receipt_public_summary( $paid_order );
@@ -288,7 +358,7 @@ $unpaid_summary       = papelito_receipt_public_summary( new ReceiptTestOrder( 5
 assert_receipt_pdf( 'pedido nao pago nao libera download', false, $unpaid_summary['available'] );
 assert_receipt_pdf( 'pedido nao pago nao tem numero', null, $unpaid_summary['number'] );
 
-// PDF binario valido, com acentuacao preservada.
+// PDF binario valido, em A4, com acentuacao preservada.
 $pdf = papelito_receipt_pdf( $paid_order );
 
 if ( ! is_string( $pdf ) || 0 !== strpos( $pdf, '%PDF-1.4' ) || false === strpos( $pdf, '%%EOF' ) ) {
@@ -296,25 +366,67 @@ if ( ! is_string( $pdf ) || 0 !== strpos( $pdf, '%PDF-1.4' ) || false === strpos
 	exit( 1 );
 }
 
-$pdf_file  = tempnam( sys_get_temp_dir(), 'papelito-receipt-' );
-$text_file = tempnam( sys_get_temp_dir(), 'papelito-receipt-text-' );
+assert_receipt_pdf_true( 'paginas em A4', false !== strpos( $pdf, '/MediaBox [0 0 595 842]' ) );
 
-if ( false === $pdf_file || false === $text_file || false === file_put_contents( $pdf_file, $pdf ) ) {
-	echo "RESULT: receipt PDF test fixture could not be created\n";
-	exit( 1 );
-}
+$extracted_text = receipt_pdf_text( $pdf );
 
-exec( 'pdftotext -enc UTF-8 ' . escapeshellarg( $pdf_file ) . ' ' . escapeshellarg( $text_file ), $output, $exit_code );
-$extracted_text = ( 0 === $exit_code && is_file( $text_file ) ) ? file_get_contents( $text_file ) : false;
-unlink( $pdf_file );
-unlink( $text_file );
-
-foreach ( array( 'Açúcar & Cia', 'São José', 'Cartão de crédito', 'Caderno 10 matérias', 'Situação do pedido', 'PPL-2026-000482' ) as $expected_text ) {
+foreach ( array(
+	'RECIBO DE PEDIDO',
+	'PPL-2026-000482',
+	'#4242',
+	'Açúcar & Cia',
+	'São José',
+	'12.345.678/0001-90',
+	'Cartão de crédito',
+	'Caderno 10 matérias',
+	'SITUAÇÃO DO PEDIDO',
+	'TOTAL PAGO',
+	'R$ 54,90',
+	'Emitido por Papelito',
+	'Página 1 de 1',
+) as $expected_text ) {
 	if ( ! is_string( $extracted_text ) || false === strpos( $extracted_text, $expected_text ) ) {
-		echo "RESULT: receipt PDF corrupts Brazilian Portuguese characters or drops the receipt number\n";
+		echo "RESULT: receipt PDF is missing expected content: {$expected_text}\n";
 		exit( 1 );
 	}
 }
+
+// Pedido longo: quebra em paginas, repete o cabecalho da tabela e numera as folhas.
+$long_items = array();
+for ( $index = 1; $index <= 40; $index++ ) {
+	$long_items[] = array(
+		'name'             => 'Papel Sulfite A4 75g/m² Branco Alcalino — caixa com 10 resmas de 500 folhas, item ' . $index,
+		'quantity'         => $index,
+		'unit_price_cents' => 1990 + $index,
+		'subtotal_cents'   => ( 1990 + $index ) * $index,
+		'discount_cents'   => 0,
+		'total_cents'      => ( 1990 + $index ) * $index,
+		'vendor_id'        => 9,
+		'vendor_name'      => 'Açúcar & Cia',
+	);
+}
+$receipt_store[9999] = receipt_fixture(
+	9999,
+	'PPL-2026-000999',
+	$long_items,
+	array( 'subtotal_cents' => 1234567, 'discount_cents' => 0, 'shipping_cents' => 98765, 'total_cents' => 1333332 )
+);
+$vendor_parts[9999]  = array( array( 'vendor_id' => 9, 'vendor_name' => 'Açúcar & Cia', 'total_cents' => 1333332, 'items_json' => wp_json_encode( array() ) ) );
+
+$long_pdf  = papelito_receipt_pdf( new ReceiptTestOrder( 9999 ) );
+$long_text = is_string( $long_pdf ) ? receipt_pdf_text( $long_pdf ) : null;
+
+assert_receipt_pdf_true( 'pedido longo gera mais de uma pagina', is_string( $long_pdf ) && substr_count( $long_pdf, '/Type /Page ' ) > 1 );
+assert_receipt_pdf_true(
+	'continuacao repete o cabecalho da tabela',
+	is_string( $long_text ) && substr_count( $long_text, 'DESCRIÇÃO' ) > 1
+);
+assert_receipt_pdf_true(
+	'continuacao repete o numero do recibo',
+	is_string( $long_text ) && substr_count( $long_text, 'PPL-2026-000999' ) > 2
+);
+assert_receipt_pdf_true( 'totais fecham na ultima pagina', is_string( $long_text ) && false !== strpos( $long_text, 'R$ 13.333,32' ) );
+assert_receipt_pdf_true( 'paginas numeradas', is_string( $long_text ) && false !== strpos( $long_text, 'Página 2 de' ) );
 
 if ( $failures > 0 ) {
 	exit( 1 );

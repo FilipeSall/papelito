@@ -1470,6 +1470,13 @@ function papelito_resolve_product_data_notifications( int $user_id, int $product
 	}
 }
 
+function papelito_handle_incomplete_kit_notification( int $product_id, array $kit, WP_Error $error ): void {
+	if ( function_exists( 'papelito_sync_product_data_notification' ) ) {
+		papelito_sync_product_data_notification( $product_id );
+	}
+}
+add_action( 'papelito_kit_publication_invalid', 'papelito_handle_incomplete_kit_notification', 10, 3 );
+
 /**
  * Sincroniza a notificação consolidada de preço e peso de um produto.
  *
@@ -1501,7 +1508,15 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 	$missing_weight   = ! papelito_product_has_valid_weight( $product );
 	$missing_price    = ! papelito_product_has_valid_price( $product );
 	$missing_category = ! $is_kit && ( ! function_exists( 'papelito_product_get_category' ) || null === papelito_product_get_category( $product_id ) );
-	$missing_dimensions = $is_kit && null === papelito_kit_package_dimensions( $kit );
+	$kit_dimensions   = $is_kit ? array(
+		'length' => $kit['package_length'] ?? 0,
+		'width'  => $kit['package_width'] ?? 0,
+		'height' => $kit['package_height'] ?? 0,
+	) : array();
+	$missing_dimension_fields = $is_kit && function_exists( 'papelito_kit_missing_package_dimensions' )
+		? papelito_kit_missing_package_dimensions( $kit_dimensions )
+		: array();
+	$missing_dimensions = ! empty( $missing_dimension_fields );
 
 	foreach ( is_array( $admins ) ? $admins : array() as $admin_id ) {
 		$admin_id = absint( $admin_id );
@@ -1519,10 +1534,12 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 			papelito_notification_product_payload( $product_id ),
 			array(
 				'entity_type'      => $is_kit ? 'kit' : 'product',
+				'kit_id'           => $is_kit ? absint( $kit['id'] ?? 0 ) : 0,
 				'missing_category' => $missing_category,
-				'missing_price'  => $missing_price,
-				'missing_weight' => $missing_weight,
+				'missing_price'    => $missing_price,
+				'missing_weight'   => $missing_weight,
 				'missing_dimensions' => $missing_dimensions,
+				'missing_dimension_fields' => $missing_dimension_fields,
 			)
 		);
 		$rows       = papelito_get_product_data_notification_rows( $admin_id, $product_id );
@@ -1551,8 +1568,9 @@ function papelito_sync_product_data_notification( int $product_id, $product = nu
 			$current_price    = ! empty( $current_payload['missing_price'] );
 			$current_weight   = ! empty( $current_payload['missing_weight'] );
 			$current_dimensions = ! empty( $current_payload['missing_dimensions'] );
+			$current_dimension_fields = array_values( array_filter( (array) ( $current_payload['missing_dimension_fields'] ?? array() ), 'is_string' ) );
 
-			if ( $current_category === $missing_category && $current_price === $missing_price && $current_weight === $missing_weight && $current_dimensions === $missing_dimensions ) {
+			if ( $current_category === $missing_category && $current_price === $missing_price && $current_weight === $missing_weight && $current_dimensions === $missing_dimensions && $current_dimension_fields === $missing_dimension_fields ) {
 				continue;
 			}
 
@@ -1586,6 +1604,13 @@ add_action(
 			return;
 		}
 		foreach ( papelito_kits_using_component( absint( $product_id ) ) as $kit_product_id ) {
+			if ( function_exists( 'papelito_kits_invalidate_public_cache' ) ) {
+				papelito_kits_invalidate_public_cache();
+			}
+			$kit = function_exists( 'papelito_kit_get_by_product' ) ? papelito_kit_get_by_product( absint( $kit_product_id ) ) : null;
+			if ( is_array( $kit ) && function_exists( 'papelito_kit_demote_if_incomplete' ) && papelito_kit_demote_if_incomplete( $kit ) ) {
+				continue;
+			}
 			papelito_sync_product_data_notification( $kit_product_id );
 		}
 	},
@@ -1641,7 +1666,12 @@ function papelito_maybe_scan_incomplete_product_data_for_admin( $user_id ) {
 	);
 
 	foreach ( is_array( $product_ids ) ? $product_ids : array() as $product_id ) {
-		papelito_sync_product_data_notification( (int) $product_id );
+		$product_id = absint( $product_id );
+		$kit        = function_exists( 'papelito_kit_get_by_product' ) ? papelito_kit_get_by_product( $product_id ) : null;
+		if ( is_array( $kit ) && function_exists( 'papelito_kit_demote_if_incomplete' ) && papelito_kit_demote_if_incomplete( $kit ) ) {
+			continue;
+		}
+		papelito_sync_product_data_notification( $product_id );
 	}
 }
 

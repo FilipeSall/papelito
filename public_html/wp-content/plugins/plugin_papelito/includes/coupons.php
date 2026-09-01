@@ -64,6 +64,7 @@ function papelito_coupon_map_to_response( int $coupon_id ): ?array {
 		'status'               => (string) $post->post_status,
 		'discount_type'        => (string) $coupon->get_discount_type(),
 		'amount'               => (float) $coupon->get_amount(),
+		'free_shipping'        => (bool) $coupon->get_free_shipping(),
 		'date_expires'         => $date_expires instanceof WC_DateTime ? $date_expires->date( DATE_ATOM ) : null,
 		'usage_limit'          => (int) $coupon->get_usage_limit(),
 		'usage_limit_per_user' => (int) $coupon->get_usage_limit_per_user(),
@@ -119,14 +120,19 @@ function papelito_coupon_validate_input( array $input, ?int $coupon_id = null ) 
 		);
 	}
 
-	$amount = isset( $input['amount'] ) ? (float) $input['amount'] : 0.0;
-	if ( $amount <= 0 ) {
+	$free_shipping = ! empty( $input['free_shipping'] );
+	$amount        = isset( $input['amount'] ) ? (float) $input['amount'] : 0.0;
+
+	// Cupom que só concede frete grátis não tem valor sobre os itens.
+	if ( $amount <= 0 && ! $free_shipping ) {
 		return new WP_Error(
 			'papelito_coupon_invalid_amount',
 			'O valor do desconto precisa ser maior que zero.',
 			array( 'status' => 422 )
 		);
 	}
+
+	$amount = max( 0.0, $amount );
 
 	if ( 'percent' === $discount_type && $amount > 100 ) {
 		return new WP_Error(
@@ -204,6 +210,7 @@ function papelito_coupon_validate_input( array $input, ?int $coupon_id = null ) 
 		'code'                 => $code,
 		'discount_type'        => $discount_type,
 		'amount'               => $amount,
+		'free_shipping'        => $free_shipping,
 		'date_expires_ts'      => $date_expires_ts,
 		'usage_limit'          => $usage_limit,
 		'usage_limit_per_user' => $usage_limit_per_user,
@@ -240,6 +247,7 @@ function papelito_coupon_persist( array $data, ?int $coupon_id = null ) {
 	$coupon->set_code( $data['code'] );
 	$coupon->set_discount_type( $data['discount_type'] );
 	$coupon->set_amount( $data['amount'] );
+	$coupon->set_free_shipping( (bool) $data['free_shipping'] );
 	$coupon->set_date_expires( $data['date_expires_ts'] );
 	$coupon->set_usage_limit( $data['usage_limit'] );
 	$coupon->set_usage_limit_per_user( $data['usage_limit_per_user'] );
@@ -433,19 +441,22 @@ function papelito_coupon_apply_resolve( string $code, array $cart_items, int $us
 		);
 	}
 
-	if ( empty( $qualifying_product_ids ) && $campaign_items > 0 ) {
+	$is_free_shipping = (bool) $coupon->get_free_shipping();
+
+	if ( empty( $qualifying_product_ids ) && $campaign_items > 0 && ! $is_free_shipping ) {
 		return array(
 			'ok'                  => true,
 			'code'                => $code,
 			'discount_type'       => (string) $coupon->get_discount_type(),
 			'discount_value'      => 0.0,
+			'free_shipping'       => false,
 			'applied_product_ids' => array(),
 			'applied'             => false,
 			'message'             => 'A oferta relâmpago prevalece sobre este cupom.',
 		);
 	}
 
-	if ( empty( $qualifying_product_ids ) ) {
+	if ( empty( $qualifying_product_ids ) && ! $is_free_shipping ) {
 		return new WP_Error(
 			'papelito_coupon_no_eligible_items',
 			'Nenhum item do seu carrinho é elegível para este cupom.',
@@ -482,6 +493,7 @@ function papelito_coupon_apply_resolve( string $code, array $cart_items, int $us
 		'code'                => $code,
 		'discount_type'       => $discount_type,
 		'discount_value'      => (float) $discount_value,
+		'free_shipping'       => $is_free_shipping,
 		'applied_product_ids' => array_values( array_unique( $qualifying_product_ids ) ),
 	);
 }
@@ -769,6 +781,7 @@ add_action(
 								'code'                => (string) ( $coupon['code'] ?? strtoupper( trim( $code ) ) ),
 								'discount_type'       => (string) ( $coupon['discountType'] ?? 'percent' ),
 								'discount_value'      => papelito_pricing_from_cents( (int) ( $coupon['discountValueCents'] ?? 0 ) ),
+								'free_shipping'       => (bool) ( $coupon['freeShipping'] ?? false ),
 								'applied_product_ids' => array_map( 'intval', (array) ( $coupon['appliedProductIds'] ?? array() ) ),
 								'applied'              => (bool) ( $coupon['applied'] ?? false ),
 								'message'              => (string) ( $coupon['message'] ?? '' ),

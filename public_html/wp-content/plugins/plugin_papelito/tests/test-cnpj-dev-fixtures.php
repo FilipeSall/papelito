@@ -154,6 +154,7 @@ add_filter(
 
 const FIXTURE_A = '99999001000159';
 const FIXTURE_B = '99999002000101';
+const FIXTURE_C = '99999003000148';
 const REAL_CNPJ = '11222333000181';
 
 echo "== Documentos das fixtures passam nos validadores oficiais ==\n";
@@ -161,6 +162,8 @@ papelito_assert_same( 'CNPJ da fixture A e valido', true, papelito_validate_cnpj
 papelito_assert_same( 'CNPJ da fixture B e valido', true, papelito_validate_cnpj( FIXTURE_B ) );
 papelito_assert_same( 'CPF do socio A e valido', true, papelito_validate_cpf( '12345678909' ) );
 papelito_assert_same( 'CPF do socio B e valido', true, papelito_validate_cpf( '98765432100' ) );
+papelito_assert_same( 'CNPJ da fixture C e valido', true, papelito_validate_cnpj( FIXTURE_C ) );
+papelito_assert_same( 'CPF do socio C e valido', true, papelito_validate_cpf( '11144477735' ) );
 
 echo "\n== 1-3. Fixtures respondem e nao geram egress ==\n";
 papelito_reset();
@@ -181,6 +184,15 @@ papelito_assert_same( 'fixture B → active', 'active', $b['status'] );
 papelito_assert_same( 'fixture B → outra empresa', 'IMPERIO DO PAPEL COMERCIO LTDA', $b['legal_name'] );
 papelito_assert_same( 'fixture B → socio sem CPF mascarado', false, isset( $b['qsa'][0]['cnpj_cpf_do_socio'] ) );
 papelito_assert_same( 'fixture B → ZERO chamadas de rede', 0, $papelito_remote_calls );
+
+papelito_reset();
+$c = papelito_cnpj_lookup( FIXTURE_C );
+papelito_assert_same( 'fixture C → active', 'active', $c['status'] );
+papelito_assert_same( 'fixture C → terceira empresa', 'CERRADO PAPEIS E SUPRIMENTOS LTDA', $c['legal_name'] );
+papelito_assert_same( 'fixture C → UF do endereco fiscal e DF', 'DF', $c['fiscal_address']['state'] );
+papelito_assert_same( 'fixture C → CEP de Brasilia', '71200030', $c['fiscal_address']['cep'] );
+papelito_assert_same( 'fixture C → 1 socio no QSA', 1, count( $c['qsa'] ) );
+papelito_assert_same( 'fixture C → ZERO chamadas de rede', 0, $papelito_remote_calls );
 
 echo "\n== 4. publica.cnpj.ws e receitaws.com.br recebem 404, brasilapi recebe o payload ==\n";
 papelito_reset();
@@ -269,7 +281,7 @@ foreach ( array( 'local', 'development' ) as $allowed ) {
 	$papelito_flag_enabled     = true;
 	$response                  = papelito_cnpj_dev_fixtures_http_response( null, $fixture_url );
 	papelito_assert_same( "gate aprovado ({$allowed}) responde a fixture", 200, is_array( $response ) ? wp_remote_retrieve_response_code( $response ) : null );
-	papelito_assert_same( "gate aprovado ({$allowed}) carrega as 2 fixtures", 2, count( papelito_cnpj_dev_fixtures() ) );
+	papelito_assert_same( "gate aprovado ({$allowed}) carrega as 3 fixtures", 3, count( papelito_cnpj_dev_fixtures() ) );
 }
 $papelito_environment_type = 'local';
 $papelito_flag_enabled     = true;
@@ -296,6 +308,17 @@ papelito_assert_same( 'B: QSA insuficiente (sem CPF mascarado)', false, $evidenc
 papelito_assert_same( 'B: nome do socio bate', true, $evidence_b['name_match'] );
 papelito_assert_same( 'B: review_path = document_required', 'document_required', papelito_company_owner_review_path( $evidence_b ) );
 
+papelito_reset();
+$lookup_c   = papelito_cnpj_lookup( FIXTURE_C, true );
+$evidence_c = papelito_company_owner_evidence( null, '11144477735', '1975-05-22', $lookup_c, 'Marcos Stub de Oliveira' );
+papelito_assert_same( 'C: registro ativo', 'active', $lookup_c['status'] );
+papelito_assert_same( 'C: QSA suficiente', true, $evidence_c['qsa_sufficient'] );
+papelito_assert_same( 'C: nome do socio bate', true, $evidence_c['name_match'] );
+papelito_assert_same( 'C: mascara de CPF bate', true, $evidence_c['cpf_mask_match'] );
+papelito_assert_same( 'C: faixa etaria bate', true, $evidence_c['age_band_match'] );
+papelito_assert_same( 'C: socio confirmado', true, $evidence_c['partner_match'] ?? null );
+papelito_assert_same( 'C: review_path = qsa_review', 'qsa_review', papelito_company_owner_review_path( $evidence_c ) );
+
 echo "\n== Registro dos filtros em processo separado (o require roda uma vez por processo) ==\n";
 $boot = __DIR__ . '/support/cnpj_dev_fixtures_boot.php';
 foreach ( array(
@@ -304,8 +327,8 @@ foreach ( array(
 	array( 'development', 'false', false, 0 ),
 	array( 'local', 'false', false, 0 ),
 	array( 'local', 'missing', false, 0 ),
-	array( 'local', 'true', true, 2 ),
-	array( 'development', 'true', true, 2 ),
+	array( 'local', 'true', true, 3 ),
+	array( 'development', 'true', true, 3 ),
 ) as $case ) {
 	list( $env, $flag, $expect_registered, $expect_count ) = $case;
 	$command = escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( $boot ) . ' ' . escapeshellarg( $env ) . ' ' . escapeshellarg( $flag );

@@ -111,7 +111,7 @@ function papelito_messaging_require_auth() {
  *
  * @param int    $user_id Usuario autenticado.
  * @param string $bucket  Identificador do endpoint.
- * @param int    $max     Maximo de chamadas na janela.
+ * @param int  $max Maximo de chamadas na janela.
  * @param int    $window  Janela em segundos.
  */
 function papelito_messaging_rate_limit( int $user_id, string $bucket, int $max = 30, int $window = 60 ): bool {

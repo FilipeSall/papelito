@@ -45,6 +45,7 @@ class WC_Coupon {
 	public function get_minimum_amount() { return $this->fixture['minimum_amount'] ?? 0; }
 	public function get_discount_type() { return $this->fixture['discount_type'] ?? 'percent'; }
 	public function get_amount() { return $this->fixture['amount'] ?? 10; }
+	public function get_free_shipping() { return ! empty( $this->fixture['free_shipping'] ); }
 }
 
 function wc_get_coupon_id_by_code( string $code ) {
@@ -157,6 +158,15 @@ if ( $failures > 0 ) {
 	echo "RESULT: {$failures} assertion(s) FAILED\n";
 	exit( 1 );
 }
+
+echo "Scenario 6: free-shipping flag travels with the resolved coupon\n";
+$coupon_fixtures[970] = array( 'discount_type' => 'fixed_cart', 'amount' => 0, 'free_shipping' => true );
+$coupon_codes['FRETEGRATIS'] = 970;
+$coupon_meta[970] = array( '_papelito_coupon_role' => 'any' );
+$free = papelito_coupon_apply_resolve( 'FRETEGRATIS', array( array( 'product_id' => 1, 'vendor_id' => 5, 'qty' => 1, 'price' => 121.0 ) ), 42 );
+coupon_assert_same( 'free shipping coupon resolves', true, is_array( $free ) && ! empty( $free['ok'] ) );
+coupon_assert_same( 'free shipping flag exposed', true, $free['free_shipping'] ?? null );
+coupon_assert_same( 'free shipping coupon does not discount items', 0.0, (float) ( $free['discount_value'] ?? -1 ) );
 
 echo "RESULT: all assertions passed\n";
 exit( 0 );

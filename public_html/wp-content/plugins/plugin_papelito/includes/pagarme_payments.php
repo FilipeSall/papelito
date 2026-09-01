@@ -199,7 +199,12 @@ function papelito_pagarme_order_items_payload( array $lines, array $shipping ): 
 		);
 	}
 
-	$shipping_cents = (int) round( 100 * (float) ( $shipping['price'] ?? 0 ) );
+	$shipping_price_cents = max( 0, (int) round( 100 * (float) ( $shipping['price'] ?? 0 ) ) );
+	$shipping_discount_cents = min(
+		$shipping_price_cents,
+		max( 0, (int) round( 100 * (float) ( $shipping['discount'] ?? 0 ) ) )
+	);
+	$shipping_cents = $shipping_price_cents - $shipping_discount_cents;
 
 	if ( $shipping_cents > 0 ) {
 		$items[] = array(
