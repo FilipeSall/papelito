@@ -59,6 +59,35 @@ A fonte de saúde real é **opt-in**, consulta apenas autenticação e o serviç
 
 Localmente, como **nenhum POST de criação real é executado**, até `unknown` abre o fallback manual. É relaxação exclusiva de desenvolvimento.
 
+### Simular rastreamento pelo WP-CLI
+
+Para avançar uma remessa mock já criada, use o mesmo processador de eventos usado pelo polling. O comando só é registrado no WP-CLI e recusa qualquer ambiente diferente de `local` ou `development`.
+
+```bash
+docker compose exec web wp --allow-root papelito tracking simulate 123
+docker compose exec web wp --allow-root papelito tracking simulate 123 --apply
+```
+
+O primeiro comando é um dry-run: mostra os eventos que seriam aplicados. O segundo grava, nesta ordem, `PO/01`, `RO/01`, `OEC/03` e `BDE/01`. Cada evento tem origem `local_simulation` em `wp_papelito_tracking_events`; nunca é apresentado como consulta aos Correios e não há chamada HTTP externa.
+
+O comando exige uma remessa ativa de saída com `is_test=1`, criada pelo modo `mock`; ele não cria remessa nem aceita S10 manual real. Para avançar um estado por vez:
+
+```bash
+docker compose exec web wp --allow-root papelito tracking simulate 123 --sequence=posted --apply
+docker compose exec web wp --allow-root papelito tracking simulate 123 --sequence=in_transit --apply
+docker compose exec web wp --allow-root papelito tracking simulate 123 --sequence=out_for_delivery --apply
+docker compose exec web wp --allow-root papelito tracking simulate 123 --sequence=delivered --apply
+```
+
+Pedidos com mais de uma remessa de teste exigem `--shipment=<id>` ou `--all`. Use `--at=<ISO-8601>` para escolher uma data-base determinística; sem essa opção, a criação da remessa define os horários. Repetir o mesmo evento com a mesma data-base é idempotente.
+
+```bash
+docker compose exec web wp --allow-root papelito tracking simulate 123 --shipment=45 --sequence=delivered --apply
+docker compose exec web wp --allow-root papelito tracking simulate 123 --all --sequence=delivered --apply
+```
+
+O status operacional só chega a `entregue` quando todas as remessas ativas do pedido foram entregues. O comando chama `papelito_tracking_ingest_event()`, portanto mantém evento bruto, projeção, nota do pedido e notificações como no fluxo normal.
+
 ## Contrato do adapter
 
 `POST /papelito/v1/vendor/me/orders/{id}/shipments` aplica o filtro `papelito_correios_generate_prepostage`, que deve devolver exatamente:

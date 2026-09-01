@@ -17,6 +17,7 @@ if ( ! defined( 'PAPELITO_TRACKING_SHIPMENTS_TABLE' ) ) {
 	define( 'PAPELITO_TRACKING_POLL_HOOK', 'papelito_correios_tracking_poll_due' );
 	define( 'PAPELITO_PREPOST_RECONCILE_HOOK', 'papelito_correios_prepostage_reconcile_due' );
 	define( 'PAPELITO_TRACKING_SOURCE_POLL', 'correios_poll' );
+	define( 'PAPELITO_TRACKING_SOURCE_LOCAL_SIMULATION', 'local_simulation' );
 }
 
 /** Resolve o nome da tabela de envios. */
@@ -229,6 +230,77 @@ function papelito_tracking_map_event( string $code, string $type ): ?array {
 		'status'   => sanitize_key( (string) $item['status'] ),
 		'rank'     => max( 0, absint( $item['rank'] ) ),
 		'terminal' => ! empty( $item['terminal'] ),
+	);
+}
+
+function papelito_tracking_simulation_event_definitions(): array {
+	return array(
+		'posted'           => array( 'code' => 'PO', 'type' => '01', 'offset_minutes' => 0, 'description' => 'Objeto de teste postado.' ),
+		'in_transit'       => array( 'code' => 'RO', 'type' => '01', 'offset_minutes' => 1, 'description' => 'Objeto de teste em transito.' ),
+		'out_for_delivery' => array( 'code' => 'OEC', 'type' => '03', 'offset_minutes' => 2, 'description' => 'Objeto de teste em rota de entrega.' ),
+		'delivered'        => array( 'code' => 'BDE', 'type' => '01', 'offset_minutes' => 3, 'description' => 'Objeto de teste entregue ao destinatario.' ),
+	);
+}
+
+function papelito_tracking_simulation_fixture_event( string $status, DateTimeImmutable $started_at ): ?array {
+	$definitions = papelito_tracking_simulation_event_definitions();
+	$status      = sanitize_key( $status );
+	if ( ! isset( $definitions[ $status ] ) ) {
+		return null;
+	}
+
+	$definition = $definitions[ $status ];
+	$event_at   = $started_at->modify( '+' . absint( $definition['offset_minutes'] ) . ' minutes' );
+	return array(
+		'codigo'      => $definition['code'],
+		'tipo'        => $definition['type'],
+		'dtHrCriado'  => $event_at->format( DATE_ATOM ),
+		'descricao'   => $definition['description'],
+		'unidade'     => array(
+			'endereco' => array(
+				'cidade' => 'AMBIENTE LOCAL',
+				'uf'     => 'DEV',
+			),
+		),
+	);
+}
+
+function papelito_tracking_simulation_started_at( array $shipment, string $value = '' ): ?DateTimeImmutable {
+	$candidate = '' !== trim( $value ) ? trim( $value ) : sanitize_text_field( (string) ( $shipment['created_at'] ?? '' ) );
+	if ( '' === $candidate ) {
+		return null;
+	}
+
+	try {
+		return ( new DateTimeImmutable( $candidate, new DateTimeZone( 'UTC' ) ) )->setTimezone( new DateTimeZone( 'UTC' ) );
+	} catch ( Exception $exception ) {
+		return null;
+	}
+}
+
+function papelito_tracking_simulation_apply_sequence( array $shipment, array $sequence, DateTimeImmutable $started_at ): array {
+	$results = array();
+	foreach ( $sequence as $status ) {
+		$event = papelito_tracking_simulation_fixture_event( (string) $status, $started_at );
+		if ( ! is_array( $event ) ) {
+			continue;
+		}
+		$results[] = array(
+			'status'   => sanitize_key( (string) $status ),
+			'event'    => $event,
+			'ingested' => papelito_tracking_ingest_event( $shipment, $event, PAPELITO_TRACKING_SOURCE_LOCAL_SIMULATION ),
+		);
+	}
+	return $results;
+}
+
+function papelito_tracking_simulation_test_shipments( int $order_id ): array {
+	$shipments = papelito_tracking_order_shipments( $order_id );
+	return array_values(
+		array_filter(
+			$shipments,
+			static fn( array $shipment ): bool => ! empty( $shipment['is_test'] ) && 'outbound' === sanitize_key( (string) ( $shipment['direction'] ?? '' ) )
+		)
 	);
 }
 
@@ -1974,3 +2046,121 @@ add_action(
 		);
 	}
 );
+
+if ( defined( 'WP_CLI' ) && WP_CLI ) {
+	class PapelitoTrackingSimulationCli {
+		private function sequence( array $assoc_args ): array {
+			$value       = sanitize_text_field( (string) ( $assoc_args['sequence'] ?? 'posted,in_transit,out_for_delivery,delivered' ) );
+			$definitions = papelito_tracking_simulation_event_definitions();
+			$sequence    = array_values( array_filter( array_map( 'sanitize_key', array_map( 'trim', explode( ',', $value ) ) ) ) );
+			$previous_offset = -1;
+			foreach ( $sequence as $status ) {
+				if ( ! isset( $definitions[ $status ] ) ) {
+					WP_CLI::error( 'Sequencia invalida. Use posted,in_transit,out_for_delivery,delivered.' );
+				}
+				$offset = absint( $definitions[ $status ]['offset_minutes'] );
+				if ( $offset <= $previous_offset ) {
+					WP_CLI::error( 'A sequencia deve avancar sem repetir ou regredir estados.' );
+				}
+				$previous_offset = $offset;
+			}
+			if ( empty( $sequence ) ) {
+				WP_CLI::error( 'Informe ao menos um estado na sequencia.' );
+			}
+			return $sequence;
+		}
+
+		private function selected_shipments( int $order_id, array $assoc_args ): array {
+			$shipment_id = absint( $assoc_args['shipment'] ?? 0 );
+			$all         = ! empty( $assoc_args['all'] );
+			if ( $shipment_id > 0 && $all ) {
+				WP_CLI::error( 'Use --shipment ou --all, nunca os dois.' );
+			}
+
+			$shipments = papelito_tracking_simulation_test_shipments( $order_id );
+			if ( $shipment_id > 0 ) {
+				$shipments = array_values( array_filter( $shipments, static fn( array $shipment ): bool => absint( $shipment['id'] ?? 0 ) === $shipment_id ) );
+			}
+			if ( empty( $shipments ) ) {
+				WP_CLI::error( 'Nenhuma remessa de teste ativa foi encontrada para o pedido.' );
+			}
+			if ( count( $shipments ) > 1 && ! $all ) {
+				WP_CLI::error( 'O pedido possui mais de uma remessa de teste. Use --shipment=<id> ou --all.' );
+			}
+			return $shipments;
+		}
+
+		/**
+		 * Simula eventos do Rastro para uma remessa local de teste.
+		 *
+		 * ## OPTIONS
+		 *
+		 * <order_id>
+		 * : ID do pedido WooCommerce.
+		 *
+		 * [--sequence=<states>]
+		 * : Estados em ordem, separados por virgula.
+		 *
+		 * [--shipment=<id>]
+		 * : ID de uma remessa de teste especifica.
+		 *
+		 * [--all]
+		 * : Aplica a sequencia a todas as remessas de teste ativas do pedido.
+		 *
+		 * [--at=<datetime>]
+		 * : Data ISO base dos eventos. Sem este argumento, usa a criacao da remessa.
+		 *
+		 * [--apply]
+		 * : Persiste os eventos. Sem esta flag, apenas mostra a simulacao.
+		 */
+		public function simulate( array $args, array $assoc_args ): void {
+			if ( ! function_exists( 'papelito_correios_prepostage_is_test_environment' ) || ! papelito_correios_prepostage_is_test_environment() ) {
+				WP_CLI::error( 'A simulacao de rastreamento so pode rodar em local ou development.' );
+			}
+
+			$order_id = absint( $args[0] ?? 0 );
+			if ( $order_id <= 0 ) {
+				WP_CLI::error( 'Informe um ID de pedido valido.' );
+			}
+
+			$sequence  = $this->sequence( $assoc_args );
+			$shipments = $this->selected_shipments( $order_id, $assoc_args );
+			$apply     = ! empty( $assoc_args['apply'] );
+			$at        = sanitize_text_field( (string) ( $assoc_args['at'] ?? '' ) );
+			$events    = 0;
+
+			foreach ( $shipments as $shipment ) {
+				$started_at = papelito_tracking_simulation_started_at( $shipment, $at );
+				if ( ! $started_at instanceof DateTimeImmutable ) {
+					WP_CLI::error( 'A data base da simulacao e invalida. Use --at em formato ISO 8601.' );
+				}
+				foreach ( $sequence as $status ) {
+					$event = papelito_tracking_simulation_fixture_event( $status, $started_at );
+					if ( ! is_array( $event ) ) {
+						continue;
+					}
+					++$events;
+					if ( ! $apply ) {
+						WP_CLI::log( wp_json_encode( array( 'shipment_id' => absint( $shipment['id'] ?? 0 ), 'source' => PAPELITO_TRACKING_SOURCE_LOCAL_SIMULATION, 'event' => $event ) ) );
+						continue;
+					}
+					$ingested = papelito_tracking_ingest_event( $shipment, $event, PAPELITO_TRACKING_SOURCE_LOCAL_SIMULATION );
+					WP_CLI::log( sprintf( 'shipment_id=%d status=%s ingested=%s source=%s', absint( $shipment['id'] ?? 0 ), $status, $ingested ? 'true' : 'false', PAPELITO_TRACKING_SOURCE_LOCAL_SIMULATION ) );
+				}
+			}
+
+			WP_CLI::success(
+				sprintf(
+					'order_id=%d shipments=%d events=%d apply=%s source=%s',
+					$order_id,
+					count( $shipments ),
+					$events,
+					$apply ? 'true' : 'false',
+					PAPELITO_TRACKING_SOURCE_LOCAL_SIMULATION
+				)
+			);
+		}
+	}
+
+	WP_CLI::add_command( 'papelito tracking', 'PapelitoTrackingSimulationCli' );
+}
