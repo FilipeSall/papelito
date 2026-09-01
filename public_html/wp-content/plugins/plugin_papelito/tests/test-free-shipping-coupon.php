@@ -139,6 +139,17 @@ assert_free_shipping( 'beneficio automatico remove o frete do total', 12100, $qu
 $quote_plain_repeated = papelito_pricing_apply_discounts( resolved_cart( 12100 ), '', 7, 1627 );
 assert_free_shipping( 'recalculo automatico nao acumula desconto', 12100, $quote_plain_repeated['totals']['totalCents'] );
 
+$quote_plain_pac = papelito_pricing_apply_discounts( resolved_cart( 12100 ), '', 7, 1937 );
+assert_free_shipping( 'PAC automatico abate o preco atual', 1937, $quote_plain_pac['totals']['shippingDiscountCents'] );
+assert_free_shipping( 'PAC automatico mantem o total', 12100, $quote_plain_pac['totals']['totalCents'] );
+
+$quote_plain_sedex = papelito_pricing_apply_discounts( resolved_cart( 12100 ), '', 7, 1245 );
+assert_free_shipping( 'troca para SEDEX substitui o abatimento anterior', 1245, $quote_plain_sedex['totals']['shippingDiscountCents'] );
+assert_free_shipping( 'SEDEX automatico mantem o total', 12100, $quote_plain_sedex['totals']['totalCents'] );
+
+$quote_plain_pac_again = papelito_pricing_apply_discounts( resolved_cart( 12100 ), '', 7, 1937 );
+assert_free_shipping( 'volta ao PAC recalcula sem estado antigo', 1937, $quote_plain_pac_again['totals']['shippingDiscountCents'] );
+
 $quote_plain_below = papelito_pricing_apply_discounts( resolved_cart( 9899 ), '', 7, 1627 );
 assert_free_shipping( 'sem atingir o minimo o frete continua cobrado', 9899 + 1627, $quote_plain_below['totals']['totalCents'] );
 
@@ -155,8 +166,18 @@ assert_free_shipping( 'beneficio automatico tambem vale com cupom de item', 1627
 assert_free_shipping( 'cupom de item desconta item', 1000, $quote_fixed['totals']['discountCents'] );
 assert_free_shipping( 'frete gratis automatico combina com cupom de item', 12100 - 1000, $quote_fixed['totals']['totalCents'] );
 
+// O frete grátis automático não pode fazer um cupom de item ineficaz parecer aplicado.
+$shadowed_cart = resolved_cart( 12100 );
+$shadowed_cart['lines'][0]['promotion'] = array(
+	'reference_unit_cents' => 12100,
+	'total_cents'          => 9000,
+);
+$quote_coupon_shadowed = papelito_pricing_apply_discounts( $shadowed_cart, 'DEZOFF', 7, 1937 );
+assert_free_shipping( 'cupom sem desconto efetivo continua nao aplicado', false, $quote_coupon_shadowed['coupon']['applied'] );
+assert_free_shipping( 'cupom ineficaz nao vira item do pedido por causa do frete automatico', null, $quote_coupon_shadowed['coupon_data'] );
+
 // Invariante do contrato consumido pelo frontend.
-foreach ( array( $quote, $quote_sedex, $quote_below, $quote_at, $quote_plain, $quote_fixed ) as $index => $checked ) {
+foreach ( array( $quote, $quote_sedex, $quote_below, $quote_at, $quote_plain, $quote_plain_pac, $quote_plain_sedex, $quote_plain_pac_again, $quote_fixed, $quote_coupon_shadowed ) as $index => $checked ) {
 	$totals = $checked['totals'];
 	assert_free_shipping(
 		"invariante itens + frete - abatimento = total ({$index})",

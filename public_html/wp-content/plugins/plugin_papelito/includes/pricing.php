@@ -444,8 +444,8 @@ function papelito_pricing_apply_discounts( array $resolved, string $coupon_code,
 	}
 
 	$coupon_response = null;
+	$coupon_applied  = $effective_coupon_cents > 0 || ( $is_free_shipping_coupon && $shipping_discount_cents > 0 );
 	if ( is_array( $coupon ) ) {
-		$coupon_applied  = $effective_coupon_cents > 0 || $shipping_discount_cents > 0;
 		$coupon_response = array(
 			'code'               => (string) $coupon['code'],
 			'discountType'       => (string) $coupon['discount_type'],
@@ -471,7 +471,7 @@ function papelito_pricing_apply_discounts( array $resolved, string $coupon_code,
 		'vendor_id'   => (int) ( $resolved['vendor_id'] ?? 0 ),
 		'vendor_name' => (string) ( $resolved['vendor_name'] ?? '' ),
 		'lines'       => $priced_lines,
-		'coupon_data' => ( $effective_coupon_cents > 0 || $shipping_discount_cents > 0 ) ? $coupon : null,
+		'coupon_data' => $coupon_applied ? $coupon : null,
 		'coupon'      => $coupon_response,
 		'adjustments' => $adjustments,
 		'totals'      => array(

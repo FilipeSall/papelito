@@ -50,7 +50,12 @@ function is_wp_error( mixed $value ): bool {
 class WC_Order {
 	public array $meta = array();
 
-	public function __construct( private int $id, private int $customer_id ) {}
+	public function __construct(
+		private int $id,
+		private int $customer_id,
+		private float $subtotal = 0.0,
+		private float $shipping_total = 0.0
+	) {}
 
 	public function get_id(): int {
 		return $this->id;
@@ -70,6 +75,14 @@ class WC_Order {
 
 	public function get_meta( $key, $single = true ) {
 		return $this->meta[ $key ] ?? '';
+	}
+
+	public function get_subtotal(): float {
+		return $this->subtotal;
+	}
+
+	public function get_shipping_total(): float {
+		return $this->shipping_total;
 	}
 }
 
@@ -114,14 +127,16 @@ papelito_assert_same( 'too-short value is blank', '', papelito_order_routing_nor
 papelito_assert_same( 'valid value is preserved', 'attempt-123', papelito_order_routing_normalize_checkout_attempt_id( 'attempt-123' ) );
 
 echo "Scenario 2: existing completed checkout attempt returns the stored order\n";
-$order = new WC_Order( 321, 77 );
+$order = new WC_Order( 321, 77, 121.00 );
 $order->meta[ PAPELITO_CHECKOUT_ATTEMPT_ID_META ]     = 'attempt-123';
 $order->meta[ PAPELITO_CHECKOUT_ATTEMPT_COMPANY_META ] = 44;
 $order->meta[ PAPELITO_CHECKOUT_ATTEMPT_HASH_META ]    = 'stable-hash';
 $order->meta[ PAPELITO_PAGARME_ORDER_ID_META ]       = 'ord_123';
 $order->meta[ PAPELITO_PAGARME_PAYMENT_METHOD_META ] = 'boleto';
 $order->meta[ PAPELITO_PAGARME_PAYMENT_STATE_META ]  = 'waiting_payment';
-$order->meta['_papelito_authoritative_total_cents']  = 10890;
+$order->meta['_papelito_authoritative_total_cents']  = 12100;
+$order->meta['_papelito_shipping_price_cents']       = 1937;
+$order->meta['_papelito_shipping_discount_cents']    = 1937;
 $papelito_test_orders                                = array( $order );
 
 $found = papelito_order_routing_find_order_by_attempt( 77, 'attempt-123' );
@@ -129,6 +144,9 @@ papelito_assert_same( 'existing order is found', 321, $found->get_id() );
 $response = papelito_order_routing_existing_order_response( $found );
 papelito_assert_same( 'response reuses order id', 321, $response['order_id'] ?? null );
 papelito_assert_same( 'response reuses payment state', 'waiting_payment', $response['payment']['state'] ?? null );
+papelito_assert_same( 'retry preserves original shipping price', 1937, $response['totals']['shippingCents'] ?? null );
+papelito_assert_same( 'retry preserves positive shipping discount', 1937, $response['totals']['shippingDiscountCents'] ?? null );
+papelito_assert_same( 'retry preserves zero effective shipping', 12100, $response['totals']['totalCents'] ?? null );
 
 echo "Scenario 3: attempt identity protects company and payload\n";
 papelito_assert_same( 'same company and payload are accepted', true, papelito_order_routing_validate_existing_attempt( $order, 44, 'stable-hash' ) );

@@ -232,6 +232,24 @@ function papelito_order_routing_existing_order_response( object $order ) {
 	$total_cents = method_exists( $order, 'get_meta' )
 		? max( 0, (int) $order->get_meta( '_papelito_authoritative_total_cents', true ) )
 		: 0;
+	$shipping_cents = method_exists( $order, 'get_meta' )
+		? max( 0, (int) $order->get_meta( '_papelito_shipping_price_cents', true ) )
+		: 0;
+	$shipping_discount_cents = method_exists( $order, 'get_meta' )
+		? min( $shipping_cents, max( 0, (int) $order->get_meta( '_papelito_shipping_discount_cents', true ) ) )
+		: 0;
+
+	// Pedidos anteriores aos metas de auditoria guardam somente o frete efetivo do WooCommerce.
+	if ( 0 === $shipping_cents && method_exists( $order, 'get_shipping_total' ) ) {
+		$shipping_cents = max( 0, (int) round( (float) $order->get_shipping_total() * 100 ) );
+	}
+
+	$shipping_charged_cents = $shipping_cents - $shipping_discount_cents;
+	$items_cents            = max( 0, $total_cents - $shipping_charged_cents );
+	$subtotal_cents         = method_exists( $order, 'get_subtotal' )
+		? max( $items_cents, (int) round( (float) $order->get_subtotal() * 100 ) )
+		: $items_cents;
+	$discount_cents         = max( 0, $subtotal_cents - $items_cents );
 
 	return array_filter(
 		array(
@@ -246,11 +264,12 @@ function papelito_order_routing_existing_order_response( object $order ) {
 				),
 			'totals'       => $total_cents > 0
 				? array(
-					'subtotalCents' => 0,
-					'discountCents' => 0,
-					'itemsCents'    => 0,
-					'shippingCents' => 0,
-					'totalCents'    => $total_cents,
+					'subtotalCents'         => $subtotal_cents,
+					'discountCents'         => $discount_cents,
+					'itemsCents'            => $items_cents,
+					'shippingCents'         => $shipping_cents,
+					'shippingDiscountCents' => $shipping_discount_cents,
+					'totalCents'            => $total_cents,
 				)
 				: null,
 		),
