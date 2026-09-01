@@ -162,7 +162,7 @@ $response = papelito_kit_admin_delete( new WP_REST_Request( array( 'id' => 2 ) )
 kit_admin_delete_assert( 'retorna sucesso', $response instanceof WP_REST_Response && true === $response->data['deleted'] );
 kit_admin_delete_assert( 'remove o produto comercial', array( 900 ) === $GLOBALS['pap_deleted_products'] );
 kit_admin_delete_assert( 'deduplica e remove as mídias exclusivas', array( 70, 72, 71 ) === $GLOBALS['pap_deleted_attachments'] );
-kit_admin_delete_assert( 'invalida o cache público', array( 'papelito_kits_public' ) === $GLOBALS['pap_deleted_transients'] );
+kit_admin_delete_assert( 'invalida as chaves de cache público', array( 'papelito_kits_public', 'papelito_kits_public_v2' ) === $GLOBALS['pap_deleted_transients'] );
 
 echo "Scenario 3: mídia vinculada a outro conteúdo é preservada\n";
 $GLOBALS['pap_attachments'] = array( 88 => (object) array( 'post_parent' => 999 ), 999 => true );

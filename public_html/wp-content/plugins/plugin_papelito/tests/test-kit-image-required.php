@@ -70,6 +70,7 @@ function kit_image_assert( string $label, bool $condition ): void {
 $payload = array(
 	'name'              => 'Kit sem imagem',
 	'price'             => '10.00',
+	'status'            => 'draft',
 	'items'             => array( array( 'productId' => 10, 'quantity' => 1 ) ),
 	'packageDimensions' => array(),
 	'imageSource'       => 'custom',
@@ -83,6 +84,10 @@ kit_image_assert( 'não chama WC_Product::save', 0 === WC_Product::$saves );
 echo "Scenario 2: Kit legado mantém preset ao editar\n";
 $legacy_image = papelito_kit_validate_write_image( array( 'imageSource' => 'premium' ), 123 );
 kit_image_assert( 'preset legado continua aceito em update', ! is_wp_error( $legacy_image ) && 'premium' === $legacy_image['source'] );
+
+echo "Scenario 3: imagem custom sem anexo e recusada no update\n";
+$invalid_custom_image = papelito_kit_validate_write_image( array( 'imageSource' => 'custom' ), 123 );
+kit_image_assert( 'recusa imagem custom sem anexo', is_wp_error( $invalid_custom_image ) && 'papelito_kit_image_required' === $invalid_custom_image->code );
 
 if ( $failures > 0 ) {
 	echo "RESULT: {$failures} assertion(s) failed\n";

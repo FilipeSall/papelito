@@ -91,7 +91,7 @@ require_once __DIR__ . '/includes/billing_email_sync.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.35.0' );
+	define( 'PAPELITO_DB_VERSION', '1.36.0' );
 }
 
 /**
@@ -128,6 +128,7 @@ function papelito_maybe_migrate_db() {
 			array(
 				'papelito_vendor_stock_install_tables',
 				'papelito_kits_install_tables',
+				'papelito_kits_normalize_legacy_images',
 				'papelito_kits_remove_legacy_collection',
 				'papelito_notifications_install_tables',
 				'papelito_tracking_install_tables',

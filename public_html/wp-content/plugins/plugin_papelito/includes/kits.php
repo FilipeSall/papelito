@@ -77,6 +77,31 @@ function papelito_kits_install_tables(): void {
 	);
 }
 
+function papelito_kits_normalize_legacy_images(): void {
+	global $wpdb;
+
+	$tables = papelito_kits_table_names();
+	$rows   = $wpdb->get_results(
+		"SELECT id, product_id FROM {$tables['kits']} WHERE image_source = 'custom' AND image_attachment_id = 0",
+		ARRAY_A
+	);
+
+	foreach ( is_array( $rows ) ? $rows : array() as $kit ) {
+		$attachment_id = absint( get_post_thumbnail_id( absint( $kit['product_id'] ?? 0 ) ) );
+		if ( $attachment_id <= 0 || ! wp_attachment_is_image( $attachment_id ) ) {
+			continue;
+		}
+
+		$wpdb->update(
+			$tables['kits'],
+			array( 'image_attachment_id' => $attachment_id ),
+			array( 'id' => absint( $kit['id'] ?? 0 ) ),
+			array( '%d' ),
+			array( '%d' )
+		);
+	}
+}
+
 function papelito_kits_remove_legacy_collection(): void {
 	// Os vínculos legados são histórico de negócio. A nova entidade Kit não os
 	// consulta, mas removê-los torna rollback e auditoria impossíveis.
@@ -560,6 +585,7 @@ function papelito_kit_response( array $kit ): array {
 		'status'              => $product ? $product->get_status() : 'draft',
 		'price'               => $product ? (string) $product->get_regular_price() : '',
 		'salePrice'           => $product ? (string) $product->get_sale_price() : '',
+		'imageAttachmentId'   => (int) $kit['image_attachment_id'],
 		'imageUrl'            => papelito_kit_image_url( $kit ),
 		'imageSource'         => sanitize_key( (string) $kit['image_source'] ),
 		'shortDescription'    => $product ? wp_kses_post( $product->get_short_description() ) : '',
@@ -783,7 +809,7 @@ function papelito_kit_validate_write_image( array $payload, ?int $kit_id ): arra
 	$source        = sanitize_key( (string) ( $payload['imageSource'] ?? 'fallback' ) );
 	$source        = array_key_exists( $source, PAPELITO_KIT_IMAGE_PRESETS ) || 'custom' === $source ? $source : 'fallback';
 	$attachment_id = absint( $payload['imageAttachmentId'] ?? 0 );
-	if ( null === $kit_id && ( 'custom' !== $source || $attachment_id <= 0 || ! wp_attachment_is_image( $attachment_id ) ) ) {
+	if ( 'custom' === $source && ( $attachment_id <= 0 || ! wp_attachment_is_image( $attachment_id ) ) ) {
 		return new WP_Error( 'papelito_kit_image_required', 'Envie uma imagem do Kit antes de salvar.', array( 'status' => 422 ) );
 	}
 
