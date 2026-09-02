@@ -157,6 +157,26 @@ function papelito_admin_reports_parse_simple_export_filters( WP_REST_Request $re
 }
 
 /**
+ * Filtros do export de usuarios.
+ *
+ * O intervalo aqui recorta `user_registered` (data de cadastro), nao periodo de venda.
+ * `role` reaproveita o mesmo vocabulario do relatorio de usuarios ja existente.
+ *
+ * @param WP_REST_Request $request Request.
+ * @return array<string, string>
+ */
+function papelito_admin_reports_parse_users_export_filters( WP_REST_Request $request ): array {
+	$filters         = papelito_admin_reports_parse_simple_export_filters( $request );
+	$filters['role'] = papelito_admin_reports_normalize_enum(
+		sanitize_text_field( (string) $request->get_param( 'role' ) ),
+		array( 'all', 'administrator', 'customer', 'seller' ),
+		'all'
+	);
+
+	return $filters;
+}
+
+/**
  * Filtros do snapshot financeiro administrativo.
  *
  * @param WP_REST_Request $request Request REST.
@@ -172,6 +192,11 @@ function papelito_admin_reports_parse_sales_snapshot_filters( WP_REST_Request $r
 			sanitize_key( (string) $request->get_param( 'interval' ) ),
 			array( 'day', 'month' ),
 			'day'
+		),
+		'segment'  => papelito_admin_reports_normalize_enum(
+			sanitize_key( (string) $request->get_param( 'segment' ) ),
+			array( 'all', 'discounted', 'refunded' ),
+			'all'
 		),
 	);
 }
@@ -771,6 +796,13 @@ function papelito_admin_reports_query_simple_user_rows( array $filters ): array 
 		$filters['to'] . ' 23:59:59',
 	);
 
+	$role = isset( $filters['role'] ) ? (string) $filters['role'] : 'all';
+
+	if ( 'all' !== $role ) {
+		$where .= ' AND capabilities.meta_value LIKE %s';
+		$args[] = '%"' . $role . '"%';
+	}
+
 	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 	$sql = $wpdb->prepare(
 		"
@@ -783,6 +815,7 @@ function papelito_admin_reports_query_simple_user_rows( array $filters ): array 
 			city.meta_value AS city,
 			COALESCE(state.meta_value, billing_state.meta_value, shipping_state.meta_value) AS state
 		FROM {$wpdb->users} AS u
+		LEFT JOIN {$wpdb->usermeta} AS capabilities ON u.ID = capabilities.user_id AND capabilities.meta_key = '{$wpdb->prefix}capabilities'
 		LEFT JOIN {$wpdb->usermeta} AS billing_phone ON u.ID = billing_phone.user_id AND billing_phone.meta_key = 'billing_phone'
 		LEFT JOIN {$wpdb->usermeta} AS billing_cellphone ON u.ID = billing_cellphone.user_id AND billing_cellphone.meta_key = 'billing_cellphone'
 		LEFT JOIN {$wpdb->usermeta} AS phone_number ON u.ID = phone_number.user_id AND phone_number.meta_key = 'phone_number'
@@ -987,6 +1020,140 @@ function papelito_admin_reports_sales_bucket( WC_Order $order, string $interval 
 }
 
 /**
+ * Pedido teve desconto monetario real.
+ *
+ * A regra canonica vive no dominio de pedidos do vendor; aqui e so a porta de
+ * entrada do relatorio administrativo.
+ *
+ * @param WC_Order $order Pedido.
+ * @return bool
+ */
+function papelito_admin_reports_order_has_discount( WC_Order $order ): bool {
+	if ( function_exists( 'papelito_vendor_dashboard_order_has_discount' ) ) {
+		return papelito_vendor_dashboard_order_has_discount( $order );
+	}
+
+	return (float) $order->get_discount_total() > 0.0;
+}
+
+/**
+ * Pedido cancelado ou reembolsado, pelos status reais do WooCommerce.
+ *
+ * @param WC_Order $order Pedido.
+ * @return bool
+ */
+function papelito_admin_reports_order_is_refunded_or_cancelled( WC_Order $order ): bool {
+	if ( function_exists( 'papelito_vendor_dashboard_order_is_refunded_or_cancelled' ) ) {
+		return papelito_vendor_dashboard_order_is_refunded_or_cancelled( $order );
+	}
+
+	$status = sanitize_key( (string) $order->get_status() );
+
+	if ( in_array( $status, array( 'refunded', 'cancelled' ), true ) ) {
+		return true;
+	}
+
+	return (float) $order->get_total_refunded() > 0.0;
+}
+
+/**
+ * Recorta os pedidos que compoem o segmento pedido.
+ *
+ * @param array<int, WC_Order> $all_orders  Todos os pedidos da janela.
+ * @param array<int, WC_Order> $paid_orders Pedidos pagos da janela.
+ * @param string               $segment     all|discounted|refunded.
+ * @return array{scope: array<int, WC_Order>, revenue: array<int, WC_Order>}
+ */
+function papelito_admin_reports_segment_orders( array $all_orders, array $paid_orders, string $segment ): array {
+	if ( 'discounted' === $segment ) {
+		$rows = array_values( array_filter( $paid_orders, 'papelito_admin_reports_order_has_discount' ) );
+
+		return array(
+			'scope'   => $rows,
+			'revenue' => $rows,
+		);
+	}
+
+	if ( 'refunded' === $segment ) {
+		$rows = array_values(
+			array_filter( $all_orders, 'papelito_admin_reports_order_is_refunded_or_cancelled' )
+		);
+
+		return array(
+			'scope'   => $rows,
+			'revenue' => $rows,
+		);
+	}
+
+	return array(
+		'scope'   => $all_orders,
+		'revenue' => $paid_orders,
+	);
+}
+
+/**
+ * Janela imediatamente anterior, de mesma duracao, para a comparacao de receita.
+ *
+ * @param string $from Data inicial Y-m-d.
+ * @param string $to   Data final Y-m-d.
+ * @return array{from: string, to: string}|null
+ */
+function papelito_admin_reports_previous_window( string $from, string $to ): ?array {
+	$timezone = function_exists( 'wp_timezone' ) ? wp_timezone() : new DateTimeZone( 'UTC' );
+
+	try {
+		$start = new DateTimeImmutable( $from, $timezone );
+		$end   = new DateTimeImmutable( $to, $timezone );
+	} catch ( Exception $exception ) {
+		return null;
+	}
+
+	$days = (int) $start->diff( $end )->days + 1;
+
+	if ( $days < 1 ) {
+		return null;
+	}
+
+	$previous_end   = $start->modify( '-1 day' );
+	$previous_start = $previous_end->modify( '-' . ( $days - 1 ) . ' days' );
+
+	return array(
+		'from' => $previous_start->format( 'Y-m-d' ),
+		'to'   => $previous_end->format( 'Y-m-d' ),
+	);
+}
+
+/**
+ * Receita bruta da janela anterior, no mesmo segmento.
+ *
+ * @param array<string, string> $filters Filtros da janela atual.
+ * @return float|null
+ */
+function papelito_admin_reports_previous_gross_revenue( array $filters ): ?float {
+	$window = papelito_admin_reports_previous_window( $filters['from'], $filters['to'] );
+
+	if ( null === $window ) {
+		return null;
+	}
+
+	$all_orders  = papelito_admin_reports_query_sales_orders( $window );
+	$paid_orders = papelito_admin_reports_paid_sales_orders( $all_orders );
+	$segmented   = papelito_admin_reports_segment_orders(
+		$all_orders,
+		$paid_orders,
+		(string) ( $filters['segment'] ?? 'all' )
+	);
+
+	$total = 0.0;
+
+	foreach ( $segmented['revenue'] as $order ) {
+		$total += max( 0.0, (float) $order->get_total() );
+	}
+
+	return round( $total, 2 );
+}
+
+/**
  * Cria um snapshot financeiro com a regra canônica de pagamento.
  *
  * @param array<string, string> $filters Filtros com from, to e interval.
@@ -995,6 +1162,10 @@ function papelito_admin_reports_sales_bucket( WC_Order $order, string $interval 
 function papelito_admin_reports_get_sales_snapshot( array $filters ): array {
 	$all_orders         = papelito_admin_reports_query_sales_orders( $filters );
 	$paid_orders        = papelito_admin_reports_paid_sales_orders( $all_orders );
+	$segment            = (string) ( $filters['segment'] ?? 'all' );
+	$segmented          = papelito_admin_reports_segment_orders( $all_orders, $paid_orders, $segment );
+	$scope_orders       = $segmented['scope'];
+	$revenue_orders     = $segmented['revenue'];
 	$gross_revenue      = 0.0;
 	$discounts_total    = 0.0;
 	$shipping_total     = 0.0;
@@ -1007,7 +1178,7 @@ function papelito_admin_reports_get_sales_snapshot( array $filters ): array {
 	$product_revenue    = array();
 	$payment_mix        = array();
 
-	foreach ( $all_orders as $order ) {
+	foreach ( $scope_orders as $order ) {
 		$status = sanitize_key( (string) $order->get_status() );
 		$status = '' === $status ? 'unknown' : $status;
 		$status_counts[ $status ] = ( $status_counts[ $status ] ?? 0 ) + 1;
@@ -1018,7 +1189,7 @@ function papelito_admin_reports_get_sales_snapshot( array $filters ): array {
 		}
 	}
 
-	foreach ( $paid_orders as $order ) {
+	foreach ( $revenue_orders as $order ) {
 		$total          = max( 0.0, (float) $order->get_total() );
 		$discount        = max( 0.0, (float) $order->get_discount_total() );
 		$shipping        = max( 0.0, (float) $order->get_shipping_total() );
@@ -1078,8 +1249,8 @@ function papelito_admin_reports_get_sales_snapshot( array $filters ): array {
 	return array(
 		'grossRevenue'      => round( $gross_revenue, 2 ),
 		'netRevenue'        => round( max( 0.0, $gross_revenue - $shipping_total - $taxes_total - $refunds_total ), 2 ),
-		'orders'            => count( $paid_orders ),
-		'avgOrderValue'     => count( $paid_orders ) > 0 ? round( $gross_revenue / count( $paid_orders ), 2 ) : 0.0,
+		'orders'            => count( $revenue_orders ),
+		'avgOrderValue'     => count( $revenue_orders ) > 0 ? round( $gross_revenue / count( $revenue_orders ), 2 ) : 0.0,
 		'discountsTotal'    => round( $discounts_total, 2 ),
 		'shippingTotal'     => round( $shipping_total, 2 ),
 		'taxesTotal'        => round( $taxes_total, 2 ),
@@ -1098,7 +1269,47 @@ function papelito_admin_reports_get_sales_snapshot( array $filters ): array {
 			array_values( $payment_rows )
 		),
 		'leaderboard'      => array_values( $leaderboard ),
+		'segment'          => $segment,
+		'previousGrossRevenue' => papelito_admin_reports_previous_gross_revenue( $filters ),
 	);
+}
+
+/**
+ * Nome do cliente para o relatorio de vendas.
+ *
+ * Em pedido B2B o comprador fiscal e a empresa: `billing_first_name`/`billing_last_name`
+ * nascem vazios e a pessoa fica so em `shipping`. Ler apenas o billing fazia o export
+ * gravar "Cliente nao identificado" em pedidos que tinham cliente. Reaproveita a mesma
+ * ordem de resolucao ja usada pelo painel do vendor.
+ *
+ * @param WC_Order $order Pedido.
+ * @return string
+ */
+function papelito_admin_reports_order_customer_name( WC_Order $order ): string {
+	if ( function_exists( 'papelito_vendor_dashboard_customer_label' ) ) {
+		$label = papelito_vendor_dashboard_customer_label( $order );
+
+		if ( '' !== $label ) {
+			return $label;
+		}
+	}
+
+	$fallbacks = array(
+		method_exists( $order, 'get_formatted_shipping_full_name' ) ? (string) $order->get_formatted_shipping_full_name() : '',
+		method_exists( $order, 'get_shipping_company' ) ? (string) $order->get_shipping_company() : '',
+		method_exists( $order, 'get_billing_company' ) ? (string) $order->get_billing_company() : '',
+		method_exists( $order, 'get_formatted_billing_full_name' ) ? (string) $order->get_formatted_billing_full_name() : '',
+	);
+
+	foreach ( $fallbacks as $candidate ) {
+		$candidate = sanitize_text_field( trim( $candidate ) );
+
+		if ( '' !== $candidate ) {
+			return $candidate;
+		}
+	}
+
+	return 'Cliente não identificado';
 }
 
 /**
@@ -1126,7 +1337,7 @@ function papelito_admin_reports_query_simple_sales_rows( array $filters ): array
 			'order_number'    => $order->get_order_number(),
 			'created_at'      => $order->get_date_created() ? $order->get_date_created()->date_i18n( 'Y-m-d H:i:s' ) : '',
 			'status'          => wc_get_order_status_name( $order->get_status() ),
-			'customer_name'   => trim( $order->get_formatted_billing_full_name() ) ? trim( $order->get_formatted_billing_full_name() ) : 'Cliente não identificado',
+			'customer_name'   => papelito_admin_reports_order_customer_name( $order ),
 			'phone'           => (string) $order->get_billing_phone(),
 			'postcode'        => (string) $order->get_billing_postcode(),
 			'city'            => $city,
@@ -1333,7 +1544,7 @@ add_action(
 					return current_user_can( 'manage_options' );
 				},
 				'callback'            => static function ( WP_REST_Request $request ) {
-					$filters = papelito_admin_reports_parse_simple_export_filters( $request );
+					$filters = papelito_admin_reports_parse_users_export_filters( $request );
 					$rows    = papelito_admin_reports_query_simple_user_rows( $filters );
 					$binary  = 'csv' === $filters['format']
 						? papelito_admin_reports_generate_simple_users_csv( $rows )

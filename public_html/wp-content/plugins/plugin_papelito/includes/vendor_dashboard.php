@@ -72,6 +72,54 @@ function papelito_vendor_dashboard_sale_statuses(): array {
 }
 
 /**
+ * Segmentos de analise de venda.
+ *
+ * @return array<int, string>
+ */
+function papelito_vendor_dashboard_segments(): array {
+	return array( 'all', 'discounted', 'refunded' );
+}
+
+/**
+ * Pedido teve desconto monetario real.
+ *
+ * Usa `discount_total` em vez da existencia de cupom: cupom aplicado e depois
+ * removido, ou cupom de frete, nao reduz o valor da venda.
+ *
+ * @param object $order Pedido WooCommerce.
+ * @return bool
+ */
+function papelito_vendor_dashboard_order_has_discount( $order ): bool {
+	if ( ! method_exists( $order, 'get_discount_total' ) ) {
+		return false;
+	}
+
+	return (float) $order->get_discount_total() > 0.0;
+}
+
+/**
+ * Pedido reembolsado ou cancelado, pelos status reais do WooCommerce.
+ *
+ * @param object $order Pedido WooCommerce.
+ * @return bool
+ */
+function papelito_vendor_dashboard_order_is_refunded_or_cancelled( $order ): bool {
+	if ( method_exists( $order, 'get_status' ) ) {
+		$status = sanitize_key( (string) $order->get_status() );
+
+		if ( in_array( $status, array( 'refunded', 'cancelled' ), true ) ) {
+			return true;
+		}
+	}
+
+	if ( ! method_exists( $order, 'get_total_refunded' ) ) {
+		return false;
+	}
+
+	return (float) $order->get_total_refunded() > 0.0;
+}
+
+/**
  * Defense-in-depth payment gate for KPIs. An order only counts as a sale when
  * the payment is actually confirmed. Trusts the WooCommerce order status
  * (paid-bearing statuses) and/or the persisted Pagar.me charge state, so that
@@ -412,7 +460,13 @@ function papelito_vendor_dashboard_period( WP_REST_Request $request ): array {
 		$to   = $temp;
 	}
 
-	return compact( 'from', 'to', 'interval' );
+	$segment = sanitize_key( (string) $request->get_param( 'segment' ) );
+
+	if ( ! in_array( $segment, papelito_vendor_dashboard_segments(), true ) ) {
+		$segment = 'all';
+	}
+
+	return compact( 'from', 'to', 'interval', 'segment' );
 }
 
 /**
@@ -522,22 +576,42 @@ function papelito_vendor_dashboard_accumulate_products( array &$products, array 
 }
 
 /**
- * Build seller KPI response.
+ * Recorta os pedidos do vendor que compoem o segmento pedido.
  *
- * @return array<string,mixed>
+ * @param array<int, object>    $orders    Pedidos do vendor.
+ * @param int                   $vendor_id Vendor.
+ * @param array<string, string> $period    Periodo com from, to e interval.
+ * @param string                $segment   all|discounted|refunded.
+ * @return array{awaiting_payment: int, rows: array<int, array<string, mixed>>}
  */
-function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array {
-	$orders                 = papelito_vendor_dashboard_orders_for_vendor( $vendor_id );
-	$gross_revenue          = 0.0;
-	$orders_count           = 0;
-	$pending_orders         = 0;
-	$awaiting_payment_count = 0;
-	$series                 = array();
-	$products               = array();
+function papelito_vendor_dashboard_kpi_segment_rows( array $orders, int $vendor_id, array $period, string $segment ): array {
 	$sale_statuses          = papelito_vendor_dashboard_sale_statuses();
+	$rows                   = array();
+	$awaiting_payment_count = 0;
 
 	foreach ( $orders as $order ) {
+		// Reembolsado e cancelado ficam fora do caminho normal de venda: o gate de
+		// pagamento e o status de expedicao descartariam justamente o que se quer ver.
+		if ( 'refunded' === $segment ) {
+			if ( ! papelito_vendor_dashboard_in_period( $order, $period['from'], $period['to'] ) ) {
+				continue;
+			}
+
+			if ( ! papelito_vendor_dashboard_order_is_refunded_or_cancelled( $order ) ) {
+				continue;
+			}
+
+			$rows[] = array(
+				'total'   => (float) $order->get_total(),
+				'pending' => false,
+				'bucket'  => papelito_vendor_dashboard_bucket( $order, $period['interval'] ),
+				'items'   => papelito_vendor_dashboard_items( $order, $vendor_id ),
+			);
+			continue;
+		}
+
 		$data = papelito_vendor_dashboard_kpi_order_data( $order, $vendor_id, $period, $sale_statuses );
+
 		if ( null === $data ) {
 			continue;
 		}
@@ -547,6 +621,80 @@ function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array 
 			continue;
 		}
 
+		if ( 'discounted' === $segment && ! papelito_vendor_dashboard_order_has_discount( $order ) ) {
+			continue;
+		}
+
+		$rows[] = $data;
+	}
+
+	return array(
+		'awaiting_payment' => $awaiting_payment_count,
+		'rows'             => $rows,
+	);
+}
+
+/**
+ * Receita bruta da janela anterior, de mesma duracao e mesmo segmento.
+ *
+ * @param int                   $vendor_id Vendor.
+ * @param array<string, string> $period    Periodo atual.
+ * @return float|null
+ */
+function papelito_vendor_dashboard_previous_gross_revenue( int $vendor_id, array $period ): ?float {
+	if ( ! function_exists( 'papelito_admin_reports_previous_window' ) ) {
+		return null;
+	}
+
+	$window = papelito_admin_reports_previous_window( (string) $period['from'], (string) $period['to'] );
+
+	if ( null === $window ) {
+		return null;
+	}
+
+	$previous = array(
+		'from'     => $window['from'],
+		'to'       => $window['to'],
+		'interval' => $period['interval'],
+		'segment'  => $period['segment'] ?? 'all',
+	);
+
+	$segmented = papelito_vendor_dashboard_kpi_segment_rows(
+		papelito_vendor_dashboard_orders_for_vendor( $vendor_id ),
+		$vendor_id,
+		$previous,
+		(string) $previous['segment']
+	);
+
+	$total = 0.0;
+
+	foreach ( $segmented['rows'] as $row ) {
+		$total += (float) $row['total'];
+	}
+
+	return round( $total, 2 );
+}
+
+/**
+ * KPIs do vendor no periodo.
+ *
+ * @param int                   $vendor_id Vendor.
+ * @param array<string, string> $period    Periodo com from, to, interval e segment.
+ * @return array<string, mixed>
+ */
+function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array {
+	$orders         = papelito_vendor_dashboard_orders_for_vendor( $vendor_id );
+	$segment        = isset( $period['segment'] ) ? (string) $period['segment'] : 'all';
+	$segmented      = papelito_vendor_dashboard_kpi_segment_rows( $orders, $vendor_id, $period, $segment );
+	$gross_revenue  = 0.0;
+	$orders_count   = 0;
+	$pending_orders = 0;
+	$series         = array();
+	$products       = array();
+
+	$awaiting_payment_count = $segmented['awaiting_payment'];
+
+	foreach ( $segmented['rows'] as $data ) {
 		$total          = (float) $data['total'];
 		$gross_revenue += $total;
 		++$orders_count;
@@ -571,6 +719,8 @@ function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array 
 
 	return array(
 		'period'                  => $period,
+		'segment'                 => $segment,
+		'previous_gross_revenue'  => papelito_vendor_dashboard_previous_gross_revenue( $vendor_id, $period ),
 		'gross_revenue'           => round( $gross_revenue, 2 ),
 		'average_ticket'          => $orders_count > 0 ? round( $gross_revenue / $orders_count, 2 ) : 0.0,
 		'pending_orders'          => $pending_orders,
