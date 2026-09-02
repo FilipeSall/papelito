@@ -1022,13 +1022,17 @@ function papelito_admin_reports_sales_bucket( WC_Order $order, string $interval 
 /**
  * Pedido teve desconto monetario real.
  *
- * Usa `discount_total` em vez da existencia de cupom: cupom aplicado e depois
- * removido, ou cupom de frete, nao reduz o valor da venda.
+ * A regra canonica vive no dominio de pedidos do vendor; aqui e so a porta de
+ * entrada do relatorio administrativo.
  *
  * @param WC_Order $order Pedido.
  * @return bool
  */
 function papelito_admin_reports_order_has_discount( WC_Order $order ): bool {
+	if ( function_exists( 'papelito_vendor_dashboard_order_has_discount' ) ) {
+		return papelito_vendor_dashboard_order_has_discount( $order );
+	}
+
 	return (float) $order->get_discount_total() > 0.0;
 }
 
@@ -1039,6 +1043,10 @@ function papelito_admin_reports_order_has_discount( WC_Order $order ): bool {
  * @return bool
  */
 function papelito_admin_reports_order_is_refunded_or_cancelled( WC_Order $order ): bool {
+	if ( function_exists( 'papelito_vendor_dashboard_order_is_refunded_or_cancelled' ) ) {
+		return papelito_vendor_dashboard_order_is_refunded_or_cancelled( $order );
+	}
+
 	$status = sanitize_key( (string) $order->get_status() );
 
 	if ( in_array( $status, array( 'refunded', 'cancelled' ), true ) ) {
