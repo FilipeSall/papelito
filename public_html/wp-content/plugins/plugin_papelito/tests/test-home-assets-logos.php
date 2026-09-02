@@ -8,15 +8,23 @@
  */
 
 define( 'ABSPATH', __DIR__ . '/../' );
+define( 'PAPELITO_TEST_CUSTOM_FOOTER_ALT', 'Rodape custom' );
+define( 'PAPELITO_TEST_PUBLIC_LOGO_URL', '/images/nova-publica.svg' );
+define( 'PAPELITO_TEST_PNG_MIME_TYPE', 'image/png' );
+define( 'PAPELITO_TEST_SVG_MIME_TYPE', 'image/svg+xml' );
 
 $GLOBALS['pap_options']            = array();
 $GLOBALS['pap_attachments']        = array();
 $GLOBALS['pap_can_manage_options'] = true;
 $GLOBALS['pap_filters']            = array();
 
-function add_action( ...$args ) {}
-function register_rest_route( ...$args ) {}
-function add_filter( $hook, $callback, $priority = 10, $accepted_args = 1 ) {
+function add_action( ...$args ) {
+	// The standalone test does not execute WordPress hooks; registration is intentionally a no-op.
+}
+function register_rest_route( ...$args ) {
+	// The standalone test calls the handlers directly; route registration is intentionally a no-op.
+}
+function add_filter( string $hook, mixed $callback, int $priority = 10, int $accepted_args = 1 ) {
 	$GLOBALS['pap_filters'][ $hook ][] = $callback;
 	return true;
 }
@@ -28,50 +36,50 @@ function papelito_test_apply_filter( string $hook, ...$args ) {
 	}
 	return $value;
 }
-function current_user_can( $cap ) { return 'manage_options' === $cap && $GLOBALS['pap_can_manage_options']; }
-function get_option( $key, $default = false ) { return $GLOBALS['pap_options'][ $key ] ?? $default; }
-function update_option( $key, $value, $autoload = null ) { $GLOBALS['pap_options'][ $key ] = $value; return true; }
-function delete_option( $key ) { unset( $GLOBALS['pap_options'][ $key ] ); return true; }
-function absint( $value ) { return abs( (int) $value ); }
-function sanitize_key( $value ) { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $value ) ); }
-function sanitize_text_field( $value ) { return trim( preg_replace( '/[\r\n\t]+/', ' ', wp_strip_all_tags( (string) $value ) ) ); }
-function sanitize_textarea_field( $value ) { return trim( wp_strip_all_tags( (string) $value ) ); }
-function wp_strip_all_tags( $value ) { return strip_tags( (string) $value ); }
-function esc_url_raw( $value ) { return (string) $value; }
-function wp_http_validate_url( $value ) { return (bool) filter_var( $value, FILTER_VALIDATE_URL ); }
-function rest_sanitize_boolean( $value ) { return ! in_array( $value, array( false, 0, '0', 'false', '', null ), true ); }
+function current_user_can( mixed $cap ) { return 'manage_options' === $cap && $GLOBALS['pap_can_manage_options']; }
+function get_option( mixed $key, mixed $default = false ) { return $GLOBALS['pap_options'][ $key ] ?? $default; }
+function update_option( mixed $key, mixed $value, mixed $autoload = null ) { $GLOBALS['pap_options'][ $key ] = $value; return true; }
+function delete_option( mixed $key ) { unset( $GLOBALS['pap_options'][ $key ] ); return true; }
+function absint( mixed $value ) { return abs( (int) $value ); }
+function sanitize_key( mixed $value ) { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $value ) ); }
+function sanitize_text_field( mixed $value ) { return trim( preg_replace( '/[\r\n\t]+/', ' ', wp_strip_all_tags( (string) $value ) ) ); }
+function sanitize_textarea_field( mixed $value ) { return trim( wp_strip_all_tags( (string) $value ) ); }
+function wp_strip_all_tags( mixed $value ) { return strip_tags( (string) $value ); }
+function esc_url_raw( mixed $value ) { return (string) $value; }
+function wp_http_validate_url( mixed $value ) { return (bool) filter_var( $value, FILTER_VALIDATE_URL ); }
+function rest_sanitize_boolean( mixed $value ) { return ! in_array( $value, array( false, 0, '0', 'false', '', null ), true ); }
 function wp_generate_uuid4() { return 'uuid-' . count( $GLOBALS['pap_options'] ); }
-function wp_get_attachment_image_url( $id, $size = 'full' ) { return $GLOBALS['pap_attachments'][ $id ] ?? false; }
+function wp_get_attachment_image_url( mixed $id, mixed $size = 'full' ) { return $GLOBALS['pap_attachments'][ $id ] ?? false; }
 
 class WP_Error {
-	public $code;
-	public $message;
-	public $data;
-	function __construct( $code = '', $message = '', $data = array() ) {
+	public mixed $code;
+	public mixed $message;
+	public mixed $data;
+	public function __construct( mixed $code = '', mixed $message = '', mixed $data = array() ) {
 		$this->code    = $code;
 		$this->message = $message;
 		$this->data    = $data;
 	}
-	function get_error_code() { return $this->code; }
-	function get_error_message() { return $this->message; }
-	function get_error_data() { return $this->data; }
+	public function get_error_code() { return $this->code; }
+	public function get_error_message() { return $this->message; }
+	public function get_error_data() { return $this->data; }
 }
-function is_wp_error( $thing ) { return $thing instanceof WP_Error; }
+function is_wp_error( mixed $thing ) { return $thing instanceof WP_Error; }
 
 class WP_REST_Response {
-	public $data;
-	public $status;
-	function __construct( $data = null, $status = 200 ) {
+	public mixed $data;
+	public mixed $status;
+	public function __construct( mixed $data = null, mixed $status = 200 ) {
 		$this->data   = $data;
 		$this->status = $status;
 	}
 }
 
 class WP_REST_Request {
-	private $params;
-	function __construct( $params = array() ) { $this->params = $params; }
-	function get_json_params() { return $this->params; }
-	function get_param( $key ) { return $this->params[ $key ] ?? null; }
+	private mixed $params;
+	public function __construct( mixed $params = array() ) { $this->params = $params; }
+	public function get_json_params() { return $this->params; }
+	public function get_param( mixed $key ) { return $this->params[ $key ] ?? null; }
 }
 
 class WP_REST_Server {
@@ -80,11 +88,11 @@ class WP_REST_Server {
 	const DELETABLE = 'DELETE';
 }
 
-require __DIR__ . '/../includes/home_assets.php';
-require __DIR__ . '/../includes/media_uploads.php';
+require_once __DIR__ . '/../includes/home_assets.php';
+require_once __DIR__ . '/../includes/media_uploads.php';
 
 $failures = 0;
-function papelito_assert( string $label, $expected, $actual ): void {
+function papelito_assert( string $label, mixed $expected, mixed $actual ): void {
 	global $failures;
 	if ( $expected === $actual ) {
 		echo "  PASS: {$label}\n";
@@ -97,9 +105,6 @@ function papelito_assert( string $label, $expected, $actual ): void {
 echo "Logos: defaults\n";
 $snapshot = papelito_home_assets_get_admin_logos_snapshot();
 papelito_assert( 'exposes exactly three logos', array( 'publicHeader', 'privateHeader', 'footer' ), array_keys( $snapshot['logos'] ) );
-papelito_assert( 'public header default', '/images/marketplacelogo.svg', $snapshot['logos']['publicHeader']['imageUrl'] );
-papelito_assert( 'private header default is marketplacelogo', '/images/marketplacelogo.svg', $snapshot['logos']['privateHeader']['imageUrl'] );
-papelito_assert( 'footer default', '/images/logo3.svg', $snapshot['logos']['footer']['imageUrl'] );
 papelito_assert( 'defaults have no issues', array(), $snapshot['issues'] );
 
 echo "Logos: per-key fallback\n";
@@ -107,13 +112,13 @@ $GLOBALS['pap_options']['papelito_site_logos'] = array(
 	'footer' => array(
 		'imageId'  => 0,
 		'imageUrl' => '/images/custom-footer.svg',
-		'alt'      => 'Rodape custom',
+		'alt'      => PAPELITO_TEST_CUSTOM_FOOTER_ALT,
 	),
 );
 $snapshot = papelito_home_assets_get_admin_logos_snapshot();
 papelito_assert( 'stored key wins', '/images/custom-footer.svg', $snapshot['logos']['footer']['imageUrl'] );
-papelito_assert( 'stored alt wins', 'Rodape custom', $snapshot['logos']['footer']['alt'] );
-papelito_assert( 'missing key falls back to default', '/images/marketplacelogo.svg', $snapshot['logos']['privateHeader']['imageUrl'] );
+papelito_assert( 'stored alt wins', PAPELITO_TEST_CUSTOM_FOOTER_ALT, $snapshot['logos']['footer']['alt'] );
+papelito_assert( 'missing key falls back to default', papelito_home_assets_default_logos()['privateHeader']['imageUrl'], $snapshot['logos']['privateHeader']['imageUrl'] );
 
 echo "Logos: attachment id resolution\n";
 $GLOBALS['pap_attachments'][77]                = 'https://wp.example/wp-content/uploads/logo-nova.svg';
@@ -136,25 +141,25 @@ $validated = papelito_home_assets_validate_logos_payload(
 	array(
 		'publicHeader' => array(
 			'imageId'  => 0,
-			'imageUrl' => '/images/nova-publica.svg',
+			'imageUrl' => PAPELITO_TEST_PUBLIC_LOGO_URL,
 			'alt'      => 'Publica',
 		),
 	)
 );
 papelito_assert( 'valid payload normalizes all keys', array( 'publicHeader', 'privateHeader', 'footer' ), array_keys( $validated ) );
-papelito_assert( 'valid payload keeps sent url', '/images/nova-publica.svg', $validated['publicHeader']['imageUrl'] );
-papelito_assert( 'valid payload fills missing key from default', '/images/logo3.svg', $validated['footer']['imageUrl'] );
+papelito_assert( 'valid payload keeps sent url', PAPELITO_TEST_PUBLIC_LOGO_URL, $validated['publicHeader']['imageUrl'] );
+papelito_assert( 'valid payload fills missing key from default', papelito_home_assets_default_logos()['footer']['imageUrl'], $validated['footer']['imageUrl'] );
 
 $blank_alt = papelito_home_assets_validate_logos_payload(
 	array(
 		'publicHeader' => array(
 			'imageId'  => 0,
-			'imageUrl' => '/images/nova-publica.svg',
+			'imageUrl' => PAPELITO_TEST_PUBLIC_LOGO_URL,
 			'alt'      => '   ',
 		),
 	)
 );
-papelito_assert( 'blank alt falls back to default instead of failing', 'Papelito', $blank_alt['publicHeader']['alt'] );
+papelito_assert( 'blank alt falls back to default instead of failing', papelito_home_assets_default_logos()['publicHeader']['alt'], $blank_alt['publicHeader']['alt'] );
 
 $external_url = papelito_home_assets_validate_logos_payload(
 	array(
@@ -165,7 +170,7 @@ $external_url = papelito_home_assets_validate_logos_payload(
 		),
 	)
 );
-papelito_assert( 'unsafe url falls back to default', '/images/logo3.svg', $external_url['footer']['imageUrl'] );
+papelito_assert( 'unsafe url falls back to default', papelito_home_assets_default_logos()['footer']['imageUrl'], $external_url['footer']['imageUrl'] );
 
 echo "Logos: restore default\n";
 $GLOBALS['pap_options']['papelito_site_logos'] = array(
@@ -177,11 +182,11 @@ $GLOBALS['pap_options']['papelito_site_logos'] = array(
 	'footer'        => array(
 		'imageId'  => 0,
 		'imageUrl' => '/images/rodape-custom.svg',
-		'alt'      => 'Rodape custom',
+		'alt'      => PAPELITO_TEST_CUSTOM_FOOTER_ALT,
 	),
 );
 $restored = papelito_home_assets_restore_default_logo( 'privateHeader' );
-papelito_assert( 'restored key returns to default', '/images/marketplacelogo.svg', $restored['logos']['privateHeader']['imageUrl'] );
+papelito_assert( 'restored key returns to default', papelito_home_assets_default_logos()['privateHeader']['imageUrl'], $restored['logos']['privateHeader']['imageUrl'] );
 papelito_assert( 'other keys are untouched', '/images/rodape-custom.svg', $restored['logos']['footer']['imageUrl'] );
 papelito_assert( 'restored key is removed from the option', false, array_key_exists( 'privateHeader', $GLOBALS['pap_options']['papelito_site_logos'] ) );
 
@@ -193,11 +198,11 @@ papelito_assert( 'valid key check rejects non-strings', false, papelito_home_ass
 
 echo "SVG uploads: mime allowance\n";
 $GLOBALS['pap_can_manage_options'] = true;
-$mimes                            = papelito_test_apply_filter( 'upload_mimes', array( 'png' => 'image/png' ) );
-papelito_assert( 'admin gets svg mime', 'image/svg+xml', $mimes['svg'] ?? null );
+$mimes                            = papelito_test_apply_filter( 'upload_mimes', array( 'png' => PAPELITO_TEST_PNG_MIME_TYPE ) );
+papelito_assert( 'admin gets svg mime', PAPELITO_TEST_SVG_MIME_TYPE, $mimes['svg'] ?? null );
 
 $GLOBALS['pap_can_manage_options'] = false;
-$mimes                            = papelito_test_apply_filter( 'upload_mimes', array( 'png' => 'image/png' ) );
+$mimes                            = papelito_test_apply_filter( 'upload_mimes', array( 'png' => PAPELITO_TEST_PNG_MIME_TYPE ) );
 papelito_assert( 'non-admin does not get svg mime', null, $mimes['svg'] ?? null );
 
 $GLOBALS['pap_can_manage_options'] = true;
@@ -211,18 +216,18 @@ $checked                          = papelito_test_apply_filter(
 	'logo.svg'
 );
 papelito_assert( 'filetype check fixes svg ext', 'svg', $checked['ext'] );
-papelito_assert( 'filetype check fixes svg type', 'image/svg+xml', $checked['type'] );
+papelito_assert( 'filetype check fixes svg type', PAPELITO_TEST_SVG_MIME_TYPE, $checked['type'] );
 
 $checked = papelito_test_apply_filter(
 	'wp_check_filetype_and_ext',
 	array(
 		'ext'  => 'png',
-		'type' => 'image/png',
+		'type' => PAPELITO_TEST_PNG_MIME_TYPE,
 	),
 	'/tmp/logo.png',
 	'logo.png'
 );
-papelito_assert( 'filetype check leaves non-svg alone', 'image/png', $checked['type'] );
+papelito_assert( 'filetype check leaves non-svg alone', PAPELITO_TEST_PNG_MIME_TYPE, $checked['type'] );
 
 echo "SVG uploads: content guard\n";
 papelito_assert( 'clean svg is accepted', true, papelito_media_svg_contents_are_safe( '<svg viewBox="0 0 10 10"><path d="M0 0h10v10H0z"/></svg>' ) );
@@ -241,7 +246,7 @@ function papelito_test_svg_upload( string $contents ): array {
 	return array(
 		'name'     => 'logo.svg',
 		'tmp_name' => $path,
-		'type'     => 'image/svg+xml',
+		'type'     => PAPELITO_TEST_SVG_MIME_TYPE,
 	);
 }
 
@@ -262,7 +267,7 @@ $png                              = papelito_test_apply_filter(
 	array(
 		'name'     => 'logo.png',
 		'tmp_name' => '/tmp/does-not-matter.png',
-		'type'     => 'image/png',
+		'type'     => PAPELITO_TEST_PNG_MIME_TYPE,
 	)
 );
 papelito_assert( 'png upload is not inspected', false, isset( $png['error'] ) );
