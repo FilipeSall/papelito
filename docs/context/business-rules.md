@@ -20,6 +20,7 @@ Todos os arquivos em `public_html/wp-content/plugins/plugin_papelito/includes/`.
 | Cupons / flash sale / roteamento | `coupons.php`, `flash_sale.php`, `order_routing.php`, `pagarme_*` | puro (normalizadores) + WP |
 | Empresa / B2B | `company_*`, `cnpj_*`, `customer_identity.php` — `papelito_company_purchase_capability()` é a única política de compra | WP |
 | Frete e rastreamento | `shipping.php`, `correios_prepostage.php`, `correios_tracking.php` | WP + HTTP externo |
+| Relatórios e exportações | `admin_reports.php` — snapshot, segmentos, exports do admin; `vendor_reports.php` — exports escopados ao vendor; regras de venda em `vendor_dashboard.php` | WP, SQL real |
 
 ## Taxonomia Papelito
 
@@ -126,9 +127,37 @@ Além disso: a query parte de `FROM wp_posts p LEFT JOIN papelito_vendor_stock v
 53. `papelito_product_on_promo` é emitido apenas na transição `non-publish → publish` de um cupom.
 54. Marcar como lida decrementa o contador **só se estava não lida**.
 
+## Relatórios e exportações
+
+55. **O nome do cliente de um pedido nunca sai só do billing.** Em pedido B2B a compradora fiscal é
+    a empresa, então `_billing_first_name` e `_billing_last_name` nascem vazios e a pessoa fica em
+    `shipping`. A ordem canônica é `papelito_vendor_dashboard_customer_label()`: pessoa do shipping →
+    empresa do shipping → empresa do billing → pessoa do billing. `papelito_admin_reports_order_customer_name()`
+    delega a ela e só então cai no literal `Cliente não identificado`. Ler apenas o billing gravava
+    esse literal em 100% dos pedidos B2B — foi corrigido duas vezes, primeiro na expedição do vendor
+    e depois no export administrativo.
+56. **Desconto é dinheiro, não cupom.** `papelito_vendor_dashboard_order_has_discount()` usa
+    `discount_total > 0`. Cupom aplicado e removido, ou cupom de frete, não reduz o valor da venda.
+57. **Reembolso e cancelamento não passam pelo gate de pagamento.**
+    `papelito_vendor_dashboard_order_is_refunded_or_cancelled()` reúne os status reais `refunded` e
+    `cancelled` (ou `total_refunded > 0`), e o segmento correspondente ignora
+    `papelito_vendor_dashboard_order_is_paid()` — exigir pagamento confirmado descartaria justamente
+    o que se quer ver.
+58. **O segmento recorta receita, KPIs e ranking juntos**, no backend. Nenhum recorte de dataset
+    acontece no frontend.
+59. **A variação de receita compara janelas, não pontos.**
+    `papelito_admin_reports_previous_window()` devolve a janela imediatamente anterior de mesma
+    duração; o snapshot soma essa janela no mesmo segmento. Vem `null` quando não pode ser derivada,
+    e isso é ausência de base de comparação, não erro.
+60. **O intervalo do relatório de usuários recorta `user_registered`** — data de cadastro. Não é
+    período de venda, e não deve ser descrito como se fosse.
+61. **O escopo de vendor nas exportações vem da sessão.** `papelito_vendor_reports_*` derivam o
+    vendor de `get_current_user_id()`; não existe parâmetro de `vendor_id`. O export de clientes
+    deduplica a conta e ignora pedido de convidado — sem conta, não há usuário a exportar.
+
 ## Erros padronizados
 
-55. Erros retornam `WP_Error` com código `papelito_*` e o status HTTP em `get_error_data()['status']`. Teste deve afirmar `get_error_code()` **e** o status. Catálogo em [`../../../docs/integration-contracts.md`](../../../docs/integration-contracts.md#catálogo-de-erros-papelito_).
+62. Erros retornam `WP_Error` com código `papelito_*` e o status HTTP em `get_error_data()['status']`. Teste deve afirmar `get_error_code()` **e** o status. Catálogo em [`../../../docs/integration-contracts.md`](../../../docs/integration-contracts.md#catálogo-de-erros-papelito_).
 
 ## Ao refatorar
 
