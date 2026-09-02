@@ -97,7 +97,7 @@ function papelito_assert( string $label, $expected, $actual ): void {
 echo "Logos: defaults\n";
 $snapshot = papelito_home_assets_get_admin_logos_snapshot();
 papelito_assert( 'exposes exactly three logos', array( 'publicHeader', 'privateHeader', 'footer' ), array_keys( $snapshot['logos'] ) );
-papelito_assert( 'public header default', '/images/logo.svg', $snapshot['logos']['publicHeader']['imageUrl'] );
+papelito_assert( 'public header default', '/images/marketplacelogo.svg', $snapshot['logos']['publicHeader']['imageUrl'] );
 papelito_assert( 'private header default is marketplacelogo', '/images/marketplacelogo.svg', $snapshot['logos']['privateHeader']['imageUrl'] );
 papelito_assert( 'footer default', '/images/logo3.svg', $snapshot['logos']['footer']['imageUrl'] );
 papelito_assert( 'defaults have no issues', array(), $snapshot['issues'] );

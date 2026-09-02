@@ -572,7 +572,7 @@ function papelito_home_assets_default_logos(): array {
 	return array(
 		'publicHeader'  => array(
 			'imageId'  => 0,
-			'imageUrl' => '/images/logo.svg',
+			'imageUrl' => '/images/marketplacelogo.svg',
 			'alt'      => 'Papelito',
 		),
 		'privateHeader' => array(
