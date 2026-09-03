@@ -75,6 +75,13 @@ Todos os arquivos em `public_html/wp-content/plugins/plugin_papelito/includes/`.
 26. Qualquer alteração dispara `papelito_vendor_stock_changed`, que invalida a cobertura.
 27. `papelito_order_routing_resolve_items` rejeita linha com quantidade acima do estoque, devolvendo **409** com produto, disponível e solicitado.
 28. Decremento por pedido é idempotente via `_papelito_stock_decremented`.
+29. `papelito_vendor_stock_set_many` é lote de **rede**, não de escrita: percorre `papelito_set_vendor_stock` produto por produto, preservando transação, log (`reason` = `vendor_bulk_update`) e evento de zerado. Falha de um produto **não** aborta os outros e volta em `failed[]`. Teto de 200 itens por requisição.
+30. Estoque baixo é `PAPELITO_VENDOR_STOCK_LOW_THRESHOLD` (constante, 5), lido por `papelito_vendor_stock_low_threshold()` e **devolvido na resposta REST** — o frontend nunca guarda uma segunda cópia do limite.
+31. `zeroed_only` e `unconfigured` são recortes **disjuntos**: `vs.qty IS NOT NULL AND disponível = 0` versus `vs.qty IS NULL`. Fundi-los esconde o produto que o vendor nunca lançou.
+32. `papelito_vendor_stock_product_audit()` é a **única** autoridade sobre o que falta no cadastro (`image`, `price`, `weight`, `dimensions`, `category`) e devolve, do mesmo `wc_get_product()`, também o `publicly_viewable`. Kit não é julgado por postmeta: peso, dimensão e categoria dele vivem em `papelito_kits`.
+33. `papelito_vendor_stock_incomplete_clause()` espelha esse audite em SQL, para filtrar e contar sobre o catálogo inteiro. **Ela não conhece kit** — quem chama precisa ter excluído a fachada de kit do recorte (a listagem pelo `type`, o resumo pelo `NOT EXISTS`). Divergir entre a cláusula e o audite faz a contagem do resumo discordar do selo da linha.
+34. `papelito_vendor_stock_summary()` sai em **uma** consulta com tabela derivada, ignora busca e taxonomia, e cada contagem tem que bater com o `total` da listagem do filtro equivalente. `coverage_percent` é `available / eligible` — presença no catálogo, nunca volume de estoque.
+35. `papelito_vendor_stock_request_product_data()` recalcula os campos faltantes no servidor, recusa produto completo com 409 e deduplica por `vendor-data-request:{vendor_id}:{product_id}` no índice `uq_user_type_dedupe`. É notificação **do vendor**, distinta da automática `product_data_incomplete` que `papelito_sync_product_data_notification()` já dispara ao salvar produto.
 
 ### Armadilhas de SQL em `papelito_vendor_stock_query`
 
@@ -89,20 +96,20 @@ Além disso: a query parte de `FROM wp_posts p LEFT JOIN papelito_vendor_stock v
 
 ## Vendor ativo
 
-29. O default é o vendor **mais próximo com estoque**, com resolução **lazy** (não persiste até o usuário interagir).
-30. `papelito_validate_active_vendor` exige cobertura do CEP, `approved` e role `seller`.
-31. `papelito_set_active_vendor` dispara `papelito_active_vendor_changed($user_id, $prev_id, $new_id)`.
+36. O default é o vendor **mais próximo com estoque**, com resolução **lazy** (não persiste até o usuário interagir).
+37. `papelito_validate_active_vendor` exige cobertura do CEP, `approved` e role `seller`.
+38. `papelito_set_active_vendor` dispara `papelito_active_vendor_changed($user_id, $prev_id, $new_id)`.
 
 ## Empresa e compra
 
-32. `papelito_company_purchase_capability()` é a **única** política de compra: centraliza `canPurchase`, `purchaseMode`, motivo estável, onboarding e `userContextType`.
-33. A classificação usa **capabilities e roles, nunca a role primária**. Precedência: `hybrid` → `internal_admin` → `vendor` → `customer`.
-34. Aprovação do primeiro owner exige CNPJ reconsultado e explicitamente `active` **nas últimas 24 h**.
-35. Falha técnica de provedor é `unavailable`, **nunca** `active` nem `inactive`. Divergência entre provedores é `conflict`.
-36. Provedor que não suporta CNPJ alfanumérico é marcado `provider_unsupported` — **nunca `invalid`**.
-37. Orçamento síncrono global de **6 s**, ~3 s por provedor, **sem retry no caminho síncrono**.
-38. Toda mutação empresarial recarrega empresa e membership do banco e exige `Idempotency-Key` durável.
-39. Transferência de titularidade e decisões de candidatura usam `SELECT ... FOR UPDATE`.
+39. `papelito_company_purchase_capability()` é a **única** política de compra: centraliza `canPurchase`, `purchaseMode`, motivo estável, onboarding e `userContextType`.
+40. A classificação usa **capabilities e roles, nunca a role primária**. Precedência: `hybrid` → `internal_admin` → `vendor` → `customer`.
+41. Aprovação do primeiro owner exige CNPJ reconsultado e explicitamente `active` **nas últimas 24 h**.
+42. Falha técnica de provedor é `unavailable`, **nunca** `active` nem `inactive`. Divergência entre provedores é `conflict`.
+43. Provedor que não suporta CNPJ alfanumérico é marcado `provider_unsupported` — **nunca `invalid`**.
+44. Orçamento síncrono global de **6 s**, ~3 s por provedor, **sem retry no caminho síncrono**.
+45. Toda mutação empresarial recarrega empresa e membership do banco e exige `Idempotency-Key` durável.
+46. Transferência de titularidade e decisões de candidatura usam `SELECT ... FOR UPDATE`.
 
 ## Suspensão de conta
 
@@ -118,59 +125,59 @@ Além disso: a query parte de `FROM wp_posts p LEFT JOIN papelito_vendor_stock v
 
 ## Pagamento
 
-40. Pagamento **direto ao vendor, sem split de receita**: `split` do PSP com recebedor único a 100%, `liable: true`, taxas no vendor.
-41. Vender exige **dupla aprovação**: regional (CEP) **e** recebedor Pagar.me `active`. `place-order` valida as duas.
-42. `POST /checkout/place-order` cria o pedido Woo, reserva estoque e chama a Pagar.me. Testar sucesso, erro de pagamento e rollback de reserva.
-43. O webhook trata `order.*` e `charge.*`. **`charge.*` pode chegar sem `order_id`** — a busca precisa cair para o postmeta `_papelito_pagarme_charge_id`.
-44. A reconciliação por WP-Cron libera reserva de pagamentos terminais não pagos e expirados, **sem restocar pedidos pagos ou processados**.
-45. Nenhum pedido B2B chama `papelito_pagarme_resolve_customer_document()` nem lê documento fiscal de usermeta.
+47. Pagamento **direto ao vendor, sem split de receita**: `split` do PSP com recebedor único a 100%, `liable: true`, taxas no vendor.
+48. Vender exige **dupla aprovação**: regional (CEP) **e** recebedor Pagar.me `active`. `place-order` valida as duas.
+49. `POST /checkout/place-order` cria o pedido Woo, reserva estoque e chama a Pagar.me. Testar sucesso, erro de pagamento e rollback de reserva.
+50. O webhook trata `order.*` e `charge.*`. **`charge.*` pode chegar sem `order_id`** — a busca precisa cair para o postmeta `_papelito_pagarme_charge_id`.
+51. A reconciliação por WP-Cron libera reserva de pagamentos terminais não pagos e expirados, **sem restocar pedidos pagos ou processados**.
+52. Nenhum pedido B2B chama `papelito_pagarme_resolve_customer_document()` nem lê documento fiscal de usermeta.
 
 ## Rastreamento
 
-46. Somente `BDE/01` conclui entrega. O pedido projeta `entregue` só quando **todas** as remessas ativas estão entregues.
-47. Evento desconhecido é armazenado mas **não altera estado**.
-48. Evento antigo permanece auditável mas **não regride a projeção**.
-49. Um S10 não pode estar em dois pedidos.
-50. `manual_fallback_eligible=1` só é gravado com `creation_outcome=not_created` **e** código na allowlist. **Status HTTP nunca libera fallback sozinho.**
+53. Somente `BDE/01` conclui entrega. O pedido projeta `entregue` só quando **todas** as remessas ativas estão entregues.
+54. Evento desconhecido é armazenado mas **não altera estado**.
+55. Evento antigo permanece auditável mas **não regride a projeção**.
+56. Um S10 não pode estar em dois pedidos.
+57. `manual_fallback_eligible=1` só é gravado com `creation_outcome=not_created` **e** código na allowlist. **Status HTTP nunca libera fallback sozinho.**
 
 ## Notificações
 
-51. `papelito_dispatch_notification($user_id, $type, $payload)` é o único ponto de escrita; o filtro `papelito_should_dispatch_notification` permite suprimir.
-52. `favorite_on_promo` é pulado para quem já tem notificação não lida do mesmo produto.
-53. `papelito_product_on_promo` é emitido apenas na transição `non-publish → publish` de um cupom.
-54. Marcar como lida decrementa o contador **só se estava não lida**.
+58. `papelito_dispatch_notification($user_id, $type, $payload)` é o único ponto de escrita; o filtro `papelito_should_dispatch_notification` permite suprimir.
+59. `favorite_on_promo` é pulado para quem já tem notificação não lida do mesmo produto.
+60. `papelito_product_on_promo` é emitido apenas na transição `non-publish → publish` de um cupom.
+61. Marcar como lida decrementa o contador **só se estava não lida**.
 
 ## Relatórios e exportações
 
-55. **O nome do cliente de um pedido nunca sai só do billing.** Em pedido B2B a compradora fiscal é
+62. **O nome do cliente de um pedido nunca sai só do billing.** Em pedido B2B a compradora fiscal é
     a empresa, então `_billing_first_name` e `_billing_last_name` nascem vazios e a pessoa fica em
     `shipping`. A ordem canônica é `papelito_vendor_dashboard_customer_label()`: pessoa do shipping →
     empresa do shipping → empresa do billing → pessoa do billing. `papelito_admin_reports_order_customer_name()`
     delega a ela e só então cai no literal `Cliente não identificado`. Ler apenas o billing gravava
     esse literal em 100% dos pedidos B2B — foi corrigido duas vezes, primeiro na expedição do vendor
     e depois no export administrativo.
-56. **Desconto é dinheiro, não cupom.** `papelito_vendor_dashboard_order_has_discount()` usa
+63. **Desconto é dinheiro, não cupom.** `papelito_vendor_dashboard_order_has_discount()` usa
     `discount_total > 0`. Cupom aplicado e removido, ou cupom de frete, não reduz o valor da venda.
-57. **Reembolso e cancelamento não passam pelo gate de pagamento.**
+64. **Reembolso e cancelamento não passam pelo gate de pagamento.**
     `papelito_vendor_dashboard_order_is_refunded_or_cancelled()` reúne os status reais `refunded` e
     `cancelled` (ou `total_refunded > 0`), e o segmento correspondente ignora
     `papelito_vendor_dashboard_order_is_paid()` — exigir pagamento confirmado descartaria justamente
     o que se quer ver.
-58. **O segmento recorta receita, KPIs e ranking juntos**, no backend. Nenhum recorte de dataset
+65. **O segmento recorta receita, KPIs e ranking juntos**, no backend. Nenhum recorte de dataset
     acontece no frontend.
-59. **A variação de receita compara janelas, não pontos.**
+66. **A variação de receita compara janelas, não pontos.**
     `papelito_admin_reports_previous_window()` devolve a janela imediatamente anterior de mesma
     duração; o snapshot soma essa janela no mesmo segmento. Vem `null` quando não pode ser derivada,
     e isso é ausência de base de comparação, não erro.
-60. **O intervalo do relatório de usuários recorta `user_registered`** — data de cadastro. Não é
+67. **O intervalo do relatório de usuários recorta `user_registered`** — data de cadastro. Não é
     período de venda, e não deve ser descrito como se fosse.
-61. **O escopo de vendor nas exportações vem da sessão.** `papelito_vendor_reports_*` derivam o
+68. **O escopo de vendor nas exportações vem da sessão.** `papelito_vendor_reports_*` derivam o
     vendor de `get_current_user_id()`; não existe parâmetro de `vendor_id`. O export de clientes
     deduplica a conta e ignora pedido de convidado — sem conta, não há usuário a exportar.
 
 ## Erros padronizados
 
-62. Erros retornam `WP_Error` com código `papelito_*` e o status HTTP em `get_error_data()['status']`. Teste deve afirmar `get_error_code()` **e** o status. Catálogo em [`../../../docs/integration-contracts.md`](../../../docs/integration-contracts.md#catálogo-de-erros-papelito_).
+69. Erros retornam `WP_Error` com código `papelito_*` e o status HTTP em `get_error_data()['status']`. Teste deve afirmar `get_error_code()` **e** o status. Catálogo em [`../../../docs/integration-contracts.md`](../../../docs/integration-contracts.md#catálogo-de-erros-papelito_).
 
 ## Ao refatorar
 

@@ -439,6 +439,21 @@ function papelito_taxonomy_slug_filter_clause( $product_expr, array $category_sl
 		return papelito_taxonomy_impossible_clause();
 	}
 
+	$clause = papelito_taxonomy_categories_clause( $product_expr, $categories, $scoped, $bare );
+
+	return null === $clause ? papelito_taxonomy_impossible_clause() : $clause;
+}
+
+/**
+ * Une em um OR só o ramo SQL de cada categoria pedida.
+ *
+ * @param string $product_expr Expressão SQL do id do produto.
+ * @param array<int,array<string,mixed>> $categories Categorias já resolvidas.
+ * @param array<string,string[]> $scoped Subcategorias com escopo de categoria.
+ * @param string[] $bare Subcategorias sem escopo.
+ * @return array{sql:string,params:array<int,mixed>}|null Null quando nenhuma categoria rendeu ramo.
+ */
+function papelito_taxonomy_categories_clause( $product_expr, array $categories, array $scoped, array $bare ) {
 	$branches = array();
 	$params   = array();
 
@@ -452,7 +467,7 @@ function papelito_taxonomy_slug_filter_clause( $product_expr, array $category_sl
 	}
 
 	if ( empty( $branches ) ) {
-		return papelito_taxonomy_impossible_clause();
+		return null;
 	}
 
 	return array(
@@ -501,6 +516,88 @@ function papelito_taxonomy_product_ids( $category_id, array $subcategory_ids = a
 	return array_map( 'intval', is_array( $rows ) ? $rows : array() );
 }
 
+/**
+ * Campos sem os quais um produto não chega à vitrine.
+ *
+ * Peso e as três dimensões porque a cotação de frete falha sem eles; imagem porque o card não
+ * renderiza; preço porque não há o que cobrar; categoria porque a taxonomia Papelito é a única
+ * fonte de classificação headless — produto publicado sem categoria não entra na vitrine.
+ *
+ * @return array<int,string>
+ */
+function papelito_incomplete_shipping_meta_keys(): array {
+	return array( '_weight', '_length', '_width', '_height' );
+}
+
+/**
+ * Produtos aos quais falta algum dado essencial para irem à vitrine.
+ *
+ * Em produto variável peso, dimensões e preço moram na variação, não no pai: cobrar isso do pai
+ * marcaria como incompleto todo produto variável, inclusive os corretos. Por isso o recorte
+ * pergunta às variações quando elas existem, e ao próprio produto quando não existem.
+ *
+ * @return array<int,int>
+ */
+function papelito_incomplete_product_ids(): array {
+	global $wpdb;
+
+	$tables       = papelito_product_taxonomy_table_names();
+	$meta_keys    = papelito_incomplete_shipping_meta_keys();
+
+	// `meta_value` vazio conta como ausente: o WooCommerce grava string vazia em campo limpo, e
+	// olhar só a existência da linha deixaria passar exatamente o produto que alguém esvaziou.
+	$missing_own_meta = "NOT EXISTS (
+		SELECT 1 FROM {$wpdb->postmeta} pm
+		WHERE pm.post_id = p.ID AND pm.meta_key = mk.meta_key
+		AND pm.meta_value <> '' AND pm.meta_value IS NOT NULL
+	)";
+
+	$missing_variation_meta = "EXISTS (
+		SELECT 1 FROM {$wpdb->posts} v
+		WHERE v.post_parent = p.ID AND v.post_type = 'product_variation' AND v.post_status <> 'trash'
+		AND NOT EXISTS (
+			SELECT 1 FROM {$wpdb->postmeta} vm
+			WHERE vm.post_id = v.ID AND vm.meta_key = mk.meta_key
+			AND vm.meta_value <> '' AND vm.meta_value IS NOT NULL
+		)
+	)";
+
+	$has_variation = "EXISTS (
+		SELECT 1 FROM {$wpdb->posts} v2
+		WHERE v2.post_parent = p.ID AND v2.post_type = 'product_variation' AND v2.post_status <> 'trash'
+	)";
+
+	$sql = "
+		SELECT DISTINCT p.ID
+		FROM {$wpdb->posts} p
+		CROSS JOIN (
+			SELECT %s AS meta_key UNION ALL SELECT %s UNION ALL SELECT %s UNION ALL SELECT %s
+			UNION ALL SELECT '_price' UNION ALL SELECT '_thumbnail_id'
+		) mk
+		WHERE p.post_type = 'product'
+		AND p.post_status NOT IN ( 'trash', 'auto-draft' )
+		AND (
+			( mk.meta_key = '_thumbnail_id' AND {$missing_own_meta} )
+			OR ( mk.meta_key <> '_thumbnail_id' AND {$has_variation} AND {$missing_variation_meta} )
+			OR ( mk.meta_key <> '_thumbnail_id' AND NOT {$has_variation} AND {$missing_own_meta} )
+		)
+
+		UNION
+
+		SELECT p.ID
+		FROM {$wpdb->posts} p
+		WHERE p.post_type = 'product'
+		AND p.post_status NOT IN ( 'trash', 'auto-draft' )
+		AND NOT EXISTS (
+			SELECT 1 FROM {$tables['product_category']} pc WHERE pc.product_id = p.ID
+		)
+	"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+	$rows = $wpdb->get_col( $wpdb->prepare( $sql, $meta_keys ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared
+
+	return array_values( array_unique( array_map( 'intval', is_array( $rows ) ? $rows : array() ) ) );
+}
+
 // ------------------------------------------------------------------
 // Filtro na REST de produtos do WooCommerce
 // ------------------------------------------------------------------
@@ -528,11 +625,20 @@ function papelito_taxonomy_filter_wc_product_query( $args, $request ) {
 		)
 	);
 
-	if ( $category <= 0 && empty( $subs ) ) {
+	$incomplete = ! empty( $request['papelito_incomplete'] );
+
+	if ( $category <= 0 && empty( $subs ) && ! $incomplete ) {
 		return $args;
 	}
 
-	$ids = papelito_taxonomy_product_ids( $category, $subs );
+	$ids = ( $category > 0 || ! empty( $subs ) )
+		? papelito_taxonomy_product_ids( $category, $subs )
+		: null;
+
+	if ( $incomplete ) {
+		$incomplete_ids = papelito_incomplete_product_ids();
+		$ids            = null === $ids ? $incomplete_ids : array_values( array_intersect( $ids, $incomplete_ids ) );
+	}
 
 	// Fail-closed: filtro que não casa devolve nada, nunca a lista inteira.
 	$args['post__in'] = empty( $ids ) ? array( 0 ) : $ids;
@@ -562,6 +668,13 @@ function papelito_taxonomy_register_wc_product_params( $params ) {
 		'type'              => 'string',
 		'default'           => '',
 		'sanitize_callback' => 'sanitize_text_field',
+	);
+
+	$params['papelito_incomplete'] = array(
+		'description'       => 'Só produtos sem algum dado essencial para a vitrine.',
+		'type'              => 'boolean',
+		'default'           => false,
+		'sanitize_callback' => 'rest_sanitize_boolean',
 	);
 
 	return $params;

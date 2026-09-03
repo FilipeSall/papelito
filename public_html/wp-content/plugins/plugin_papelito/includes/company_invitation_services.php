@@ -157,7 +157,11 @@ function papelito_company_invitation_authorize_target( int $actor_user_id, int $
  * Retorna apenas o estritamente necessário para orientar o usuário; nunca CNPJ completo,
  * membros ou dados fiscais.
  *
- * @return array{invitationId:int,companyName:string,invitedRole:string,invitedEmail:string}|WP_Error
+ * `accountExists`/`authMethods` existem para a landing rotear o convidado de forma
+ * determinística (criar conta x entrar) em vez de oferecer uma bifurcação cega. Não é
+ * enumeração de e-mail: só o portador do token chega aqui, e `invitedEmail` já é devolvido.
+ *
+ * @return array{invitationId:int,companyName:string,invitedRole:string,invitedEmail:string,accountExists:bool,authMethods:array<int,string>}|WP_Error
  */
 function papelito_company_invitation_preview( string $token ) {
 	$invitation = papelito_company_invitation_find_pending_by_token( $token );
@@ -168,11 +172,18 @@ function papelito_company_invitation_preview( string $token ) {
 	$company = papelito_company_get( (int) $invitation['company_id'] );
 	$name    = $company ? (string) ( ! empty( $company['trade_name'] ) ? $company['trade_name'] : $company['legal_name'] ) : '';
 
+	$email   = (string) $invitation['invited_email'];
+	$user_id = (int) email_exists( $email );
+
 	return array(
-		'invitationId' => (int) $invitation['id'],
-		'companyName'  => $name,
-		'invitedRole'  => (string) $invitation['invited_role'],
-		'invitedEmail' => (string) $invitation['invited_email'],
+		'invitationId'  => (int) $invitation['id'],
+		'companyName'   => $name,
+		'invitedRole'   => (string) $invitation['invited_role'],
+		'invitedEmail'  => $email,
+		'accountExists' => $user_id > 0,
+		'authMethods'   => $user_id > 0 && function_exists( 'papelito_auth_credential_methods' )
+			? papelito_auth_credential_methods( $user_id )
+			: array(),
 	);
 }
 

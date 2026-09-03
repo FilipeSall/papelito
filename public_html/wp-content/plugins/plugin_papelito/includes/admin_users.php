@@ -671,7 +671,9 @@ function papelito_admin_users_metrics( WP_User $user, ?array $vendor_orders = nu
 	$favorites_count  = papelito_admin_users_favorites_count( $user_id );
 	$tickets_count    = papelito_admin_users_support_tickets_count( $user_id );
 	$cancelled_orders = 0;
-	$vendor_orders    = papelito_admin_users_resolve_vendor_orders( $user_id, $vendor_orders );
+	$vendor_orders    = papelito_admin_users_is_vendor_related( $user )
+		? papelito_admin_users_resolve_vendor_orders( $user_id, $vendor_orders )
+		: array();
 	$sales_count      = papelito_admin_users_sales_orders_count( $user_id, $vendor_orders );
 
 	foreach ( papelito_admin_users_customer_orders( $user_id, 20 ) as $order ) {
@@ -1123,14 +1125,99 @@ function papelito_admin_users_get_snapshot( array $filters ): array {
 }
 
 /**
+ * Primeiro valor nao vazio de uma cadeia de origens.
+ *
+ * @param array<int, mixed> $candidates Valores em ordem de precedencia.
+ */
+function papelito_admin_users_first_filled( array $candidates ): string {
+	foreach ( $candidates as $candidate ) {
+		$value = trim( (string) $candidate );
+
+		if ( '' !== $value ) {
+			return $value;
+		}
+	}
+
+	return '';
+}
+
+/**
+ * Empresa que completa o cadastro do usuario no painel administrativo.
+ *
+ * No modelo B2B telefone, CNPJ e endereco fiscal moram na empresa, nao no usermeta legado. A
+ * leitura e pura de proposito: `papelito_company_active_resolve()` normaliza a selecao gravando
+ * usermeta e nao pode rodar num GET administrativo.
+ *
+ * @param int                              $user_id Usuario alvo.
+ * @param array<int, array<string, mixed>> $memberships Saida de papelito_admin_users_company_memberships().
+ * @return array<string, mixed>|null
+ */
+function papelito_admin_users_reference_company( int $user_id, array $memberships ): ?array {
+	if ( empty( $memberships ) || ! function_exists( 'papelito_company_get' ) ) {
+		return null;
+	}
+
+	$selected_id = function_exists( 'papelito_company_active_get_selection' )
+		? papelito_company_active_get_selection( $user_id )
+		: 0;
+	$company_id  = (int) $memberships[0]['companyId'];
+
+	foreach ( $memberships as $membership ) {
+		if ( $selected_id > 0 && (int) $membership['companyId'] === $selected_id ) {
+			$company_id = $selected_id;
+			break;
+		}
+	}
+
+	return $company_id > 0 ? papelito_company_get( $company_id ) : null;
+}
+
+/**
+ * Endereco cadastral do usuario, na ordem em que cada fluxo persiste os campos.
+ *
+ * Vendor grava `seller_application_*`; onboarding B2B grava `papelito_b2b_onboarding_address_*`;
+ * o restante so existe no endereco fiscal da empresa.
+ *
+ * @param WP_User                   $user Usuario alvo.
+ * @param array<string, mixed>|null $company Empresa de referencia.
+ * @return array<string, string>
+ */
+function papelito_admin_users_address_detail( WP_User $user, ?array $company ): array {
+	$legacy_keys = array(
+		'cep'          => 'cep',
+		'state'        => 'state',
+		'city'         => 'city',
+		'street'       => defined( 'PAPELITO_VENDOR_APPLICATION_STREET_META' ) ? PAPELITO_VENDOR_APPLICATION_STREET_META : '',
+		'number'       => defined( 'PAPELITO_VENDOR_APPLICATION_NUMBER_META' ) ? PAPELITO_VENDOR_APPLICATION_NUMBER_META : '',
+		'complement'   => defined( 'PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META' ) ? PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META : '',
+		'neighborhood' => defined( 'PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META' ) ? PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META : '',
+	);
+	$address     = array();
+
+	foreach ( $legacy_keys as $field => $legacy_key ) {
+		$address[ $field ] = papelito_admin_users_first_filled(
+			array(
+				'' === $legacy_key ? '' : get_user_meta( $user->ID, $legacy_key, true ),
+				get_user_meta( $user->ID, 'papelito_b2b_onboarding_address_' . $field, true ),
+				null === $company ? '' : ( $company[ 'fiscal_' . $field ] ?? '' ),
+			)
+		);
+	}
+
+	return $address;
+}
+
+/**
  * Dados basicos do usuario.
  *
- * @param WP_User $user Usuario alvo.
+ * @param WP_User                   $user Usuario alvo.
+ * @param array<string, mixed>|null $company Empresa de referencia do vinculo B2B.
  * @return array<string, mixed>
  */
-function papelito_admin_users_base_detail( WP_User $user ): array {
+function papelito_admin_users_base_detail( WP_User $user, ?array $company = null ): array {
 	$role          = papelito_admin_users_primary_role( $user );
 	$account_state = papelito_admin_users_account_status( $user );
+	$address       = papelito_admin_users_address_detail( $user, $company );
 
 	return array(
 		'id'                 => (int) $user->ID,
@@ -1140,16 +1227,26 @@ function papelito_admin_users_base_detail( WP_User $user ): array {
 		'firstName'          => (string) get_user_meta( $user->ID, 'first_name', true ),
 		'lastName'           => (string) get_user_meta( $user->ID, 'last_name', true ),
 		'storeName'          => (string) get_user_meta( $user->ID, 'store_name', true ),
-		'phoneNumber'        => (string) get_user_meta( $user->ID, 'phone_number', true ),
-		'cnpj'               => (string) get_user_meta( $user->ID, 'cnpj', true ),
+		'phoneNumber'        => papelito_admin_users_first_filled(
+			array(
+				get_user_meta( $user->ID, 'phone_number', true ),
+				null === $company ? '' : ( $company['phone'] ?? '' ),
+			)
+		),
+		'cnpj'               => papelito_admin_users_first_filled(
+			array(
+				get_user_meta( $user->ID, 'cnpj', true ),
+				null === $company ? '' : ( $company['cnpj'] ?? '' ),
+			)
+		),
 		'instagram'          => (string) get_user_meta( $user->ID, 'instagram', true ),
-		'state'              => (string) get_user_meta( $user->ID, 'state', true ),
-		'city'               => (string) get_user_meta( $user->ID, 'city', true ),
-		'cep'                => (string) get_user_meta( $user->ID, 'cep', true ),
-		'street'             => defined( 'PAPELITO_VENDOR_APPLICATION_STREET_META' ) ? (string) get_user_meta( $user->ID, PAPELITO_VENDOR_APPLICATION_STREET_META, true ) : '',
-		'number'             => defined( 'PAPELITO_VENDOR_APPLICATION_NUMBER_META' ) ? (string) get_user_meta( $user->ID, PAPELITO_VENDOR_APPLICATION_NUMBER_META, true ) : '',
-		'complement'         => defined( 'PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META' ) ? (string) get_user_meta( $user->ID, PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META, true ) : '',
-		'neighborhood'       => defined( 'PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META' ) ? (string) get_user_meta( $user->ID, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, true ) : '',
+		'state'              => $address['state'],
+		'city'               => $address['city'],
+		'cep'                => $address['cep'],
+		'street'             => $address['street'],
+		'number'             => $address['number'],
+		'complement'         => $address['complement'],
+		'neighborhood'       => $address['neighborhood'],
 		'role'               => $role,
 		'roleLabel'          => papelito_admin_users_role_label( $role ),
 		'roles'              => array_values( array_map( 'sanitize_key', (array) $user->roles ) ),
@@ -1205,8 +1302,11 @@ function papelito_admin_users_get_detail( int $user_id ) {
 		return new WP_Error( 'papelito_admin_user_not_found', PAPELITO_ADMIN_USERS_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
-	$base            = papelito_admin_users_base_detail( $user );
-	$vendor_orders   = function_exists( 'papelito_vendor_dashboard_orders_for_vendor' )
+	$memberships = papelito_admin_users_company_memberships( $user_id );
+	$company     = papelito_admin_users_reference_company( $user_id, $memberships );
+
+	$base            = papelito_admin_users_base_detail( $user, $company );
+	$vendor_orders   = papelito_admin_users_is_vendor_related( $user ) && function_exists( 'papelito_vendor_dashboard_orders_for_vendor' )
 		? papelito_vendor_dashboard_orders_for_vendor( $user_id )
 		: array();
 	$metrics         = papelito_admin_users_metrics( $user, $vendor_orders );
@@ -1255,7 +1355,7 @@ function papelito_admin_users_get_detail( int $user_id ) {
 			'statusHistory'   => function_exists( 'papelito_account_status_history' )
 				? papelito_account_status_history( $user_id, 20 )
 				: array(),
-			'companies'       => papelito_admin_users_company_memberships( $user_id ),
+			'companies'       => $memberships,
 		)
 	);
 }

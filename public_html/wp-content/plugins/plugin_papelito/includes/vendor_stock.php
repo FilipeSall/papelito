@@ -511,6 +511,436 @@ function papelito_vendor_stock_product_image_urls( array $product_ids ): array {
 }
 
 /**
+ * Limite de estoque baixo, em unidades.
+ *
+ * Constante e nao configuracao: antes desta decisao o sistema nao tinha nenhuma regra de estoque
+ * baixo, e um limite por vendor exigiria campo, endpoint e migracao para um numero que o painel
+ * usa apenas para ordenar atencao. O valor viaja na resposta REST para o front nunca guardar uma
+ * segunda copia.
+ */
+if ( ! defined( 'PAPELITO_VENDOR_STOCK_LOW_THRESHOLD' ) ) {
+	define( 'PAPELITO_VENDOR_STOCK_LOW_THRESHOLD', 5 );
+}
+
+/** @return int Limite abaixo do qual o saldo positivo conta como estoque baixo. */
+function papelito_vendor_stock_low_threshold(): int {
+	return max( 1, (int) PAPELITO_VENDOR_STOCK_LOW_THRESHOLD );
+}
+
+/**
+ * Recortes de estoque aceitos pela listagem.
+ *
+ * `zeroed_only` e `unconfigured` sao disjuntos de proposito: quem nunca lancou saldo nao "ficou
+ * sem estoque", e juntar os dois num filtro so esconde o produto que o vendor ainda nao trabalhou.
+ *
+ * @return string[]
+ */
+function papelito_vendor_stock_filters(): array {
+	return array( 'all', 'with_stock', 'low_stock', 'zeroed_only', 'unconfigured', 'incomplete' );
+}
+
+/**
+ * Situacao do catalogo inteiro para um vendor, em uma consulta.
+ *
+ * Nao aplica busca nem taxonomia: o resumo e a situacao fixa do catalogo, e cada numero dele e um
+ * atalho para o filtro correspondente. Respeita apenas o segmento (`products` ou `kits`), senao a
+ * contagem contradiria a lista que o vendor esta vendo.
+ *
+ * `coverage_percent` e presenca no catalogo — quantos SKUs elegiveis o vendor tem disponiveis —,
+ * nunca participacao no volume fisico de estoque.
+ *
+ * @param int    $vendor_id Vendor alvo.
+ * @param string $type      Segmento: `products` ou `kits`.
+ * @return array<string,mixed>
+ */
+function papelito_vendor_stock_summary( int $vendor_id, string $type = 'products' ): array {
+	global $wpdb;
+
+	$vendor_id = (int) $vendor_id;
+	$type      = in_array( $type, array( 'products', 'kits' ), true ) ? $type : 'products';
+	$threshold = papelito_vendor_stock_low_threshold();
+	$empty     = array(
+		'eligible'            => 0,
+		'available'           => 0,
+		'low_stock'           => 0,
+		'out_of_stock'        => 0,
+		'unconfigured'        => 0,
+		'incomplete'          => 0,
+		'coverage_percent'    => 0.0,
+		'low_stock_threshold' => $threshold,
+	);
+
+	if ( $vendor_id <= 0 ) {
+		return $empty;
+	}
+
+	$tables       = papelito_vendor_stock_table_names();
+	$posts        = $wpdb->posts;
+	$effective_id = 'COALESCE(NULLIF(p.post_parent, 0), p.ID)';
+
+	$availability_sql    = 'COALESCE(vs.qty, 0)';
+	$availability_params = array();
+	$where               = array( 'p.post_type IN (%s, %s)', 'p.post_status = %s' );
+	$where_params        = array( 'product', 'product_variation', 'publish' );
+
+	if ( function_exists( 'papelito_kits_table_names' ) ) {
+		$kits_tables = papelito_kits_table_names();
+		$kit_exists  = "EXISTS ( SELECT 1 FROM {$kits_tables['kits']} papelito_summary_kit WHERE papelito_summary_kit.product_id = p.ID )";
+
+		// Kit disponivel e o menor `saldo / quantidade` entre os componentes, a mesma regra da
+		// listagem: a linha de estoque do produto comercial do kit nao decide disponibilidade.
+		$availability_sql    = "CASE WHEN {$kit_exists} THEN COALESCE((SELECT MIN(FLOOR(COALESCE(papelito_summary_component.qty, 0) / papelito_summary_item.quantity)) FROM {$kits_tables['items']} papelito_summary_item LEFT JOIN {$tables['stock']} papelito_summary_component ON papelito_summary_component.product_id = papelito_summary_item.product_id AND papelito_summary_component.vendor_id = %d WHERE papelito_summary_item.kit_id = (SELECT id FROM {$kits_tables['kits']} papelito_summary_kit_id WHERE papelito_summary_kit_id.product_id = p.ID LIMIT 1) AND papelito_summary_item.quantity > 0), 0) ELSE COALESCE(vs.qty, 0) END";
+		$availability_params = array( $vendor_id );
+		$where[]             = 'kits' === $type ? $kit_exists : "NOT {$kit_exists}";
+	}
+
+	// Cadastro de kit vive na entidade `papelito_kits` e e checado pelo editor de kits; julgar o
+	// produto comercial pelo postmeta acusaria falta onde o dado existe noutro lugar.
+	$incomplete_sql = 'kits' === $type
+		? '0'
+		: papelito_vendor_stock_incomplete_clause( $effective_id )['sql'];
+	$configured_sql = 'kits' === $type
+		? '1'
+		: 'CASE WHEN vs.qty IS NULL THEN 0 ELSE 1 END';
+
+	$sql = "SELECT COUNT(*) AS eligible,
+			SUM( situacao.avail > 0 ) AS available,
+			SUM( situacao.avail > 0 AND situacao.avail <= %d ) AS low_stock,
+			SUM( 1 = situacao.configured AND 0 = situacao.avail ) AS out_of_stock,
+			SUM( 0 = situacao.configured ) AS unconfigured,
+			SUM( 1 = situacao.incomplete ) AS incomplete
+		FROM ( SELECT {$availability_sql} AS avail,
+				{$configured_sql} AS configured,
+				CASE WHEN {$incomplete_sql} THEN 1 ELSE 0 END AS incomplete
+			FROM {$posts} p
+			LEFT JOIN {$tables['stock']} vs ON vs.product_id = p.ID AND vs.vendor_id = %d
+			WHERE " . implode( ' AND ', $where ) . ' ) situacao';
+
+	$params = array_merge( array( $threshold ), $availability_params, array( $vendor_id ), $where_params );
+
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared
+	$row = $wpdb->get_row( $wpdb->prepare( $sql, $params ), ARRAY_A );
+
+	if ( ! is_array( $row ) ) {
+		return $empty;
+	}
+
+	$eligible  = (int) ( $row['eligible'] ?? 0 );
+	$available = (int) ( $row['available'] ?? 0 );
+
+	return array(
+		'eligible'            => $eligible,
+		'available'           => $available,
+		'low_stock'           => (int) ( $row['low_stock'] ?? 0 ),
+		'out_of_stock'        => (int) ( $row['out_of_stock'] ?? 0 ),
+		'unconfigured'        => (int) ( $row['unconfigured'] ?? 0 ),
+		'incomplete'          => (int) ( $row['incomplete'] ?? 0 ),
+		'coverage_percent'    => $eligible > 0 ? round( $available * 100 / $eligible, 1 ) : 0.0,
+		'low_stock_threshold' => $threshold,
+	);
+}
+
+/**
+ * Aplica a mesma quantidade a varios produtos do vendor em uma chamada.
+ *
+ * Cada produto continua passando por `papelito_set_vendor_stock()`: a transacao por linha, o log
+ * de ajuste e o evento de zerado sao os mesmos do lancamento individual. O ganho e de rede — uma
+ * requisicao em vez de uma por produto —, nao um caminho de escrita paralelo.
+ *
+ * @param int   $vendor_id   Vendor alvo.
+ * @param int[] $product_ids Produtos selecionados.
+ * @param int   $qty         Quantidade aplicada a todos.
+ * @return array{updated:int,failed:array<int,array{product_id:int,message:string}>}
+ */
+function papelito_vendor_stock_set_many( int $vendor_id, array $product_ids, int $qty ): array {
+	$product_ids = array_values( array_unique( array_filter( array_map( 'absint', $product_ids ) ) ) );
+	$updated     = 0;
+	$failed      = array();
+
+	foreach ( $product_ids as $product_id ) {
+		$result = papelito_set_vendor_stock( $vendor_id, $product_id, $qty, 'vendor_bulk_update' );
+
+		if ( is_wp_error( $result ) ) {
+			$failed[] = array(
+				'product_id' => $product_id,
+				'message'    => $result->get_error_message(),
+			);
+			continue;
+		}
+
+		++$updated;
+	}
+
+	return array(
+		'updated' => $updated,
+		'failed'  => $failed,
+	);
+}
+
+/**
+ * Registra para a Papelito o pedido de completar o cadastro de um produto.
+ *
+ * Os campos que faltam sao recalculados no servidor, nunca lidos do corpo da requisicao: o painel
+ * mostra o que falta, mas quem afirma o que falta e a mesma auditoria que alimenta a listagem.
+ *
+ * Duplicidade e resolvida pelo indice `uq_user_type_dedupe`: uma solicitacao por vendor, produto e
+ * administrador. Se ja existe, a resposta diz isso em vez de criar uma segunda.
+ *
+ * @param int    $vendor_id  Vendor solicitante.
+ * @param int    $product_id Produto com cadastro incompleto.
+ * @param string $message    Recado opcional do vendor.
+ * @return array{ok:bool,created:int,already_pending:bool,missing_fields:string[]}|WP_Error
+ */
+function papelito_vendor_stock_request_product_data( int $vendor_id, int $product_id, string $message = '' ) {
+	$vendor_id  = (int) $vendor_id;
+	$product_id = (int) $product_id;
+
+	if ( $vendor_id <= 0 || $product_id <= 0 ) {
+		return new WP_Error( 'papelito_invalid_request', 'Produto invalido.', array( 'status' => 400 ) );
+	}
+
+	if ( ! function_exists( 'wc_get_product' ) || ! wc_get_product( $product_id ) ) {
+		return new WP_Error( 'papelito_product_not_found', 'Produto nao encontrado.', array( 'status' => 404 ) );
+	}
+
+	$product   = wc_get_product( $product_id );
+	$parent_id = (int) $product->get_parent_id();
+	$effective = $parent_id > 0 ? $parent_id : $product_id;
+	$audit     = papelito_vendor_stock_product_audit(
+		$effective,
+		'' !== papelito_vendor_stock_product_image_url( $effective )
+	);
+
+	if ( empty( $audit['missing'] ) ) {
+		return new WP_Error(
+			'papelito_product_data_complete',
+			'O cadastro desse produto esta completo. Recarregue a pagina para ver os dados atuais.',
+			array( 'status' => 409 )
+		);
+	}
+
+	$vendor      = get_user_by( 'id', $vendor_id );
+	$store_name  = sanitize_text_field( (string) get_user_meta( $vendor_id, 'store_name', true ) );
+	$dedupe_key  = 'vendor-data-request:' . $vendor_id . ':' . $effective;
+	$admins      = get_users(
+		array(
+			'role'   => 'administrator',
+			'fields' => 'ID',
+		)
+	);
+	$payload = array(
+		'product_id'     => $effective,
+		'product_name'   => (string) $product->get_name(),
+		'product_sku'    => (string) $product->get_sku(),
+		'missing_fields' => $audit['missing'],
+		'message'        => $message,
+		'vendor_id'      => $vendor_id,
+		'vendor_name'    => $vendor instanceof WP_User ? (string) $vendor->display_name : '',
+		'vendor_store'   => $store_name,
+		'admin_url'      => admin_url( 'post.php?post=' . $effective . '&action=edit' ),
+	);
+
+	$created         = 0;
+	$already_pending = false;
+
+	foreach ( is_array( $admins ) ? $admins : array() as $admin_id ) {
+		$admin_id = absint( $admin_id );
+
+		if ( $admin_id <= 0 ) {
+			continue;
+		}
+
+		$dispatched = papelito_dispatch_notification(
+			$admin_id,
+			PAPELITO_NOTIF_VENDOR_PRODUCT_DATA_REQUEST,
+			$payload,
+			$dedupe_key
+		);
+
+		if ( false === $dispatched ) {
+			$already_pending = true;
+			continue;
+		}
+
+		++$created;
+	}
+
+	return array(
+		'ok'              => true,
+		'created'         => $created,
+		'already_pending' => 0 === $created && $already_pending,
+		'missing_fields'  => $audit['missing'],
+	);
+}
+
+/**
+ * Campos que o cadastro de um produto precisa ter para ser vendido, na ordem em que o painel os
+ * mostra. Sao as regras que o proprio sistema ja aplica em outro lugar, nao uma lista nova:
+ * preco e peso vem de `papelito_product_has_valid_price()` / `papelito_product_has_valid_weight()`,
+ * dimensao e a mesma exigencia do frete em `papelito_catalog_search_product_rows()`, e categoria e
+ * a condicao de entrar na vitrine.
+ */
+function papelito_vendor_stock_required_fields(): array {
+	return array( 'image', 'price', 'weight', 'dimensions', 'category' );
+}
+
+/**
+ * Audita o cadastro de um produto uma unica vez, devolvendo o que falta e se a pagina publica
+ * consegue renderiza-lo.
+ *
+ * Uma funcao so porque as duas respostas saem do mesmo `wc_get_product()`: separadas, a listagem
+ * instanciaria o produto duas vezes por linha.
+ *
+ * @param int  $effective_id  Produto simples, ou o pai de uma variacao.
+ * @param bool $has_thumbnail Se a listagem encontrou thumbnail para o produto.
+ * @return array{publicly_viewable:bool,missing:string[]}
+ */
+function papelito_vendor_stock_product_audit( int $effective_id, bool $has_thumbnail = true ): array {
+	$missing = array();
+
+	if ( $effective_id <= 0 || ! function_exists( 'wc_get_product' ) ) {
+		return array(
+			'publicly_viewable' => false,
+			'missing'           => array(),
+		);
+	}
+
+	$product = wc_get_product( $effective_id );
+
+	if ( ! $product ) {
+		return array(
+			'publicly_viewable' => false,
+			'missing'           => array(),
+		);
+	}
+
+	$is_kit = function_exists( 'papelito_kit_get_by_product' )
+		&& is_array( papelito_kit_get_by_product( $effective_id ) );
+
+	if ( ! $has_thumbnail ) {
+		$missing[] = 'image';
+	}
+
+	if ( function_exists( 'papelito_product_has_valid_price' ) && ! papelito_product_has_valid_price( $product ) ) {
+		$missing[] = 'price';
+	}
+
+	$has_weight = function_exists( 'papelito_product_has_valid_weight' )
+		? papelito_product_has_valid_weight( $product )
+		: papelito_vendor_stock_has_positive_weight( $product->get_weight() );
+
+	if ( ! $has_weight ) {
+		$missing[] = 'weight';
+	}
+
+	// Kit tem dimensao propria na entidade, checada pelo editor de kits. Julgar o produto
+	// comercial pelo postmeta acusaria falta onde o dado existe noutro lugar.
+	if ( ! $is_kit && ! papelito_vendor_stock_product_has_dimensions( $product ) ) {
+		$missing[] = 'dimensions';
+	}
+
+	if ( ! $is_kit && ( ! function_exists( 'papelito_product_get_category' ) || null === papelito_product_get_category( $effective_id ) ) ) {
+		$missing[] = 'category';
+	}
+
+	return array(
+		'publicly_viewable' => $has_weight,
+		'missing'           => $missing,
+	);
+}
+
+/**
+ * Dimensoes completas no proprio produto ou em qualquer variacao publicada, a mesma leitura que o
+ * frete faz. Sem as tres o calculo de frete falha, entao faltar uma equivale a faltar todas.
+ *
+ * @param WC_Product $product Produto avaliado.
+ */
+function papelito_vendor_stock_product_has_dimensions( $product ): bool {
+	if ( ! is_object( $product ) || ! method_exists( $product, 'get_length' ) ) {
+		return false;
+	}
+
+	$complete = static function ( $candidate ): bool {
+		foreach ( array( $candidate->get_length(), $candidate->get_width(), $candidate->get_height() ) as $side ) {
+			if ( ! papelito_vendor_stock_has_positive_weight( $side ) ) {
+				return false;
+			}
+		}
+
+		return true;
+	};
+
+	if ( $complete( $product ) ) {
+		return true;
+	}
+
+	if ( $product->is_type( 'variable' ) ) {
+		foreach ( $product->get_children() as $variation_id ) {
+			$variation = wc_get_product( (int) $variation_id );
+
+			if ( $variation && $complete( $variation ) ) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Clausula SQL verdadeira quando falta algum dado obrigatorio no cadastro.
+ *
+ * Existe em SQL, e nao so no audite por linha, porque filtrar e contar "dados incompletos" olha o
+ * catalogo inteiro, nao a pagina. Espelha `papelito_vendor_stock_product_audit()`; divergir entre
+ * as duas faria a contagem do resumo discordar do selo da linha.
+ *
+ * ATENCAO: a clausula NAO conhece kit, e a fachada comercial de um kit cai nela como incompleta —
+ * peso, dimensao e categoria de kit vivem na entidade `papelito_kits`, nao no postmeta do produto.
+ * Quem chama precisa ter excluido kit do recorte antes (a listagem exclui pelo `type`, o resumo
+ * pelo `NOT EXISTS`). Aplicar isto ao catalogo inteiro sem esse recorte acusa falta onde nao ha.
+ *
+ * @param string $product_expr Expressao SQL do produto efetivo.
+ * @return array{sql:string,params:array<int,mixed>}
+ */
+function papelito_vendor_stock_incomplete_clause( string $product_expr ): array {
+	global $wpdb;
+
+	$postmeta = $wpdb->postmeta;
+	$posts    = $wpdb->posts;
+	$decimal  = static function ( string $alias ): string {
+		return "CAST( REPLACE( {$alias}.meta_value, ',', '.' ) AS DECIMAL(20,6) ) > 0";
+	};
+
+	$has_thumbnail = "EXISTS ( SELECT 1 FROM {$postmeta} thumb_meta WHERE thumb_meta.post_id = {$product_expr} AND thumb_meta.meta_key = '_thumbnail_id' AND thumb_meta.meta_value > 0 )";
+	$has_price     = "EXISTS ( SELECT 1 FROM {$postmeta} price_meta WHERE price_meta.post_id = {$product_expr} AND price_meta.meta_key = '_price' AND {$decimal( 'price_meta' )} )";
+
+	$own_shipping = "EXISTS ( SELECT 1 FROM {$postmeta} weight_meta
+		INNER JOIN {$postmeta} length_meta ON length_meta.post_id = weight_meta.post_id AND length_meta.meta_key = '_length'
+		INNER JOIN {$postmeta} width_meta ON width_meta.post_id = weight_meta.post_id AND width_meta.meta_key = '_width'
+		INNER JOIN {$postmeta} height_meta ON height_meta.post_id = weight_meta.post_id AND height_meta.meta_key = '_height'
+		WHERE weight_meta.post_id = {$product_expr} AND weight_meta.meta_key = '_weight'
+		AND {$decimal( 'weight_meta' )} AND {$decimal( 'length_meta' )} AND {$decimal( 'width_meta' )} AND {$decimal( 'height_meta' )} )";
+
+	$variation_shipping = "EXISTS ( SELECT 1 FROM {$posts} shipping_variation
+		INNER JOIN {$postmeta} variation_weight ON variation_weight.post_id = shipping_variation.ID AND variation_weight.meta_key = '_weight'
+		INNER JOIN {$postmeta} variation_length ON variation_length.post_id = shipping_variation.ID AND variation_length.meta_key = '_length'
+		INNER JOIN {$postmeta} variation_width ON variation_width.post_id = shipping_variation.ID AND variation_width.meta_key = '_width'
+		INNER JOIN {$postmeta} variation_height ON variation_height.post_id = shipping_variation.ID AND variation_height.meta_key = '_height'
+		WHERE shipping_variation.post_parent = {$product_expr} AND shipping_variation.post_type = 'product_variation' AND shipping_variation.post_status = 'publish'
+		AND {$decimal( 'variation_weight' )} AND {$decimal( 'variation_length' )} AND {$decimal( 'variation_width' )} AND {$decimal( 'variation_height' )} )";
+
+	$taxonomy_tables = papelito_product_taxonomy_table_names();
+	$has_category    = "EXISTS ( SELECT 1 FROM {$taxonomy_tables['product_category']} complete_pc WHERE complete_pc.product_id = {$product_expr} )";
+
+	$complete = "( {$has_thumbnail} AND {$has_price} AND ( {$own_shipping} OR {$variation_shipping} ) AND {$has_category} )";
+
+	return array(
+		'sql'    => "NOT {$complete}",
+		'params' => array(),
+	);
+}
+
+/**
  * Indica se a pagina publica de produto (`/produtos/{id}` no front) consegue
  * renderizar o produto. O catalogo headless esconde produtos sem peso (frete
  * impossivel) via `hasValidWeight`; espelhamos a mesma regra aqui para nao
@@ -520,29 +950,7 @@ function papelito_vendor_stock_product_image_urls( array $product_ids ): array {
  * tem peso positivo nele mesmo ou em qualquer variacao.
  */
 function papelito_vendor_stock_product_publicly_viewable( int $effective_id ): bool {
-	if ( $effective_id <= 0 || ! function_exists( 'wc_get_product' ) ) {
-		return false;
-	}
-
-	$product = wc_get_product( $effective_id );
-	if ( ! $product ) {
-		return false;
-	}
-
-	if ( papelito_vendor_stock_has_positive_weight( $product->get_weight() ) ) {
-		return true;
-	}
-
-	if ( $product->is_type( 'variable' ) ) {
-		foreach ( $product->get_children() as $variation_id ) {
-			$variation = wc_get_product( (int) $variation_id );
-			if ( $variation && papelito_vendor_stock_has_positive_weight( $variation->get_weight() ) ) {
-				return true;
-			}
-		}
-	}
-
-	return false;
+	return papelito_vendor_stock_product_audit( $effective_id )['publicly_viewable'];
 }
 
 /**
@@ -915,8 +1323,13 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 		$tag_ids = array_values( array_unique( $tag_ids ) );
 	}
 
-	if ( ! in_array( $filter, array( 'all', 'with_stock', 'zeroed_only' ), true ) ) {
+	if ( ! in_array( $filter, papelito_vendor_stock_filters(), true ) ) {
 		$filter = 'all';
+	}
+
+	$type = (string) ( $args['type'] ?? 'products' );
+	if ( ! in_array( $type, array( 'products', 'kits' ), true ) ) {
+		$type = 'products';
 	}
 
 	$tables                 = papelito_vendor_stock_table_names();
@@ -939,8 +1352,18 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 		$where[] = "{$kit_availability_sql} > 0";
 		$params  = array_merge( $params, $kit_availability_params );
 	} elseif ( 'zeroed_only' === $filter ) {
-		$where[] = "{$kit_availability_sql} = 0";
+		// Zerado e nunca configurado sao buckets disjuntos: quem nunca lancou saldo nao "ficou
+		// sem", e somar os dois numa lista so esconde justamente o produto que o vendor ainda
+		// nao trabalhou. `unconfigured` cobre esse outro caso.
+		$where[] = 'kits' === $type
+			? "{$kit_availability_sql} = 0"
+			: "vs.qty IS NOT NULL AND {$kit_availability_sql} = 0";
 		$params  = array_merge( $params, $kit_availability_params );
+	} elseif ( 'low_stock' === $filter ) {
+		$where[] = "{$kit_availability_sql} > 0 AND {$kit_availability_sql} <= %d";
+		$params  = array_merge( $params, $kit_availability_params, $kit_availability_params, array( papelito_vendor_stock_low_threshold() ) );
+	} elseif ( 'unconfigured' === $filter ) {
+		$where[] = 'vs.qty IS NULL';
 	}
 
 	if ( '' !== $search ) {
@@ -986,11 +1409,13 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 		$where_sql = implode( ' AND ', $where );
 	}
 
-	// Kit é entidade própria (`papelito_kits`), não taxonomia: filtrar por coleção
-	// legada devolveria vínculo histórico que a entidade nova nem consulta.
-	$type = (string) ( $args['type'] ?? 'products' );
-	if ( ! in_array( $type, array( 'products', 'kits' ), true ) ) {
-		$type = 'products';
+	// Cadastro incompleto e propriedade do produto, nao do estoque: entra como mais um AND sobre
+	// o mesmo recorte, para o vendor cruzar "tenho saldo" com "falta dado".
+	if ( 'incomplete' === $filter ) {
+		$incomplete = papelito_vendor_stock_incomplete_clause( $effective_id );
+		$where[]    = $incomplete['sql'];
+		$params     = array_merge( $params, $incomplete['params'] );
+		$where_sql  = implode( ' AND ', $where );
 	}
 
 	if ( function_exists( 'papelito_kits_table_names' ) ) {
@@ -1055,25 +1480,37 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	$product_ids   = array();
 	$effective_ids = array();
 	$items         = array();
+	$image_rows    = is_array( $rows ) ? $rows : array();
 	$image_urls    = papelito_vendor_stock_product_image_urls(
-		array_map( static fn( array $row ): int => (int) ( $row['product_id'] ?? 0 ), is_array( $rows ) ? $rows : array() )
+		array_merge(
+			array_map( static fn( array $row ): int => (int) ( $row['product_id'] ?? 0 ), $image_rows ),
+			// O efetivo tambem entra no lote: variacao raramente tem thumbnail propria, herda a do
+			// pai. Sem isso a listagem mostrava fallback e acusava "sem imagem" onde ha imagem.
+			array_map( static fn( array $row ): int => (int) ( $row['effective_id'] ?? 0 ), $image_rows )
+		)
 	);
 
-	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+	foreach ( $image_rows as $row ) {
 		$product_id      = (int) ( $row['product_id'] ?? 0 );
 		$effective       = (int) ( $row['effective_id'] ?? $product_id );
 		$product_ids[]   = $product_id;
 		$effective_ids[] = $effective;
+		$image_url       = $image_urls[ $product_id ] ?? ( $image_urls[ $effective ] ?? '' );
+		$audit           = papelito_vendor_stock_product_audit( $effective, '' !== $image_url );
+		$qty             = (int) ( $row['qty'] ?? 0 );
 		$items[]         = array(
 			'product_id'           => $product_id,
 			'public_product_id'    => $effective,
-			'is_publicly_viewable' => papelito_vendor_stock_product_publicly_viewable( $effective ),
+			'is_publicly_viewable' => $audit['publicly_viewable'],
+			'missing_fields'       => $audit['missing'],
 			'product_name'         => (string) ( $row['product_name'] ?? '' ),
 			'sku'                  => (string) ( $row['sku'] ?? '' ),
-			'qty'                  => (int) ( $row['qty'] ?? 0 ),
+			'qty'                  => $qty,
 			'updated_at'           => (string) ( $row['updated_at'] ?? '' ),
-			'is_zeroed'            => 0 === (int) ( $row['qty'] ?? 0 ),
-			'image_url'            => $image_urls[ $product_id ] ?? '',
+			'is_zeroed'            => 0 === $qty,
+			// `null` no join e ausencia de linha: o vendor nunca lancou saldo desse produto.
+			'is_unconfigured'      => null === ( $row['qty'] ?? null ),
+			'image_url'            => $image_url,
 			'history'              => array(),
 			'effective_id'         => $effective,
 			'categories'           => array(),
@@ -1158,10 +1595,11 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	}
 
 	return array(
-		'items'    => $items,
-		'total'    => $total,
-		'page'     => $page,
-		'per_page' => $paginate ? $per_page : max( 1, $total ),
+		'items'               => $items,
+		'total'               => $total,
+		'page'                => $page,
+		'per_page'            => $paginate ? $per_page : max( 1, $total ),
+		'low_stock_threshold' => papelito_vendor_stock_low_threshold(),
 	);
 }
 
@@ -1474,6 +1912,134 @@ add_action(
 						(int) $request->get_param( 'product_id' ),
 						(int) $request->get_param( 'qty' ),
 						$reason
+					);
+
+					if ( is_wp_error( $result ) ) {
+						return $result;
+					}
+
+					return new WP_REST_Response( $result, 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/me/stock/summary',
+			array(
+				'methods'             => 'GET',
+				'permission_callback' => static function () {
+					$check = papelito_vendor_stock_require_seller();
+					return is_wp_error( $check ) ? $check : true;
+				},
+				'args'                => array(
+					'type' => array(
+						'type'              => 'string',
+						'default'           => 'products',
+						'sanitize_callback' => static function ( $value ) {
+							$value = strtolower( trim( (string) $value ) );
+
+							return in_array( $value, array( 'products', 'kits' ), true ) ? $value : 'products';
+						},
+					),
+				),
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$user = wp_get_current_user();
+
+					return new WP_REST_Response(
+						papelito_vendor_stock_summary( (int) $user->ID, (string) $request->get_param( 'type' ) ),
+						200
+					);
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/me/stock/bulk',
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => static function () {
+					$check = papelito_vendor_stock_require_seller_commercial();
+					return is_wp_error( $check ) ? $check : true;
+				},
+				'args'                => array(
+					'product_ids' => array(
+						'type'     => 'array',
+						'required' => true,
+						'items'    => array( 'type' => 'integer' ),
+					),
+					'qty'         => array(
+						'type'     => 'integer',
+						'required' => true,
+					),
+				),
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$user        = wp_get_current_user();
+					$qty         = (int) $request->get_param( 'qty' );
+					$product_ids = (array) $request->get_param( 'product_ids' );
+
+					if ( $qty < 0 ) {
+						return new WP_Error( 'papelito_invalid_qty', 'Quantidade nao pode ser negativa.', array( 'status' => 400 ) );
+					}
+
+					if ( empty( $product_ids ) ) {
+						return new WP_Error( 'papelito_empty_selection', 'Selecione ao menos um produto.', array( 'status' => 400 ) );
+					}
+
+					// Teto de lote: acima disso a requisicao passaria do tempo limite do PHP no meio
+					// da escrita, deixando parte da selecao aplicada sem o vendor saber quais.
+					if ( count( $product_ids ) > 200 ) {
+						return new WP_Error(
+							'papelito_selection_too_large',
+							'Selecione no maximo 200 produtos por vez.',
+							array( 'status' => 422 )
+						);
+					}
+
+					$result = papelito_vendor_stock_set_many( (int) $user->ID, $product_ids, $qty );
+
+					return new WP_REST_Response(
+						array(
+							'ok'      => empty( $result['failed'] ),
+							'qty'     => $qty,
+							'updated' => $result['updated'],
+							'failed'  => $result['failed'],
+						),
+						200
+					);
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1',
+			'/vendor/me/stock/data-request',
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => static function () {
+					$check = papelito_vendor_stock_require_seller_commercial();
+					return is_wp_error( $check ) ? $check : true;
+				},
+				'args'                => array(
+					'product_id' => array(
+						'type'     => 'integer',
+						'required' => true,
+					),
+					'message'    => array(
+						'type'              => 'string',
+						'default'           => '',
+						'sanitize_callback' => static function ( $value ) {
+							return substr( sanitize_textarea_field( (string) $value ), 0, 500 );
+						},
+					),
+				),
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$user   = wp_get_current_user();
+					$result = papelito_vendor_stock_request_product_data(
+						(int) $user->ID,
+						(int) $request->get_param( 'product_id' ),
+						(string) $request->get_param( 'message' )
 					);
 
 					if ( is_wp_error( $result ) ) {

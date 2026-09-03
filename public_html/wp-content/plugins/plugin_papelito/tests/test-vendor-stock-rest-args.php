@@ -32,6 +32,7 @@ function sanitize_title( $title, $fallback_title = '', $context = 'save' ) {
 
 function absint( $value ) { return abs( (int) $value ); }
 function sanitize_text_field( $value ) { return trim( (string) $value ); }
+function sanitize_textarea_field( $value ) { return trim( (string) $value ); }
 function get_post_thumbnail_id( $post_id ) { return 0; }
 function wp_get_object_terms( $ids, $taxonomy, $args ) { return array(); }
 function papelito_curated_collections() { return array( 'premium' ); }

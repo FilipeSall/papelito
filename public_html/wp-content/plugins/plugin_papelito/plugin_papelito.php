@@ -25,6 +25,7 @@ require_once __DIR__ . '/includes/product_taxonomy.php';
 require_once __DIR__ . '/includes/product_taxonomy_rest.php';
 require_once __DIR__ . '/includes/product_taxonomy_graphql.php';
 require_once __DIR__ . '/includes/product_taxonomy_query.php';
+require_once __DIR__ . '/includes/rest_products_pagination.php';
 require_once __DIR__ . '/includes/product_benefits.php';
 require_once __DIR__ . '/includes/product_benefits_rest.php';
 require_once __DIR__ . '/includes/catalog_search.php';

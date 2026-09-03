@@ -27,6 +27,7 @@ const PAPELITO_AUTH_ONBOARDING_RESUME_MESSAGE = 'Retome seu onboarding B2B para 
 const PAPELITO_AUTH_RATE_LIMIT_MESSAGE = 'Muitas tentativas. Tente novamente em alguns instantes.';
 const PAPELITO_AUTH_INVALID_VERIFICATION_MESSAGE = 'Link de confirmação inválido ou expirado.';
 const PAPELITO_AUTH_SESSION_VERSION_META = 'papelito_auth_session_version';
+const PAPELITO_AUTH_PASSWORD_UNSET_META = 'papelito_auth_password_unset';
 
 add_filter(
 	'graphql_jwt_auth_expire',
@@ -388,6 +389,49 @@ function papelito_auth_mark_email_verified( int $user_id ): void {
 	 * @param int $user_id Usuario verificado.
 	 */
 	do_action( 'papelito_email_verified', $user_id );
+}
+
+/**
+ * Lista os meios de autenticacao que a conta realmente consegue usar hoje.
+ *
+ * Ausencia da meta de senha nao-definida significa senha escolhida pelo proprio usuario
+ * (todo cadastro por senha e a base legada), portanto 'password' e o default.
+ *
+ * @param int $user_id Usuario avaliado.
+ * @return array<int,string> Subconjunto de {'password','google'}.
+ */
+function papelito_auth_credential_methods( int $user_id ): array {
+	$methods = array();
+
+	if ( '1' !== (string) get_user_meta( $user_id, PAPELITO_AUTH_PASSWORD_UNSET_META, true ) ) {
+		$methods[] = 'password';
+	}
+
+	if ( '' !== (string) get_user_meta( $user_id, 'google_sub', true ) ) {
+		$methods[] = 'google';
+	}
+
+	return $methods;
+}
+
+/**
+ * Marca que a conta nasceu sem senha escolhida (senha aleatoria, so entra por OAuth).
+ *
+ * @param int $user_id Conta recem-criada.
+ * @return void
+ */
+function papelito_auth_mark_password_unset( int $user_id ): void {
+	update_user_meta( $user_id, PAPELITO_AUTH_PASSWORD_UNSET_META, '1' );
+}
+
+/**
+ * Registra que a conta passou a ter senha propria (cadastro, troca ou redefinicao).
+ *
+ * @param int $user_id Conta que definiu a senha.
+ * @return void
+ */
+function papelito_auth_mark_password_set( int $user_id ): void {
+	delete_user_meta( $user_id, PAPELITO_AUTH_PASSWORD_UNSET_META );
 }
 
 /**
@@ -835,6 +879,7 @@ function papelito_auth_change_password( WP_User $user, array $data ) {
 	}
 
 	wp_set_password( $password, $user->ID );
+	papelito_auth_mark_password_set( $user->ID );
 	papelito_auth_invalidate_user_sessions( $user->ID );
 
 	return true;
@@ -931,12 +976,69 @@ function papelito_auth_sync_google_user( WP_User $user, string $email, array $pa
 }
 
 /**
- * Resolve o WP_User a partir de um payload Google verificado.
+ * Informa se um token de convite pendente autoriza criar conta para exatamente este e-mail.
  *
- * @param array $payload Payload do tokeninfo.
+ * @param string $token Token em claro (vazio quando o login nao parte de um convite).
+ * @param string $email E-mail normalizado.
+ * @return bool
+ */
+function papelito_auth_invitation_authorizes_email( string $token, string $email ): bool {
+	if ( '' === trim( $token ) || '' === $email || ! function_exists( 'papelito_company_invitation_find_pending_by_token' ) ) {
+		return false;
+	}
+
+	$invitation = papelito_company_invitation_find_pending_by_token( $token );
+
+	return null !== $invitation && hash_equals( strtolower( (string) $invitation['invited_email'] ), strtolower( $email ) );
+}
+
+/**
+ * Cria a conta de um convidado que optou por entrar pelo Google.
+ *
+ * Um convite pendente E a pre-aprovacao que a candidatura empresarial forneceria, portanto
+ * dispensa o fluxo de pre-conta. A conta nasce sem senha propria (entra so por OAuth) e com
+ * e-mail verificado, porque `papelito_auth_verify_google_id_token()` ja exige `email_verified`.
+ *
+ * @param string $email   E-mail normalizado do payload.
+ * @param array  $payload Payload verificado do tokeninfo.
  * @return WP_User|WP_Error
  */
-function papelito_auth_find_or_create_google_user( array $payload ) {
+function papelito_auth_create_google_invited_user( string $email, array $payload ) {
+	$user_id = wp_insert_user(
+		array(
+			'user_login' => $email,
+			'user_email' => $email,
+			'user_pass'  => wp_generate_password( 32, true, true ),
+			'first_name' => papelito_normalize_unicode_spaces( sanitize_text_field( (string) ( $payload['given_name'] ?? '' ) ) ),
+			'last_name'  => papelito_normalize_unicode_spaces( sanitize_text_field( (string) ( $payload['family_name'] ?? '' ) ) ),
+			'role'       => 'customer',
+		)
+	);
+	if ( is_wp_error( $user_id ) ) {
+		return $user_id;
+	}
+
+	update_user_meta( $user_id, 'papelito_profile_complete', '0' );
+	papelito_auth_mark_email_verified( $user_id );
+	papelito_auth_mark_password_unset( $user_id );
+	papelito_auth_welcome_toast_arm( $user_id );
+	papelito_b2b_mark_cohort( $user_id );
+
+	$user = get_userdata( $user_id );
+
+	return $user instanceof WP_User
+		? $user
+		: new WP_Error( 'papelito_user_lookup_failed', PAPELITO_AUTH_NEW_USER_LOOKUP_MESSAGE, array( 'status' => 500 ) );
+}
+
+/**
+ * Resolve o WP_User a partir de um payload Google verificado.
+ *
+ * @param array  $payload          Payload do tokeninfo.
+ * @param string $invitation_token Token de convite em claro, quando o login parte de um convite.
+ * @return WP_User|WP_Error
+ */
+function papelito_auth_find_or_create_google_user( array $payload, string $invitation_token = '' ) {
 	$email = papelito_normalize_email( (string) $payload['email'] );
 	if ( '' === $email ) {
 		return new WP_Error( 'papelito_invalid_email', PAPELITO_AUTH_INVALID_EMAIL_MESSAGE, array( 'status' => 400 ) );
@@ -944,6 +1046,14 @@ function papelito_auth_find_or_create_google_user( array $payload ) {
 
 	$existing_id = email_exists( $email );
 	if ( ! $existing_id ) {
+		if ( papelito_auth_invitation_authorizes_email( $invitation_token, $email ) ) {
+			$created = papelito_auth_create_google_invited_user( $email, $payload );
+
+			// O vinculo da identidade Google (google_sub) vive num unico lugar: sem passar pelo
+			// sync, a conta recem-criada ficaria sem nenhum meio de entrada declarado.
+			return is_wp_error( $created ) ? $created : papelito_auth_sync_google_user( $created, $email, $payload );
+		}
+
 		return new WP_Error( 'papelito_pre_account_required', 'Conclua a candidatura empresarial antes de criar uma conta.', array( 'status' => 422 ) );
 	}
 
@@ -1175,7 +1285,7 @@ function papelito_auth_handle_google( WP_REST_Request $request ) {
 		return $payload;
 	}
 
-	$user = papelito_auth_find_or_create_google_user( $payload );
+	$user = papelito_auth_find_or_create_google_user( $payload, (string) $request->get_param( 'invitation_token' ) );
 	if ( is_wp_error( $user ) ) {
 		return $user;
 	}
@@ -1218,20 +1328,73 @@ function papelito_auth_handle_invitation_register( WP_REST_Request $request ) {
 		return new WP_Error( 'papelito_invitation_registration_unavailable', 'Não foi possível criar uma conta para este convite.', array( 'status' => 409 ) );
 	}
 
+	$existing_id = (int) email_exists( $email );
+	if ( $existing_id > 0 ) {
+		return papelito_auth_invitation_register_resume( $existing_id );
+	}
+
 	$user = papelito_auth_create_invited_user( $data );
 	if ( is_wp_error( $user ) ) {
 		return $user;
 	}
+	papelito_auth_mark_password_set( $user->ID );
 
 	$dispatch = papelito_auth_dispatch_verification_email( $user );
 	return new WP_REST_Response(
 		array(
 			'ok'                        => true,
+			'accountExists'             => false,
 			'requiresEmailVerification' => true,
 			'email'                     => $user->user_email,
 			'emailSent'                 => ! is_wp_error( $dispatch ),
 		),
 		201
+	);
+}
+
+/**
+ * Retoma um cadastro por convite cujo e-mail ja tem conta, em vez de devolver um 409 sem saida.
+ *
+ * INVARIANTE DE SEGURANCA: nunca grava a senha enviada no payload. Portar um token de convite
+ * nao autoriza sobrescrever a credencial de uma conta existente — isso seria tomada de conta.
+ * Conta pendente recebe novo e-mail de verificacao; conta verificada e mandada para o login.
+ *
+ * @param int $user_id Conta ja existente para o e-mail convidado.
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_auth_invitation_register_resume( int $user_id ) {
+	$user = get_userdata( $user_id );
+	if ( ! $user instanceof WP_User ) {
+		return new WP_Error( 'papelito_user_lookup_failed', PAPELITO_AUTH_NEW_USER_LOOKUP_MESSAGE, array( 'status' => 500 ) );
+	}
+
+	if ( papelito_auth_requires_email_verification( $user_id ) ) {
+		$dispatch = papelito_auth_maybe_resend_pending_verification( $user );
+
+		return new WP_REST_Response(
+			array(
+				'ok'                        => true,
+				'accountExists'             => true,
+				'requiresEmailVerification' => true,
+				'requiresLogin'             => false,
+				'email'                     => $user->user_email,
+				'emailSent'                 => ! is_wp_error( $dispatch ),
+				'authMethods'               => papelito_auth_credential_methods( $user_id ),
+			),
+			200
+		);
+	}
+
+	return new WP_REST_Response(
+		array(
+			'ok'                        => true,
+			'accountExists'             => true,
+			'requiresEmailVerification' => false,
+			'requiresLogin'             => true,
+			'email'                     => $user->user_email,
+			'authMethods'               => papelito_auth_credential_methods( $user_id ),
+		),
+		200
 	);
 }
 
@@ -1361,6 +1524,7 @@ function papelito_auth_handle_reset_password( WP_REST_Request $request ) {
 	}
 
 	reset_password( $user, $password );
+	papelito_auth_mark_password_set( $user->ID );
 	papelito_auth_invalidate_user_sessions( $user->ID );
 	papelito_auth_mark_email_verified( $user->ID );
 

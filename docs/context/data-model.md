@@ -327,7 +327,9 @@ Ao aprovar, confira em qual fila a candidatura está: os IDs não são intercamb
 
 **Vendor**: `min_cep[]`, `max_cep[]` (arrays **serializados**), `cep`, `cep_lat`, `cep_lng`, `shipping_lead_time_days`, `application_status` / `seller_application_status`, `application_rejection_reason`, `application_reviewed_by`, `application_reviewed_at`, `papelito_pagarme_recipient_id`, `papelito_pagarme_recipient_status`.
 
-**B2B**: `papelito_b2b_required`, e as sete metas de coorte legada listadas em [`../../../docs/flows/legacy-migration.md`](../../../docs/flows/legacy-migration.md#dados).
+**B2B**: `papelito_b2b_required`, `papelito_b2b_active_company_id`, `papelito_b2b_onboarding_address_{cep,state,city,street,number,complement,neighborhood}`, e as sete metas de coorte legada listadas em [`../../../docs/flows/legacy-migration.md`](../../../docs/flows/legacy-migration.md#dados).
+
+**Endereço e contato não têm origem única.** Cada fluxo grava no seu lugar e nenhum retrofita os outros: o vendor usa `seller_application_*`, o onboarding B2B usa `papelito_b2b_onboarding_address_*` e o cadastro pela empresa deixa telefone, CNPJ e endereço fiscal só em `wp_papelito_companies`. Leitura administrativa que precisa do dado consolidado percorre as três origens nessa ordem — é o que `papelito_admin_users_base_detail()` faz. Ler só o usermeta legado devolve vazio para conta B2B.
 
 > `min_cep[]` / `max_cep[]` são **serializados** em usermeta. Factory de teste precisa passar por `update_user_meta`, não escrever direto.
 >
