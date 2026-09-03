@@ -585,31 +585,18 @@ function papelito_vendor_dashboard_accumulate_products( array &$products, array 
  * @return array{awaiting_payment: int, rows: array<int, array<string, mixed>>}
  */
 function papelito_vendor_dashboard_kpi_segment_rows( array $orders, int $vendor_id, array $period, string $segment ): array {
+	if ( 'refunded' === $segment ) {
+		return array(
+			'awaiting_payment' => 0,
+			'rows'             => papelito_vendor_dashboard_refunded_rows( $orders, $vendor_id, $period ),
+		);
+	}
+
 	$sale_statuses          = papelito_vendor_dashboard_sale_statuses();
 	$rows                   = array();
 	$awaiting_payment_count = 0;
 
 	foreach ( $orders as $order ) {
-		// Reembolsado e cancelado ficam fora do caminho normal de venda: o gate de
-		// pagamento e o status de expedicao descartariam justamente o que se quer ver.
-		if ( 'refunded' === $segment ) {
-			if ( ! papelito_vendor_dashboard_in_period( $order, $period['from'], $period['to'] ) ) {
-				continue;
-			}
-
-			if ( ! papelito_vendor_dashboard_order_is_refunded_or_cancelled( $order ) ) {
-				continue;
-			}
-
-			$rows[] = array(
-				'total'   => (float) $order->get_total(),
-				'pending' => false,
-				'bucket'  => papelito_vendor_dashboard_bucket( $order, $period['interval'] ),
-				'items'   => papelito_vendor_dashboard_items( $order, $vendor_id ),
-			);
-			continue;
-		}
-
 		$data = papelito_vendor_dashboard_kpi_order_data( $order, $vendor_id, $period, $sale_statuses );
 
 		if ( null === $data ) {
@@ -632,6 +619,41 @@ function papelito_vendor_dashboard_kpi_segment_rows( array $orders, int $vendor_
 		'awaiting_payment' => $awaiting_payment_count,
 		'rows'             => $rows,
 	);
+}
+
+/**
+ * Linhas do segmento `refunded`.
+ *
+ * Reembolsado e cancelado ficam fora do caminho normal de venda: o gate de pagamento e o status de
+ * expedicao descartariam justamente o que se quer ver. Por isso este segmento tem laco proprio, e
+ * nao um desvio dentro do laco geral.
+ *
+ * @param array<int, object>    $orders    Pedidos do vendor.
+ * @param int                   $vendor_id Vendor.
+ * @param array<string, string> $period    Periodo com from, to e interval.
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_vendor_dashboard_refunded_rows( array $orders, int $vendor_id, array $period ): array {
+	$rows = array();
+
+	foreach ( $orders as $order ) {
+		if ( ! papelito_vendor_dashboard_in_period( $order, $period['from'], $period['to'] ) ) {
+			continue;
+		}
+
+		if ( ! papelito_vendor_dashboard_order_is_refunded_or_cancelled( $order ) ) {
+			continue;
+		}
+
+		$rows[] = array(
+			'total'   => (float) $order->get_total(),
+			'pending' => false,
+			'bucket'  => papelito_vendor_dashboard_bucket( $order, $period['interval'] ),
+			'items'   => papelito_vendor_dashboard_items( $order, $vendor_id ),
+		);
+	}
+
+	return $rows;
 }
 
 /**
@@ -1397,6 +1419,30 @@ function papelito_vendor_dashboard_permission_seller() {
 }
 
 /**
+ * Require an authenticated seller whose account is not suspended.
+ *
+ * Cobertura e estoque sao operacoes de venda futura: conta suspensa nao mexe nelas. Despacho,
+ * rastreio e mensagens de pedidos ja vendidos seguem em `permission_seller`.
+ *
+ * @return true|WP_Error
+ */
+function papelito_vendor_dashboard_permission_seller_commercial() {
+	$check = papelito_vendor_dashboard_require_seller();
+
+	if ( is_wp_error( $check ) ) {
+		return $check;
+	}
+
+	if ( ! function_exists( 'papelito_account_guard_commercial' ) ) {
+		return true;
+	}
+
+	$guard = papelito_account_guard_commercial( (int) $check->ID );
+
+	return is_wp_error( $guard ) ? $guard : true;
+}
+
+/**
  * Return the profile permission result expected by REST.
  *
  * @return true|WP_Error
@@ -1491,7 +1537,7 @@ function papelito_vendor_dashboard_register_settings_routes(): void {
 			),
 			array(
 				'methods'             => WP_REST_Server::EDITABLE,
-				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller_commercial',
 				'callback'            => 'papelito_vendor_dashboard_handle_update_settings',
 			),
 		)
@@ -1513,7 +1559,7 @@ function papelito_vendor_dashboard_register_coverage_routes(): void {
 			),
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
-				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller_commercial',
 				'callback'            => 'papelito_vendor_dashboard_handle_add_coverage_range',
 			),
 		)
@@ -1525,7 +1571,7 @@ function papelito_vendor_dashboard_register_coverage_routes(): void {
 		array(
 			array(
 				'methods'             => WP_REST_Server::EDITABLE,
-				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller_commercial',
 				'callback'            => 'papelito_vendor_dashboard_handle_update_coverage_range',
 				'args'                => array(
 					'id' => array(
@@ -1535,7 +1581,7 @@ function papelito_vendor_dashboard_register_coverage_routes(): void {
 			),
 			array(
 				'methods'             => WP_REST_Server::DELETABLE,
-				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller_commercial',
 				'callback'            => 'papelito_vendor_dashboard_handle_delete_coverage_range',
 				'args'                => array(
 					'id' => array(

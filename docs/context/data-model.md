@@ -259,6 +259,33 @@ papelito_companies
 
 Índice `idx_company_created (company_id, created_at)`. Append-only.
 
+### `papelito_account_status_log`
+
+Histórico de suspensão e reativação de **conta**. Existe separado de `papelito_company_audit_log`
+porque aquele é escopado por empresa (`company_id NOT NULL`) e a suspensão é um estado da pessoa,
+que pode não ter empresa nenhuma.
+
+| Coluna | Notas |
+|---|---|
+| `user_id`, `actor_user_id`, `created_at` | quem foi suspenso, quem suspendeu, quando |
+| `action` | `suspend` ou `reactivate` |
+| `reason` | TEXT NULL — justificativa; obrigatória na suspensão, opcional na reativação |
+
+Índice `idx_user_created (user_id, created_at)`. Append-only.
+
+O estado corrente **não** mora nessa tabela: vive em usermeta, para a leitura ser barata no caminho
+de compra e de venda.
+
+| Usermeta | Conteúdo |
+|---|---|
+| `papelito_account_status` | `suspended` quando suspensa; ausente ou `active` caso contrário |
+| `papelito_account_suspension_reason` | justificativa vigente |
+| `papelito_account_suspension_at` | data/hora UTC da suspensão vigente |
+| `papelito_account_suspension_actor` | id do administrador que suspendeu |
+
+A reativação apaga as três últimas e devolve `papelito_account_status` para `active` — o histórico
+permanece só no log.
+
 ### Candidatura empresarial pré-conta
 
 `papelito_company_pre_account_applications` é a tabela do cadastro empresarial vigente. Ela existe porque **a candidatura não pode criar conta**: antes da aprovação administrativa não há `wp_user`, empresa, membership nem sessão para o candidato.

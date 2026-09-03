@@ -93,6 +93,12 @@ function papelito_matching_vendor_ids($user_cep)
 			continue;
 		}
 
+		// Vendor suspenso sai da cobertura, da vitrine e do roteamento no mesmo instante. Os
+		// pedidos que ele ja vendeu continuam sendo despachados por ele.
+		if ( function_exists( 'papelito_account_is_suspended' ) && papelito_account_is_suspended( (int) $vendor->ID ) ) {
+			continue;
+		}
+
         $min_ceps = get_user_meta($vendor->ID, 'min_cep');
         $max_ceps = get_user_meta($vendor->ID, 'max_cep');
 

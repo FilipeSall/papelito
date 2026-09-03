@@ -1241,6 +1241,35 @@ function papelito_vendor_stock_taxonomies() {
 /**
  * Verifica que o usuário corrente é vendor aprovado.
  */
+/**
+ * Require an authenticated seller whose account is not suspended.
+ *
+ * Lancar estoque e preparar venda futura, e conta suspensa nao vende. A leitura do estoque
+ * continua liberada para o vendor conseguir despachar o que ja vendeu.
+ *
+ * @return WP_User|WP_Error
+ */
+function papelito_vendor_stock_require_seller_commercial() {
+	$check = papelito_vendor_stock_require_seller();
+
+	if ( is_wp_error( $check ) ) {
+		return $check;
+	}
+
+	if ( ! function_exists( 'papelito_account_guard_commercial' ) ) {
+		return $check;
+	}
+
+	$guard = papelito_account_guard_commercial( (int) $check->ID );
+
+	return is_wp_error( $guard ) ? $guard : $check;
+}
+
+/**
+ * Require an authenticated seller.
+ *
+ * @return WP_User|WP_Error
+ */
 function papelito_vendor_stock_require_seller() {
 	$user = wp_get_current_user();
 
@@ -1419,7 +1448,7 @@ add_action(
 			array(
 				'methods'             => 'PUT',
 				'permission_callback' => static function () {
-					$check = papelito_vendor_stock_require_seller();
+					$check = papelito_vendor_stock_require_seller_commercial();
 					return is_wp_error( $check ) ? $check : true;
 				},
 				'args'                => array(

@@ -19,6 +19,7 @@ Todos os arquivos em `public_html/wp-content/plugins/plugin_papelito/includes/`.
 | Notificações e mensagens | `notifications.php`, `vendor_messaging.php` | WP, SQL real |
 | Cupons / flash sale / roteamento | `coupons.php`, `flash_sale.php`, `order_routing.php`, `pagarme_*` | puro (normalizadores) + WP |
 | Empresa / B2B | `company_*`, `cnpj_*`, `customer_identity.php` — `papelito_company_purchase_capability()` é a única política de compra | WP |
+| Estado da conta | `account_status.php` — `papelito_account_is_suspended`, `papelito_account_can_suspend`, `papelito_account_suspend`/`_reactivate`, `papelito_account_guard_commercial`; rotas em `account_admin_endpoints.php` | WP, SQL real |
 | Frete e rastreamento | `shipping.php`, `correios_prepostage.php`, `correios_tracking.php` | WP + HTTP externo |
 | Relatórios e exportações | `admin_reports.php` — snapshot, segmentos, exports do admin; `vendor_reports.php` — exports escopados ao vendor; regras de venda em `vendor_dashboard.php` | WP, SQL real |
 
@@ -102,6 +103,18 @@ Além disso: a query parte de `FROM wp_posts p LEFT JOIN papelito_vendor_stock v
 37. Orçamento síncrono global de **6 s**, ~3 s por provedor, **sem retry no caminho síncrono**.
 38. Toda mutação empresarial recarrega empresa e membership do banco e exige `Idempotency-Key` durável.
 39. Transferência de titularidade e decisões de candidatura usam `SELECT ... FOR UPDATE`.
+
+## Suspensão de conta
+
+39a. `papelito_account_is_suspended()` é a **única** leitura do estado comercial da conta; nenhuma superfície replica a condição. Compra passa por `papelito_company_purchase_capability()`, escrita de vendor por `papelito_account_guard_commercial()`, e cobertura/vitrine por `papelito_matching_vendor_ids()`.
+39b. `account_suspended` é o **primeiro** motivo de bloqueio de compra, acima de empresa e de identidade — nenhuma outra CTA desbloqueia.
+39c. `papelito_account_can_suspend()` é **pré-voo**, não a garantia: recusa auto-suspensão e outro administrador. O **único titular ativo** não trava mais.
+39c-1. `papelito_account_commit_suspension()` é a garantia: sucessão de **todas** as empresas afetadas, gravação do estado e histórico em **uma transação só**. O sucessor é resolvido dentro do lock (`papelito_account_ownership_successor( …, $for_update = true )`), toda escrita tem retorno verificado, e o rollback chama `papelito_account_forget_user_cache()`.
+39c-2. `papelito_account_status` entra em `$coverage_meta_keys` (`rest_api.php`): sem isso o transient de cobertura de 5 min continuaria servindo o vendor suspenso.
+39d. Suspender exige justificativa de 5 a 500 caracteres; suspender de novo é idempotente e não duplica histórico.
+39e. **Suspensão não bloqueia login** — o gate continua fora de `wp_authenticate_user`. Quem entra lê o aviso e mantém histórico, cadastro e conversas.
+39f. Vendor suspenso **sai da cobertura na hora** e **mantém os pedidos que já vendeu**: `permission_seller_commercial` barra estoque, faixas de CEP e configurações; `permission_seller` continua servindo pedidos, rastreio e mensagens.
+39g. Empresa volta a `active` só com `ownership_status = 'verified'`; empresa `archived` não muda de estado por essa via.
 
 ## Pagamento
 

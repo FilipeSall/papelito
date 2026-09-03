@@ -633,6 +633,9 @@ function papelito_company_context_with_purchase_capability( int $user_id, array 
 	$context['isInternalAdmin'] = $capability['isInternalAdmin'];
 	$context['isVendor'] = $capability['isVendor'];
 	$context['hasCustomerContext'] = $capability['hasCustomerContext'];
+	if ( function_exists( 'papelito_account_status_context' ) ) {
+		$context = array_merge( $context, papelito_account_status_context( $user_id ) );
+	}
 	return $context;
 }
 
@@ -745,6 +748,11 @@ function papelito_company_purchase_capability( int $user_id, ?array $context = n
 	);
 	if ( ! $customer ) {
 		return papelito_company_purchase_capability_result( $base, false, 'not_buyer', 'not_a_customer_buyer', null, null );
+	}
+	// Conta suspensa vence qualquer outro motivo: nenhuma CTA de empresa ou de identidade
+	// desbloqueia a compra enquanto a plataforma mantiver a conta suspensa.
+	if ( function_exists( 'papelito_account_is_suspended' ) && papelito_account_is_suspended( $user_id ) ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'account_suspended', null, null );
 	}
 	$context = $context ?? papelito_company_context( $user_id );
 	if ( ! empty( $context['companySelectionRequired'] ) ) {

@@ -145,6 +145,8 @@ O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grav
 | Arquivo | Responsabilidade |
 |---|---|
 | `admin_users.php` | listagem, detalhe, papel, ativação de e-mail, cancelamento de pedido |
+| `account_status.php` | estado comercial da conta (ativa/suspensa), guards, histórico e contexto de `/auth/me` |
+| `account_admin_endpoints.php` | rotas de suspender/reativar conta e empresa, e histórico de estado |
 | `admin_reports.php` | snapshot de vendas com segmento e janela anterior, relatórios e exportações |
 | `notifications.php` | dispatcher **e todos os listeners** dos eventos de domínio |
 

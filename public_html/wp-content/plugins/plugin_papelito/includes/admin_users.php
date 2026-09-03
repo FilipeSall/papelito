@@ -7,6 +7,14 @@
 
 defined( 'ABSPATH' ) || exit;
 
+const PAPELITO_ADMIN_USERS_REST_NAMESPACE = 'papelito/v1/admin';
+const PAPELITO_ADMIN_USERS_NOT_FOUND_MESSAGE = 'Usuario nao encontrado.';
+const PAPELITO_ADMIN_USERS_CAP_LIKE = 'cap.meta_value LIKE %s';
+const PAPELITO_ADMIN_USERS_CAP_NOT_LIKE = 'cap.meta_value NOT LIKE %s';
+const PAPELITO_ADMIN_USERS_CAP_ADMINISTRATOR = '%"administrator"%';
+const PAPELITO_ADMIN_USERS_CAP_SELLER = '%"seller"%';
+const PAPELITO_ADMIN_USERS_CAP_CUSTOMER = '%"customer"%';
+
 /**
  * Filtros aceitos na listagem admin de usuarios.
  *
@@ -51,7 +59,36 @@ function papelito_admin_users_parse_filters( WP_REST_Request $request ): array {
 			papelito_admin_users_allowed_roles(),
 			'all'
 		),
+		'status'  => papelito_admin_users_normalize_enum(
+			sanitize_key( (string) $request->get_param( 'status' ) ),
+			papelito_admin_users_allowed_statuses(),
+			'all'
+		),
+		'relation' => papelito_admin_users_normalize_enum(
+			sanitize_key( (string) $request->get_param( 'relation' ) ),
+			papelito_admin_users_allowed_relations(),
+			'all'
+		),
+		'countsOnly' => '1' === (string) $request->get_param( 'countsOnly' ),
 	);
+}
+
+/**
+ * Estados de conta aceitos pelo filtro.
+ *
+ * @return array<int,string>
+ */
+function papelito_admin_users_allowed_statuses(): array {
+	return array( 'all', 'active', 'suspended', 'email_pending' );
+}
+
+/**
+ * Recortes de relacionamento aceitos pelo filtro.
+ *
+ * @return array<int,string>
+ */
+function papelito_admin_users_allowed_relations(): array {
+	return array( 'all', 'company', 'unlinked' );
 }
 
 /**
@@ -77,7 +114,28 @@ function papelito_admin_users_base_sql(): string {
 		LEFT JOIN {$usermeta_table} first_name ON first_name.user_id = u.ID AND first_name.meta_key = 'first_name'
 		LEFT JOIN {$usermeta_table} last_name ON last_name.user_id = u.ID AND last_name.meta_key = 'last_name'
 		LEFT JOIN {$usermeta_table} email_verification_status ON email_verification_status.user_id = u.ID AND email_verification_status.meta_key = 'papelito_email_verification_status'
+		LEFT JOIN {$usermeta_table} account_status ON account_status.user_id = u.ID AND account_status.meta_key = 'papelito_account_status'
 	";
+}
+
+/**
+ * Subconsulta de vinculo empresarial vivo (ativo ou em analise).
+ *
+ * Devolve string vazia quando o modelo B2B nao esta instalado, e o filtro de relacionamento
+ * simplesmente nao se aplica.
+ */
+function papelito_admin_users_company_membership_exists_sql(): string {
+	if ( ! function_exists( 'papelito_company_table_names' ) ) {
+		return '';
+	}
+
+	$tables = papelito_company_table_names();
+
+	return "EXISTS (
+		SELECT 1 FROM {$tables['members']} membership
+		WHERE membership.user_id = u.ID
+		AND membership.member_status IN ( 'active', 'pending_company_approval', 'pending_identity' )
+	)";
 }
 
 /**
@@ -119,24 +177,41 @@ function papelito_admin_users_where_sql( array $filters, array &$args ): string 
 		array_push( $args, $term, $term, $term, $term, $term, $term );
 	}
 
+	if ( 'suspended' === ( $filters['status'] ?? 'all' ) ) {
+		$conditions[] = "account_status.meta_value = 'suspended'";
+	} elseif ( 'active' === ( $filters['status'] ?? 'all' ) ) {
+		$conditions[] = "( account_status.meta_value IS NULL OR account_status.meta_value <> 'suspended' )";
+	} elseif ( 'email_pending' === ( $filters['status'] ?? 'all' ) ) {
+		$conditions[] = "( account_status.meta_value IS NULL OR account_status.meta_value <> 'suspended' )";
+		$conditions[] = "email_verification_status.meta_value = 'pending'";
+	}
+
+	$membership_exists = papelito_admin_users_company_membership_exists_sql();
+
+	if ( '' !== $membership_exists && 'company' === ( $filters['relation'] ?? 'all' ) ) {
+		$conditions[] = $membership_exists;
+	} elseif ( '' !== $membership_exists && 'unlinked' === ( $filters['relation'] ?? 'all' ) ) {
+		$conditions[] = 'NOT ' . $membership_exists;
+	}
+
 	if ( 'administrator' === $filters['role'] ) {
-		$conditions[] = 'cap.meta_value LIKE %s';
-		$args[]       = '%"administrator"%';
+		$conditions[] = PAPELITO_ADMIN_USERS_CAP_LIKE;
+		$args[]       = PAPELITO_ADMIN_USERS_CAP_ADMINISTRATOR;
 	} elseif ( 'seller' === $filters['role'] ) {
-		$conditions[] = 'cap.meta_value LIKE %s';
-		$args[]       = '%"seller"%';
+		$conditions[] = PAPELITO_ADMIN_USERS_CAP_LIKE;
+		$args[]       = PAPELITO_ADMIN_USERS_CAP_SELLER;
 	} elseif ( 'customer' === $filters['role'] ) {
-		$conditions[] = 'cap.meta_value NOT LIKE %s';
-		$args[]       = '%"administrator"%';
-		$conditions[] = 'cap.meta_value LIKE %s';
-		$args[] = '%"customer"%';
+		$conditions[] = PAPELITO_ADMIN_USERS_CAP_NOT_LIKE;
+		$args[]       = PAPELITO_ADMIN_USERS_CAP_ADMINISTRATOR;
+		$conditions[] = PAPELITO_ADMIN_USERS_CAP_LIKE;
+		$args[]       = PAPELITO_ADMIN_USERS_CAP_CUSTOMER;
 	} elseif ( 'other' === $filters['role'] ) {
-		$conditions[] = 'cap.meta_value NOT LIKE %s';
-		$args[]       = '%"administrator"%';
-		$conditions[] = 'cap.meta_value NOT LIKE %s';
-		$args[]       = '%"customer"%';
-		$conditions[] = 'cap.meta_value NOT LIKE %s';
-		$args[]       = '%"seller"%';
+		$conditions[] = PAPELITO_ADMIN_USERS_CAP_NOT_LIKE;
+		$args[]       = PAPELITO_ADMIN_USERS_CAP_ADMINISTRATOR;
+		$conditions[] = PAPELITO_ADMIN_USERS_CAP_NOT_LIKE;
+		$args[]       = PAPELITO_ADMIN_USERS_CAP_CUSTOMER;
+		$conditions[] = PAPELITO_ADMIN_USERS_CAP_NOT_LIKE;
+		$args[]       = PAPELITO_ADMIN_USERS_CAP_SELLER;
 	}
 
 	return ' WHERE ' . implode( ' AND ', $conditions );
@@ -362,6 +437,11 @@ function papelito_admin_users_role_label( string $role ): string {
  * @return string
  */
 function papelito_admin_users_account_status( WP_User $user ): string {
+	// A suspensao e estado de plataforma: vence rotulo de role e pendencia de e-mail.
+	if ( function_exists( 'papelito_account_is_suspended' ) && papelito_account_is_suspended( (int) $user->ID ) ) {
+		return 'suspended';
+	}
+
 	$email_status = sanitize_key( (string) get_user_meta( $user->ID, 'papelito_email_verification_status', true ) );
 	if ( 'pending' === $email_status ) {
 		return 'email_pending';
@@ -386,6 +466,8 @@ function papelito_admin_users_account_status( WP_User $user ): string {
  */
 function papelito_admin_users_account_status_label( string $status ): string {
 	switch ( $status ) {
+		case 'suspended':
+			return 'Suspensa';
 		case 'email_pending':
 			return 'Email pendente';
 		case 'vendor_pending':
@@ -399,6 +481,66 @@ function papelito_admin_users_account_status_label( string $status ): string {
 		default:
 			return 'Ativa';
 	}
+}
+
+/**
+ * Aplica o mapeamento operacional do pedido, quando o painel do vendor esta disponivel.
+ *
+ * @param object $order Pedido WooCommerce.
+ * @return array<string, mixed>
+ */
+function papelito_admin_users_vendor_mapped_order( $order, string $relationship, int $viewer_user_id ): array {
+	if ( ! function_exists( 'papelito_vendor_dashboard_map_order' ) ) {
+		return array();
+	}
+
+	$vendor_id = 'sale' === $relationship ? $viewer_user_id : null;
+
+	return papelito_vendor_dashboard_map_order( $order, $vendor_id, true );
+}
+
+/**
+ * Status WooCommerce normalizado do pedido.
+ *
+ * @param object $order Pedido WooCommerce.
+ */
+function papelito_admin_users_order_wc_status( $order ): string {
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_status' ) ) {
+		return '';
+	}
+
+	return sanitize_key( (string) $order->get_status() );
+}
+
+/**
+ * Justificativa de cancelamento registrada pelo vendor.
+ *
+ * @param object $order Pedido WooCommerce.
+ */
+function papelito_admin_users_order_cancel_reason( $order ): string {
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_meta' ) ) {
+		return '';
+	}
+
+	return sanitize_textarea_field( (string) $order->get_meta( '_papelito_vendor_cancel_reason', true ) );
+}
+
+/**
+ * Id do pedido, preferindo o mapeamento operacional.
+ *
+ * @param object              $order  Pedido WooCommerce.
+ * @param array<string,mixed> $mapped Pedido ja mapeado.
+ */
+function papelito_admin_users_related_order_id( $order, array $mapped ): int {
+	if ( isset( $mapped['id'] ) ) {
+		return (int) $mapped['id'];
+	}
+
+	if ( is_object( $order ) && method_exists( $order, 'get_id' ) ) {
+		return (int) $order->get_id();
+	}
+
+	return 0;
 }
 
 /**
@@ -477,20 +619,13 @@ function papelito_admin_users_order_vendor_id( $order ): int {
  * @return array<string, mixed>
  */
 function papelito_admin_users_map_related_order( $order, string $relationship, int $viewer_user_id ): array {
-	$mapped = function_exists( 'papelito_vendor_dashboard_map_order' )
-		? papelito_vendor_dashboard_map_order( $order, 'sale' === $relationship ? $viewer_user_id : null, true )
-		: array();
-
-	$wc_status = is_object( $order ) && method_exists( $order, 'get_status' )
-		? sanitize_key( (string) $order->get_status() )
-		: '';
+	$mapped        = papelito_admin_users_vendor_mapped_order( $order, $relationship, $viewer_user_id );
+	$wc_status     = papelito_admin_users_order_wc_status( $order );
 	$vendor_status = sanitize_key( (string) ( $mapped['vendor_status'] ?? '' ) );
-	$cancel_reason = is_object( $order ) && method_exists( $order, 'get_meta' )
-		? sanitize_textarea_field( (string) $order->get_meta( '_papelito_vendor_cancel_reason', true ) )
-		: '';
+	$cancel_reason = papelito_admin_users_order_cancel_reason( $order );
 
 	return array(
-		'id'                => isset( $mapped['id'] ) ? (int) $mapped['id'] : ( is_object( $order ) && method_exists( $order, 'get_id' ) ? (int) $order->get_id() : 0 ),
+		'id'                => papelito_admin_users_related_order_id( $order, $mapped ),
 		'orderNumber'       => isset( $mapped['order_number'] ) ? (string) $mapped['order_number'] : '',
 		'createdAt'         => isset( $mapped['created_at'] ) ? (string) $mapped['created_at'] : '',
 		'customerName'      => isset( $mapped['customer_name'] ) ? (string) $mapped['customer_name'] : '',
@@ -507,6 +642,24 @@ function papelito_admin_users_map_related_order( $order, string $relationship, i
 }
 
 /**
+ * Resolve a lista de pedidos do vendor, carregando-a quando nao vier pronta.
+ *
+ * @param array<int,mixed>|null $vendor_orders
+ * @return array<int,mixed>
+ */
+function papelito_admin_users_resolve_vendor_orders( int $user_id, ?array $vendor_orders ): array {
+	if ( is_array( $vendor_orders ) ) {
+		return $vendor_orders;
+	}
+
+	if ( ! function_exists( 'papelito_vendor_dashboard_orders_for_vendor' ) ) {
+		return array();
+	}
+
+	return papelito_vendor_dashboard_orders_for_vendor( $user_id );
+}
+
+/**
  * Resumo de metricas brutas do usuario.
  *
  * @param WP_User $user Usuario alvo.
@@ -518,9 +671,7 @@ function papelito_admin_users_metrics( WP_User $user, ?array $vendor_orders = nu
 	$favorites_count  = papelito_admin_users_favorites_count( $user_id );
 	$tickets_count    = papelito_admin_users_support_tickets_count( $user_id );
 	$cancelled_orders = 0;
-	$vendor_orders    = null === $vendor_orders && function_exists( 'papelito_vendor_dashboard_orders_for_vendor' )
-		? papelito_vendor_dashboard_orders_for_vendor( $user_id )
-		: ( is_array( $vendor_orders ) ? $vendor_orders : array() );
+	$vendor_orders    = papelito_admin_users_resolve_vendor_orders( $user_id, $vendor_orders );
 	$sales_count      = papelito_admin_users_sales_orders_count( $user_id, $vendor_orders );
 
 	foreach ( papelito_admin_users_customer_orders( $user_id, 20 ) as $order ) {
@@ -586,12 +737,141 @@ function papelito_admin_users_map_row( array $row ): array {
 		'accountStatusLabel' => papelito_admin_users_account_status_label( $account_state ),
 		'registeredAt'       => (string) $user->user_registered,
 		'isVendor'           => papelito_admin_users_is_vendor_related( $user ),
+		'storeName'          => isset( $row['store_name'] ) ? trim( (string) $row['store_name'] ) : '',
+		'city'               => isset( $row['city'] ) ? trim( (string) $row['city'] ) : '',
+		'state'              => isset( $row['state'] ) ? trim( (string) $row['state'] ) : '',
+		'hasCoverage'        => ! empty( $row['has_coverage'] ),
+		'cnpj'               => isset( $row['cnpj'] ) ? trim( (string) $row['cnpj'] ) : '',
 		'ordersCount'        => $metrics['ordersCount'],
 		'purchasesCount'     => $metrics['purchasesCount'],
 		'salesCount'         => $metrics['salesCount'],
 		'favoritesCount'     => $metrics['favoritesCount'],
 		'supportTicketsCount' => $metrics['supportTicketsCount'],
 	);
+}
+
+/**
+ * Vinculo empresarial de cada usuario da pagina, em duas consultas.
+ *
+ * Evita o N+1 que apareceria se cada linha consultasse membros e empresa por conta propria. A
+ * empresa exibida e a do vinculo mais relevante: ativo antes de pendente, mais recente antes.
+ *
+ * @param array<int,int> $user_ids
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_admin_users_company_relations( array $user_ids ): array {
+	$user_ids = array_values( array_unique( array_filter( array_map( 'absint', $user_ids ) ) ) );
+
+	if ( empty( $user_ids ) || ! function_exists( 'papelito_company_table_names' ) ) {
+		return array();
+	}
+
+	$primary = papelito_admin_users_primary_memberships( $user_ids );
+
+	if ( empty( $primary ) ) {
+		return array();
+	}
+
+	$companies = papelito_admin_users_companies_by_id( array_column( $primary, 'company_id' ) );
+	$relations = array();
+
+	foreach ( $primary as $user_id => $member ) {
+		$company_id = (int) $member['company_id'];
+		$company    = $companies[ $company_id ] ?? null;
+
+		$relations[ $user_id ] = array(
+			'companyId'        => $company_id,
+			'companyName'      => papelito_admin_users_company_label( $company ),
+			'companyCnpj'      => is_array( $company ) ? (string) $company['cnpj'] : '',
+			'companyStatus'    => is_array( $company ) ? (string) $company['company_status'] : '',
+			'membershipRole'   => (string) $member['member_role'],
+			'membershipStatus' => (string) $member['member_status'],
+		);
+	}
+
+	return $relations;
+}
+
+/**
+ * Vinculo mais relevante de cada usuario: ativo antes de pendente, mais recente antes.
+ *
+ * @param array<int,int> $user_ids
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_admin_users_primary_memberships( array $user_ids ): array {
+	global $wpdb;
+
+	$tables       = papelito_company_table_names();
+	$placeholders = implode( ',', array_fill( 0, count( $user_ids ), '%d' ) );
+	$members      = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->prepare(
+			"SELECT user_id, company_id, member_role, member_status
+			FROM {$tables['members']}
+			WHERE user_id IN ( {$placeholders} )
+			ORDER BY FIELD( member_status, 'active', 'pending_company_approval', 'pending_identity' ), updated_at DESC", // phpcs:ignore WordPress.DB.PreparedSQL
+			$user_ids
+		),
+		ARRAY_A
+	);
+
+	$primary = array();
+
+	foreach ( is_array( $members ) ? $members : array() as $member ) {
+		$user_id = (int) $member['user_id'];
+
+		if ( ! isset( $primary[ $user_id ] ) ) {
+			$primary[ $user_id ] = $member;
+		}
+	}
+
+	return $primary;
+}
+
+/**
+ * Carrega as empresas da pagina em uma consulta, indexadas por id.
+ *
+ * @param array<int,int> $company_ids
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_admin_users_companies_by_id( array $company_ids ): array {
+	global $wpdb;
+
+	$company_ids = array_values( array_unique( array_filter( array_map( 'absint', $company_ids ) ) ) );
+
+	if ( empty( $company_ids ) ) {
+		return array();
+	}
+
+	$tables       = papelito_company_table_names();
+	$placeholders = implode( ',', array_fill( 0, count( $company_ids ), '%d' ) );
+	$rows         = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->prepare(
+			"SELECT id, legal_name, trade_name, cnpj, company_status FROM {$tables['companies']} WHERE id IN ( {$placeholders} )", // phpcs:ignore WordPress.DB.PreparedSQL
+			$company_ids
+		),
+		ARRAY_A
+	);
+
+	$companies = array();
+
+	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		$companies[ (int) $row['id'] ] = $row;
+	}
+
+	return $companies;
+}
+
+/**
+ * Nome de exibicao da empresa: fantasia quando existe, razao social como fallback.
+ *
+ * @param array<string,mixed>|null $company
+ */
+function papelito_admin_users_company_label( ?array $company ): string {
+	if ( ! is_array( $company ) ) {
+		return '';
+	}
+
+	return (string) ( $company['trade_name'] ?: $company['legal_name'] );
 }
 
 /**
@@ -651,6 +931,12 @@ function papelito_admin_users_query_rows( array $filters, ?int $limit = null, ?i
 		}
 	}
 
+	$relations = papelito_admin_users_company_relations( array_column( $rows, 'id' ) );
+
+	foreach ( $rows as $index => $row ) {
+		$rows[ $index ]['company'] = $relations[ (int) $row['id'] ] ?? null;
+	}
+
 	return $rows;
 }
 
@@ -661,7 +947,13 @@ function papelito_admin_users_query_rows( array $filters, ?int $limit = null, ?i
  * @return array<int, array<string, mixed>>
  */
 function papelito_admin_users_pending_pre_account_rows( array $filters ): array {
+	// Candidatura pre-conta ainda nao e conta: nao tem estado de conta nem vinculo empresarial.
+	// Ela so aparece na listagem sem recorte, senao inflaria contagens como a de contas suspensas.
 	if ( 'all' !== $filters['role'] || ! function_exists( 'papelito_pre_account_application_admin_list' ) ) {
+		return array();
+	}
+
+	if ( 'all' !== ( $filters['status'] ?? 'all' ) || 'all' !== ( $filters['relation'] ?? 'all' ) ) {
 		return array();
 	}
 
@@ -715,6 +1007,12 @@ function papelito_admin_users_pending_pre_account_rows( array $filters ): array 
 			'salesCount'          => 0,
 			'favoritesCount'      => 0,
 			'supportTicketsCount' => 0,
+			'company'             => null,
+			'storeName'           => '',
+			'city'                => '',
+			'state'               => '',
+			'hasCoverage'         => false,
+			'cnpj'                => (string) ( $application['cnpj'] ?? '' ),
 		);
 	}
 
@@ -730,17 +1028,22 @@ function papelito_admin_users_pending_pre_account_rows( array $filters ): array 
 function papelito_admin_users_query_summary( array $filters ): array {
 	global $wpdb;
 
-	$args            = array();
-	$base_sql        = papelito_admin_users_base_sql();
-	$where_sql       = papelito_admin_users_where_sql( $filters, $args );
-	$coverage_exists = papelito_admin_users_coverage_exists_sql();
-
-	$args[] = '%"administrator"%';
-	$args[] = '%"seller"%';
-	$args[] = '%"customer"%';
-	$args[] = '%"administrator"%';
-	$args[] = '%"customer"%';
-	$args[] = '%"seller"%';
+	// `prepare()` substitui na ordem em que os placeholders aparecem na QUERY, e aqui o SELECT vem
+	// antes do WHERE. Empilhar os argumentos do WHERE primeiro trocava os valores de lugar sempre
+	// que havia busca ou filtro de papel — os totais saíam errados justamente na tela filtrada.
+	$select_args = array(
+		PAPELITO_ADMIN_USERS_CAP_ADMINISTRATOR,
+		PAPELITO_ADMIN_USERS_CAP_SELLER,
+		PAPELITO_ADMIN_USERS_CAP_CUSTOMER,
+		PAPELITO_ADMIN_USERS_CAP_ADMINISTRATOR,
+		PAPELITO_ADMIN_USERS_CAP_CUSTOMER,
+		PAPELITO_ADMIN_USERS_CAP_SELLER,
+		'suspended',
+	);
+	$where_args = array();
+	$base_sql   = papelito_admin_users_base_sql();
+	$where_sql  = papelito_admin_users_where_sql( $filters, $where_args );
+	$args       = array_merge( $select_args, $where_args );
 
 	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 	$sql = $wpdb->prepare(
@@ -750,7 +1053,8 @@ function papelito_admin_users_query_summary( array $filters ): array {
 			SUM(CASE WHEN cap.meta_value LIKE %s THEN 1 ELSE 0 END) AS admins_count,
 			SUM(CASE WHEN cap.meta_value LIKE %s THEN 1 ELSE 0 END) AS sellers_count,
 			SUM(CASE WHEN cap.meta_value LIKE %s THEN 1 ELSE 0 END) AS customers_count,
-			SUM(CASE WHEN cap.meta_value NOT LIKE %s AND cap.meta_value NOT LIKE %s AND cap.meta_value NOT LIKE %s THEN 1 ELSE 0 END) AS others_count
+			SUM(CASE WHEN cap.meta_value NOT LIKE %s AND cap.meta_value NOT LIKE %s AND cap.meta_value NOT LIKE %s THEN 1 ELSE 0 END) AS others_count,
+			SUM(CASE WHEN account_status.meta_value = %s THEN 1 ELSE 0 END) AS suspended_count
 		" . $base_sql . $where_sql,
 		$args
 	);
@@ -763,6 +1067,7 @@ function papelito_admin_users_query_summary( array $filters ): array {
 		'sellersCount' => isset( $summary['sellers_count'] ) ? (int) $summary['sellers_count'] : 0,
 		'customersCount' => isset( $summary['customers_count'] ) ? (int) $summary['customers_count'] : 0,
 		'othersCount' => isset( $summary['others_count'] ) ? (int) $summary['others_count'] : 0,
+		'suspendedCount' => isset( $summary['suspended_count'] ) ? (int) $summary['suspended_count'] : 0,
 	);
 }
 
@@ -773,7 +1078,23 @@ function papelito_admin_users_query_summary( array $filters ): array {
  * @return array<string, mixed>
  */
 function papelito_admin_users_get_snapshot( array $filters ): array {
-	$summary          = papelito_admin_users_query_summary( $filters );
+	$summary = papelito_admin_users_query_summary( $filters );
+
+	// O painel usa esta rota também só para contar. Montar linha significa carregar pedidos,
+	// favoritos e tickets de cada usuário — trabalho caro e inteiramente jogado fora quando quem
+	// chama só quer o total.
+	if ( ! empty( $filters['countsOnly'] ) ) {
+		return array(
+			'rows'        => array(),
+			'summary'     => $summary,
+			'currentPage' => 1,
+			'perPage'     => (int) $filters['perPage'],
+			'totalRows'   => $summary['totalUsers'],
+			'totalPages'  => 1,
+			'issues'      => array(),
+		);
+	}
+
 	$pre_account_rows = papelito_admin_users_pending_pre_account_rows( $filters );
 	$pre_account_total = count( $pre_account_rows );
 	$total_rows       = $summary['totalUsers'] + $pre_account_total;
@@ -851,6 +1172,11 @@ function papelito_admin_users_available_actions( WP_User $target, int $viewer_id
 	$current_role = papelito_admin_users_primary_role( $target );
 	$is_self      = $viewer_id === (int) $target->ID;
 
+	$is_suspended = function_exists( 'papelito_account_is_suspended' ) && papelito_account_is_suspended( (int) $target->ID );
+	$suspend_block = function_exists( 'papelito_account_can_suspend' )
+		? papelito_account_can_suspend( (int) $target->ID, $viewer_id )
+		: true;
+
 	return array(
 		'isSelf'                    => $is_self,
 		'currentRole'               => $current_role,
@@ -859,6 +1185,10 @@ function papelito_admin_users_available_actions( WP_User $target, int $viewer_id
 		'canDemoteAdministrator'    => 'administrator' === $current_role && ! $is_self,
 		'canUseVendorRedirect'      => in_array( $current_role, array( 'customer', 'administrator' ), true ),
 		'canCancelOrders'           => true,
+		'canSuspend'                => ! $is_suspended && ! is_wp_error( $suspend_block ),
+		'canReactivate'             => $is_suspended,
+		'suspendBlockedReason'      => is_wp_error( $suspend_block ) ? $suspend_block->get_error_message() : '',
+		'suspendBlockedCode'        => is_wp_error( $suspend_block ) ? $suspend_block->get_error_code() : '',
 	);
 }
 
@@ -872,7 +1202,7 @@ function papelito_admin_users_get_detail( int $user_id ) {
 	$user = get_userdata( $user_id );
 
 	if ( ! $user instanceof WP_User ) {
-		return new WP_Error( 'papelito_admin_user_not_found', 'Usuario nao encontrado.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_admin_user_not_found', PAPELITO_ADMIN_USERS_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
 	$base            = papelito_admin_users_base_detail( $user );
@@ -919,7 +1249,62 @@ function papelito_admin_users_get_detail( int $user_id ) {
 			'cancelledOrders' => array_values( $cancelled_orders ),
 			'vendorData'      => $vendor_data,
 			'availableActions' => papelito_admin_users_available_actions( $user, get_current_user_id() ),
+			'accountSuspension' => function_exists( 'papelito_account_suspension_details' )
+				? papelito_account_suspension_details( $user_id )
+				: null,
+			'statusHistory'   => function_exists( 'papelito_account_status_history' )
+				? papelito_account_status_history( $user_id, 20 )
+				: array(),
+			'companies'       => papelito_admin_users_company_memberships( $user_id ),
 		)
+	);
+}
+
+/**
+ * Empresas em que o usuario tem vinculo, com os demais membros de cada uma.
+ *
+ * E o que permite navegar usuario -> empresa -> usuarios da empresa sem sair da tela.
+ *
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_admin_users_company_memberships( int $user_id ): array {
+	global $wpdb;
+
+	if ( ! function_exists( 'papelito_company_table_names' ) ) {
+		return array();
+	}
+
+	$tables = papelito_company_table_names();
+	$rows   = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->prepare(
+			"SELECT m.company_id, m.member_role, m.member_status, c.legal_name, c.trade_name, c.cnpj, c.company_status, c.ownership_status
+			FROM {$tables['members']} m
+			INNER JOIN {$tables['companies']} c ON c.id = m.company_id
+			WHERE m.user_id = %d
+			ORDER BY FIELD( m.member_status, 'active', 'pending_company_approval', 'pending_identity' ), m.updated_at DESC", // phpcs:ignore WordPress.DB.PreparedSQL
+			$user_id
+		),
+		ARRAY_A
+	);
+
+	if ( ! is_array( $rows ) ) {
+		return array();
+	}
+
+	return array_map(
+		static function ( array $row ): array {
+			return array(
+				'companyId'        => (int) $row['company_id'],
+				'legalName'        => (string) $row['legal_name'],
+				'tradeName'        => (string) $row['trade_name'],
+				'cnpj'             => (string) $row['cnpj'],
+				'companyStatus'    => (string) $row['company_status'],
+				'ownershipStatus'  => (string) $row['ownership_status'],
+				'membershipRole'   => (string) $row['member_role'],
+				'membershipStatus' => (string) $row['member_status'],
+			);
+		},
+		$rows
 	);
 }
 
@@ -935,7 +1320,7 @@ function papelito_admin_users_change_role( int $target_user_id, int $viewer_user
 	$user = get_userdata( $target_user_id );
 
 	if ( ! $user instanceof WP_User ) {
-		return new WP_Error( 'papelito_admin_user_not_found', 'Usuario nao encontrado.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_admin_user_not_found', PAPELITO_ADMIN_USERS_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
 	$target_role  = sanitize_key( $target_role );
@@ -1041,7 +1426,7 @@ function papelito_admin_users_cancel_order( int $user_id, int $order_id, string 
 function papelito_admin_users_activate_email( int $user_id ) {
 	$user = get_userdata( $user_id );
 	if ( ! $user instanceof WP_User ) {
-		return new WP_Error( 'papelito_admin_user_not_found', 'Usuario nao encontrado.', array( 'status' => 404 ) );
+		return new WP_Error( 'papelito_admin_user_not_found', PAPELITO_ADMIN_USERS_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
 
 	if ( ! papelito_auth_requires_email_verification( $user->ID ) ) {
@@ -1136,7 +1521,7 @@ add_action(
 	'rest_api_init',
 	static function (): void {
 		register_rest_route(
-			'papelito/v1/admin',
+			PAPELITO_ADMIN_USERS_REST_NAMESPACE,
 			'/users',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
@@ -1146,7 +1531,7 @@ add_action(
 		);
 
 		register_rest_route(
-			'papelito/v1/admin',
+			PAPELITO_ADMIN_USERS_REST_NAMESPACE,
 			'/users/(?P<id>\d+)',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
@@ -1156,7 +1541,7 @@ add_action(
 		);
 
 		register_rest_route(
-			'papelito/v1/admin',
+			PAPELITO_ADMIN_USERS_REST_NAMESPACE,
 			'/users/(?P<id>\d+)/role',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
@@ -1166,7 +1551,7 @@ add_action(
 		);
 
 		register_rest_route(
-			'papelito/v1/admin',
+			PAPELITO_ADMIN_USERS_REST_NAMESPACE,
 			'/users/(?P<id>\d+)/activate-email',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
@@ -1179,7 +1564,7 @@ add_action(
 		);
 
 		register_rest_route(
-			'papelito/v1/admin',
+			PAPELITO_ADMIN_USERS_REST_NAMESPACE,
 			'/users/(?P<id>\d+)/orders/(?P<orderId>\d+)/cancel',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,

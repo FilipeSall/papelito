@@ -64,6 +64,7 @@ function papelito_order_routing_checkout_request_hash( array $payload ): string 
  */
 function papelito_order_routing_purchase_block_message( string $reason ): string {
 	$messages = array(
+		'account_suspended'          => 'Sua conta está suspensa para operações comerciais. Fale com a Papelito.',
 		'role_cannot_purchase'       => 'Seu papel nesta empresa não permite concluir compras. Peça a um administrador da empresa para alterar sua permissão.',
 		'company_missing'            => 'Vincule uma empresa à sua conta para concluir a compra.',
 		'company_selection_required' => 'Selecione a empresa que vai realizar esta compra.',

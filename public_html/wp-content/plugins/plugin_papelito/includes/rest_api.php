@@ -378,6 +378,9 @@ function papelito_coverage_maybe_bump_user_meta_cache( $meta_id, $user_id, $meta
 		// Entra na elegibilidade da cobertura pela dupla aprovacao: sem recebedor `active` o vendor
 		// nao aparece. Sem invalidar aqui, ativar o recebedor levava ate 5 min para valer.
 		'papelito_pagarme_recipient_status',
+		// Mesma razao: conta suspensa sai de papelito_matching_vendor_ids() na hora, e sem
+		// invalidar aqui a vitrine seguiria oferecendo o vendor suspenso ate o transient expirar.
+		'papelito_account_status',
 	);
 
 	if ( in_array( (string) $meta_key, $coverage_meta_keys, true ) ) {
