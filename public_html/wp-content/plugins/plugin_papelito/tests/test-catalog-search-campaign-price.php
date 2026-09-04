@@ -68,6 +68,8 @@ function papelito_taxonomy_subcategory_ids_by_slugs( $category_id, array $slugs 
 function papelito_taxonomy_exists_clause( $product_expr, $category_id, array $subcategory_ids, $unresolved = false ) { return null; }
 function papelito_taxonomy_has_unresolved_subcategory_slugs( $category_id, array $slugs ) { return false; }
 function papelito_taxonomy_slug_filter_clause( $product_expr, array $categories, array $subcategories ) { return null; }
+function papelito_curated_collections() { return array( 'premium', 'kits' ); }
+function papelito_product_taxonomy_table_names() { return array( 'product_collection' => 'wp_papelito_product_collection' ); }
 
 require_once __DIR__ . '/../includes/catalog_search.php';
 

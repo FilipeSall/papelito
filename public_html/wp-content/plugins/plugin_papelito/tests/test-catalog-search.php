@@ -8,6 +8,7 @@
 define( 'ABSPATH', __DIR__ );
 define( 'ARRAY_A', 'ARRAY_A' );
 define( 'MINUTE_IN_SECONDS', 60 );
+define( 'DAY_IN_SECONDS', 86400 );
 function add_action( ...$args ) {}
 function register_rest_route( ...$args ) {}
 function __return_true() { return true; }
@@ -66,6 +67,13 @@ function papelito_taxonomy_exists_clause( $product_expr, $category_id, array $su
 function papelito_taxonomy_has_unresolved_subcategory_slugs( $category_id, array $slugs ) { return false; }
 function papelito_taxonomy_slug_filter_clause( $product_expr, array $categories, array $subcategories ) { return null; }
 function papelito_curated_collections() { return array( 'premium', 'kits', 'edicao-limitada' ); }
+
+/** Configuração das coleções derivadas, controlada pelo teste. */
+$GLOBALS['pap_collections_config'] = array(
+	'newArrivals' => array( 'limit' => 10, 'expirationDays' => 0 ),
+	'promotions'  => array( 'limit' => 0 ),
+);
+function papelito_collections_get_config(): array { return $GLOBALS['pap_collections_config']; }
 
 require __DIR__ . '/../includes/catalog_search.php';
 
@@ -139,6 +147,63 @@ foreach ( array( 1, 10, 40 ) as $count ) {
 	papelito_catalog_search_products( array( 'search' => 'produto', 'per_page' => 9 ) );
 	papelito_catalog_search_assert_same( "consultas para {$count} produtos", 2, $wpdb->queries );
 }
+
+echo "Scenario 4: coleções derivadas seguem a configuração do painel\n";
+
+/**
+ * Semeia produtos com data de publicação decrescente: o índice 1 é o mais novo.
+ */
+function papelito_catalog_search_seed_dated( int $count ): void {
+	global $wpdb;
+	$wpdb->products = array();
+	$wpdb->tags     = array();
+
+	for ( $index = 1; $index <= $count; ++$index ) {
+		$wpdb->products[] = array(
+			'ID'         => $index,
+			'post_title' => 'Produto ' . $index,
+			'post_date'  => gmdate( 'Y-m-d H:i:s', time() - ( ( $index - 1 ) * 10 * DAY_IN_SECONDS ) ),
+		);
+	}
+}
+
+papelito_catalog_search_seed_dated( 12 );
+
+$GLOBALS['pap_collections_config'] = array(
+	'newArrivals' => array( 'limit' => 4, 'expirationDays' => 0 ),
+	'promotions'  => array( 'limit' => 0 ),
+);
+$result = papelito_catalog_search_products( array( 'search' => 'produto', 'collection' => 'novidades', 'per_page' => 60 ) );
+papelito_catalog_search_assert_same( 'novidades na busca respeita o teto configurado', array( 1, 2, 3, 4 ), $result['ids'] );
+papelito_catalog_search_assert_same( 'total da busca reflete o teto', 4, $result['total'] );
+
+$GLOBALS['pap_collections_config'] = array(
+	'newArrivals' => array( 'limit' => 10, 'expirationDays' => 25 ),
+	'promotions'  => array( 'limit' => 0 ),
+);
+$result = papelito_catalog_search_products( array( 'search' => 'produto', 'collection' => 'novidades', 'per_page' => 60 ) );
+papelito_catalog_search_assert_same( 'novidades na busca respeita o prazo configurado', array( 1, 2, 3 ), $result['ids'] );
+
+$GLOBALS['pap_collections_config'] = array(
+	'newArrivals' => array( 'limit' => 0, 'expirationDays' => 0 ),
+	'promotions'  => array( 'limit' => 0 ),
+);
+$result = papelito_catalog_search_products( array( 'search' => 'produto', 'collection' => 'novidades', 'per_page' => 60 ) );
+papelito_catalog_search_assert_same( 'teto zero esvazia novidades na busca', array(), $result['ids'] );
+
+$GLOBALS['pap_collections_config'] = array(
+	'newArrivals' => array( 'limit' => 10, 'expirationDays' => 0 ),
+	'promotions'  => array( 'limit' => 0 ),
+);
+$result = papelito_catalog_search_products( array( 'search' => 'produto', 'collection' => 'promocoes', 'per_page' => 60 ) );
+papelito_catalog_search_assert_same( 'promoções sem teto devolve todos os elegíveis', 12, $result['total'] );
+
+$GLOBALS['pap_collections_config'] = array(
+	'newArrivals' => array( 'limit' => 10, 'expirationDays' => 0 ),
+	'promotions'  => array( 'limit' => 3 ),
+);
+$result = papelito_catalog_search_products( array( 'search' => 'produto', 'collection' => 'promocoes', 'per_page' => 60 ) );
+papelito_catalog_search_assert_same( 'promoções na busca respeita o teto configurado', array( 1, 2, 3 ), $result['ids'] );
 
 if ( $failures > 0 ) {
 	echo "RESULT: {$failures} assertion(s) FAILED\n";

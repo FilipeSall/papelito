@@ -430,6 +430,26 @@ function papelito_company_revoke_cpf_invitations( array $tables ): void {
 }
 
 /**
+ * Torna explícita a exigência de CPF nos vínculos criados pela política antiga de convite.
+ *
+ * A migration não inventa identidade: usuários sem perfil continuam bloqueados até regularizar
+ * o próprio CPF.
+ */
+function papelito_company_migrate_cpf_required_memberships(): void {
+	global $wpdb;
+
+	$tables = papelito_company_table_names();
+	$wpdb->query(
+		$wpdb->prepare(
+			"UPDATE {$tables['members']} SET identity_requirement = %s, updated_at = %s WHERE identity_requirement = %s",
+			'required',
+			current_time( 'mysql', true ),
+			'not_required'
+		)
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+}
+
+/**
  * Cria/atualiza as tabelas do modelo B2B via dbDelta.
  *
  * Chamado pelo bootstrap de migration em plugin_papelito.php quando papelito_db_version for

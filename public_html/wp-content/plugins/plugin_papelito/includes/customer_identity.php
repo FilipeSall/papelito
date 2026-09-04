@@ -291,6 +291,9 @@ function papelito_customer_profile_upsert( int $user_id, string $raw_cpf, array 
 	}
 
 	if ( false === $result ) {
+		if ( isset( $wpdb->last_error ) && '' !== (string) $wpdb->last_error && false !== stripos( (string) $wpdb->last_error, 'duplicate' ) ) {
+			return new WP_Error( 'papelito_pii_cpf_in_use', 'Este CPF já está associado a outra conta.', array( 'status' => 409 ) );
+		}
 		return new WP_Error( 'papelito_pii_persist_failed', 'Falha ao persistir o perfil de customer.' );
 	}
 

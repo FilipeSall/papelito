@@ -21,6 +21,42 @@
 defined( 'ABSPATH' ) || exit;
 
 /**
+ * Recusa convite para um e-mail que já tem vínculo vivo com a empresa.
+ *
+ * Convidar quem já está dentro não faz nada de útil: o aceite é idempotente e não muda papel, mas
+ * dispara e-mail, ocupa a lista de convites e faz o admin acreditar que promoveu ou reconvidou
+ * alguém. Vínculo encerrado (revogado/rejeitado) NÃO bloqueia — readmitir por convite é o caminho
+ * previsto.
+ *
+ * @return null|WP_Error Erro quando o e-mail já pertence a um membro da empresa.
+ */
+function papelito_company_invitation_blocking_membership( int $company_id, string $email ): ?WP_Error {
+	$user_id = (int) email_exists( $email );
+	if ( $user_id <= 0 ) {
+		return null;
+	}
+
+	$member = papelito_company_member_get( $company_id, $user_id );
+	if ( null === $member ) {
+		return null;
+	}
+
+	$messages = array(
+		'active'                   => 'Este e-mail já faz parte da empresa. Ajuste o papel pela lista de membros.',
+		'suspended'                => 'Este e-mail pertence a um membro suspenso. Reative o acesso pela lista de membros.',
+		'pending_company_approval' => 'Este e-mail já solicitou acesso à empresa. Aprove a solicitação pendente.',
+		'pending_identity'         => 'Este e-mail já solicitou acesso à empresa. Aprove a solicitação pendente.',
+	);
+
+	$status = (string) $member['member_status'];
+	if ( ! isset( $messages[ $status ] ) ) {
+		return null;
+	}
+
+	return new WP_Error( 'papelito_b2b_invitation_already_member', $messages[ $status ], array( 'status' => 409 ) );
+}
+
+/**
  * Cria um convite (owner/admin). Retorna dados públicos + token em claro (uma única vez).
  *
  * @param array<string,mixed> $input invited_email, invited_role, ttl_days?
@@ -43,6 +79,11 @@ function papelito_company_invitation_issue( int $actor_user_id, int $company_id,
 	$role = (string) ( $input['invited_role'] ?? 'buyer' );
 	if ( ! in_array( $role, papelito_company_assignable_roles(), true ) ) {
 		return new WP_Error( 'papelito_b2b_invitation_invalid_role', 'Convite só concede admin, buyer ou viewer.', array( 'status' => 422 ) );
+	}
+
+	$blocked = papelito_company_invitation_blocking_membership( $company_id, $email );
+	if ( null !== $blocked ) {
+		return $blocked;
 	}
 
 	$data = array( 'invited_role' => $role );
@@ -161,7 +202,10 @@ function papelito_company_invitation_authorize_target( int $actor_user_id, int $
  * determinística (criar conta x entrar) em vez de oferecer uma bifurcação cega. Não é
  * enumeração de e-mail: só o portador do token chega aqui, e `invitedEmail` já é devolvido.
  *
- * @return array{invitationId:int,companyName:string,invitedRole:string,invitedEmail:string,accountExists:bool,authMethods:array<int,string>}|WP_Error
+ * `companyCnpj` sai da relação convite → empresa, canônico, e é o ÚNICO CNPJ que o convidado vê
+ * ou envia no fluxo: nenhuma tela do aceite ou do cadastro por convite aceita CNPJ digitado.
+ *
+ * @return array{invitationId:int,companyName:string,companyCnpj:string,invitedRole:string,invitedEmail:string,accountExists:bool,authMethods:array<int,string>}|WP_Error
  */
 function papelito_company_invitation_preview( string $token ) {
 	$invitation = papelito_company_invitation_find_pending_by_token( $token );
@@ -178,6 +222,7 @@ function papelito_company_invitation_preview( string $token ) {
 	return array(
 		'invitationId'  => (int) $invitation['id'],
 		'companyName'   => $name,
+		'companyCnpj'   => $company ? (string) $company['cnpj'] : '',
 		'invitedRole'   => (string) $invitation['invited_role'],
 		'invitedEmail'  => $email,
 		'accountExists' => $user_id > 0,
@@ -185,6 +230,29 @@ function papelito_company_invitation_preview( string $token ) {
 			? papelito_auth_credential_methods( $user_id )
 			: array(),
 	);
+}
+
+/**
+ * Valida a identidade e o e-mail do usuário que está aceitando o convite.
+ *
+ * @param array<string,mixed> $invitation Linha do convite.
+ * @return null|WP_Error
+ */
+function papelito_company_invitation_validate_acceptance( int $user_id, WP_User $user, array $invitation ) {
+	if ( strtolower( (string) $invitation['invited_email'] ) !== strtolower( (string) $user->user_email ) ) {
+		return new WP_Error( 'papelito_b2b_invitation_email_mismatch', 'Este convite foi enviado para outro e-mail.', array( 'status' => 403 ) );
+	}
+
+	if ( function_exists( 'papelito_auth_requires_email_verification' ) && papelito_auth_requires_email_verification( $user_id ) ) {
+		return new WP_Error( 'papelito_b2b_invitation_email_unverified', 'Confirme o e-mail destinatário antes de aceitar o convite.', array( 'status' => 422 ) );
+	}
+
+	$profile = papelito_company_profile_get( $user_id );
+	if ( null === $profile || 'verified' !== (string) ( $profile['identity_status'] ?? '' ) ) {
+		return new WP_Error( 'papelito_b2b_invitation_identity_required', 'Informe seu CPF antes de aceitar o convite.', array( 'status' => 422 ) );
+	}
+
+	return null;
 }
 
 /**
@@ -203,13 +271,9 @@ function papelito_company_invitation_accept_token( int $user_id, string $token )
 		return new WP_Error( 'papelito_b2b_invitation_invalid', 'Convite inválido ou expirado.', array( 'status' => 404 ) );
 	}
 
-	// E-mail autenticado precisa bater com o destinatário do convite.
-	if ( strtolower( (string) $invitation['invited_email'] ) !== strtolower( (string) $user->user_email ) ) {
-		return new WP_Error( 'papelito_b2b_invitation_email_mismatch', 'Este convite foi enviado para outro e-mail.', array( 'status' => 403 ) );
-	}
-
-	if ( function_exists( 'papelito_auth_requires_email_verification' ) && papelito_auth_requires_email_verification( $user_id ) ) {
-		return new WP_Error( 'papelito_b2b_invitation_email_unverified', 'Confirme o e-mail destinatário antes de aceitar o convite.', array( 'status' => 422 ) );
+	$validation = papelito_company_invitation_validate_acceptance( $user_id, $user, $invitation );
+	if ( is_wp_error( $validation ) ) {
+		return $validation;
 	}
 
 	$company_id = (int) $invitation['company_id'];
@@ -248,7 +312,7 @@ function papelito_company_invitation_accept_token( int $user_id, string $token )
 				'invited_by_user_id'  => (int) $invitation['invited_by_user_id'],
 				'approved_by_user_id' => (int) $invitation['invited_by_user_id'],
 				'approved_at'         => current_time( 'mysql', true ),
-				'identity_requirement' => 'not_required',
+				'identity_requirement' => 'required',
 			)
 		);
 		if ( is_wp_error( $member ) ) {

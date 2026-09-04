@@ -201,6 +201,7 @@ function papelito_company_access_request_approve( int $actor_user_id, int $compa
 		array(
 			'member_role'         => $role,
 			'member_status'       => 'active',
+			'identity_requirement'=> 'required',
 			'approved_by_user_id' => $actor_user_id,
 			'approved_at'         => current_time( 'mysql', true ),
 		)

@@ -131,6 +131,44 @@ function papelito_company_get_owner_user_id( int $company_id ): ?int {
 }
 
 /**
+ * Encerra os convites endereçados ao e-mail de um usuário que está sendo excluído.
+ *
+ * Roda no hook `delete_user`, antes da remoção, quando `get_userdata()` ainda resolve o e-mail.
+ * A linha é preservada (quem convidou, quando, para qual papel) e só o estado deixa de mentir.
+ *
+ * @return int Convites encerrados.
+ */
+function papelito_company_invitations_close_for_deleted_email( int $user_id ): int {
+	global $wpdb;
+
+	$user = get_userdata( $user_id );
+	if ( ! $user instanceof WP_User ) {
+		return 0;
+	}
+
+	$email = strtolower( trim( (string) $user->user_email ) );
+	if ( '' === $email ) {
+		return 0;
+	}
+
+	$tables = papelito_company_table_names();
+	$result = $wpdb->query(
+		$wpdb->prepare(
+			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+			"UPDATE {$tables['invitations']} SET invitation_status = %s, revoked_at = %s, revoked_reason = %s WHERE invited_email = %s AND invitation_status IN ( %s, %s )",
+			'revoked',
+			current_time( 'mysql', true ),
+			'invited_user_deleted',
+			$email,
+			'pending',
+			'accepted'
+		)
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	return false === $result ? 0 : (int) $result;
+}
+
+/**
  * Remove dados de empresas criadas por um usuário excluído.
  */
 function papelito_company_cleanup_deleted_user( int $user_id ): void {
@@ -183,8 +221,54 @@ function papelito_company_cleanup_deleted_user( int $user_id ): void {
 		$wpdb->delete( $tables['companies'], array( 'id' => $company_id ), array( '%d' ) );
 	}
 
+	// A conta também pode ser apenas membro de uma empresa de outra pessoa. Remova o vínculo
+	// diretamente; deixar esse registro seria um membership órfão após o usuário sumir do wp_users.
+	$wpdb->delete( $tables['members'], array( 'user_id' => $user_id ), array( '%d' ) );
+
+	// Convites emitidos exigem o autor (NOT NULL), então não podem sobreviver à exclusão do autor.
+	$wpdb->delete( $tables['invitations'], array( 'invited_by_user_id' => $user_id ), array( '%d' ) );
+
+	// Convites ENDEREÇADOS a quem está sendo removido também precisam ser encerrados. Um convite
+	// pendente sobrevivente readmitiria qualquer um que recriasse a conta com o mesmo e-mail; e um
+	// convite 'accepted' cujo vínculo acabou de ser apagado passa a afirmar, na lista da empresa,
+	// que aquele e-mail é membro — foi o que produziu o convite aceito sem membro correspondente.
+	papelito_company_invitations_close_for_deleted_email( $user_id );
+
+	// Os demais campos de auditoria são opcionais: preservamos o histórico sem referências inválidas.
+	$nullable_references = array(
+		$tables['members']                  => array(
+			'invited_by_user_id',
+			'approved_by_user_id',
+			'rejected_by_user_id',
+			'suspended_by_user_id',
+			'revoked_by_user_id',
+			'role_changed_by_user_id',
+		),
+		$tables['invitations']              => array(
+			'accepted_by_user_id',
+			'revoked_by_user_id',
+			'declined_by_user_id',
+		),
+		$tables['audit']                    => array( 'actor_user_id' ),
+		$tables['companies']                => array( 'verified_by_user_id', 'ownership_rejected_by_user_id' ),
+		$tables['pre_account_applications'] => array( 'decided_by_user_id', 'created_user_id' ),
+	);
+
+	foreach ( $nullable_references as $table => $columns ) {
+		foreach ( $columns as $column ) {
+			$wpdb->update(
+				$table,
+				array( $column => null ),
+				array( $column => $user_id ),
+				array( null ),
+				array( '%d' )
+			);
+		}
+	}
+
 	$wpdb->delete( $tables['idempotency'], array( 'actor_user_id' => $user_id ), array( '%d' ) );
 	$wpdb->delete( $tables['onboarding'], array( 'user_id' => $user_id ), array( '%d' ) );
+	$wpdb->delete( $tables['legacy_email_log'], array( 'user_id' => $user_id ), array( '%d' ) );
 }
 
 if ( function_exists( 'add_action' ) ) {

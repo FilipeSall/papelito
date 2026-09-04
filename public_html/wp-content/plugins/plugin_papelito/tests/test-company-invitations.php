@@ -42,6 +42,13 @@ function wp_json_encode( $v ) { return json_encode( $v ); }
 function current_time( string $type, bool $gmt = false ) { global $papelito_now; return gmdate( PAPELITO_TEST_MYSQL_DATETIME_FORMAT, $papelito_now ); }
 function wp_mail( string $to, string $subject, string $body ) { global $papelito_mail; $papelito_mail[] = array( 'to' => $to, 'subject' => $subject, 'body' => $body ); return true; }
 function get_userdata( int $id ) { global $papelito_users; return $papelito_users[ $id ] ?? false; }
+function email_exists( string $email ) {
+	global $papelito_users;
+	foreach ( $papelito_users as $id => $user ) {
+		if ( strtolower( (string) $user->user_email ) === strtolower( trim( $email ) ) ) { return (int) $id; }
+	}
+	return false;
+}
 function wp_parse_url( string $url, int $component = -1 ) { return parse_url( $url, $component ); }
 function wp_get_environment_type() { return 'production'; }
 /** @param mixed $d @return mixed */
@@ -197,6 +204,11 @@ require_once __DIR__ . '/../includes/company_authz.php';
 /* company_services provides papelito_company_context / audit? audit is in company_services. Stub audit + context minimally. */
 function papelito_company_audit( int $c, ?int $a, string $action, array $p = array() ): void {}
 function papelito_company_context( int $user_id ): array { return array( 'user' => $user_id ); }
+$papelito_missing_identity_users = array();
+function papelito_company_profile_get( int $user_id ): ?array {
+	global $papelito_missing_identity_users;
+	return ! empty( $papelito_missing_identity_users[ $user_id ] ) ? null : array( 'identity_status' => 'verified' );
+}
 
 require_once __DIR__ . '/../includes/frontend_links.php';
 require_once __DIR__ . '/../includes/company_invitation_services.php';
@@ -230,9 +242,27 @@ $token = $inv['token'];
 $bad = papelito_company_invitation_issue( 1, $company_id, array( 'invited_email' => 'x@acme.com', 'invited_role' => 'owner' ) );
 ok( 'invitation cannot grant owner', is_wp_error( $bad ) && $bad->get_error_code() === 'papelito_b2b_invitation_invalid_role' );
 
+/* ---- quem ja tem vinculo vivo nao e convidavel de novo ---- */
+$already = papelito_company_invitation_issue( 1, $company_id, array( 'invited_email' => 'owner@acme.com', 'invited_role' => 'admin' ) );
+ok( 'active member cannot be invited again', is_wp_error( $already ) && $already->get_error_code() === 'papelito_b2b_invitation_already_member' );
+ok( 'blocked invitation answers 409', is_wp_error( $already ) && 409 === ( $already->get_error_data()['status'] ?? 0 ) );
+
+papelito_company_member_upsert( $company_id, 3, array( 'member_role' => 'buyer', 'member_status' => 'revoked' ) );
+$readmit = papelito_company_invitation_issue( 1, $company_id, array( 'invited_email' => 'intruder@evil.com', 'invited_role' => 'viewer' ) );
+ok( 'revoked member can be invited back', is_array( $readmit ) && ! empty( $readmit['token'] ) );
+
 /* ---- email mismatch rejected ---- */
 $mismatch = papelito_company_invitation_accept_token( 3, $token );
 ok( 'email mismatch rejected', is_wp_error( $mismatch ) && $mismatch->get_error_code() === 'papelito_b2b_invitation_email_mismatch' );
+
+/* ---- acceptance without a personal CPF is blocked before membership activation ---- */
+$identity_inv = papelito_company_invitation_issue( 1, $company_id, array( 'invited_email' => 'without-cpf@acme.com', 'invited_role' => 'buyer' ) );
+$papelito_users[7] = new WP_User( 7, 'without-cpf@acme.com' );
+$papelito_missing_identity_users[7] = true;
+$missing_identity = papelito_company_invitation_accept_token( 7, $identity_inv['token'] );
+ok( 'invitation without CPF is rejected', is_wp_error( $missing_identity ) && $missing_identity->get_error_code() === 'papelito_b2b_invitation_identity_required' );
+ok( 'invitation without CPF does not create membership', null === papelito_company_member_get( $company_id, 7 ) );
+unset( $papelito_missing_identity_users[7] );
 
 /* ---- accept by correct user ---- */
 $ctx = papelito_company_invitation_accept_token( 2, $token );

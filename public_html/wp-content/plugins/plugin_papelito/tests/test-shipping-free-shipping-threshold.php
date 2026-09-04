@@ -75,7 +75,14 @@ foreach ( array( 0, -1, 99.5, '9900', null ) as $invalid ) {
 $public_route = $GLOBALS['pap_routes']['papelito/v1/shipping/free-shipping-threshold'][0];
 $public_response = $public_route['callback']( new WP_REST_Request() );
 papelito_assert( 'public response status', 200, $public_response->status );
-papelito_assert( 'public response contains only the configured minimum', array( 'minimumOrderCents' => 12550 ), $public_response->data );
+papelito_assert(
+	'public response carries the minimum and the regional scope',
+	array(
+		'minimumOrderCents' => 12550,
+		'zipRanges'         => array(),
+	),
+	$public_response->data
+);
 papelito_assert( 'public configuration does not consume the shipping quote rate-limit bucket', 0, $GLOBALS['pap_auth_rate_limit_calls'] );
 
 $admin_routes = $GLOBALS['pap_routes']['papelito/v1/admin/shipping/free-shipping-threshold'];
@@ -90,5 +97,88 @@ papelito_assert( 'route rejects decimal cents', 'papelito_shipping_invalid_free_
 $updated_response = $admin_routes[1]['callback']( new WP_REST_Request( array( 'minimumOrderCents' => 9900 ) ) );
 papelito_assert( 'route persists valid cents', 200, $updated_response->status );
 papelito_assert( 'route response has configured value', 9900, $updated_response->data['minimumOrderCents'] );
+
+// Faixas de CEP: lista vazia é território inteiro, e é o padrão.
+papelito_assert( 'starts without regional restriction', array(), papelito_shipping_get_free_shipping_zip_ranges() );
+papelito_assert( 'an empty list allows any destination', true, papelito_shipping_cep_allows_free_shipping( '70000000' ) );
+papelito_assert( 'an empty list allows even an unknown destination', true, papelito_shipping_cep_allows_free_shipping( '' ) );
+
+$saved_ranges = papelito_shipping_update_free_shipping_zip_ranges(
+	array(
+		array( 'minCep' => '70000-000', 'maxCep' => '70999999' ),
+		array( 'minCep' => '01000000', 'maxCep' => '05999-999' ),
+	)
+);
+papelito_assert( 'normalizes the mask away', array(
+	array( 'minCep' => '70000000', 'maxCep' => '70999999' ),
+	array( 'minCep' => '01000000', 'maxCep' => '05999999' ),
+), $saved_ranges['zipRanges'] );
+
+papelito_assert( 'a destination inside the first range is eligible', true, papelito_shipping_cep_allows_free_shipping( '70123456' ) );
+papelito_assert( 'a destination inside the second range is eligible', true, papelito_shipping_cep_allows_free_shipping( '03000-000' ) );
+papelito_assert( 'a destination outside every range is not eligible', false, papelito_shipping_cep_allows_free_shipping( '88000000' ) );
+papelito_assert( 'the lower bound is inclusive', true, papelito_shipping_cep_allows_free_shipping( '70000000' ) );
+papelito_assert( 'the upper bound is inclusive', true, papelito_shipping_cep_allows_free_shipping( '70999999' ) );
+papelito_assert( 'an unknown destination is refused once ranges exist', false, papelito_shipping_cep_allows_free_shipping( '' ) );
+papelito_assert( 'a malformed destination is refused once ranges exist', false, papelito_shipping_cep_allows_free_shipping( '7000' ) );
+
+papelito_assert(
+	'rejects an incomplete range',
+	'papelito_shipping_invalid_free_shipping_ranges',
+	papelito_shipping_update_free_shipping_zip_ranges( array( array( 'minCep' => '70000000' ) ) )->get_error_code()
+);
+papelito_assert(
+	'names the offending range',
+	'Informe CEP inicial e final válidos na faixa 2.',
+	papelito_shipping_update_free_shipping_zip_ranges(
+		array(
+			array( 'minCep' => '70000000', 'maxCep' => '70999999' ),
+			array( 'minCep' => '7000', 'maxCep' => '70999999' ),
+		)
+	)->get_error_message()
+);
+papelito_assert(
+	'rejects an inverted range',
+	'papelito_shipping_invalid_free_shipping_range_order',
+	papelito_shipping_update_free_shipping_zip_ranges( array( array( 'minCep' => '80000000', 'maxCep' => '70000000' ) ) )->get_error_code()
+);
+papelito_assert(
+	'rejects more ranges than the ceiling',
+	'papelito_shipping_too_many_free_shipping_ranges',
+	papelito_shipping_update_free_shipping_zip_ranges(
+		array_fill( 0, PAPELITO_SHIPPING_FREE_SHIPPING_ZIP_RANGES_MAX + 1, array( 'minCep' => '70000000', 'maxCep' => '70999999' ) )
+	)->get_error_code()
+);
+papelito_assert( 'a refused write leaves the stored ranges untouched', 2, count( papelito_shipping_get_free_shipping_zip_ranges() ) );
+papelito_assert( 'an empty payload clears the restriction', array(), papelito_shipping_update_free_shipping_zip_ranges( array() )['zipRanges'] );
+
+// A rota administrativa aceita os dois campos, juntos ou separados, e valida antes de gravar.
+$GLOBALS['pap_options'][ PAPELITO_SHIPPING_FREE_SHIPPING_MINIMUM_OPTION ] = 9900;
+$rejected = $admin_routes[1]['callback'](
+	new WP_REST_Request(
+		array(
+			'minimumOrderCents' => 15000,
+			'zipRanges'         => array( array( 'minCep' => '80000000', 'maxCep' => '70000000' ) ),
+		)
+	)
+);
+papelito_assert( 'an invalid range rejects the whole payload', 'papelito_shipping_invalid_free_shipping_range_order', $rejected->get_error_code() );
+papelito_assert( 'the minimum is not written when the range is refused', 9900, papelito_shipping_get_free_shipping_minimum_cents() );
+
+$combined = $admin_routes[1]['callback'](
+	new WP_REST_Request(
+		array(
+			'minimumOrderCents' => 15000,
+			'zipRanges'         => array( array( 'minCep' => '70000000', 'maxCep' => '70999999' ) ),
+		)
+	)
+);
+papelito_assert( 'a valid payload writes both fields', 200, $combined->status );
+papelito_assert( 'the minimum was written', 15000, $combined->data['minimumOrderCents'] );
+papelito_assert( 'the range was written', 1, count( $combined->data['zipRanges'] ) );
+
+$ranges_only = $admin_routes[1]['callback']( new WP_REST_Request( array( 'zipRanges' => array() ) ) );
+papelito_assert( 'ranges alone are accepted', 200, $ranges_only->status );
+papelito_assert( 'the minimum survives a ranges-only write', 15000, $ranges_only->data['minimumOrderCents'] );
 
 echo "Shipping free-shipping threshold: ok\n";

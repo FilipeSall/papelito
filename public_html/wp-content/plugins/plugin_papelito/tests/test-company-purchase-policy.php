@@ -107,7 +107,9 @@ policy_assert_same( 'customer without company has stable reason', 'company_missi
 $invited_context = policy_context();
 $invited_context['identityStatus'] = 'incomplete';
 $invited = papelito_company_purchase_capability( 4, $invited_context );
-policy_assert_same( 'invited buyer without CPF can purchase', true, $invited['canPurchase'] );
+policy_assert_same( 'invited buyer without CPF is blocked', false, $invited['canPurchase'] );
+policy_assert_same( 'invited buyer without CPF has stable reason', 'identity_incomplete', $invited['purchaseBlockReason'] );
+policy_assert_same( 'missing CPF does not send existing company to onboarding', false, $invited['requiresB2bOnboarding'] );
 $viewer = papelito_company_purchase_capability( 5, policy_context() );
 policy_assert_same( 'viewer is blocked', false, $viewer['canPurchase'] );
 policy_assert_same( 'viewer has stable reason', 'role_cannot_purchase', $viewer['purchaseBlockReason'] );

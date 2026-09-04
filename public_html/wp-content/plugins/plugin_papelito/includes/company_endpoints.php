@@ -152,6 +152,27 @@ add_action( 'rest_api_init', static function (): void { // NOSONAR -- bloco decl
 		return new WP_REST_Response( papelito_company_context( $user_id ), 200 );
 	} ) );
 
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/identity/cpf', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
+		$writes = papelito_b2b_require_company_writes();
+		if ( is_wp_error( $writes ) ) {
+			return $writes;
+		}
+		if ( ! papelito_auth_rate_limit( 'customer_identity_cpf', 10, 60 ) ) {
+			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+		}
+		$user_id = papelito_company_require_authenticated_user();
+		if ( is_wp_error( $user_id ) ) {
+			return $user_id;
+		}
+		$user = get_userdata( $user_id );
+		if ( ! $user instanceof WP_User || ! in_array( papelito_user_context_type( $user ), array( 'customer', 'hybrid' ), true ) ) {
+			return new WP_Error( 'papelito_b2b_identity_not_required', 'Este tipo de conta não exige CPF empresarial.', array( 'status' => 422 ) );
+		}
+		$data = (array) $request->get_json_params();
+		$result = papelito_company_customer_cpf_upsert( $user_id, (string) ( $data['cpf'] ?? '' ) );
+		return is_wp_error( $result ) ? $result : new WP_REST_Response( papelito_company_context( $user_id ), 200 );
+	} ) );
+
 	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/companies', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
 		if ( ! papelito_b2b_company_model_enabled() ) { return new WP_Error( 'papelito_b2b_company_rollout_disabled', 'Cadastro empresarial temporariamente indisponível.', array( 'status' => 503 ) ); }
 		$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }

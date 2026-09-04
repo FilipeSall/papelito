@@ -15,8 +15,9 @@ const PAPELITO_PRICING_INSTALLMENT_CONFIG_OPTION = 'papelito_pricing_installment
 const PAPELITO_PRICING_DEFAULT_MAX_INSTALLMENTS = 6;
 const PAPELITO_PRICING_DEFAULT_INSTALLMENT_MINIMUM_CENTS = 100;
 const PAPELITO_PRICING_MAX_INSTALLMENTS_LIMIT = 12;
+const PAPELITO_PRICING_NAMESPACE              = 'papelito/v1';
 
-function papelito_pricing_normalize_positive_int( $value ): ?int {
+function papelito_pricing_normalize_positive_int( mixed $value ): ?int {
 	if ( is_int( $value ) && $value > 0 ) {
 		return $value;
 	}
@@ -29,7 +30,7 @@ function papelito_pricing_normalize_positive_int( $value ): ?int {
 	return null;
 }
 
-function papelito_pricing_normalize_installment_count( $value ): ?int {
+function papelito_pricing_normalize_installment_count( mixed $value ): ?int {
 	$normalized = papelito_pricing_normalize_positive_int( $value );
 	return null !== $normalized && $normalized <= PAPELITO_PRICING_MAX_INSTALLMENTS_LIMIT ? $normalized : null;
 }
@@ -50,7 +51,7 @@ function papelito_pricing_get_installment_config_snapshot(): array {
 	return papelito_pricing_get_installment_config();
 }
 
-function papelito_pricing_update_installment_config( $max_installments, $installment_minimum_cents ) {
+function papelito_pricing_update_installment_config( mixed $max_installments, mixed $installment_minimum_cents ) {
 	$max_installments          = papelito_pricing_normalize_installment_count( $max_installments );
 	$installment_minimum_cents = papelito_pricing_normalize_positive_int( $installment_minimum_cents );
 
@@ -185,6 +186,72 @@ function papelito_pricing_normalize_items( $items ) {
  * @param array<int,array<string,mixed>> $items Linhas normalizadas.
  * @return array<string,mixed>|WP_Error
  */
+/**
+ * Recusa a linha quando o vendor não tem saldo para a quantidade pedida.
+ *
+ * Kit tem verificação própria, que confere os componentes; produto simples compara o saldo direto.
+ *
+ * @param string $product_name Nome do produto, só para a mensagem de erro.
+ * @return true|WP_Error
+ */
+function papelito_pricing_guard_line_stock( int $vendor_id, int $product_id, int $qty, bool $is_kit, string $product_name ) {
+	if ( $is_kit ) {
+		$kit_stock = papelito_kit_vendor_has_stock( $product_id, $qty, $vendor_id );
+
+		return is_wp_error( $kit_stock ) ? $kit_stock : true;
+	}
+
+	$current_stock = (int) papelito_get_vendor_stock( $vendor_id, $product_id );
+
+	if ( $current_stock < $qty ) {
+		return new WP_Error(
+			'papelito_checkout_insufficient_stock',
+			sprintf( 'Estoque insuficiente para o produto "%s".', $product_name ),
+			array( 'status' => 409, 'product_id' => $product_id, 'available' => $current_stock, 'requested' => $qty )
+		);
+	}
+
+	return true;
+}
+
+/**
+ * Resolve a campanha relâmpago da linha e o contexto que acompanha o preço promocional.
+ *
+ * O preço de referência é o regular; quando ele não existe, o preço corrente assume o papel, senão
+ * um produto sem preço regular apareceria com desconto sobre zero.
+ *
+ * @param object $product Produto do WooCommerce.
+ * @return array{promotion:array<string,int>|null, context:string}
+ */
+function papelito_pricing_resolve_line_promotion( object $product, int $product_id, int $qty, int $normal_unit_cents ): array {
+	$campaign = function_exists( 'papelito_flash_sale_get_active_campaign_for_product' )
+		? papelito_flash_sale_get_active_campaign_for_product( $product_id )
+		: null;
+	$context  = is_array( $campaign ) && function_exists( 'papelito_flash_sale_create_promotion_context' )
+		? papelito_flash_sale_create_promotion_context( $campaign, $product_id )
+		: '';
+
+	if ( ! is_array( $campaign ) ) {
+		return array( 'promotion' => null, 'context' => $context );
+	}
+
+	$reference_unit_cents = papelito_pricing_to_cents( $product->get_regular_price( 'edit' ) );
+
+	if ( $reference_unit_cents <= 0 ) {
+		$reference_unit_cents = $normal_unit_cents;
+	}
+
+	$discount_percent = min( 99, max( 0, (int) ( $campaign['discountPercent'] ?? 0 ) ) );
+
+	return array(
+		'promotion' => array(
+			'reference_unit_cents' => $reference_unit_cents,
+			'total_cents'          => ( (int) round( $reference_unit_cents * ( 100 - $discount_percent ) / 100 ) ) * $qty,
+		),
+		'context'   => $context,
+	);
+}
+
 function papelito_pricing_resolve_items( array $items ) {
 	if ( ! function_exists( 'wc_get_product' ) ) {
 		return new WP_Error( 'papelito_checkout_woocommerce_unavailable', 'WooCommerce indisponivel para concluir o pedido.', array( 'status' => 500 ) );
@@ -212,40 +279,15 @@ function papelito_pricing_resolve_items( array $items ) {
 		}
 
 		$is_kit = function_exists( 'papelito_kit_is_product' ) && papelito_kit_is_product( (int) $item['product_id'] );
-		$current_stock = (int) papelito_get_vendor_stock( $vendor_id, $item['product_id'] );
-		if ( $is_kit ) {
-			$kit_stock = papelito_kit_vendor_has_stock( (int) $item['product_id'], (int) $item['qty'], $vendor_id );
-			if ( is_wp_error( $kit_stock ) ) {
-				return $kit_stock;
-			}
-		} elseif ( $current_stock < (int) $item['qty'] ) {
-			return new WP_Error(
-				'papelito_checkout_insufficient_stock',
-				sprintf( 'Estoque insuficiente para o produto "%s".', $product->get_name() ),
-				array( 'status' => 409, 'product_id' => (int) $item['product_id'], 'available' => $current_stock, 'requested' => (int) $item['qty'] )
-			);
+		$stock  = papelito_pricing_guard_line_stock( $vendor_id, (int) $item['product_id'], (int) $item['qty'], $is_kit, (string) $product->get_name() );
+		if ( is_wp_error( $stock ) ) {
+			return $stock;
 		}
 
 		$normal_unit_cents = papelito_pricing_to_cents( $product->get_price( 'edit' ) );
-		$promotion = null;
-		$campaign  = function_exists( 'papelito_flash_sale_get_active_campaign_for_product' )
-			? papelito_flash_sale_get_active_campaign_for_product( (int) $item['product_id'] )
-			: null;
-		$context   = is_array( $campaign ) && function_exists( 'papelito_flash_sale_create_promotion_context' )
-			? papelito_flash_sale_create_promotion_context( $campaign, (int) $item['product_id'] )
-			: '';
-
-		if ( is_array( $campaign ) ) {
-			$reference_unit_cents = papelito_pricing_to_cents( $product->get_regular_price( 'edit' ) );
-			if ( $reference_unit_cents <= 0 ) {
-				$reference_unit_cents = $normal_unit_cents;
-			}
-			$discount_percent = min( 99, max( 0, (int) ( $campaign['discountPercent'] ?? 0 ) ) );
-			$promotion        = array(
-				'reference_unit_cents' => $reference_unit_cents,
-				'total_cents'          => ( (int) round( $reference_unit_cents * ( 100 - $discount_percent ) / 100 ) ) * (int) $item['qty'],
-			);
-		}
+		$campaign_line     = papelito_pricing_resolve_line_promotion( $product, (int) $item['product_id'], (int) $item['qty'], $normal_unit_cents );
+		$promotion         = $campaign_line['promotion'];
+		$context           = $campaign_line['context'];
 
 		$lines[] = array(
 			'product'                => $product,
@@ -307,40 +349,48 @@ function papelito_pricing_allocate_discount( array $lines, array $product_ids, i
  * @param array<string,mixed> $resolved Itens autoritativos.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_pricing_apply_discounts( array $resolved, string $coupon_code, int $user_id, int $shipping_cents = 0 ) {
-	$lines       = (array) ( $resolved['lines'] ?? array() );
-	$adjustments = (array) ( $resolved['adjustments'] ?? array() );
-	$coupon      = null;
-	$allocation  = array();
-	$code        = strtoupper( trim( sanitize_text_field( $coupon_code ) ) );
+/**
+ * Resolve o cupom informado e o rateio do desconto sobre as linhas elegíveis.
+ *
+ * Linha em campanha fica fora da base: o preço da oferta relâmpago já é o menor.
+ *
+ * @param array<int,array<string,mixed>> $lines   Linhas resolvidas.
+ * @param string                         $code    Código já normalizado.
+ * @param int                            $user_id Usuário autenticado.
+ * @return array{coupon:array<string,mixed>, allocation:array<int,int>}|WP_Error
+ */
+function papelito_pricing_resolve_coupon_allocation( array $lines, string $code, int $user_id ) {
+	if ( $user_id <= 0 ) {
+		return new WP_Error( 'papelito_coupon_auth_required', 'Faca login para aplicar cupons.', array( 'status' => 401 ) );
+	}
 
-	if ( '' !== $code ) {
-		if ( $user_id <= 0 ) {
-			return new WP_Error( 'papelito_coupon_auth_required', 'Faca login para aplicar cupons.', array( 'status' => 401 ) );
-		}
+	$coupon_lines = array_filter(
+		$lines,
+		static fn( array $line ): bool => ! is_array( $line['promotion'] ?? null )
+	);
+	$cart_items   = array_map(
+		static fn( array $line ): array => array(
+			'product_id' => (int) $line['product_id'],
+			'vendor_id'  => (int) $line['vendor_id'],
+			'qty'        => (int) $line['qty'],
+			'price'      => papelito_pricing_from_cents( (int) $line['normal_unit_cents'] ),
+		),
+		$lines
+	);
 
-		$coupon_lines = array_filter(
-			$lines,
-			static fn( array $line ): bool => ! is_array( $line['promotion'] ?? null )
-		);
-		$cart_items = array_map(
-			static fn( array $line ): array => array(
-				'product_id' => (int) $line['product_id'],
-				'vendor_id'  => (int) $line['vendor_id'],
-				'qty'        => (int) $line['qty'],
-				'price'      => papelito_pricing_from_cents( (int) $line['normal_unit_cents'] ),
-			),
-			$lines
-		);
-		$coupon = papelito_coupon_apply_resolve( $code, $cart_items, $user_id );
-		if ( is_wp_error( $coupon ) ) {
-			return $coupon;
-		}
-		$eligible_product_ids = array_map(
-			static fn( array $line ): int => (int) $line['product_id'],
-			$coupon_lines
-		);
-		$allocation = papelito_pricing_allocate_discount(
+	$coupon = papelito_coupon_apply_resolve( $code, $cart_items, $user_id );
+	if ( is_wp_error( $coupon ) ) {
+		return $coupon;
+	}
+
+	$eligible_product_ids = array_map(
+		static fn( array $line ): int => (int) $line['product_id'],
+		$coupon_lines
+	);
+
+	return array(
+		'coupon'     => $coupon,
+		'allocation' => papelito_pricing_allocate_discount(
 			$lines,
 			array_values(
 				array_intersect(
@@ -349,14 +399,23 @@ function papelito_pricing_apply_discounts( array $resolved, string $coupon_code,
 				)
 			),
 			papelito_pricing_to_cents( $coupon['discount_value'] ?? 0 )
-		);
-	}
+		),
+	);
+}
 
-	$priced_lines             = array();
-	$effective_coupon_cents   = 0;
-	$subtotal_cents           = 0;
-	$discount_cents           = 0;
-	$items_total_cents        = 0;
+/**
+ * Precifica cada linha escolhendo entre cupom e campanha, e acumula os totais de itens.
+ *
+ * @param array<int,array<string,mixed>> $lines      Linhas resolvidas.
+ * @param array<int,int>                 $allocation Desconto de cupom por índice.
+ * @return array{lines:array<int,array<string,mixed>>, subtotal_cents:int, discount_cents:int, items_total_cents:int, coupon_cents:int}
+ */
+function papelito_pricing_build_priced_lines( array $lines, array $allocation ): array {
+	$priced_lines           = array();
+	$effective_coupon_cents = 0;
+	$subtotal_cents         = 0;
+	$discount_cents         = 0;
+	$items_total_cents      = 0;
 
 	foreach ( $lines as $index => $line ) {
 		$normal_subtotal = (int) $line['normal_subtotal_cents'];
@@ -405,63 +464,185 @@ function papelito_pricing_apply_discounts( array $resolved, string $coupon_code,
 		);
 	}
 
-	$shipping_cents          = max( 0, $shipping_cents );
-	$is_free_shipping_coupon = is_array( $coupon ) && ! empty( $coupon['free_shipping'] );
-	$shipping_discount_cents = 0;
-	$free_shipping_message   = '';
-	$minimum_cents           = papelito_pricing_free_shipping_minimum_cents();
+	return array(
+		'lines'             => $priced_lines,
+		'subtotal_cents'    => $subtotal_cents,
+		'discount_cents'    => $discount_cents,
+		'items_total_cents' => $items_total_cents,
+		'coupon_cents'      => $effective_coupon_cents,
+	);
+}
 
-	// O mínimo configurado concede o benefício automaticamente assim que existe
-	// uma modalidade válida. O cupom de frete grátis continua compatível, mas não
-	// é necessário para que um pedido elegível tenha o frete integralmente abatido.
-	if (
-		$minimum_cents > 0 &&
-		$subtotal_cents >= $minimum_cents &&
-		$shipping_cents > 0
-	) {
-		$shipping_discount_cents = $shipping_cents;
+/**
+ * Resolve o abatimento do frete e a explicação que acompanha a recusa.
+ *
+ * O benefício automático depende de valor mínimo E de região; o cupom de frete grátis depende só do
+ * valor mínimo, porque foi concedido caso a caso pelo administrador. Quando o cupom cobre o frete a
+ * recusa regional não é reportada: ela contradiria um frete que de fato saiu do total.
+ *
+ * @param array<string,mixed>|null $coupon Cupom já resolvido, quando existe.
+ * @return array{discount_cents:int, adjustment:array<string,string>|null, coupon_message:string}
+ */
+function papelito_pricing_resolve_free_shipping(
+	int $subtotal_cents,
+	int $shipping_cents,
+	int $minimum_cents,
+	string $destination_cep,
+	?array $coupon
+): array {
+	$is_free_shipping_coupon = is_array( $coupon ) && ! empty( $coupon['free_shipping'] );
+	$coupon_message          = '';
+
+	if ( $is_free_shipping_coupon && $subtotal_cents < $minimum_cents ) {
+		$coupon_message = sprintf(
+			'O frete grátis exige um subtotal mínimo de %s.',
+			papelito_pricing_money_label( $minimum_cents )
+		);
+	} elseif ( $is_free_shipping_coupon && $shipping_cents <= 0 ) {
+		$coupon_message = 'Escolha uma modalidade de entrega para o frete grátis ser aplicado.';
 	}
 
+	if ( $is_free_shipping_coupon && '' === $coupon_message ) {
+		return array(
+			'discount_cents' => $shipping_cents,
+			'adjustment'     => null,
+			'coupon_message' => '',
+		);
+	}
+
+	if ( $minimum_cents <= 0 || $subtotal_cents < $minimum_cents || $shipping_cents <= 0 ) {
+		return array(
+			'discount_cents' => 0,
+			'adjustment'     => null,
+			'coupon_message' => $coupon_message,
+		);
+	}
+
+	if ( ! papelito_pricing_region_allows_free_shipping( $destination_cep ) ) {
+		return array(
+			'discount_cents' => 0,
+			'adjustment'     => array(
+				'type'    => 'free_shipping_out_of_region',
+				'message' => 'O frete grátis não está disponível para este CEP.',
+			),
+			'coupon_message' => $coupon_message,
+		);
+	}
+
+	return array(
+		'discount_cents' => $shipping_cents,
+		'adjustment'     => null,
+		'coupon_message' => $coupon_message,
+	);
+}
+
+/**
+ * Monta o bloco `coupon` da resposta e o ajuste que explica um cupom sem efeito.
+ *
+ * @param array<string,mixed> $coupon Cupom resolvido.
+ * @return array{response:array<string,mixed>, adjustment:array<string,string>|null}
+ */
+function papelito_pricing_build_coupon_response(
+	array $coupon,
+	int $effective_coupon_cents,
+	bool $is_free_shipping_coupon,
+	string $free_shipping_message,
+	bool $coupon_applied
+): array {
+	$response = array(
+		'code'               => (string) $coupon['code'],
+		'discountType'       => (string) $coupon['discount_type'],
+		'discountValueCents' => $effective_coupon_cents,
+		'freeShipping'       => $is_free_shipping_coupon,
+		'appliedProductIds'  => array_map( 'intval', (array) $coupon['applied_product_ids'] ),
+		'applied'            => $coupon_applied,
+	);
+
 	if ( $is_free_shipping_coupon ) {
-		if ( $subtotal_cents < $minimum_cents ) {
-			$free_shipping_message = sprintf(
-				'O frete grátis exige um subtotal mínimo de %s.',
-				papelito_pricing_money_label( $minimum_cents )
-			);
-		} elseif ( $shipping_cents <= 0 ) {
-			$free_shipping_message = 'Escolha uma modalidade de entrega para o frete grátis ser aplicado.';
-		} else {
-			$shipping_discount_cents = $shipping_cents;
+		if ( '' !== $free_shipping_message ) {
+			$response['message'] = $free_shipping_message;
 		}
 
-		if ( '' !== $free_shipping_message ) {
-			$adjustments[] = array(
-				'type'    => 'free_shipping_not_applied',
-				'code'    => (string) $coupon['code'],
-				'message' => $free_shipping_message,
-			);
+		return array( 'response' => $response, 'adjustment' => null );
+	}
+
+	if ( 0 !== $effective_coupon_cents ) {
+		return array( 'response' => $response, 'adjustment' => null );
+	}
+
+	$response['message'] = 'A oferta relâmpago já concede um desconto maior; o cupom não reduziu o total.';
+
+	return array(
+		'response'   => $response,
+		'adjustment' => array( 'type' => 'coupon_no_additional_discount', 'message' => $response['message'] ),
+	);
+}
+
+function papelito_pricing_apply_discounts( array $resolved, string $coupon_code, int $user_id, int $shipping_cents = 0, string $destination_cep = '' ) {
+	$lines       = (array) ( $resolved['lines'] ?? array() );
+	$adjustments = (array) ( $resolved['adjustments'] ?? array() );
+	$coupon      = null;
+	$allocation  = array();
+	$code        = strtoupper( trim( sanitize_text_field( $coupon_code ) ) );
+
+	if ( '' !== $code ) {
+		$resolved_coupon = papelito_pricing_resolve_coupon_allocation( $lines, $code, $user_id );
+		if ( is_wp_error( $resolved_coupon ) ) {
+			return $resolved_coupon;
 		}
+
+		$coupon     = $resolved_coupon['coupon'];
+		$allocation = $resolved_coupon['allocation'];
+	}
+
+	$priced                 = papelito_pricing_build_priced_lines( $lines, $allocation );
+	$priced_lines           = $priced['lines'];
+	$subtotal_cents         = $priced['subtotal_cents'];
+	$discount_cents         = $priced['discount_cents'];
+	$items_total_cents      = $priced['items_total_cents'];
+	$effective_coupon_cents = $priced['coupon_cents'];
+
+	$shipping_cents          = max( 0, $shipping_cents );
+	$is_free_shipping_coupon = is_array( $coupon ) && ! empty( $coupon['free_shipping'] );
+	$free_shipping           = papelito_pricing_resolve_free_shipping(
+		$subtotal_cents,
+		$shipping_cents,
+		papelito_pricing_free_shipping_minimum_cents(),
+		$destination_cep,
+		$coupon
+	);
+	$shipping_discount_cents = $free_shipping['discount_cents'];
+	$free_shipping_message   = $free_shipping['coupon_message'];
+
+	if ( null !== $free_shipping['adjustment'] ) {
+		$adjustments[] = $free_shipping['adjustment'];
+	}
+
+	if ( $is_free_shipping_coupon && '' !== $free_shipping_message ) {
+		$adjustments[] = array(
+			'type'    => 'free_shipping_not_applied',
+			'code'    => (string) $coupon['code'],
+			'message' => $free_shipping_message,
+		);
 	}
 
 	$coupon_response = null;
 	$coupon_applied  = $effective_coupon_cents > 0 || ( $is_free_shipping_coupon && $shipping_discount_cents > 0 );
+
 	if ( is_array( $coupon ) ) {
-		$coupon_response = array(
-			'code'               => (string) $coupon['code'],
-			'discountType'       => (string) $coupon['discount_type'],
-			'discountValueCents' => $effective_coupon_cents,
-			'freeShipping'       => $is_free_shipping_coupon,
-			'appliedProductIds'  => array_map( 'intval', (array) $coupon['applied_product_ids'] ),
-			'applied'            => $coupon_applied,
+		$built = papelito_pricing_build_coupon_response(
+			$coupon,
+			$effective_coupon_cents,
+			$is_free_shipping_coupon,
+			$free_shipping_message,
+			$coupon_applied
 		);
-		if ( $is_free_shipping_coupon ) {
-			if ( '' !== $free_shipping_message ) {
-				$coupon_response['message'] = $free_shipping_message;
-			}
-		} elseif ( 0 === $effective_coupon_cents ) {
-			$coupon_response['message'] = 'A oferta relâmpago já concede um desconto maior; o cupom não reduziu o total.';
-			$adjustments[] = array( 'type' => 'coupon_no_additional_discount', 'message' => $coupon_response['message'] );
+		$coupon_response = $built['response'];
+
+		if ( null !== $built['adjustment'] ) {
+			$adjustments[] = $built['adjustment'];
 		}
+
 		$coupon['discount_value'] = papelito_pricing_from_cents( $effective_coupon_cents );
 	}
 
@@ -490,6 +671,20 @@ function papelito_pricing_apply_discounts( array $resolved, string $coupon_code,
  * Subtotal mínimo, em centavos, para o frete grátis automático valer. Mesma
  * configuração administrativa que alimenta a mensagem de elegibilidade.
  */
+/**
+ * Elegibilidade regional do frete grátis automático.
+ *
+ * Delega a `shipping.php`, que é o dono da regra; sem o módulo carregado o comportamento é o
+ * anterior às faixas, ou seja, território inteiro.
+ *
+ * @param string $destination_cep CEP de destino do pedido.
+ * @return bool
+ */
+function papelito_pricing_region_allows_free_shipping( string $destination_cep ): bool {
+	return ! function_exists( 'papelito_shipping_cep_allows_free_shipping' )
+		|| papelito_shipping_cep_allows_free_shipping( $destination_cep );
+}
+
 function papelito_pricing_free_shipping_minimum_cents(): int {
 	return function_exists( 'papelito_shipping_get_free_shipping_minimum_cents' )
 		? max( 0, (int) papelito_shipping_get_free_shipping_minimum_cents() )
@@ -522,6 +717,8 @@ function papelito_pricing_quote( mixed $items, string $coupon_code, int $user_id
 		return $resolved;
 	}
 
+	$destination_cep = '';
+
 	if ( null !== $shipping_selection ) {
 		if ( ! function_exists( 'papelito_shipping_normalize_cep' ) || ! function_exists( 'papelito_order_routing_resolve_shipping' ) ) {
 			return new WP_Error( 'papelito_checkout_shipping_unavailable', 'Não foi possível recalcular o frete.', array( 'status' => 503 ) );
@@ -545,7 +742,7 @@ function papelito_pricing_quote( mixed $items, string $coupon_code, int $user_id
 		$shipping_cents = papelito_pricing_to_cents( $shipping['price'] ?? 0 );
 	}
 
-	return papelito_pricing_apply_discounts( $resolved, $coupon_code, $user_id, $shipping_cents );
+	return papelito_pricing_apply_discounts( $resolved, $coupon_code, $user_id, $shipping_cents, $destination_cep );
 }
 
 /**
@@ -646,7 +843,7 @@ add_action(
 	'rest_api_init',
 	static function (): void {
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_PRICING_NAMESPACE,
 			'/home/payment-config',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
@@ -664,7 +861,7 @@ add_action(
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_PRICING_NAMESPACE,
 			'/admin/payment-config',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
@@ -674,7 +871,7 @@ add_action(
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_PRICING_NAMESPACE,
 			'/admin/payment-config',
 			array(
 				'methods'             => WP_REST_Server::EDITABLE,
@@ -699,7 +896,7 @@ add_action(
 		);
 
 		register_rest_route(
-			'papelito/v1',
+			PAPELITO_PRICING_NAMESPACE,
 			'/cart/pricing',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,

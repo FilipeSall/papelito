@@ -63,6 +63,42 @@ function papelito_company_profile_upsert( int $user_id, string $cpf, string $bir
 	return false === $updated ? new WP_Error( 'papelito_b2b_profile_persist_failed', 'Falha ao salvar perfil.', array( 'status' => 500 ) ) : true;
 }
 
+/**
+ * Persiste o CPF pessoal de um cliente B2B sem exigir os dados exclusivos do onboarding de owner.
+ *
+ * @return true|WP_Error
+ */
+function papelito_company_customer_cpf_upsert( int $user_id, string $cpf ): true|WP_Error {
+	// Este endpoint só PREENCHE a identidade que falta. Trocar um CPF já verificado por aqui
+	// desfaria a evidência que aprovou a titularidade (o CPF conferido contra o QSA da Receita) e
+	// liberaria reciclar CPF entre contas — troca é atendimento, não autoatendimento.
+	$profile = papelito_company_profile_get( $user_id );
+	if ( null !== $profile && 'verified' === (string) ( $profile['identity_status'] ?? '' ) ) {
+		return new WP_Error( 'papelito_b2b_identity_already_verified', 'Seu CPF já está registrado. Fale com o suporte para alterá-lo.', array( 'status' => 409 ) );
+	}
+
+	// O CPF pertence a uma pessoa só: um CPF de outra conta é recusado antes de tocar no perfil.
+	$owner = papelito_customer_profile_find_user_by_cpf( $cpf );
+	if ( is_wp_error( $owner ) ) {
+		return $owner;
+	}
+	if ( null !== $owner && $owner !== $user_id ) {
+		return new WP_Error( 'papelito_pii_cpf_in_use', 'Este CPF já está associado a outra conta.', array( 'status' => 409 ) );
+	}
+
+	$result = papelito_customer_profile_upsert(
+		$user_id,
+		$cpf,
+		array(
+			'identity_status'     => 'verified',
+			'identity_method'     => 'self_attested',
+			'identity_checked_at' => current_time( 'mysql', true ),
+		)
+	);
+
+	return is_wp_error( $result ) ? $result : true;
+}
+
 function papelito_company_normalize_name( string $value ): string {
 	$value = trim( $value );
 
@@ -514,6 +550,7 @@ function papelito_company_context( int $user_id ): array {
 		'isInternalAdmin'            => false,
 		'isVendor'                   => false,
 		'hasCustomerContext'         => false,
+		'requiresCustomerCpf'        => false,
 	);
 	if ( function_exists( 'papelito_legacy_context' ) ) {
 		$base = array_merge( $base, papelito_legacy_context( $user_id ) );
@@ -633,6 +670,10 @@ function papelito_company_context_with_purchase_capability( int $user_id, array 
 	$context['isInternalAdmin'] = $capability['isInternalAdmin'];
 	$context['isVendor'] = $capability['isVendor'];
 	$context['hasCustomerContext'] = $capability['hasCustomerContext'];
+	$context['requiresCustomerCpf'] = in_array( (string) $capability['userContextType'], array( 'customer', 'hybrid' ), true )
+		&& ! empty( $context['companyId'] )
+		&& 'active' === (string) ( $context['membershipStatus'] ?? '' )
+		&& 'verified' !== (string) ( $context['identityStatus'] ?? 'incomplete' );
 	if ( function_exists( 'papelito_account_status_context' ) ) {
 		$context = array_merge( $context, papelito_account_status_context( $user_id ) );
 	}
@@ -721,7 +762,7 @@ function papelito_company_purchase_capability_result( array $base, bool $can_pur
 			'canPurchase' => $can_purchase,
 			'purchaseMode' => $purchase_mode,
 			'purchaseBlockReason' => $reason,
-			'requiresB2bOnboarding' => 'blocked' === $purchase_mode,
+			'requiresB2bOnboarding' => 'blocked' === $purchase_mode && ! in_array( $reason, array( 'identity_incomplete', 'identity_rejected' ), true ),
 			'company' => $company,
 			'membership' => $membership,
 		)
@@ -797,16 +838,12 @@ function papelito_company_purchase_capability( int $user_id, ?array $context = n
 	if ( 'active' !== $membership_status ) {
 		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'membership_pending', $company, $membership );
 	}
-	// CPF é exigido apenas em memberships que representam responsável/legado. Um membro
-	// aceito por convite possui autorização empresarial explícita e não recebe perfil CPF.
-	if ( 'not_required' !== (string) ( $membership['identity_requirement'] ?? 'required' ) ) {
-		$identity_status = (string) ( $context['identityStatus'] ?? 'incomplete' );
-		if ( in_array( $identity_status, array( 'rejected', 'suspended' ), true ) ) {
-			return papelito_company_purchase_capability_result( $base, false, 'blocked', 'identity_rejected', $company, $membership );
-		}
-		if ( 'verified' !== $identity_status ) {
-			return papelito_company_purchase_capability_result( $base, false, 'blocked', 'identity_incomplete', $company, $membership );
-		}
+	$identity_status = (string) ( $context['identityStatus'] ?? 'incomplete' );
+	if ( in_array( $identity_status, array( 'rejected', 'suspended' ), true ) ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'identity_rejected', $company, $membership );
+	}
+	if ( 'verified' !== $identity_status ) {
+		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'identity_incomplete', $company, $membership );
 	}
 	if ( ! in_array( (string) $membership['member_role'], papelito_company_purchasing_roles(), true ) ) {
 		return papelito_company_purchase_capability_result( $base, false, 'blocked', 'role_cannot_purchase', $company, $membership );

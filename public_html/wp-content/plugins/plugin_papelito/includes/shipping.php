@@ -11,6 +11,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 const PAPELITO_SHIPPING_FREE_SHIPPING_MINIMUM_OPTION        = 'papelito_shipping_free_shipping_minimum_cents';
 const PAPELITO_SHIPPING_DEFAULT_FREE_SHIPPING_MINIMUM_CENTS = 9900;
+const PAPELITO_SHIPPING_FREE_SHIPPING_ZIP_RANGES_OPTION     = 'papelito_shipping_free_shipping_zip_ranges';
+const PAPELITO_SHIPPING_FREE_SHIPPING_ZIP_RANGES_MAX        = 50;
 const PAPELITO_CORREIOS_JSON_CONTENT_TYPE                   = 'application/json';
 const PAPELITO_REST_NAMESPACE                               = 'papelito/v1';
 
@@ -46,7 +48,127 @@ function papelito_shipping_get_free_shipping_minimum_cents(): int {
 function papelito_shipping_get_free_shipping_threshold_snapshot(): array {
 	return array(
 		'minimumOrderCents' => papelito_shipping_get_free_shipping_minimum_cents(),
+		'zipRanges'         => papelito_shipping_get_free_shipping_zip_ranges(),
 	);
+}
+
+/**
+ * Faixas de CEP elegíveis ao frete grátis automático.
+ *
+ * Lista vazia significa território inteiro: é o comportamento anterior à existência das faixas e
+ * continua sendo o padrão, para que gravar a primeira faixa seja uma restrição consciente e não um
+ * efeito colateral de abrir a tela.
+ *
+ * @return array<int, array<string, string>>
+ */
+function papelito_shipping_get_free_shipping_zip_ranges(): array {
+	$stored = get_option( PAPELITO_SHIPPING_FREE_SHIPPING_ZIP_RANGES_OPTION, array() );
+	$ranges = papelito_shipping_normalize_free_shipping_zip_ranges( $stored );
+
+	return is_wp_error( $ranges ) ? array() : $ranges;
+}
+
+/**
+ * Normaliza faixas de CEP vindas de origem não confiável.
+ *
+ * Reaproveita `papelito_shipping_normalize_cep()` como única definição de CEP válido e repete a
+ * política de ordem já aplicada à cobertura de vendor: início nunca maior que fim.
+ *
+ * @param mixed $value Faixas cruas da option ou do payload REST.
+ * @return array<int, array<string, string>>|WP_Error
+ */
+function papelito_shipping_normalize_free_shipping_zip_ranges( mixed $value ) {
+	if ( null === $value || '' === $value ) {
+		return array();
+	}
+
+	if ( ! is_array( $value ) ) {
+		return new WP_Error(
+			'papelito_shipping_invalid_free_shipping_ranges',
+			'Informe uma lista de faixas de CEP.',
+			array( 'status' => 422 )
+		);
+	}
+
+	if ( count( $value ) > PAPELITO_SHIPPING_FREE_SHIPPING_ZIP_RANGES_MAX ) {
+		return new WP_Error(
+			'papelito_shipping_too_many_free_shipping_ranges',
+			sprintf( 'O limite é de %d faixas de CEP.', PAPELITO_SHIPPING_FREE_SHIPPING_ZIP_RANGES_MAX ),
+			array( 'status' => 422 )
+		);
+	}
+
+	$normalized = array();
+
+	foreach ( array_values( $value ) as $index => $range ) {
+		if ( ! is_array( $range ) ) {
+			return new WP_Error(
+				'papelito_shipping_invalid_free_shipping_ranges',
+				sprintf( 'Informe CEP inicial e final válidos na faixa %d.', $index + 1 ),
+				array( 'status' => 422 )
+			);
+		}
+
+		$min_cep = papelito_shipping_normalize_cep( $range['minCep'] ?? $range['min_cep'] ?? '' );
+		$max_cep = papelito_shipping_normalize_cep( $range['maxCep'] ?? $range['max_cep'] ?? '' );
+
+		if ( '' === $min_cep || '' === $max_cep ) {
+			return new WP_Error(
+				'papelito_shipping_invalid_free_shipping_ranges',
+				sprintf( 'Informe CEP inicial e final válidos na faixa %d.', $index + 1 ),
+				array( 'status' => 422 )
+			);
+		}
+
+		if ( (int) $min_cep > (int) $max_cep ) {
+			return new WP_Error(
+				'papelito_shipping_invalid_free_shipping_range_order',
+				sprintf( 'O CEP final precisa ser maior ou igual ao inicial na faixa %d.', $index + 1 ),
+				array( 'status' => 422 )
+			);
+		}
+
+		$normalized[] = array(
+			'minCep' => $min_cep,
+			'maxCep' => $max_cep,
+		);
+	}
+
+	return $normalized;
+}
+
+/**
+ * Diz se um CEP de destino está em alguma faixa elegível ao frete grátis automático.
+ *
+ * Sem faixa cadastrada o benefício vale para todo o território. Com faixas cadastradas e CEP
+ * ausente a resposta é negativa: a restrição regional só se sustenta se um destino desconhecido
+ * ficar de fora.
+ *
+ * @param string $destination_cep CEP de destino, cru ou normalizado.
+ * @return bool
+ */
+function papelito_shipping_cep_allows_free_shipping( string $destination_cep ): bool {
+	$ranges = papelito_shipping_get_free_shipping_zip_ranges();
+
+	if ( empty( $ranges ) ) {
+		return true;
+	}
+
+	$cep = papelito_shipping_normalize_cep( $destination_cep );
+
+	if ( '' === $cep ) {
+		return false;
+	}
+
+	$needle = (int) $cep;
+
+	foreach ( $ranges as $range ) {
+		if ( (int) $range['minCep'] <= $needle && (int) $range['maxCep'] >= $needle ) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 /**
@@ -65,6 +187,24 @@ function papelito_shipping_update_free_shipping_minimum_cents( mixed $value ) {
 	}
 
 	update_option( PAPELITO_SHIPPING_FREE_SHIPPING_MINIMUM_OPTION, $value, false );
+
+	return papelito_shipping_get_free_shipping_threshold_snapshot();
+}
+
+/**
+ * Persiste as faixas de CEP elegíveis ao frete grátis.
+ *
+ * @param mixed $value Faixas cruas do payload REST.
+ * @return array<string, mixed>|WP_Error
+ */
+function papelito_shipping_update_free_shipping_zip_ranges( mixed $value ) {
+	$normalized = papelito_shipping_normalize_free_shipping_zip_ranges( $value );
+
+	if ( is_wp_error( $normalized ) ) {
+		return $normalized;
+	}
+
+	update_option( PAPELITO_SHIPPING_FREE_SHIPPING_ZIP_RANGES_OPTION, $normalized, false );
 
 	return papelito_shipping_get_free_shipping_threshold_snapshot();
 }
@@ -1279,14 +1419,39 @@ function papelito_shipping_free_shipping_threshold_response(): WP_REST_Response 
  * @return WP_REST_Response|WP_Error
  */
 function papelito_shipping_update_free_shipping_threshold_endpoint( WP_REST_Request $request ) {
-	$payload = $request->get_json_params();
-	if ( ! is_array( $payload ) || ! array_key_exists( 'minimumOrderCents', $payload ) ) {
+	$payload        = $request->get_json_params();
+	$payload        = is_array( $payload ) ? $payload : array();
+	$has_minimum    = array_key_exists( 'minimumOrderCents', $payload );
+	$has_zip_ranges = array_key_exists( 'zipRanges', $payload );
+
+	if ( ! $has_minimum && ! $has_zip_ranges ) {
 		return new WP_Error( 'papelito_shipping_invalid_free_shipping_minimum', 'Informe um valor mínimo positivo em centavos.', array( 'status' => 422 ) );
 	}
 
-	$result = papelito_shipping_update_free_shipping_minimum_cents( $payload['minimumOrderCents'] );
+	// As faixas são validadas antes de qualquer escrita: um payload com mínimo válido e faixa
+	// inválida não pode gravar metade da regra.
+	if ( $has_zip_ranges ) {
+		$validated_ranges = papelito_shipping_normalize_free_shipping_zip_ranges( $payload['zipRanges'] );
+		if ( is_wp_error( $validated_ranges ) ) {
+			return $validated_ranges;
+		}
+	}
 
-	return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+	if ( $has_minimum ) {
+		$result = papelito_shipping_update_free_shipping_minimum_cents( $payload['minimumOrderCents'] );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+	}
+
+	if ( $has_zip_ranges ) {
+		$result = papelito_shipping_update_free_shipping_zip_ranges( $payload['zipRanges'] );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+	}
+
+	return new WP_REST_Response( papelito_shipping_get_free_shipping_threshold_snapshot(), 200 );
 }
 
 /**

@@ -26,6 +26,7 @@ const PAPELITO_AUTH_NEW_USER_LOOKUP_MESSAGE = 'Falha ao carregar usuário recém
 const PAPELITO_AUTH_ONBOARDING_RESUME_MESSAGE = 'Retome seu onboarding B2B para continuar.';
 const PAPELITO_AUTH_RATE_LIMIT_MESSAGE = 'Muitas tentativas. Tente novamente em alguns instantes.';
 const PAPELITO_AUTH_INVALID_VERIFICATION_MESSAGE = 'Link de confirmação inválido ou expirado.';
+const PAPELITO_AUTH_CPF_IN_USE_MESSAGE = 'Este CPF já está associado a outra conta.';
 const PAPELITO_AUTH_SESSION_VERSION_META = 'papelito_auth_session_version';
 const PAPELITO_AUTH_PASSWORD_UNSET_META = 'papelito_auth_password_unset';
 
@@ -1175,15 +1176,15 @@ function papelito_auth_create_registered_user( array $data ) {
 	papelito_auth_welcome_toast_arm( $user_id );
 
 	$profile = papelito_company_profile_upsert( $user_id, (string) $data['cpf'], (string) ( $data['birth_date'] ?? '' ) );
-	if ( is_wp_error( $profile ) ) { wp_delete_user( $user_id ); return $profile; }
+	if ( is_wp_error( $profile ) ) { papelito_auth_delete_partial_user( $user_id ); return $profile; }
 	$requested_onboarding = (string) ( $data['onboarding_type'] ?? $data['intent'] ?? '' );
 	$onboarding_type      = in_array( $requested_onboarding, array( 'create_company', 'join_company' ), true )
 		? $requested_onboarding
 		: 'create_company';
 	$onboarding = papelito_company_onboarding_upsert( $user_id, $onboarding_type, (string) ( $data['cnpj'] ?? '' ), 'pending_email' );
-	if ( is_wp_error( $onboarding ) ) { wp_delete_user( $user_id ); return $onboarding; }
+	if ( is_wp_error( $onboarding ) ) { papelito_auth_delete_partial_user( $user_id ); return $onboarding; }
 	$address = papelito_company_onboarding_save_address( $user_id, (string) $data['cep'], $data );
-	if ( is_wp_error( $address ) ) { wp_delete_user( $user_id ); return $address; }
+	if ( is_wp_error( $address ) ) { papelito_auth_delete_partial_user( $user_id ); return $address; }
 	papelito_b2b_mark_cohort( $user_id );
 
 	$user = get_userdata( $user_id );
@@ -1191,6 +1192,22 @@ function papelito_auth_create_registered_user( array $data ) {
 	return $user instanceof WP_User
 		? $user
 		: new WP_Error( 'papelito_user_lookup_failed', PAPELITO_AUTH_NEW_USER_LOOKUP_MESSAGE, array( 'status' => 500 ) );
+}
+
+/**
+ * Remove uma conta criada pela metade, funcionando também fora do wp-admin.
+ *
+ * `wp_delete_user()` só é declarada em `wp-admin/includes/user.php`, que não é carregado numa
+ * requisição REST. Chamá-la direto derruba o processo com erro crítico ANTES de apagar nada, e a
+ * conta parcial fica no banco — sem perfil de CPF e, pior, sem a meta de verificação de e-mail,
+ * que `papelito_auth_requires_email_verification()` lê como "conta legada verificada".
+ */
+function papelito_auth_delete_partial_user( int $user_id ): void {
+	if ( ! function_exists( 'wp_delete_user' ) ) {
+		require_once ABSPATH . 'wp-admin/includes/user.php';
+	}
+
+	wp_delete_user( $user_id );
 }
 
 /** Validação mínima para uma conta criada exclusivamente a partir de convite empresarial. */
@@ -1202,6 +1219,12 @@ function papelito_auth_validate_invitation_register_payload( array $data ) {
 	}
 	if ( strlen( (string) ( $data['password'] ?? '' ) ) < 8 ) {
 		$errors->add( 'password', 'Senha precisa ter pelo menos 8 caracteres.' );
+	}
+	$cpf = trim( (string) ( $data['cpf'] ?? '' ) );
+	if ( '' === $cpf ) {
+		$errors->add( 'cpf', 'Informe seu CPF.' );
+	} elseif ( ! papelito_validate_cpf( $cpf ) ) {
+		$errors->add( 'cpf', 'Informe um CPF válido.' );
 	}
 	if ( '' === trim( (string) ( $data['token'] ?? '' ) ) ) {
 		$errors->add( 'token', 'Dados do convite incompletos.' );
@@ -1215,11 +1238,20 @@ function papelito_auth_validate_invitation_register_payload( array $data ) {
 	return $errors->has_errors() ? $errors : null;
 }
 
-/** Cria uma conta sem perfil CPF; a autorização empresarial só é ativada no aceite posterior. */
+/** Cria uma conta com o perfil CPF; a autorização empresarial só é ativada no aceite posterior. */
 function papelito_auth_create_invited_user( array $data ): WP_User|WP_Error {
 	$email = strtolower( sanitize_email( trim( (string) $data['email'] ) ) );
 	if ( email_exists( $email ) ) {
 		return new WP_Error( 'papelito_invitation_registration_unavailable', 'Não foi possível criar uma conta para este convite.', array( 'status' => 409 ) );
+	}
+	// O CPF é conferido ANTES de existir conta: um CPF já vinculado a outra pessoa não pode
+	// produzir uma conta pela metade nem um 500 genérico.
+	$cpf_owner = papelito_customer_profile_find_user_by_cpf( (string) $data['cpf'] );
+	if ( is_wp_error( $cpf_owner ) ) {
+		return $cpf_owner;
+	}
+	if ( null !== $cpf_owner ) {
+		return new WP_Error( 'papelito_pii_cpf_in_use', PAPELITO_AUTH_CPF_IN_USE_MESSAGE, array( 'status' => 409 ) );
 	}
 	$user_id = wp_insert_user(
 		array(
@@ -1234,8 +1266,25 @@ function papelito_auth_create_invited_user( array $data ): WP_User|WP_Error {
 	if ( is_wp_error( $user_id ) ) {
 		return $user_id;
 	}
-	update_user_meta( $user_id, 'papelito_profile_complete', '0' );
+	// Antes de qualquer passo que possa falhar: sem esta meta, uma conta parcial passa por conta
+	// legada e entra como e-mail já confirmado.
 	papelito_auth_mark_email_pending( $user_id );
+	$profile = papelito_customer_profile_upsert(
+		$user_id,
+		(string) $data['cpf'],
+		array(
+			'identity_status'     => 'verified',
+			'identity_method'     => 'invitation_registration',
+			'identity_checked_at' => current_time( 'mysql', true ),
+		)
+	);
+	if ( is_wp_error( $profile ) ) {
+		papelito_auth_delete_partial_user( $user_id );
+		return 'papelito_pii_cpf_in_use' === $profile->get_error_code()
+			? new WP_Error( 'papelito_pii_cpf_in_use', PAPELITO_AUTH_CPF_IN_USE_MESSAGE, array( 'status' => 409 ) )
+			: $profile;
+	}
+	update_user_meta( $user_id, 'papelito_profile_complete', '0' );
 	papelito_auth_welcome_toast_arm( $user_id );
 	papelito_b2b_mark_cohort( $user_id );
 	update_user_meta( $user_id, 'papelito_post_email_verification_path', '/convite' );

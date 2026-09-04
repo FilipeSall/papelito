@@ -288,13 +288,42 @@ function papelito_catalog_search_collection_clause( string $product_expr, string
 }
 
 /**
- * Mantém somente a coleção global de novidades: os oito mais recentes da
- * vitrine elegível, definidos antes de busca, categoria, preço e paginação.
+ * Configuração das coleções derivadas, com o mesmo padrão que a vitrine aplica.
+ *
+ * Sem o módulo carregado o comportamento é o anterior à configuração: dez novidades e sem prazo.
+ *
+ * @return array{newArrivals:array{limit:int,expirationDays:int}, promotions:array{limit:int}}
+ */
+function papelito_catalog_search_collections_config(): array {
+	if ( function_exists( 'papelito_collections_get_config' ) ) {
+		return papelito_collections_get_config();
+	}
+
+	return array(
+		'newArrivals' => array( 'limit' => 10, 'expirationDays' => 0 ),
+		'promotions'  => array( 'limit' => 0 ),
+	);
+}
+
+/**
+ * Mantém somente a coleção global de novidades: os mais recentes da vitrine elegível, no teto e no
+ * prazo configurados no painel, definidos antes de busca, categoria, preço e paginação.
+ *
+ * A busca precisa chegar ao mesmo recorte que a listagem sem busca, senão a mesma coleção teria
+ * dois tamanhos dependendo de o comprador ter digitado algo.
  *
  * @param array<int,array<string,mixed>> $rows
  * @return array<int,array<string,mixed>>
  */
 function papelito_catalog_search_filter_new_arrivals( array $rows, array $args ): array {
+	$config          = papelito_catalog_search_collections_config();
+	$limit           = (int) $config['newArrivals']['limit'];
+	$expiration_days = (int) $config['newArrivals']['expirationDays'];
+
+	if ( $limit <= 0 ) {
+		return array();
+	}
+
 	$global_args                  = $args;
 	$global_args['categories']    = array();
 	$global_args['subcategories'] = array();
@@ -302,13 +331,67 @@ function papelito_catalog_search_filter_new_arrivals( array $rows, array $args )
 	$global_args['max_price']     = null;
 	$global_args['collection']    = 'todos';
 	$global_rows                  = papelito_catalog_search_product_rows( $global_args );
-	$newest_ids                   = array_map( 'intval', array_slice( array_column( $global_rows, 'ID' ), 0, 8 ) );
-	$newest_lookup                = array_fill_keys( $newest_ids, true );
+
+	if ( $expiration_days > 0 ) {
+		$cutoff      = time() - ( $expiration_days * DAY_IN_SECONDS );
+		$global_rows = array_values(
+			array_filter(
+				$global_rows,
+				static function ( array $row ) use ( $cutoff ): bool {
+					$published = strtotime( (string) ( $row['post_date'] ?? '' ) );
+
+					return false !== $published && $published >= $cutoff;
+				}
+			)
+		);
+	}
+
+	$newest_ids    = array_map( 'intval', array_slice( array_column( $global_rows, 'ID' ), 0, $limit ) );
+	$newest_lookup = array_fill_keys( $newest_ids, true );
 
 	return array_values(
 		array_filter(
 			$rows,
 			static fn( array $row ): bool => isset( $newest_lookup[ (int) ( $row['ID'] ?? 0 ) ] )
+		)
+	);
+}
+
+/**
+ * Aplica o teto configurado de Promoções sobre a coleção global elegível.
+ *
+ * O corte é global e anterior a busca, categoria e preço, pela mesma razão de Recém-chegados: o
+ * teto é da coleção, não do recorte que o comprador está olhando.
+ *
+ * @param array<int,array<string,mixed>> $rows
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_catalog_search_filter_promotions( array $rows, array $args, array $campaign_prices ): array {
+	$limit = (int) papelito_catalog_search_collections_config()['promotions']['limit'];
+
+	if ( $limit <= 0 ) {
+		return $rows;
+	}
+
+	$global_args                  = $args;
+	$global_args['categories']    = array();
+	$global_args['subcategories'] = array();
+	$global_args['min_price']     = null;
+	$global_args['max_price']     = null;
+	$global_rows                  = papelito_catalog_search_filter_campaign_prices(
+		papelito_catalog_search_product_rows( $global_args ),
+		$campaign_prices,
+		$global_args
+	);
+	$allowed_ids                  = array_fill_keys(
+		array_map( 'intval', array_slice( array_column( $global_rows, 'ID' ), 0, $limit ) ),
+		true
+	);
+
+	return array_values(
+		array_filter(
+			$rows,
+			static fn( array $row ): bool => isset( $allowed_ids[ (int) ( $row['ID'] ?? 0 ) ] )
 		)
 	);
 }
@@ -383,7 +466,7 @@ function papelito_catalog_search_product_rows( array $args ): array {
 		}
 	}
 
-	$sql = "SELECT p.ID, p.post_title FROM {$wpdb->posts} p WHERE " . implode( ' AND ', $where ) . ' ORDER BY p.post_date DESC, p.ID DESC';
+	$sql = "SELECT p.ID, p.post_title, p.post_date FROM {$wpdb->posts} p WHERE " . implode( ' AND ', $where ) . ' ORDER BY p.post_date DESC, p.ID DESC';
 
 	return $wpdb->get_results( $wpdb->prepare( $sql, $params ), ARRAY_A );
 }
@@ -446,6 +529,8 @@ function papelito_catalog_search_products( array $args ): array {
 
 	if ( 'novidades' === $collection ) {
 		$rows = papelito_catalog_search_filter_new_arrivals( $rows, $args );
+	} elseif ( 'promocoes' === $collection ) {
+		$rows = papelito_catalog_search_filter_promotions( $rows, $args, $campaign_prices );
 	}
 	$tags_by_id              = papelito_catalog_search_tags_by_product( array_column( $rows, 'ID' ) );
 	$matches                 = array();

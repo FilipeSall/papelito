@@ -29,7 +29,7 @@ if ( ! defined( 'PAPELITO_B2B_SNAPSHOT_VERSION' ) ) {
 	define( 'PAPELITO_B2B_SNAPSHOT_VERSION', '1' );
 }
 
-function papelito_order_routing_sort_payload( $value ) {
+function papelito_order_routing_sort_payload( mixed $value ): mixed {
 	if ( ! is_array( $value ) ) {
 		return $value;
 	}
@@ -180,7 +180,7 @@ function papelito_order_routing_normalize_payment_method( $value ): string {
 /**
  * Normaliza a chave idempotente enviada pelo checkout.
  */
-function papelito_order_routing_normalize_checkout_attempt_id( $value ): string {
+function papelito_order_routing_normalize_checkout_attempt_id( mixed $value ): string {
 	$attempt_id = sanitize_text_field( (string) $value );
 	$attempt_id = substr( $attempt_id, 0, 120 );
 
@@ -618,7 +618,121 @@ function papelito_order_routing_add_coupon_item( $order, array $coupon ): void {
  * @param string $payment_method Metodo de pagamento.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_order_routing_create_order( int $user_id, array $address, array $lines, array $shipping, ?array $coupon, string $payment_method, string $checkout_attempt_id = '', array $b2b_snapshot = array(), string $request_hash = '' ) {
+/**
+ * Endereço de cobrança do pedido.
+ *
+ * Sem snapshot de empresa a cobrança é a do comprador; com snapshot, os dados fiscais da empresa
+ * sobrescrevem o endereço, porque o comprador fiscal do pedido B2B é o CNPJ.
+ *
+ * @param array<string,mixed> $wc_address   Endereço do comprador já no formato do WooCommerce.
+ * @param array<string,mixed> $b2b_snapshot Snapshot fiscal imutável do pedido.
+ * @return array<string,mixed>
+ */
+function papelito_order_routing_build_billing_address( array $wc_address, array $b2b_snapshot ): array {
+	if ( empty( $b2b_snapshot['company'] ) || ! is_array( $b2b_snapshot['company'] ) ) {
+		return $wc_address;
+	}
+
+	$company = $b2b_snapshot['company'];
+
+	return array_merge(
+		$wc_address,
+		array(
+			'first_name' => '',
+			'last_name'  => '',
+			'company'    => (string) $company['legal_name'],
+			'email'      => (string) $company['billing_email'],
+			'phone'      => (string) $company['phone'],
+			'address_1'  => trim( (string) $company['fiscal_street'] . ', ' . (string) $company['fiscal_number'] ),
+			'address_2'  => (string) $company['fiscal_complement'],
+			'city'       => (string) $company['fiscal_city'],
+			'state'      => (string) $company['fiscal_state'],
+			'postcode'   => (string) $company['fiscal_cep'],
+		)
+	);
+}
+
+/**
+ * Adiciona os itens de produto ao pedido, com o snapshot de preço e de vendor em cada linha.
+ *
+ * @param object                         $order       Pedido do WooCommerce.
+ * @param array<int,array<string,mixed>> $lines       Linhas já precificadas.
+ * @param int                            $vendor_id   Vendor único do pedido.
+ * @param string                         $vendor_name Nome do vendor.
+ * @return void
+ */
+function papelito_order_routing_add_line_items( object $order, array $lines, int $vendor_id, string $vendor_name ): void {
+	foreach ( $lines as $line ) {
+		$item_id = $order->add_product(
+			$line['product'],
+			(int) $line['qty'],
+			array(
+				'subtotal' => (float) $line['subtotal'],
+				'total'    => (float) $line['total'],
+			)
+		);
+
+		$item = $order->get_item( $item_id );
+
+		if ( ! papelito_order_routing_is_wc_instance( $item, 'WC_Order_Item_Product' ) ) {
+			continue;
+		}
+
+		$item->add_meta_data( '_vendor_id', $vendor_id, true );
+		$item->add_meta_data( '_vendor_name', $vendor_name, true );
+		$item->add_meta_data( '_papelito_discount_source', sanitize_key( (string) ( $line['discount_source'] ?? 'none' ) ), true );
+		$item->add_meta_data( '_papelito_subtotal_cents', (int) ( $line['subtotal_cents'] ?? 0 ), true );
+		$item->add_meta_data( '_papelito_discount_cents', (int) ( $line['discount_cents'] ?? 0 ), true );
+		$item->add_meta_data( '_papelito_total_cents', (int) ( $line['total_cents'] ?? 0 ), true );
+
+		if ( ! empty( $line['kit_snapshot'] ) ) {
+			$item->add_meta_data( '_papelito_kit_snapshot', wp_json_encode( $line['kit_snapshot'] ), true );
+		}
+
+		$item->save();
+	}
+}
+
+/**
+ * Adiciona o item de frete e devolve os três valores que o pedido precisa registrar.
+ *
+ * O frete grátis abate a modalidade escolhida: o item guarda o valor efetivamente cobrado, e o
+ * preço cheio fica no meta para auditoria e recibo.
+ *
+ * @param object              $order    Pedido do WooCommerce.
+ * @param array<string,mixed> $shipping Modalidade resolvida.
+ * @return array{price_cents:int, discount_cents:int, charged_cents:int}
+ */
+function papelito_order_routing_add_shipping_item( object $order, array $shipping ): array {
+	$price_cents    = papelito_pricing_to_cents( (float) ( $shipping['price'] ?? 0 ) );
+	$discount_cents = min(
+		$price_cents,
+		max( 0, papelito_pricing_to_cents( (float) ( $shipping['discount'] ?? 0 ) ) )
+	);
+	$charged_cents  = $price_cents - $discount_cents;
+
+	$shipping_item_class = 'WC_Order_Item_Shipping';
+	$shipping_item       = new $shipping_item_class();
+	$shipping_item->set_method_id( 'papelito_correios_' . strtolower( sanitize_key( (string) ( $shipping['service'] ?? 'shipping' ) ) ) );
+	$shipping_item->set_method_title( sanitize_text_field( (string) ( $shipping['name'] ?? $shipping['service'] ?? 'Correios' ) ) );
+	$shipping_item->set_total( papelito_pricing_from_cents( $charged_cents ) );
+	$shipping_item->add_meta_data( '_papelito_shipping_service_code', sanitize_text_field( (string) ( $shipping['code'] ?? '' ) ), true );
+	$shipping_item->add_meta_data( '_papelito_shipping_price_cents', $price_cents, true );
+	$shipping_item->add_meta_data( '_papelito_shipping_discount_cents', $discount_cents, true );
+	$order->add_item( $shipping_item );
+
+	return array(
+		'price_cents'    => $price_cents,
+		'discount_cents' => $discount_cents,
+		'charged_cents'  => $charged_cents,
+	);
+}
+
+function papelito_order_routing_create_order( int $user_id, array $address, array $lines, array $shipping, ?array $coupon, string $payment_method, array $context = array() ) {
+	$checkout_attempt_id = (string) ( $context['checkout_attempt_id'] ?? '' );
+	$b2b_snapshot        = is_array( $context['b2b_snapshot'] ?? null ) ? $context['b2b_snapshot'] : array();
+	$request_hash        = (string) ( $context['request_hash'] ?? '' );
+
 	if ( ! function_exists( 'wc_create_order' ) || ! class_exists( 'WC_Order' ) || ! class_exists( 'WC_Order_Item_Shipping' ) || ! class_exists( 'WC_Order_Item_Product' ) ) {
 		return new WP_Error(
 			'papelito_checkout_woocommerce_unavailable',
@@ -656,26 +770,8 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 
 	$vendor_id   = (int) $lines[0]['vendor_id'];
 	$vendor_name = (string) $lines[0]['vendor_name'];
-	$wc_address  = papelito_order_routing_build_wc_address( $user_id, $address );
-	$billing_address = $wc_address;
-	if ( ! empty( $b2b_snapshot['company'] ) && is_array( $b2b_snapshot['company'] ) ) {
-		$company = $b2b_snapshot['company'];
-		$billing_address = array_merge(
-			$billing_address,
-			array(
-				'first_name' => '',
-				'last_name' => '',
-				'company' => (string) $company['legal_name'],
-				'email' => (string) $company['billing_email'],
-				'phone' => (string) $company['phone'],
-				'address_1' => trim( (string) $company['fiscal_street'] . ', ' . (string) $company['fiscal_number'] ),
-				'address_2' => (string) $company['fiscal_complement'],
-				'city' => (string) $company['fiscal_city'],
-				'state' => (string) $company['fiscal_state'],
-				'postcode' => (string) $company['fiscal_cep'],
-			)
-		);
-	}
+	$wc_address      = papelito_order_routing_build_wc_address( $user_id, $address );
+	$billing_address = papelito_order_routing_build_billing_address( $wc_address, $b2b_snapshot );
 
 	try {
 		$order->set_currency( get_woocommerce_currency() );
@@ -684,50 +780,12 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 		$order->set_address( $billing_address, 'billing' );
 		$order->set_address( $wc_address, 'shipping' );
 
-		foreach ( $lines as $line ) {
-			$item_id = $order->add_product(
-				$line['product'],
-				(int) $line['qty'],
-				array(
-					'subtotal' => (float) $line['subtotal'],
-					'total'    => (float) $line['total'],
-				)
-			);
+		papelito_order_routing_add_line_items( $order, $lines, $vendor_id, $vendor_name );
 
-			$item = $order->get_item( $item_id );
-
-			if ( papelito_order_routing_is_wc_instance( $item, 'WC_Order_Item_Product' ) ) {
-				$item->add_meta_data( '_vendor_id', $vendor_id, true );
-				$item->add_meta_data( '_vendor_name', $vendor_name, true );
-				$item->add_meta_data( '_papelito_discount_source', sanitize_key( (string) ( $line['discount_source'] ?? 'none' ) ), true );
-				$item->add_meta_data( '_papelito_subtotal_cents', (int) ( $line['subtotal_cents'] ?? 0 ), true );
-				$item->add_meta_data( '_papelito_discount_cents', (int) ( $line['discount_cents'] ?? 0 ), true );
-				$item->add_meta_data( '_papelito_total_cents', (int) ( $line['total_cents'] ?? 0 ), true );
-				if ( ! empty( $line['kit_snapshot'] ) ) {
-					$item->add_meta_data( '_papelito_kit_snapshot', wp_json_encode( $line['kit_snapshot'] ), true );
-				}
-				$item->save();
-			}
-		}
-
-		// O frete grátis abate a modalidade escolhida: o item de frete guarda o valor
-		// efetivamente cobrado, e o preço cheio fica no meta para auditoria e recibo.
-		$shipping_price_cents    = papelito_pricing_to_cents( (float) ( $shipping['price'] ?? 0 ) );
-		$shipping_discount_cents = min(
-			$shipping_price_cents,
-			max( 0, papelito_pricing_to_cents( (float) ( $shipping['discount'] ?? 0 ) ) )
-		);
-		$shipping_charged_cents  = $shipping_price_cents - $shipping_discount_cents;
-
-		$shipping_item_class = 'WC_Order_Item_Shipping';
-		$shipping_item       = new $shipping_item_class();
-		$shipping_item->set_method_id( 'papelito_correios_' . strtolower( sanitize_key( (string) ( $shipping['service'] ?? 'shipping' ) ) ) );
-		$shipping_item->set_method_title( sanitize_text_field( (string) ( $shipping['name'] ?? $shipping['service'] ?? 'Correios' ) ) );
-		$shipping_item->set_total( papelito_pricing_from_cents( $shipping_charged_cents ) );
-		$shipping_item->add_meta_data( '_papelito_shipping_service_code', sanitize_text_field( (string) ( $shipping['code'] ?? '' ) ), true );
-		$shipping_item->add_meta_data( '_papelito_shipping_price_cents', $shipping_price_cents, true );
-		$shipping_item->add_meta_data( '_papelito_shipping_discount_cents', $shipping_discount_cents, true );
-		$order->add_item( $shipping_item );
+		$shipping_totals         = papelito_order_routing_add_shipping_item( $order, $shipping );
+		$shipping_price_cents    = $shipping_totals['price_cents'];
+		$shipping_discount_cents = $shipping_totals['discount_cents'];
+		$shipping_charged_cents  = $shipping_totals['charged_cents'];
 
 		if ( null !== $coupon ) {
 			papelito_order_routing_add_coupon_item( $order, $coupon );
@@ -902,6 +960,75 @@ function papelito_order_routing_map_order_items_vendor( $order ): array {
  * @param int $order_id ID do pedido.
  * @return void
  */
+/**
+ * Reúne as baixas de estoque de um pedido, uma por linha utilizável.
+ *
+ * Linha sem vendor, produto ou quantidade legível é ignorada em vez de derrubar a baixa inteira:
+ * um item corrompido não pode impedir o pedido de reservar o que dá para reservar.
+ *
+ * @param object $order Pedido do WooCommerce.
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_order_routing_collect_stock_adjustments( object $order ): array {
+	$default_vendor_id = absint( $order->get_meta( '_papelito_vendor_id', true ) );
+	$adjustments       = array();
+
+	foreach ( $order->get_items( 'line_item' ) as $item ) {
+		if ( ! is_object( $item ) || ! method_exists( $item, 'get_meta' ) || ! method_exists( $item, 'get_product_id' ) || ! method_exists( $item, 'get_quantity' ) ) {
+			continue;
+		}
+
+		$vendor_id  = absint( $item->get_meta( '_vendor_id', true ) ) ?: $default_vendor_id;
+		$product_id = (int) $item->get_product_id();
+		$qty        = (int) $item->get_quantity();
+
+		if ( $vendor_id <= 0 || $product_id <= 0 || $qty <= 0 ) {
+			continue;
+		}
+
+		$snapshot      = json_decode( (string) $item->get_meta( '_papelito_kit_snapshot', true ), true );
+		$adjustments[] = array(
+			'vendor_id'    => $vendor_id,
+			'product_id'   => $product_id,
+			'qty'          => $qty,
+			'kit_snapshot' => is_array( $snapshot ) ? $snapshot : array(),
+		);
+	}
+
+	return $adjustments;
+}
+
+/**
+ * Aplica as baixas e para na primeira que falhar.
+ *
+ * @param array<int,array<string,mixed>> $adjustments Baixas a aplicar.
+ * @param int                            $order_id    Pedido, só para a origem do lançamento.
+ * @return string|null Nota a registrar no pedido, ou null quando todas passaram.
+ */
+function papelito_order_routing_apply_stock_adjustments( array $adjustments, int $order_id ): ?string {
+	foreach ( $adjustments as $adjustment ) {
+		$result = function_exists( 'papelito_adjust_stock_line' )
+			? papelito_adjust_stock_line( $adjustment, -1, 'order_decrement:#' . $order_id )
+			: papelito_adjust_vendor_stock(
+				$adjustment['vendor_id'],
+				$adjustment['product_id'],
+				$adjustment['qty'] * -1,
+				'order_decrement:#' . $order_id
+			);
+
+		if ( is_wp_error( $result ) ) {
+			return sprintf(
+				'Falha ao baixar estoque do vendor %d no produto %d: %s',
+				$adjustment['vendor_id'],
+				$adjustment['product_id'],
+				$result->get_error_message()
+			);
+		}
+	}
+
+	return null;
+}
+
 function papelito_order_routing_decrement_stock_for_order( int $order_id ): void {
 	if ( ! function_exists( 'wc_get_order' ) || ! function_exists( 'papelito_adjust_vendor_stock' ) ) {
 		return;
@@ -917,58 +1044,19 @@ function papelito_order_routing_decrement_stock_for_order( int $order_id ): void
 		return;
 	}
 
-	$default_vendor_id = absint( $order->get_meta( '_papelito_vendor_id', true ) );
-	$adjustments       = array();
-
-	foreach ( $order->get_items( 'line_item' ) as $item ) {
-		if ( ! is_object( $item ) || ! method_exists( $item, 'get_meta' ) || ! method_exists( $item, 'get_product_id' ) || ! method_exists( $item, 'get_quantity' ) ) {
-			continue;
-		}
-
-		$vendor_id = absint( $item->get_meta( '_vendor_id', true ) ) ?: $default_vendor_id;
-		$product_id = (int) $item->get_product_id();
-		$qty        = (int) $item->get_quantity();
-
-		if ( $vendor_id <= 0 || $product_id <= 0 || $qty <= 0 ) {
-			continue;
-		}
-
-		$snapshot = json_decode( (string) $item->get_meta( '_papelito_kit_snapshot', true ), true );
-		$adjustments[] = array(
-			'vendor_id'  => $vendor_id,
-			'product_id' => $product_id,
-			'qty'        => $qty,
-			'kit_snapshot' => is_array( $snapshot ) ? $snapshot : array(),
-		);
-	}
+	$adjustments = papelito_order_routing_collect_stock_adjustments( $order );
 
 	if ( empty( $adjustments ) ) {
 		return;
 	}
 
-	foreach ( $adjustments as $adjustment ) {
-		$result = function_exists( 'papelito_adjust_stock_line' )
-			? papelito_adjust_stock_line( $adjustment, -1, 'order_decrement:#' . $order_id )
-			: papelito_adjust_vendor_stock(
-				$adjustment['vendor_id'],
-				$adjustment['product_id'],
-				$adjustment['qty'] * -1,
-				'order_decrement:#' . $order_id
-			);
+	$failure = papelito_order_routing_apply_stock_adjustments( $adjustments, $order_id );
 
-		if ( is_wp_error( $result ) ) {
-			$order->add_order_note(
-				sprintf(
-					'Falha ao baixar estoque do vendor %d no produto %d: %s',
-					$adjustment['vendor_id'],
-					$adjustment['product_id'],
-					$result->get_error_message()
-				)
-			);
-			$order->save();
+	if ( null !== $failure ) {
+		$order->add_order_note( $failure );
+		$order->save();
 
-			return;
-		}
+		return;
 	}
 
 	if ( '' === (string) $order->get_meta( '_papelito_vendor_status', true ) ) {
@@ -1019,7 +1107,12 @@ add_action(
 /**
  * Processa o checkout headless completo.
  */
-function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
+/**
+ * Guardas de entrada do checkout: cota, gateway configurado e payload legível.
+ *
+ * @return array<string,mixed>|WP_Error Payload decodificado, ou o erro que interrompe o pedido.
+ */
+function papelito_order_routing_guard_place_order_request( WP_REST_Request $request ) {
 	if ( function_exists( 'papelito_auth_rate_limit' ) && ! papelito_auth_rate_limit( 'checkout_place_order', 30, 60 ) ) {
 		return new WP_Error(
 			'papelito_rate_limited',
@@ -1037,35 +1130,223 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 	}
 
 	$payload = $request->get_json_params();
+
 	if ( ! is_array( $payload ) ) {
 		return new WP_Error( 'papelito_checkout_invalid_payload', 'Payload invalido.', array( 'status' => 400 ) );
 	}
 
-	$user_id = get_current_user_id();
+	return $payload;
+}
+
+/**
+ * Devolve a resposta do pedido já criado para a mesma tentativa de checkout.
+ *
+ * @return WP_REST_Response|WP_Error|null Resposta pronta, erro de validação, ou null quando não
+ *                                        existe tentativa anterior e o pedido deve seguir.
+ */
+function papelito_order_routing_replay_checkout_attempt( int $user_id, string $checkout_attempt_id, int $company_id, string $request_hash ) {
+	if ( '' === $checkout_attempt_id ) {
+		return null;
+	}
+
+	$existing_order = papelito_order_routing_find_order_by_attempt( $user_id, $checkout_attempt_id );
+
+	if ( ! is_object( $existing_order ) ) {
+		return null;
+	}
+
+	$attempt_valid = papelito_order_routing_validate_existing_attempt( $existing_order, $company_id, $request_hash );
+
+	if ( is_wp_error( $attempt_valid ) ) {
+		return $attempt_valid;
+	}
+
+	$existing_response = papelito_order_routing_existing_order_response( $existing_order );
+
+	if ( is_wp_error( $existing_response ) ) {
+		return $existing_response;
+	}
+
+	return is_array( $existing_response ) ? new WP_REST_Response( $existing_response, 200 ) : null;
+}
+
+/**
+ * Resolve destino, cobertura e modalidade de frete do pedido.
+ *
+ * @param array<string,mixed>            $payload Payload cru do checkout.
+ * @param array<string,mixed>            $address Endereço já normalizado.
+ * @param array<int,array<string,mixed>> $lines   Linhas resolvidas do vendor.
+ * @return array{shipping:array<string,mixed>, destination_cep:string}|WP_Error
+ */
+function papelito_order_routing_resolve_checkout_shipping( array $payload, array $address, int $vendor_id, array $lines ) {
+	$shipping_payload = isset( $payload['shipping'] ) && is_array( $payload['shipping'] ) ? $payload['shipping'] : array();
+	$destination_cep  = papelito_shipping_normalize_cep( $shipping_payload['destination_cep'] ?? $address['zip_code'] );
+	$selected_code    = sanitize_text_field( (string) ( $shipping_payload['selected_code'] ?? '' ) );
+
+	if ( '' === $destination_cep || '' === $selected_code ) {
+		return new WP_Error(
+			'papelito_checkout_invalid_shipping',
+			'Selecione uma opção de frete válida.',
+			array( 'status' => 422 )
+		);
+	}
+
+	$coverage = papelito_order_routing_validate_vendor_coverage( $vendor_id, $destination_cep );
+
+	if ( is_wp_error( $coverage ) ) {
+		return $coverage;
+	}
+
+	$shipping = papelito_order_routing_resolve_shipping( $vendor_id, $destination_cep, $selected_code, $lines );
+
+	if ( is_wp_error( $shipping ) ) {
+		return $shipping;
+	}
+
+	return array( 'shipping' => $shipping, 'destination_cep' => $destination_cep );
+}
+
+/**
+ * Marca o pedido como falho, libera o que foi reservado e registra o motivo.
+ *
+ * @param object                         $order   Pedido recém-criado.
+ * @param array<int,array<string,mixed>> $lines   Linhas do pedido.
+ * @param string                         $note    Nota a registrar.
+ * @param string                         $release Motivo da liberação, ou '' quando não há o que liberar.
+ * @return void
+ */
+function papelito_order_routing_fail_created_order( object $order, array $lines, string $note, string $release = '' ): void {
+	if ( '' !== $release ) {
+		papelito_pagarme_release_order_stock( $order, $lines, $release );
+	}
+
+	$order->add_order_note( $note );
+	$order->update_status( 'failed' );
+
+	if ( function_exists( 'papelito_pagarme_mark_vendor_status_unpaid' ) ) {
+		papelito_pagarme_mark_vendor_status_unpaid( $order );
+	}
+
+	$order->save();
+}
+
+/**
+ * Traduz a falha do gateway no erro que o checkout devolve.
+ *
+ * O código do Pagar.me não vaza: só `total_mismatch` e a recusa de valor têm significado próprio
+ * para a interface, e o resto vira indisponibilidade de pagamento.
+ */
+function papelito_order_routing_gateway_error( WP_Error $result ): WP_Error {
+	$error_code = $result->get_error_code();
+
+	if ( 'papelito_pagarme_amount_rejected' === $error_code ) {
+		$error_code = 'papelito_checkout_gateway_amount_rejected';
+	} elseif ( 'papelito_checkout_total_mismatch' !== $error_code ) {
+		$error_code = 'papelito_checkout_payment_unavailable';
+	}
+
+	$data = $result->get_error_data();
+
+	return new WP_Error(
+		$error_code,
+		$result->get_error_message(),
+		array( 'status' => is_array( $data ) ? (int) ( $data['status'] ?? 502 ) : 502 )
+	);
+}
+
+/**
+ * Acrescenta à resposta do gateway os totais autoritativos do pedido.
+ *
+ * @param array<string,mixed>            $result  Resposta do pagamento.
+ * @param array<string,mixed>            $pricing Preço autoritativo.
+ * @param array<int,array<string,mixed>> $lines   Linhas precificadas.
+ * @return array<string,mixed>
+ */
+function papelito_order_routing_decorate_place_order_response( array $result, array $pricing, array $lines ): array {
+	$result['totals']      = $pricing['totals'];
+	$result['lines']       = array_map(
+		static fn( array $line ): array => array(
+			'productId'      => (int) $line['product_id'],
+			'quantity'       => (int) $line['qty'],
+			'subtotalCents'  => (int) $line['subtotal_cents'],
+			'discountCents'  => (int) $line['discount_cents'],
+			'totalCents'     => (int) $line['total_cents'],
+			'discountSource' => (string) $line['discount_source'],
+		),
+		$lines
+	);
+	$result['coupon']      = $pricing['coupon'];
+	$result['adjustments'] = $pricing['adjustments'];
+
+	return $result;
+}
+
+/**
+ * Normaliza o pagamento e confere o que impede a cobrança antes de existir pedido.
+ *
+ * As três verificações vivem juntas porque respondem a mesma pergunta: este pedido pode ser
+ * cobrado? Valor mínimo por parcela e recebedor apto do vendor são condições de cobrança, não de
+ * pedido — reprová-las depois de criar o pedido deixaria lixo com status `failed`.
+ *
+ * @param array<string,mixed> $payload Payload cru do checkout.
+ * @param array<string,mixed> $address Endereço normalizado.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_order_routing_resolve_checkout_payment( array $payload, array $address, int $total_cents, int $vendor_id ) {
+	$payment = papelito_order_routing_normalize_payment( $payload['payment'] ?? null, $address );
+
+	if ( is_wp_error( $payment ) ) {
+		return $payment;
+	}
+
+	$amount_validation = papelito_pricing_validate_payment_amount(
+		(string) $payment['method'],
+		$total_cents,
+		(int) ( $payment['installments'] ?? 1 )
+	);
+
+	if ( is_wp_error( $amount_validation ) ) {
+		return $amount_validation;
+	}
+
+	$recipient_validation = function_exists( 'papelito_pagarme_validate_vendor_recipient' )
+		? papelito_pagarme_validate_vendor_recipient( $vendor_id )
+		: new WP_Error(
+			'papelito_checkout_payment_unavailable',
+			'Não foi possível validar o recebedor do vendor.',
+			array( 'status' => 503 )
+		);
+
+	if ( is_wp_error( $recipient_validation ) ) {
+		return $recipient_validation;
+	}
+
+	return $payment;
+}
+
+function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
+	$payload = papelito_order_routing_guard_place_order_request( $request );
+	if ( is_wp_error( $payload ) ) {
+		return $payload;
+	}
+
+	$user_id      = get_current_user_id();
 	$b2b_snapshot = papelito_order_routing_resolve_b2b_snapshot( $user_id, $payload );
 	if ( is_wp_error( $b2b_snapshot ) ) {
 		return $b2b_snapshot;
 	}
+
 	$checkout_attempt_id = papelito_order_routing_normalize_checkout_attempt_id( $payload['checkout_attempt_id'] ?? '' );
-	$request_hash = papelito_order_routing_checkout_request_hash( $payload );
+	$request_hash        = papelito_order_routing_checkout_request_hash( $payload );
 
-	if ( '' !== $checkout_attempt_id ) {
-		$existing_order = papelito_order_routing_find_order_by_attempt( $user_id, $checkout_attempt_id );
-		if ( is_object( $existing_order ) ) {
-			$attempt_valid = papelito_order_routing_validate_existing_attempt( $existing_order, (int) ( $b2b_snapshot['company_id'] ?? 0 ), $request_hash );
-			if ( is_wp_error( $attempt_valid ) ) {
-				return $attempt_valid;
-			}
-			$existing_response = papelito_order_routing_existing_order_response( $existing_order );
-
-			if ( is_wp_error( $existing_response ) ) {
-				return $existing_response;
-			}
-
-			if ( is_array( $existing_response ) ) {
-				return new WP_REST_Response( $existing_response, 200 );
-			}
-		}
+	$replay = papelito_order_routing_replay_checkout_attempt(
+		$user_id,
+		$checkout_attempt_id,
+		(int) ( $b2b_snapshot['company_id'] ?? 0 ),
+		$request_hash
+	);
+	if ( null !== $replay ) {
+		return $replay;
 	}
 
 	$address = papelito_order_routing_normalize_address( $payload['address'] ?? null );
@@ -1083,38 +1364,25 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		return $resolved_items;
 	}
 
-	$shipping_payload = isset( $payload['shipping'] ) && is_array( $payload['shipping'] ) ? $payload['shipping'] : array();
-	$destination_cep  = papelito_shipping_normalize_cep( $shipping_payload['destination_cep'] ?? $address['zip_code'] );
-	$selected_code    = sanitize_text_field( (string) ( $shipping_payload['selected_code'] ?? '' ) );
-
-	if ( '' === $destination_cep || '' === $selected_code ) {
-		return new WP_Error(
-			'papelito_checkout_invalid_shipping',
-			'Selecione uma opção de frete válida.',
-			array( 'status' => 422 )
-		);
-	}
-
-	$coverage = papelito_order_routing_validate_vendor_coverage( (int) $resolved_items['vendor_id'], $destination_cep );
-	if ( is_wp_error( $coverage ) ) {
-		return $coverage;
-	}
-
-	$shipping = papelito_order_routing_resolve_shipping(
+	$resolved_shipping = papelito_order_routing_resolve_checkout_shipping(
+		$payload,
+		$address,
 		(int) $resolved_items['vendor_id'],
-		$destination_cep,
-		$selected_code,
 		$resolved_items['lines']
 	);
-	if ( is_wp_error( $shipping ) ) {
-		return $shipping;
+	if ( is_wp_error( $resolved_shipping ) ) {
+		return $resolved_shipping;
 	}
+
+	$shipping        = $resolved_shipping['shipping'];
+	$destination_cep = $resolved_shipping['destination_cep'];
 
 	$pricing = papelito_pricing_apply_discounts(
 		$resolved_items,
 		sanitize_text_field( (string) ( $payload['coupon_code'] ?? '' ) ),
 		$user_id,
-		papelito_pricing_to_cents( $shipping['price'] ?? 0 )
+		papelito_pricing_to_cents( $shipping['price'] ?? 0 ),
+		$destination_cep
 	);
 	if ( is_wp_error( $pricing ) ) {
 		return $pricing;
@@ -1127,32 +1395,29 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		max( 0, (int) ( $pricing['totals']['shippingDiscountCents'] ?? 0 ) )
 	);
 
-	$payment = papelito_order_routing_normalize_payment( $payload['payment'] ?? null, $address );
+	$payment = papelito_order_routing_resolve_checkout_payment(
+		$payload,
+		$address,
+		(int) ( $pricing['totals']['totalCents'] ?? 0 ),
+		(int) $resolved_items['vendor_id']
+	);
 	if ( is_wp_error( $payment ) ) {
 		return $payment;
 	}
 
-	$amount_validation = papelito_pricing_validate_payment_amount(
+	$created = papelito_order_routing_create_order(
+		$user_id,
+		$address,
+		$lines,
+		$shipping,
+		$coupon,
 		(string) $payment['method'],
-		(int) ( $pricing['totals']['totalCents'] ?? 0 ),
-		(int) ( $payment['installments'] ?? 1 )
+		array(
+			'checkout_attempt_id' => $checkout_attempt_id,
+			'b2b_snapshot'        => $b2b_snapshot,
+			'request_hash'        => $request_hash,
+		)
 	);
-	if ( is_wp_error( $amount_validation ) ) {
-		return $amount_validation;
-	}
-
-	$recipient_validation = function_exists( 'papelito_pagarme_validate_vendor_recipient' )
-		? papelito_pagarme_validate_vendor_recipient( (int) $resolved_items['vendor_id'] )
-		: new WP_Error(
-			'papelito_checkout_payment_unavailable',
-			'Não foi possível validar o recebedor do vendor.',
-			array( 'status' => 503 )
-		);
-	if ( is_wp_error( $recipient_validation ) ) {
-		return $recipient_validation;
-	}
-
-	$created = papelito_order_routing_create_order( $user_id, $address, $lines, $shipping, $coupon, (string) $payment['method'], $checkout_attempt_id, $b2b_snapshot, $request_hash );
 	if ( is_wp_error( $created ) ) {
 		return $created;
 	}
@@ -1172,36 +1437,26 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 
 	$reserved = papelito_pagarme_reserve_order_stock( $order, $lines );
 	if ( is_wp_error( $reserved ) ) {
-		$order->add_order_note( 'Falha ao reservar estoque para o pagamento: ' . $reserved->get_error_message() );
-		$order->update_status( 'failed' );
-		if ( function_exists( 'papelito_pagarme_mark_vendor_status_unpaid' ) ) {
-			papelito_pagarme_mark_vendor_status_unpaid( $order );
-		}
-		$order->save();
+		papelito_order_routing_fail_created_order(
+			$order,
+			$lines,
+			'Falha ao reservar estoque para o pagamento: ' . $reserved->get_error_message()
+		);
+
 		return $reserved;
 	}
 
 	$result = papelito_pagarme_create_order_payment( $order, $user_id, $payment, $address, $lines, $shipping );
 
 	if ( is_wp_error( $result ) ) {
-		papelito_pagarme_release_order_stock( $order, $lines, 'payment_error' );
-		$order->add_order_note( 'Falha ao criar pedido no Pagar.me: ' . $result->get_error_message() );
-		$order->update_status( 'failed' );
-		if ( function_exists( 'papelito_pagarme_mark_vendor_status_unpaid' ) ) {
-			papelito_pagarme_mark_vendor_status_unpaid( $order );
-		}
-		$order->save();
-		$error_code = $result->get_error_code();
-		if ( 'papelito_pagarme_amount_rejected' === $error_code ) {
-			$error_code = 'papelito_checkout_gateway_amount_rejected';
-		} elseif ( 'papelito_checkout_total_mismatch' !== $error_code ) {
-			$error_code = 'papelito_checkout_payment_unavailable';
-		}
-		return new WP_Error(
-			$error_code,
-			$result->get_error_message(),
-			array( 'status' => is_array( $result->get_error_data() ) ? (int) ( $result->get_error_data()['status'] ?? 502 ) : 502 )
+		papelito_order_routing_fail_created_order(
+			$order,
+			$lines,
+			'Falha ao criar pedido no Pagar.me: ' . $result->get_error_message(),
+			'payment_error'
 		);
+
+		return papelito_order_routing_gateway_error( $result );
 	}
 
 	$payment_state = sanitize_key( (string) ( $result['payment']['state'] ?? '' ) );
@@ -1210,22 +1465,10 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		papelito_pagarme_release_order_stock( $order, $lines, 'payment_failed' );
 	}
 
-	$result['totals']      = $pricing['totals'];
-	$result['lines']       = array_map(
-		static fn( array $line ): array => array(
-			'productId'      => (int) $line['product_id'],
-			'quantity'       => (int) $line['qty'],
-			'subtotalCents'  => (int) $line['subtotal_cents'],
-			'discountCents'  => (int) $line['discount_cents'],
-			'totalCents'     => (int) $line['total_cents'],
-			'discountSource' => (string) $line['discount_source'],
-		),
-		$lines
+	return new WP_REST_Response(
+		papelito_order_routing_decorate_place_order_response( $result, $pricing, $lines ),
+		200
 	);
-	$result['coupon']      = $pricing['coupon'];
-	$result['adjustments'] = $pricing['adjustments'];
-
-	return new WP_REST_Response( $result, 200 );
 }
 
 add_action(
