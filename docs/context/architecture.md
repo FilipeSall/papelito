@@ -120,8 +120,9 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `correios_tracking.php` | polling do Rastro, projeção de estado, S10 manual |
 | `receipts.php` | recibo persistido: numeração anual, snapshot imutável em centavos, parcelas por vendor |
 | `receipts_backfill.php` | backfill em lotes dos pedidos pagos antes do recibo existir, com checkpoint e WP-CLI |
-| `fiscal_documents.php` | fundação de documentos fiscais: schema, armazenamento privado, domínio e auditoria |
-| `fiscal_document_validation.php` | validação **local** de nota: módulo 11 da chave, CNPJ, parse de XML e cruzamentos |
+| `fiscal_documents.php` | nota fiscal como arquivo indexado: schema, armazenamento privado, trilha |
+| `fiscal_documents_rest.php` | rotas da nota do vendor e do comprador, e a transação que substitui sem deixar órfão |
+| `fiscal_documents_cleanup.php` | exclusão em cascata (pedido, vendor) e `wp papelito fiscal sweep` |
 | `order_receipt.php` | recibo interno em PDF |
 
 O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grava** o documento no momento em que o pagamento é confirmado, congelando valores e itens; `order_receipt.php` **renderiza** o PDF sob demanda, lendo `papelito_receipts` + `papelito_receipt_vendor_parts`. A renderização é separada em duas etapas: `papelito_receipt_document()` monta o conteúdo já rotulado e formatado, e `papelito_receipt_pdf()` o diagrama em A4 com primitivas próprias (retângulo, fio, losango, texto alinhado por métrica de Helvetica) — sem dependência externa de PDF. **Nada financeiro, identificador de compra ou data vem do `WC_Order` ao vivo** — dele só sai a situação operacional, que é informativa. Pedido pago sem linha de recibo emite de forma idempotente durante a geração; sem recibo possível, a rota devolve `papelito_receipt_unavailable` (409), nunca um fatal.

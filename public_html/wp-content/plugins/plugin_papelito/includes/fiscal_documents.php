@@ -1,49 +1,47 @@
 <?php
 /**
- * Fundação de documentos fiscais: schema, armazenamento privado e domínio.
+ * Fundação da nota fiscal do pedido: schema, armazenamento privado e domínio.
  *
- * A Papelito não emite nota. O vendor emite por fora e anexa aqui. Esta etapa
- * é só a fundação: **não registra rota REST, não tem UI e nada de fulfillment
- * ou pagamento lê `doc_status`**.
+ * A Papelito não emite nota, não participa da operação fiscal e não valida
+ * documento perante o fisco. O que ela faz é **guardar o arquivo que o vendor
+ * anexa e saber que ele existe** — nada além disso é lido, interpretado ou
+ * afirmado sobre o conteúdo.
+ *
+ * Por isso o modelo é: uma nota por `(order_id, vendor_id)`, um arquivo por
+ * nota, e nenhum campo digitado. Anexar de novo substitui e apaga o arquivo
+ * anterior do disco.
  *
  * @package Papelito
  */
 
 defined( 'ABSPATH' ) || exit;
 
-if ( ! function_exists( 'papelito_fiscal_key_is_valid' ) ) {
-	require_once __DIR__ . '/fiscal_document_validation.php';
+if ( ! defined( 'PAPELITO_FISCAL_XML_MAX_BYTES' ) ) {
+	define( 'PAPELITO_FISCAL_XML_MAX_BYTES', 2 * 1048576 );
 }
 
-if ( ! defined( 'PAPELITO_FISCAL_SNAPSHOT_VERSION' ) ) {
-	define( 'PAPELITO_FISCAL_SNAPSHOT_VERSION', 1 );
-}
-
-/**
- * Tipos de documento aceitos.
- *
- * @return array<int,string>
- */
-function papelito_fiscal_document_types(): array {
-	return array( 'nfe', 'nfce', 'nfse', 'other' );
+if ( ! defined( 'PAPELITO_FISCAL_PDF_MAX_BYTES' ) ) {
+	define( 'PAPELITO_FISCAL_PDF_MAX_BYTES', 10 * 1048576 );
 }
 
 /**
- * Estados do documento. `substituida` e `cancelada` são terminais.
+ * Idade mínima para a varredura considerar um arquivo órfão.
  *
- * @return array<int,string>
+ * O arquivo é gravado em disco **antes** da transação que o referencia. Sem
+ * esta janela, a varredura apagaria o arquivo de um upload cuja transação ainda
+ * não commitou.
  */
-function papelito_fiscal_document_statuses(): array {
-	return array( 'recebida', 'pendente_revisao', 'aceita', 'rejeitada', 'cancelada', 'substituida' );
+if ( ! defined( 'PAPELITO_FISCAL_SWEEP_MIN_AGE' ) ) {
+	define( 'PAPELITO_FISCAL_SWEEP_MIN_AGE', 3600 );
 }
 
 /**
- * Papéis de arquivo. Um ativo por papel em cada documento.
+ * Eventos da trilha. `removida` também é registrado quando o pedido é apagado.
  *
  * @return array<int,string>
  */
-function papelito_fiscal_file_roles(): array {
-	return array( 'danfe_pdf', 'xml', 'other' );
+function papelito_fiscal_document_events(): array {
+	return array( 'anexada', 'substituida', 'removida' );
 }
 
 /**
@@ -54,33 +52,29 @@ function papelito_fiscal_table_names(): array {
 
 	return array(
 		'documents' => $wpdb->prefix . 'papelito_fiscal_documents',
-		'files'     => $wpdb->prefix . 'papelito_fiscal_document_files',
 		'events'    => $wpdb->prefix . 'papelito_fiscal_document_events',
 	);
 }
 
 /**
- * Apaga versões antigas de nota deixadas pelo modelo anterior.
+ * Remove o schema do modelo anterior, que guardava dados digitados da nota.
  *
- * O pedido passou a guardar **uma** nota, sem histórico. As linhas com
- * `is_current` nulo eram versões substituídas; sem UI que as alcance elas
- * seriam registros órfãos, e os arquivos delas, arquivos sem referência.
- * Idempotente: roda de novo sem efeito quando não há o que limpar.
+ * A nota deixou de ter chave de acesso, número, série, emissão, valor, status,
+ * nível de conferência e flags de divergência: ela é só o arquivo. As tabelas
+ * antigas não têm como ser migradas para o formato novo — `documents` perdeu
+ * vinte colunas, `files` foi absorvida pela linha do documento e `events`
+ * mudou de chave estrangeira para `(order_id, vendor_id)`.
+ *
+ * Idempotente e seguro: `DROP TABLE IF EXISTS` seguido do instalador novo, que
+ * roda na mesma migração.
  */
-function papelito_fiscal_documents_drop_superseded(): void {
+function papelito_fiscal_documents_drop_legacy(): void {
 	global $wpdb;
 
-	$tables = papelito_fiscal_table_names();
-	$ids    = $wpdb->get_col( "SELECT id FROM {$tables['documents']} WHERE is_current IS NULL" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery
+	$prefix = $wpdb->prefix;
 
-	foreach ( array_map( 'intval', (array) $ids ) as $document_id ) {
-		if ( function_exists( 'papelito_fiscal_document_purge_files' ) && function_exists( 'papelito_fiscal_document_storage_keys' ) ) {
-			papelito_fiscal_document_purge_files( papelito_fiscal_document_storage_keys( $document_id ) );
-		}
-
-		$wpdb->delete( $tables['files'], array( 'fiscal_document_id' => $document_id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-		$wpdb->delete( $tables['events'], array( 'fiscal_document_id' => $document_id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-		$wpdb->delete( $tables['documents'], array( 'id' => $document_id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	foreach ( array( 'papelito_fiscal_document_files', 'papelito_fiscal_document_events', 'papelito_fiscal_documents' ) as $table ) {
+		$wpdb->query( "DROP TABLE IF EXISTS {$prefix}{$table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery
 	}
 }
 
@@ -90,95 +84,50 @@ function papelito_fiscal_documents_install_tables(): void {
 	$tables          = papelito_fiscal_table_names();
 	$charset_collate = $wpdb->get_charset_collate();
 
+	// `UNIQUE (order_id, vendor_id)` é unicidade de verdade: uma nota por
+	// pedido/vendor, para sempre. O modelo anterior precisava do truque
+	// `is_current = 1 | NULL` só para caber N versões históricas sob índice
+	// único — sem histórico de documento, o truque some junto.
 	$documents_sql = "CREATE TABLE {$tables['documents']} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   order_id BIGINT UNSIGNED NOT NULL,
   vendor_id BIGINT UNSIGNED NOT NULL,
-  receipt_id BIGINT UNSIGNED NULL DEFAULT NULL,
-  receipt_vendor_part_id BIGINT UNSIGNED NULL DEFAULT NULL,
-  doc_type VARCHAR(16) NOT NULL DEFAULT 'nfe',
-  doc_status VARCHAR(24) NOT NULL DEFAULT 'recebida',
-  validation_level TINYINT UNSIGNED NOT NULL DEFAULT 1,
-  access_key CHAR(44) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL DEFAULT NULL,
-  access_key_status VARCHAR(16) NOT NULL DEFAULT 'ausente',
-  doc_number VARCHAR(20) NULL DEFAULT NULL,
-  doc_series VARCHAR(10) NULL DEFAULT NULL,
-  protocol VARCHAR(40) NULL DEFAULT NULL,
-  issuer_cnpj CHAR(14) NULL DEFAULT NULL,
-  issuer_name VARCHAR(255) NULL DEFAULT NULL,
-  issued_at DATETIME NULL DEFAULT NULL,
-  total_cents BIGINT NOT NULL DEFAULT 0,
-  internal_notes TEXT NULL,
-  flags_json LONGTEXT NULL,
-  snapshot_version SMALLINT UNSIGNED NOT NULL DEFAULT 1,
-  replaces_document_id BIGINT UNSIGNED NULL DEFAULT NULL,
-  replaced_by_document_id BIGINT UNSIGNED NULL DEFAULT NULL,
-  cancelled_at DATETIME NULL DEFAULT NULL,
-  cancel_reason VARCHAR(255) NULL DEFAULT NULL,
-  is_current TINYINT UNSIGNED NULL DEFAULT 1,
-  created_by BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  updated_by BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  created_at DATETIME NOT NULL,
-  updated_at DATETIME NOT NULL,
-  PRIMARY KEY  (id),
-  UNIQUE KEY uniq_current (order_id, vendor_id, is_current),
-  KEY idx_access_key (access_key),
-  KEY idx_order (order_id),
-  KEY idx_vendor_status (vendor_id, doc_status),
-  KEY idx_receipt (receipt_id),
-  KEY idx_issued_at (issued_at)
-) {$charset_collate};";
-
-	$files_sql = "CREATE TABLE {$tables['files']} (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  fiscal_document_id BIGINT UNSIGNED NOT NULL,
-  role VARCHAR(16) NOT NULL DEFAULT 'other',
   storage_key VARCHAR(96) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   original_name VARCHAR(191) NOT NULL DEFAULT '',
   mime VARCHAR(64) NOT NULL DEFAULT '',
   size_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
   sha256 CHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL DEFAULT '',
-  is_active TINYINT UNSIGNED NULL DEFAULT 1,
   uploaded_by BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  deleted_by BIGINT UNSIGNED NULL DEFAULT NULL,
-  deleted_at DATETIME NULL DEFAULT NULL,
   created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
   PRIMARY KEY  (id),
-  UNIQUE KEY uniq_active_role (fiscal_document_id, role, is_active),
+  UNIQUE KEY uniq_order_vendor (order_id, vendor_id),
   UNIQUE KEY uniq_storage_key (storage_key),
-  KEY idx_document (fiscal_document_id),
-  KEY idx_sha256 (sha256)
+  KEY idx_order (order_id),
+  KEY idx_vendor (vendor_id)
 ) {$charset_collate};";
 
+	// A trilha é chaveada por `(order_id, vendor_id)`, e não pelo id do
+	// documento, de propósito: remover a nota apaga a linha do documento, e é
+	// justamente aí que alguém precisa saber o que aconteceu com ela.
 	$events_sql = "CREATE TABLE {$tables['events']} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  fiscal_document_id BIGINT UNSIGNED NOT NULL,
+  order_id BIGINT UNSIGNED NOT NULL,
+  vendor_id BIGINT UNSIGNED NOT NULL,
   event VARCHAR(32) NOT NULL,
+  original_name VARCHAR(191) NOT NULL DEFAULT '',
   actor_user_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  actor_role VARCHAR(20) NOT NULL DEFAULT '',
-  detail_json LONGTEXT NULL,
   created_at DATETIME NOT NULL,
   PRIMARY KEY  (id),
-  KEY idx_document_created (fiscal_document_id, created_at),
-  KEY idx_event (event)
+  KEY idx_order_vendor_created (order_id, vendor_id, created_at)
 ) {$charset_collate};";
 
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 	dbDelta( $documents_sql );
-	dbDelta( $files_sql );
 	dbDelta( $events_sql );
 
 	papelito_db_align_binary_columns(
 		$tables['documents'],
-		array(
-			'access_key' => array(
-				'type'       => 'CHAR(44)',
-				'attributes' => 'NULL DEFAULT NULL',
-			),
-		)
-	);
-	papelito_db_align_binary_columns(
-		$tables['files'],
 		array(
 			'storage_key' => array(
 				'type'       => 'VARCHAR(96)',
@@ -207,44 +156,56 @@ function papelito_fiscal_documents_prepare_dir() {
 }
 
 /**
- * Política de arquivo por papel. São dois specs porque os limites diferem:
- * 10 MB para o DANFE em PDF, 2 MB para o XML.
+ * Política do arquivo da nota: PDF ou XML, num spec só.
+ *
+ * O teto declarado aqui é o maior dos dois; o limite por formato é aplicado
+ * depois, em `papelito_fiscal_document_validate_upload()`, porque só dá para
+ * saber qual vale depois que o `finfo` disse o que o arquivo é de verdade.
  *
  * @return array<string,mixed>
  */
-function papelito_fiscal_document_spec( string $role ): array {
-	if ( 'xml' === $role ) {
-		return array(
-			'code_prefix'       => 'papelito_fiscal_document',
-			'max_bytes'         => PAPELITO_FISCAL_XML_MAX_BYTES,
-			'formats'           => array( 'xml' ),
-			'fallback_basename' => 'nota',
-		);
-	}
-
+function papelito_fiscal_document_spec(): array {
 	return array(
 		'code_prefix'       => 'papelito_fiscal_document',
 		'max_bytes'         => PAPELITO_FISCAL_PDF_MAX_BYTES,
-		'formats'           => array( 'pdf' ),
-		'fallback_basename' => 'danfe',
+		'formats'           => array( 'pdf', 'xml' ),
+		'fallback_basename' => 'nota',
+	);
+}
+
+function papelito_fiscal_document_max_bytes( string $format ): int {
+	return 'xml' === $format ? PAPELITO_FISCAL_XML_MAX_BYTES : PAPELITO_FISCAL_PDF_MAX_BYTES;
+}
+
+/**
+ * @return array<string,int>
+ */
+function papelito_fiscal_document_limits(): array {
+	return array(
+		'pdf' => PAPELITO_FISCAL_PDF_MAX_BYTES,
+		'xml' => PAPELITO_FISCAL_XML_MAX_BYTES,
 	);
 }
 
 /**
  * @return array{extension:string,mime:string,size:int,sha256:string,original_name:string}|WP_Error
  */
-function papelito_fiscal_document_validate_upload( array $file, string $role ) {
-	$validated = papelito_private_file_validate_upload( $file, papelito_fiscal_document_spec( $role ) );
+function papelito_fiscal_document_validate_upload( array $file ) {
+	$validated = papelito_private_file_validate_upload( $file, papelito_fiscal_document_spec() );
 
-	if ( is_wp_error( $validated ) || 'xml' !== $role ) {
+	if ( is_wp_error( $validated ) ) {
 		return $validated;
 	}
 
-	$contents = file_get_contents( (string) $file['tmp_name'] ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- arquivo temporario ja validado.
-	$parsed   = is_string( $contents ) ? papelito_fiscal_xml_parse( $contents ) : null;
+	$max_bytes = papelito_fiscal_document_max_bytes( (string) $validated['extension'] );
 
-	if ( ! $parsed instanceof SimpleXMLElement ) {
-		return papelito_private_file_error( 'papelito_fiscal_document', 'xml_invalid', 'O XML enviado é inválido.', 422 );
+	if ( (int) $validated['size'] > $max_bytes ) {
+		return papelito_private_file_error(
+			'papelito_fiscal_document',
+			'size_invalid',
+			papelito_private_file_size_message( $max_bytes ),
+			413
+		);
 	}
 
 	return $validated;
@@ -267,17 +228,21 @@ function papelito_fiscal_document_key_is_valid( string $key ): bool {
 }
 
 /**
- * Documento corrente de um vendor no pedido, ou null.
+ * Nota do vendor no pedido, ou null.
  *
  * @return array<string,mixed>|null
  */
 function papelito_fiscal_document_current( int $order_id, int $vendor_id ): ?array {
 	global $wpdb;
 
+	if ( $order_id <= 0 || $vendor_id <= 0 ) {
+		return null;
+	}
+
 	$tables = papelito_fiscal_table_names();
 	$row    = $wpdb->get_row(
 		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- nome de tabela com prefixo do $wpdb.
-		$wpdb->prepare( "SELECT * FROM {$tables['documents']} WHERE order_id = %d AND vendor_id = %d AND is_current = 1", $order_id, $vendor_id ),
+		$wpdb->prepare( "SELECT * FROM {$tables['documents']} WHERE order_id = %d AND vendor_id = %d", $order_id, $vendor_id ),
 		ARRAY_A
 	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
@@ -301,71 +266,17 @@ function papelito_fiscal_document_get( int $document_id ): ?array {
 }
 
 /**
- * Documentos que declaram a mesma chave. Duplicidade é sinalização
- * administrativa, não erro de banco — por isso o índice não é único.
+ * Registra um evento na trilha.
  *
- * @return array<int,array<string,mixed>>
+ * O nome original do arquivo é guardado porque é o único jeito de a trilha
+ * dizer *qual* nota foi trocada depois que o arquivo já sumiu do disco.
  */
-function papelito_fiscal_documents_by_access_key( string $access_key ): array {
+function papelito_fiscal_document_log_event( int $order_id, int $vendor_id, string $event, string $original_name = '', int $actor_user_id = 0 ): bool {
 	global $wpdb;
 
-	$access_key = papelito_fiscal_key_normalize( $access_key );
+	$event = sanitize_key( $event );
 
-	if ( 44 !== strlen( $access_key ) ) {
-		return array();
-	}
-
-	$tables = papelito_fiscal_table_names();
-	$rows   = $wpdb->get_results(
-		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- nome de tabela com prefixo do $wpdb.
-		$wpdb->prepare( "SELECT * FROM {$tables['documents']} WHERE access_key = %s ORDER BY id ASC", $access_key ),
-		ARRAY_A
-	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-
-	return is_array( $rows ) ? $rows : array();
-}
-
-/**
- * Arquivos ativos de um documento.
- *
- * @return array<int,array<string,mixed>>
- */
-function papelito_fiscal_document_files( int $document_id, bool $only_active = true ): array {
-	global $wpdb;
-
-	$tables = papelito_fiscal_table_names();
-
-	if ( $only_active ) {
-		$rows = $wpdb->get_results(
-			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- nome de tabela com prefixo do $wpdb.
-			$wpdb->prepare( "SELECT * FROM {$tables['files']} WHERE fiscal_document_id = %d AND is_active = 1 ORDER BY id ASC", $document_id ),
-			ARRAY_A
-		); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-
-		return is_array( $rows ) ? $rows : array();
-	}
-
-	$rows = $wpdb->get_results(
-		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- nome de tabela com prefixo do $wpdb.
-		$wpdb->prepare( "SELECT * FROM {$tables['files']} WHERE fiscal_document_id = %d ORDER BY id ASC", $document_id ),
-		ARRAY_A
-	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-
-	return is_array( $rows ) ? $rows : array();
-}
-
-/**
- * Evento imutável de auditoria.
- *
- * Nunca recebe PII, conteúdo de arquivo, nome original ou chave completa: o
- * detalhe é sanitizado por papelito_fiscal_event_safe_detail().
- *
- * @param array<string,mixed> $detail Detalhe estruturado.
- */
-function papelito_fiscal_document_log_event( int $document_id, string $event, array $detail = array(), int $actor_user_id = 0, string $actor_role = '' ): bool {
-	global $wpdb;
-
-	if ( $document_id <= 0 || '' === $event ) {
+	if ( $order_id <= 0 || $vendor_id <= 0 || ! in_array( $event, papelito_fiscal_document_events(), true ) ) {
 		return false;
 	}
 
@@ -373,140 +284,41 @@ function papelito_fiscal_document_log_event( int $document_id, string $event, ar
 	$inserted = $wpdb->insert(
 		$tables['events'],
 		array(
-			'fiscal_document_id' => $document_id,
-			'event'              => substr( sanitize_key( $event ), 0, 32 ),
-			'actor_user_id'      => max( 0, $actor_user_id ),
-			'actor_role'         => substr( sanitize_key( $actor_role ), 0, 20 ),
-			'detail_json'        => wp_json_encode( papelito_fiscal_event_safe_detail( $detail ) ),
-			'created_at'         => current_time( 'mysql', true ),
-		)
+			'order_id'      => $order_id,
+			'vendor_id'     => $vendor_id,
+			'event'         => $event,
+			'original_name' => substr( sanitize_file_name( $original_name ), 0, 191 ),
+			'actor_user_id' => max( 0, $actor_user_id ),
+			'created_at'    => current_time( 'mysql', true ),
+		),
+		array( '%d', '%d', '%s', '%s', '%d', '%s' )
 	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
 	return false !== $inserted;
 }
 
 /**
- * Reduz o detalhe do evento ao que é seguro persistir.
+ * Trilha da nota, da mais antiga para a mais recente.
  *
- * Escalares numéricos e booleanos passam; strings só quando estão na lista de
- * campos não sensíveis, e a chave de acesso vira só os quatro últimos dígitos.
- *
- * @param array<string,mixed> $detail Detalhe cru.
- * @return array<string,mixed>
+ * @return array<int,array<string,mixed>>
  */
-function papelito_fiscal_event_safe_detail( array $detail ): array {
-	$allowed_strings = array( 'doc_type', 'doc_status', 'previous_status', 'role', 'access_key_status', 'reason_code' );
-	$safe            = array();
+function papelito_fiscal_document_history( int $order_id, int $vendor_id ): array {
+	global $wpdb;
 
-	foreach ( $detail as $key => $value ) {
-		$key = sanitize_key( (string) $key );
-
-		if ( 'access_key' === $key ) {
-			$normalized = papelito_fiscal_key_normalize( (string) $value );
-			if ( '' !== $normalized ) {
-				$safe['access_key_last4'] = substr( $normalized, -4 );
-			}
-			continue;
-		}
-
-		if ( is_bool( $value ) || is_int( $value ) ) {
-			$safe[ $key ] = $value;
-			continue;
-		}
-
-		if ( is_array( $value ) && 'flags' === $key ) {
-			$safe['flags'] = array_values( array_map( 'sanitize_key', array_map( 'strval', $value ) ) );
-			continue;
-		}
-
-		if ( is_string( $value ) && in_array( $key, $allowed_strings, true ) ) {
-			$safe[ $key ] = substr( sanitize_key( $value ), 0, 32 );
-		}
+	if ( $order_id <= 0 || $vendor_id <= 0 ) {
+		return array();
 	}
 
-	return $safe;
-}
+	$tables = papelito_fiscal_table_names();
+	$rows   = $wpdb->get_results(
+		$wpdb->prepare(
+			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- nome de tabela com prefixo do $wpdb.
+			"SELECT * FROM {$tables['events']} WHERE order_id = %d AND vendor_id = %d ORDER BY id ASC",
+			$order_id,
+			$vendor_id
+		),
+		ARRAY_A
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
-/**
- * Monta a linha de um documento a partir de dados declarados e extraídos.
- *
- * Não grava nada: devolve o array pronto para insert, com flags e nível já
- * calculados. O digitado nunca é sobrescrito pelo XML.
- *
- * @param array<string,mixed> $declared  Dados informados pelo vendor.
- * @param array<string,mixed> $extracted Dados lidos do XML, se houver.
- * @param array<string,mixed> $context   Dados do pedido para cruzamento.
- * @return array<string,mixed>
- */
-/**
- * Valor digitado quando há um, e o do XML quando não há.
- *
- * `??` não cai para o fallback diante de `''`, e string vazia é um valor
- * legítimo aqui: é assim que o vendor apaga um dado que digitou errado. Sem
- * esta distinção, limpar o campo deixava de aceitar o valor do XML e gravava
- * vazio — o mesmo cuidado que `access_key` e `issued_at` já tomam à mão.
- *
- * @param array<string,mixed> $declared  Dados informados pelo vendor.
- * @param array<string,mixed> $extracted Dados lidos do XML.
- */
-function papelito_fiscal_declared_or_extracted( array $declared, string $declared_key, array $extracted, string $extracted_key ): string {
-	$value = trim( (string) ( $declared[ $declared_key ] ?? '' ) );
-
-	return '' !== $value ? $value : trim( (string) ( $extracted[ $extracted_key ] ?? '' ) );
-}
-
-function papelito_fiscal_document_build( array $declared, array $extracted = array(), array $context = array() ): array {
-	$doc_type = sanitize_key( (string) ( $declared['doc_type'] ?? 'nfe' ) );
-	$doc_type = in_array( $doc_type, papelito_fiscal_document_types(), true ) ? $doc_type : 'other';
-
-	$access_key = papelito_fiscal_key_normalize( (string) ( $declared['access_key'] ?? '' ) );
-	if ( '' === $access_key && ! empty( $extracted['access_key'] ) ) {
-		$access_key = papelito_fiscal_key_normalize( (string) $extracted['access_key'] );
-	}
-
-	$issued_at = papelito_fiscal_normalize_datetime( (string) ( $declared['issued_at'] ?? '' ) );
-	if ( '' === $issued_at && ! empty( $extracted['issued_at'] ) ) {
-		$issued_at = papelito_fiscal_normalize_datetime( (string) $extracted['issued_at'] );
-	}
-
-	$document = array(
-		'order_id'          => (int) ( $declared['order_id'] ?? 0 ),
-		'vendor_id'         => (int) ( $declared['vendor_id'] ?? 0 ),
-		'doc_type'          => $doc_type,
-		'access_key'        => $access_key,
-		'access_key_status' => papelito_fiscal_key_status( $access_key ),
-		'doc_number'        => papelito_fiscal_declared_or_extracted( $declared, 'doc_number', $extracted, 'number' ),
-		'doc_series'        => papelito_fiscal_declared_or_extracted( $declared, 'doc_series', $extracted, 'series' ),
-		'protocol'          => papelito_fiscal_declared_or_extracted( $declared, 'protocol', $extracted, 'protocol' ),
-		'issuer_cnpj'       => papelito_fiscal_key_normalize( papelito_fiscal_declared_or_extracted( $declared, 'issuer_cnpj', $extracted, 'issuer_cnpj' ) ),
-		'issuer_name'       => sanitize_text_field( papelito_fiscal_declared_or_extracted( $declared, 'issuer_name', $extracted, 'issuer_name' ) ),
-		'issued_at'         => $issued_at,
-		'total_cents'       => (int) ( $declared['total_cents'] ?? 0 ),
-		'has_xml'           => ! empty( $extracted ),
-	);
-
-	if ( $document['total_cents'] <= 0 && ! empty( $extracted['total'] ) ) {
-		$document['total_cents'] = papelito_fiscal_amount_to_cents( (string) $extracted['total'] );
-	}
-
-	$comparable = $extracted;
-	if ( ! empty( $extracted ) ) {
-		$comparable['total_cents'] = papelito_fiscal_amount_to_cents( (string) ( $extracted['total'] ?? '' ) );
-	}
-
-	$flags = array_values(
-		array_unique(
-			array_merge(
-				empty( $extracted ) ? array() : papelito_fiscal_compare_declared( $declared, $comparable ),
-				papelito_fiscal_key_coherence_flags( $document ),
-				papelito_fiscal_order_cross_flags( $document, $context )
-			)
-		)
-	);
-
-	$document['flags']            = $flags;
-	$document['validation_level'] = papelito_fiscal_validation_level( $document, $flags, $context );
-	$document['doc_status']       = empty( $flags ) ? 'recebida' : 'pendente_revisao';
-
-	return $document;
+	return is_array( $rows ) ? $rows : array();
 }

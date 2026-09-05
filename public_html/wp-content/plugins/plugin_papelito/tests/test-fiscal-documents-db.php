@@ -1,10 +1,11 @@
 <?php
 /**
- * Integration checks for the fiscal document schema.
+ * Integration checks da nota fiscal como arquivo indexado.
  *
- * O que só o MySQL garante: N versões históricas com uma única corrente por
- * (pedido, vendor), um arquivo ativo por papel, e chave de acesso duplicada
- * como sinalização — não como erro de banco. Precisa do WordPress carregado:
+ * O que só o banco e o disco garantem: uma nota por (pedido, vendor),
+ * substituição que apaga o arquivo anterior, remoção que não deixa órfão, e a
+ * varredura que recolhe arquivo sem linha sem tocar em upload recém-gravado.
+ * Precisa do WordPress carregado:
  *
  *   wp eval-file tests/test-fiscal-documents-db.php
  *
@@ -22,17 +23,19 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Pedido reservado para teste: nunca colide com pedido real.
  */
 const PAPELITO_FISCAL_TEST_ORDER_ID = 999000001;
+const PAPELITO_FISCAL_TEST_VENDOR_ID = 999000002;
 
 /**
  * `wp eval-file` executa o arquivo dentro de uma função: variável de topo NÃO é
  * global. Sem declarar aqui, o `global $failures` dos helpers apontaria para
  * outra variável e o teste sairia com código 0 mesmo falhando.
  */
-global $wpdb, $tables, $failures, $now;
+global $wpdb, $tables, $failures, $now, $directory;
 
-$tables   = papelito_fiscal_table_names();
-$failures = 0;
-$now      = current_time( 'mysql', true );
+$tables    = papelito_fiscal_table_names();
+$failures  = 0;
+$now       = current_time( 'mysql', true );
+$directory = papelito_fiscal_documents_prepare_dir();
 
 /**
  * Compara valores e contabiliza falhas do teste.
@@ -51,7 +54,25 @@ function assert_fiscal_db( string $label, $expected, $actual ): void {
 }
 
 /**
- * Insere um documento de teste.
+ * Grava um arquivo no diretório privado e devolve a storage key.
+ */
+function fiscal_db_write_file( string $contents = '%PDF-1.4 teste' ): string {
+	global $directory;
+
+	$key = bin2hex( random_bytes( 32 ) ) . '.pdf';
+	file_put_contents( trailingslashit( $directory ) . $key, $contents ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+
+	return $key;
+}
+
+function fiscal_db_file_exists( string $key ): bool {
+	global $directory;
+
+	return is_file( trailingslashit( $directory ) . $key );
+}
+
+/**
+ * Insere uma nota de teste diretamente, sem passar pelo upload.
  *
  * @param array<string,mixed> $overrides Campos a sobrescrever.
  * @return int|false
@@ -59,206 +80,171 @@ function assert_fiscal_db( string $label, $expected, $actual ): void {
 function fiscal_db_insert( array $overrides = array() ) {
 	global $wpdb, $tables, $now;
 
-	$row = array_merge(
-		array(
-			'order_id'          => PAPELITO_FISCAL_TEST_ORDER_ID,
-			'vendor_id'         => 4321,
-			'doc_type'          => 'nfe',
-			'doc_status'        => 'recebida',
-			'validation_level'  => PAPELITO_FISCAL_LEVEL_KEY,
-			'access_key_status' => 'ausente',
-			'total_cents'       => 15000,
-			'is_current'        => 1,
-			'created_at'        => $now,
-			'updated_at'        => $now,
-		),
-		$overrides
-	);
-
-	$inserted = $wpdb->insert( $tables['documents'], $row ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	$inserted = $wpdb->insert(
+		$tables['documents'],
+		array_merge(
+			array(
+				'order_id'      => PAPELITO_FISCAL_TEST_ORDER_ID,
+				'vendor_id'     => PAPELITO_FISCAL_TEST_VENDOR_ID,
+				'storage_key'   => fiscal_db_write_file(),
+				'original_name' => 'nota.pdf',
+				'mime'          => 'application/pdf',
+				'size_bytes'    => 14,
+				'sha256'        => str_repeat( 'a', 64 ),
+				'uploaded_by'   => PAPELITO_FISCAL_TEST_VENDOR_ID,
+				'created_at'    => $now,
+				'updated_at'    => $now,
+			),
+			$overrides
+		)
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
 	return false === $inserted ? false : (int) $wpdb->insert_id;
 }
 
-papelito_fiscal_documents_install_tables();
+function fiscal_db_cleanup(): void {
+	global $wpdb, $tables;
 
-/**
- * Cria um upload XML temporário para validar o caminho real do WordPress.
- *
- * @return array<string,mixed>
- */
-function fiscal_db_xml_upload( string $contents ): array {
-	$tmp_file = wp_tempnam( 'papelito-fiscal-upload' );
-	file_put_contents( $tmp_file, $contents ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+	foreach ( array( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_ORDER_ID + 1 ) as $order_id ) {
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT storage_key FROM {$tables['documents']} WHERE order_id = %d", $order_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery
 
-	return array(
-		'error'    => UPLOAD_ERR_OK,
-		'name'     => 'nota.xml',
-		'tmp_name' => $tmp_file,
-	);
+		foreach ( (array) $rows as $row ) {
+			papelito_fiscal_document_purge_file( (string) $row['storage_key'] );
+		}
+
+		$wpdb->delete( $tables['documents'], array( 'order_id' => $order_id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->delete( $tables['events'], array( 'order_id' => $order_id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	}
 }
 
-$valid_xml_upload = fiscal_db_xml_upload( '<?xml version="1.0"?><nfeProc><NFe/></nfeProc>' );
-$valid_xml_result = papelito_fiscal_document_validate_upload( $valid_xml_upload, 'xml' );
-assert_fiscal_db( 'xml valido passa pela validacao real do WordPress', true, is_array( $valid_xml_result ) );
-unlink( $valid_xml_upload['tmp_name'] ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
+fiscal_db_cleanup();
 
-$invalid_xml_upload = fiscal_db_xml_upload( '<?xml version="1.0"?><nfeProc><NFe></nfeProc>' );
-$invalid_xml_result = papelito_fiscal_document_validate_upload( $invalid_xml_upload, 'xml' );
-assert_fiscal_db(
-	'xml malformado e recusado antes do armazenamento',
-	'papelito_fiscal_document_xml_invalid',
-	is_wp_error( $invalid_xml_result ) ? $invalid_xml_result->get_error_code() : 'aceitou'
-);
-unlink( $invalid_xml_upload['tmp_name'] ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink
+assert_fiscal_db( 'diretorio privado esta preparado', false, is_wp_error( $directory ) );
 
-// 1. Uma corrente por (pedido, vendor).
+// 1. Uma nota por (pedido, vendor): a segunda linha é recusada pelo índice único.
 $first = fiscal_db_insert();
-assert_fiscal_db( 'primeiro documento e inserido', true, $first > 0 );
+assert_fiscal_db( 'primeira nota entra', true, $first > 0 );
 
-$suppress = $wpdb->suppress_errors( true );
-$conflict = fiscal_db_insert();
-$wpdb->suppress_errors( $suppress );
-assert_fiscal_db( 'segunda corrente do mesmo vendor e recusada pelo indice', false, $conflict );
+$suppressed = $wpdb->suppress_errors( true );
+$second     = fiscal_db_insert();
+$wpdb->suppress_errors( $suppressed );
+assert_fiscal_db( 'segunda nota do mesmo vendor no mesmo pedido e recusada', false, $second );
 
-// 2. Histórico: is_current = NULL permite N versões.
-$wpdb->update(
-	$tables['documents'],
+// 2. Outro vendor no mesmo pedido é permitido: a unicidade é do par.
+$other_vendor = fiscal_db_insert( array( 'vendor_id' => PAPELITO_FISCAL_TEST_VENDOR_ID + 1 ) );
+assert_fiscal_db( 'outro vendor no mesmo pedido entra', true, $other_vendor > 0 );
+$wpdb->delete( $tables['documents'], array( 'id' => $other_vendor ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+// 3. `papelito_fiscal_document_current()` acha a nota do par certo.
+$current = papelito_fiscal_document_current( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_VENDOR_ID );
+assert_fiscal_db( 'nota corrente e encontrada', $first, (int) ( $current['id'] ?? 0 ) );
+assert_fiscal_db( 'par sem nota devolve null', null, papelito_fiscal_document_current( PAPELITO_FISCAL_TEST_ORDER_ID, 42424242 ) );
+
+// 4. Substituição: a linha é a mesma, o arquivo antigo sai do disco.
+$old_key    = (string) $current['storage_key'];
+$new_key    = fiscal_db_write_file();
+$commit     = papelito_fiscal_document_commit(
+	PAPELITO_FISCAL_TEST_ORDER_ID,
+	PAPELITO_FISCAL_TEST_VENDOR_ID,
 	array(
-		'is_current' => null,
-		'doc_status' => 'substituida',
+		'original_name' => 'nota-v2.pdf',
+		'mime'          => 'application/pdf',
+		'size_bytes'    => 20,
+		'size'          => 20,
+		'sha256'        => str_repeat( 'b', 64 ),
 	),
-	array( 'id' => $first )
-); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-$second = fiscal_db_insert( array( 'replaces_document_id' => $first ) );
-assert_fiscal_db( 'nova corrente entra depois de arquivar a anterior', true, $second > 0 );
-
-$wpdb->update(
-	$tables['documents'],
 	array(
-		'is_current' => null,
-		'doc_status' => 'substituida',
+		'key'  => $new_key,
+		'path' => trailingslashit( $directory ) . $new_key,
 	),
-	array( 'id' => $second )
-); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-$third = fiscal_db_insert( array( 'replaces_document_id' => $second ) );
-assert_fiscal_db( 'terceira versao tambem entra', true, $third > 0 );
-
-$historic = (int) $wpdb->get_var(
-	// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- nome de tabela com prefixo do $wpdb.
-	$wpdb->prepare( "SELECT COUNT(*) FROM {$tables['documents']} WHERE order_id = %d AND is_current IS NULL", PAPELITO_FISCAL_TEST_ORDER_ID )
-); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-assert_fiscal_db( 'duas versoes historicas convivem', 2, $historic );
-
-$current = papelito_fiscal_document_current( PAPELITO_FISCAL_TEST_ORDER_ID, 4321 );
-assert_fiscal_db( 'helper devolve a corrente', $third, is_array( $current ) ? (int) $current['id'] : 0 );
-
-// 3. Outro vendor no mesmo pedido tem a sua própria corrente.
-$other_vendor = fiscal_db_insert( array( 'vendor_id' => 8765 ) );
-assert_fiscal_db( 'outro vendor tem corrente propria', true, $other_vendor > 0 );
-
-// 4. Chave duplicada é sinalização, não erro de banco.
-$key_base = implode( '', array( '35', '2607', '11222333000181', '55', '001', '000000123', '1', '12345678' ) );
-$key      = $key_base . papelito_fiscal_key_check_digit( $key_base );
-assert_fiscal_db( 'chave da fixture tem 44 digitos', 44, strlen( $key ) );
-$wpdb->update(
-	$tables['documents'],
-	array(
-		'access_key'        => $key,
-		'access_key_status' => 'valida',
-	),
-	array( 'id' => $third )
-); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-$duplicate = $wpdb->update(
-	$tables['documents'],
-	array(
-		'access_key'        => $key,
-		'access_key_status' => 'valida',
-	),
-	array( 'id' => $other_vendor )
-); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-
-assert_fiscal_db( 'chave duplicada e aceita pelo banco', true, false !== $duplicate );
-assert_fiscal_db( 'busca por chave encontra as duas', 2, count( papelito_fiscal_documents_by_access_key( $key ) ) );
-
-// 5. Um arquivo ativo por papel; removidos convivem com is_active NULL.
-$file_row = array(
-	'fiscal_document_id' => $third,
-	'role'               => 'xml',
-	'storage_key'        => bin2hex( random_bytes( 32 ) ) . '.xml',
-	'mime'               => 'application/xml',
-	'size_bytes'         => 2048,
-	'sha256'             => str_repeat( 'a', 64 ),
-	'is_active'          => 1,
-	'created_at'         => $now,
+	PAPELITO_FISCAL_TEST_VENDOR_ID
 );
-$file_one = $wpdb->insert( $tables['files'], $file_row ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-assert_fiscal_db( 'primeiro xml do documento entra', true, false !== $file_one );
-$file_one_id = (int) $wpdb->insert_id;
 
-$file_row['storage_key'] = bin2hex( random_bytes( 32 ) ) . '.xml';
-$suppress                = $wpdb->suppress_errors( true );
-$file_conflict           = $wpdb->insert( $tables['files'], $file_row ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-$wpdb->suppress_errors( $suppress );
-assert_fiscal_db( 'segundo xml ativo e recusado', false, $file_conflict );
+assert_fiscal_db( 'commit de substituicao devolve o evento', 'substituida', is_array( $commit ) ? $commit['event'] : '' );
+assert_fiscal_db( 'commit devolve a key anterior para o chamador apagar', $old_key, is_array( $commit ) ? $commit['previous_key'] : '' );
 
-$wpdb->update(
-	$tables['files'],
-	array(
-		'is_active'  => null,
-		'deleted_at' => $now,
-	),
-	array( 'id' => $file_one_id )
-); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-$file_two = $wpdb->insert( $tables['files'], $file_row ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-assert_fiscal_db( 'novo xml entra depois do soft-delete', true, false !== $file_two );
+$replaced = papelito_fiscal_document_current( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_VENDOR_ID );
+assert_fiscal_db( 'substituir reescreve a MESMA linha', $first, (int) $replaced['id'] );
+assert_fiscal_db( 'a linha aponta para o arquivo novo', $new_key, (string) $replaced['storage_key'] );
+assert_fiscal_db( 'o nome original acompanha a troca', 'nota-v2.pdf', (string) $replaced['original_name'] );
 
-$file_row['role']        = 'danfe_pdf';
-$file_row['storage_key'] = bin2hex( random_bytes( 32 ) ) . '.pdf';
-$file_row['mime']        = 'application/pdf';
-$pdf_file                = $wpdb->insert( $tables['files'], $file_row ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-assert_fiscal_db( 'pdf e xml convivem no mesmo documento', true, false !== $pdf_file );
+// O commit não apaga: quem apaga é o chamador, depois do COMMIT.
+assert_fiscal_db( 'arquivo antigo ainda existe antes do purge', true, fiscal_db_file_exists( $old_key ) );
+papelito_fiscal_document_purge_file( $old_key );
+assert_fiscal_db( 'arquivo antigo sai do disco no purge', false, fiscal_db_file_exists( $old_key ) );
+assert_fiscal_db( 'arquivo novo continua no disco', true, fiscal_db_file_exists( $new_key ) );
 
-assert_fiscal_db( 'helper lista so os arquivos ativos', 2, count( papelito_fiscal_document_files( $third ) ) );
-assert_fiscal_db( 'helper opcionalmente lista os removidos', 3, count( papelito_fiscal_document_files( $third, false ) ) );
+// 5. A trilha acumula, e é chaveada pelo par — não pelo id do documento.
+$history = papelito_fiscal_document_history( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_VENDOR_ID );
+assert_fiscal_db( 'trilha registrou a substituicao', 1, count( $history ) );
+assert_fiscal_db( 'trilha guarda o nome do arquivo', 'nota-v2.pdf', (string) ( $history[0]['original_name'] ?? '' ) );
 
-// 6. Evento de auditoria não guarda chave completa.
-papelito_fiscal_document_log_event(
-	$third,
-	'documento_anexado',
-	array(
-		'access_key' => $key,
-		'role'       => 'xml',
-		'doc_status' => 'recebida',
-	),
-	0,
-	'vendor'
+// 6. Remoção: some a linha, some o arquivo, a trilha fica.
+$removed = papelito_fiscal_document_remove( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_VENDOR_ID, PAPELITO_FISCAL_TEST_VENDOR_ID );
+assert_fiscal_db( 'remocao devolve sucesso', true, $removed );
+assert_fiscal_db( 'linha some', null, papelito_fiscal_document_current( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_VENDOR_ID ) );
+assert_fiscal_db( 'arquivo some do disco', false, fiscal_db_file_exists( $new_key ) );
+
+$history = papelito_fiscal_document_history( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_VENDOR_ID );
+assert_fiscal_db( 'a trilha SOBREVIVE a remocao da nota', 2, count( $history ) );
+assert_fiscal_db( 'o ultimo evento e a remocao', 'removida', (string) ( $history[1]['event'] ?? '' ) );
+
+// 7. Remover o que não existe é 404, não erro de banco.
+assert_fiscal_db(
+	'remover nota inexistente devolve 404',
+	'papelito_fiscal_document_not_found',
+	papelito_fiscal_document_remove( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_VENDOR_ID, 1 )->get_error_code()
 );
-$event = $wpdb->get_row(
-	// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- nome de tabela com prefixo do $wpdb.
-	$wpdb->prepare( "SELECT * FROM {$tables['events']} WHERE fiscal_document_id = %d ORDER BY id DESC LIMIT 1", $third ),
-	ARRAY_A
-); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
-assert_fiscal_db( 'evento foi gravado', 'documento_anexado', is_array( $event ) ? (string) $event['event'] : '' );
-assert_fiscal_db( 'evento nao contem a chave completa', false, is_array( $event ) && str_contains( (string) $event['detail_json'], $key ) );
-assert_fiscal_db( 'evento guarda os 4 ultimos digitos', true, is_array( $event ) && str_contains( (string) $event['detail_json'], substr( $key, -4 ) ) );
+// 8. Exclusão do pedido não deixa linha nem arquivo, e registra ator "sistema".
+$doc_id      = fiscal_db_insert();
+$cascade_key = (string) papelito_fiscal_document_current( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_VENDOR_ID )['storage_key'];
+papelito_fiscal_documents_delete_for_order( PAPELITO_FISCAL_TEST_ORDER_ID );
 
-// Limpeza.
-$document_ids = $wpdb->get_col(
-	// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- nome de tabela com prefixo do $wpdb.
-	$wpdb->prepare( "SELECT id FROM {$tables['documents']} WHERE order_id = %d", PAPELITO_FISCAL_TEST_ORDER_ID )
-); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+assert_fiscal_db( 'apagar o pedido remove a linha', null, papelito_fiscal_document_current( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_VENDOR_ID ) );
+assert_fiscal_db( 'apagar o pedido remove o arquivo', false, fiscal_db_file_exists( $cascade_key ) );
 
-foreach ( array_map( 'intval', (array) $document_ids ) as $document_id ) {
-	$wpdb->delete( $tables['files'], array( 'fiscal_document_id' => $document_id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-	$wpdb->delete( $tables['events'], array( 'fiscal_document_id' => $document_id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-}
-$wpdb->delete( $tables['documents'], array( 'order_id' => PAPELITO_FISCAL_TEST_ORDER_ID ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+$history = papelito_fiscal_document_history( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_VENDOR_ID );
+$last    = end( $history );
+assert_fiscal_db( 'remocao em cascata nao tem ator', 0, (int) ( $last['actor_user_id'] ?? -1 ) );
+assert_fiscal_db( 'payload traduz ator zero para sistema', 'sistema', papelito_fiscal_event_payload( array( $last ) )[0]['actor_role'] );
 
-echo "limpeza ok\n";
+// 9. Varredura: recolhe arquivo sem linha, preserva upload recém-gravado.
+$orphan_old = fiscal_db_write_file();
+$orphan_new = fiscal_db_write_file();
+touch( trailingslashit( $directory ) . $orphan_old, time() - PAPELITO_FISCAL_SWEEP_MIN_AGE - 60 );
+
+$referenced = fiscal_db_insert();
+$referenced_key = (string) papelito_fiscal_document_current( PAPELITO_FISCAL_TEST_ORDER_ID, PAPELITO_FISCAL_TEST_VENDOR_ID )['storage_key'];
+touch( trailingslashit( $directory ) . $referenced_key, time() - PAPELITO_FISCAL_SWEEP_MIN_AGE - 60 );
+
+$dry = papelito_fiscal_documents_sweep( true );
+assert_fiscal_db( 'dry-run enxerga o orfao antigo', true, in_array( $orphan_old, $dry['orphans'], true ) );
+assert_fiscal_db( 'dry-run poupa o orfao recente (upload em voo)', false, in_array( $orphan_new, $dry['orphans'], true ) );
+assert_fiscal_db( 'dry-run poupa arquivo referenciado', false, in_array( $referenced_key, $dry['orphans'], true ) );
+assert_fiscal_db( 'dry-run nao apaga nada', 0, (int) $dry['removed'] );
+assert_fiscal_db( 'dry-run nao tocou o arquivo', true, fiscal_db_file_exists( $orphan_old ) );
+
+$swept = papelito_fiscal_documents_sweep( false );
+assert_fiscal_db( 'varredura apaga o orfao antigo', false, fiscal_db_file_exists( $orphan_old ) );
+assert_fiscal_db( 'varredura preserva o orfao recente', true, fiscal_db_file_exists( $orphan_new ) );
+assert_fiscal_db( 'varredura preserva o arquivo referenciado', true, fiscal_db_file_exists( $referenced_key ) );
+assert_fiscal_db( 'varredura contabiliza o que removeu', true, (int) $swept['removed'] >= 1 );
+
+// Arquivo fora do padrão de storage key é reportado, nunca apagado.
+$stranger = trailingslashit( $directory ) . 'arquivo-estranho.pdf';
+file_put_contents( $stranger, 'x' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+touch( $stranger, time() - PAPELITO_FISCAL_SWEEP_MIN_AGE - 60 );
+$swept = papelito_fiscal_documents_sweep( false );
+assert_fiscal_db( 'arquivo fora do padrao e reportado', true, in_array( 'arquivo-estranho.pdf', $swept['skipped'], true ) );
+assert_fiscal_db( 'arquivo fora do padrao NAO e apagado', true, is_file( $stranger ) );
+unlink( $stranger );
+papelito_fiscal_document_purge_file( $orphan_new );
+
+fiscal_db_cleanup();
 
 if ( $failures > 0 ) {
+	echo "RESULT: {$failures} assertion(s) failed\n";
 	exit( 1 );
 }
 

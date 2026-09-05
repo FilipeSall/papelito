@@ -34,7 +34,7 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Correios | `test-correios-prepostage.php`, `test-correios-idempotency.php`, `test-correios-reconciliation.php`, `test-correios-tracking-map.php` |
 | Pedido | `test-order-receipt-pdf.php`, `test-receipts-snapshot.php`, `test-receipts-backfill.php`, `test-receipt-email-attachment.php` (**estrutural**: o envio do recibo roda em REST e não pode chamar função que só existe em `wp-admin/includes/file.php`) |
 | Analytics | `test-analytics-ga4.php` (validação estrita dos ids do navegador, payload do Measurement Protocol, idempotência do webhook reemitido) |
-| Documento fiscal | `test-fiscal-documents.php`, `test-fiscal-xml.php` (exige SimpleXML) |
+| Documento fiscal | `test-fiscal-documents.php` (política do arquivo), `test-fiscal-documents-db.php` (substituição, remoção e varredura — `wp eval-file`) |
 | Administração | `test-admin-activate-email.php` |
 | E-mail de faturamento | `test-billing-email-rules.php` (tabela de decisão), `test-billing-email-sync.php` (cascata e backfill), `test-billing-email-token.php`, `test-pre-account-email-verification.php` (**estrutural**: nenhum `wp_insert_user()` pode ficar sem gravar o estado de verificação) |
 | Links de e-mail | `test-frontend-base-url.php` (allowlist, nunca `localhost` em ambiente remoto, `Origin` não é fallback) |
@@ -64,12 +64,16 @@ docker compose exec web wp --allow-root eval-file \
 
 > **Armadilha do `wp eval-file`**: o arquivo roda **dentro de uma função**, então variável de topo **não é global**. Um `$failures = 0;` no topo com `global $failures;` dentro do assert cria duas variáveis diferentes — o teste imprime `FAIL` e mesmo assim sai com código 0. Os três testes de banco declaram `global $wpdb, $failures;` no topo por isso. Ao criar um teste novo nesse formato, verifique o exit code injetando uma falha proposital.
 
-### Testes que precisam de extensão XML
+### Nota fiscal: o teste de banco também toca o disco
 
-`test-fiscal-xml.php` exige **SimpleXML**, que o PHP CLI do host normalmente não tem (o mesmo motivo pelo qual o PHPCS não roda no host). Ele falha explicitamente em vez de pular em silêncio:
+`test-fiscal-documents-db.php` grava e apaga arquivos de verdade no diretório privado, porque é
+justamente a ordem entre a transação e o `unlink` que o teste protege — substituir tem de apagar o
+arquivo anterior **depois** do commit, e nunca antes. Ele também exercita a varredura de órfãos
+mexendo no `mtime` dos arquivos para atravessar a janela de `PAPELITO_FISCAL_SWEEP_MIN_AGE`:
 
 ```bash
-docker compose exec web php wp-content/plugins/plugin_papelito/tests/test-fiscal-xml.php
+docker compose exec web wp --allow-root eval-file \
+  wp-content/plugins/plugin_papelito/tests/test-fiscal-documents-db.php
 ``` Ele filtra os candidatos antes de emitir, portanto não altera pedidos que não sejam fixtures do teste.
 
 ```bash

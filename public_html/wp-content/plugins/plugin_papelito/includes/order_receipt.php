@@ -1630,9 +1630,9 @@ function papelito_receipt_pdf( object $order ) {
 /**
  * Monta o arquivo PDF a partir das paginas ja renderizadas.
  *
- * Fica separado do recibo porque o espelho da nota fiscal usa exatamente o
- * mesmo desenho de pagina: duplicar o xref e a tabela de objetos daria duas
- * implementacoes do formato para manter em sincronia.
+ * Fica separado da montagem do recibo para o xref e a tabela de objetos
+ * viverem num lugar so: quem escrever outro documento A4 reaproveita o
+ * formato em vez de reimplementa-lo.
  *
  * @param array<int,array<int,string>> $pages Operadores de content stream por pagina.
  */

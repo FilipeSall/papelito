@@ -156,8 +156,11 @@ function papelito_private_file_xml_is_hostile( string $contents ): bool {
 }
 
 /**
- * Aceita apenas XML textual sem DOCTYPE/ENTITY. O parse real e a checagem de
- * raiz ficam em fiscal_document_validation.php, depois do arquivo em disco.
+ * Aceita apenas XML textual sem DOCTYPE/ENTITY.
+ *
+ * Nao ha parse: a nota fiscal e guardada como arquivo, e o sistema nao le o
+ * conteudo dela. Esta funcao decide se o arquivo entra no disco, nao o que ele
+ * significa.
  */
 function papelito_private_file_verify_xml( string $tmp_name, string $mime ): bool {
 	unset( $mime );

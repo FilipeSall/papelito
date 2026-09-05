@@ -63,11 +63,10 @@ require_once __DIR__ . '/includes/vendor_dashboard.php';
 require_once __DIR__ . '/includes/vendor_reports.php';
 require_once __DIR__ . '/includes/receipts.php';
 require_once __DIR__ . '/includes/receipts_backfill.php';
-require_once __DIR__ . '/includes/fiscal_document_validation.php';
 require_once __DIR__ . '/includes/fiscal_documents.php';
 require_once __DIR__ . '/includes/fiscal_documents_rest.php';
+require_once __DIR__ . '/includes/fiscal_documents_cleanup.php';
 require_once __DIR__ . '/includes/order_receipt.php';
-require_once __DIR__ . '/includes/fiscal_document_pdf.php';
 require_once __DIR__ . '/includes/vendor_messaging.php';
 require_once __DIR__ . '/includes/vendor_processing_alerts.php';
 require_once __DIR__ . '/includes/company_flags.php';
@@ -98,7 +97,7 @@ require_once __DIR__ . '/includes/account_status.php';
 require_once __DIR__ . '/includes/account_admin_endpoints.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.39.0' );
+	define( 'PAPELITO_DB_VERSION', '1.40.0' );
 }
 
 /**
@@ -146,8 +145,8 @@ function papelito_maybe_migrate_db() {
 				'papelito_company_migrate_cpf_required_memberships',
 				'papelito_pre_account_application_backfill_pending_notifications',
 				'papelito_receipts_install_tables',
+				'papelito_fiscal_documents_drop_legacy',
 				'papelito_fiscal_documents_install_tables',
-				'papelito_fiscal_documents_drop_superseded',
 				'papelito_product_taxonomy_install_tables',
 				'papelito_integration_secret_install_tables',
 				'papelito_account_status_install_tables',

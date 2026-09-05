@@ -147,15 +147,14 @@ O CNPJ vem de `_papelito_company_cnpj` do pedido, **nunca de `wp_usermeta`**.
 
 ### Documentos fiscais
 
-Três tabelas de fundação. **A Papelito não emite nota**: o vendor emite por fora e anexa. Nesta camada não há rota REST, UI nem leitura de `doc_status` por pagamento ou fulfillment.
+Duas tabelas. **A Papelito não emite nota, não participa da operação fiscal e não lê o conteúdo do documento**: o vendor emite por fora e anexa, e o marketplace guarda o arquivo. Não há campo digitado nem extraído — nem chave de acesso, nem número, série, emissão ou valor.
 
-- **`wp_papelito_fiscal_documents`** — um documento **corrente** por `(order_id, vendor_id)`. A corrente tem `is_current = 1`; versões substituídas viram `is_current = NULL`, **nunca `0`**, e é isso que permite N históricos sob `UNIQUE (order_id, vendor_id, is_current)` — MySQL não compara NULLs em índice único. Guarda tipo, status, nível de validação, chave normalizada, emitente, emissão, valor em centavos, `flags_json` e as relações de substituição/cancelamento.
-- **`wp_papelito_fiscal_document_files`** — um arquivo **ativo** por papel (`danfe_pdf`, `xml`, `other`), pelo mesmo truque: `UNIQUE (fiscal_document_id, role, is_active)` com `is_active = NULL` no soft-delete. Guarda storage key, nome original, MIME, tamanho e SHA-256.
-- **`wp_papelito_fiscal_document_events`** — trilha imutável. Só insert. O detalhe passa por `papelito_fiscal_event_safe_detail()`, que **descarta PII, conteúdo e nome original** e reduz a chave de acesso aos quatro últimos dígitos.
+- **`wp_papelito_fiscal_documents`** — **uma nota por `(order_id, vendor_id)`**, com um arquivo só. `UNIQUE (order_id, vendor_id)` é unicidade de verdade: sem histórico de documento, o truque de `is_current = 1 | NULL` do modelo anterior deixou de ser necessário. As colunas são o par pedido/vendor mais os dados do arquivo: `storage_key`, `original_name`, `mime`, `size_bytes`, `sha256`, `uploaded_by` e as datas. Substituir é um `UPDATE` da **mesma linha**.
+- **`wp_papelito_fiscal_document_events`** — trilha imutável, só insert: `anexada`, `substituida`, `removida`, com `original_name` e o ator. É chaveada por **`(order_id, vendor_id)`, e não por `fiscal_document_id`**, de propósito: remover a nota apaga a linha do documento, e é justamente aí que alguém precisa saber o que houve.
 
-> **`access_key` tem índice não único de propósito.** Chave duplicada é sinalização administrativa, não erro de banco: um `UNIQUE` transformaria duplicidade esperada em 500. A busca é `papelito_fiscal_documents_by_access_key()`.
+Os arquivos vivem em `PAPELITO_PRIVATE_FISCAL_DOCUMENTS_DIR`, fora do webroot, 0600 em diretório 0700, com nome de 64 hex.
 
-Os arquivos vivem em `PAPELITO_PRIVATE_FISCAL_DOCUMENTS_DIR`, fora do webroot, 0600 em diretório 0700, com nome de 64 hex. Não há purga automática nem endpoint que apague: descarte é operação manual documentada.
+> **A ordem da substituição é o que impede órfão.** O arquivo novo é gravado **antes** da transação e o antigo apagado **depois do commit**. Apagar antes perderia a nota válida num rollback; falhar depois deixa só um arquivo solto. Exclusão de pedido ou de vendor remove linha e arquivo por gancho (`woocommerce_before_delete_order`, `before_delete_post`, `deleted_user`), e `wp papelito fiscal sweep [--dry-run]` recolhe o que escapou — ignorando arquivo com menos de `PAPELITO_FISCAL_SWEEP_MIN_AGE`, que pode ser upload ainda em voo, e nunca apagando arquivo fora do padrão de storage key.
 
 ### Nunca criada
 

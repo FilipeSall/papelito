@@ -271,10 +271,12 @@ function papelito_direct_upload_pre_account_document( array $ticket, array $file
 /**
  * Anexo de nota fiscal ao pedido do vendor.
  *
- * O tíquete já carrega pedido, papel, modo e os campos digitados: o endpoint
- * direto não exige JWT, então nada que decida autorização pode chegar do
- * navegador neste momento. A conferência de dono do pedido acontece de novo
- * aqui, porque o tíquete pode ter sido emitido e o vínculo mudado desde então.
+ * O tíquete já carrega o pedido e o vendor: o endpoint direto não exige JWT,
+ * então nada que decida autorização pode chegar do navegador neste momento. A
+ * conferência de dono do pedido acontece de novo aqui, porque o tíquete pode
+ * ter sido emitido e o vínculo mudado desde então.
+ *
+ * O upload sempre substitui a nota que houver — o pedido guarda uma só.
  *
  * @param array<string,mixed> $ticket Tíquete consumido.
  * @param array<string,mixed> $file   Arquivo recebido.
@@ -284,9 +286,8 @@ function papelito_direct_upload_vendor_fiscal_document( array $ticket, array $fi
 	$context   = (array) ( $ticket['context'] ?? array() );
 	$vendor_id = (int) ( $context['vendor_id'] ?? 0 );
 	$order_id  = (int) ( $context['order_id'] ?? 0 );
-	$role      = (string) ( $context['role'] ?? '' );
 
-	if ( $vendor_id <= 0 || $order_id <= 0 || ! in_array( $role, array( 'xml', 'danfe_pdf' ), true ) ) {
+	if ( $vendor_id <= 0 || $order_id <= 0 ) {
 		return papelito_direct_upload_error( 'papelito_upload_not_allowed', 'Você não tem permissão para anexar esta nota fiscal.', 403 );
 	}
 
@@ -304,23 +305,7 @@ function papelito_direct_upload_vendor_fiscal_document( array $ticket, array $fi
 		return papelito_direct_upload_error( 'papelito_fiscal_order_not_ready', 'Este pedido ainda não aceita nota fiscal.', 409 );
 	}
 
-	$validated = papelito_fiscal_document_validate_upload( $file, $role );
-	if ( is_wp_error( $validated ) ) {
-		return $validated;
-	}
-
-	$result = papelito_fiscal_document_attach_file(
-		$order,
-		$vendor_id,
-		array(
-			'role'      => $role,
-			'file'      => $file,
-			'validated' => $validated,
-			'declared'  => (array) ( $context['declared'] ?? array() ),
-			'mode'      => 'replace' === (string) ( $context['mode'] ?? 'attach' ) ? 'replace' : 'attach',
-		),
-		$vendor_id
-	);
+	$result = papelito_fiscal_document_attach_file( $order, $vendor_id, $file, $vendor_id );
 
 	if ( is_wp_error( $result ) ) {
 		return $result;
@@ -346,8 +331,8 @@ function papelito_direct_upload_catalog( array $ticket, array $file ) {
 /**
  * Emite o tíquete de anexo de nota fiscal, com a autorização já resolvida.
  *
- * Pedido, papel, modo e campos digitados são fixados aqui — na chamada
- * autenticada — e não aceitos do navegador no momento do upload.
+ * O pedido é fixado aqui — na chamada autenticada — e não aceito do navegador
+ * no momento do upload.
  *
  * @return WP_REST_Response|WP_Error
  */
@@ -364,11 +349,6 @@ function papelito_direct_upload_vendor_fiscal_ticket( WP_REST_Request $request, 
 	$enabled = papelito_fiscal_documents_require_enabled();
 	if ( is_wp_error( $enabled ) ) {
 		return $enabled;
-	}
-
-	$role = sanitize_key( (string) $request->get_param( 'role' ) );
-	if ( ! in_array( $role, array( 'xml', 'danfe_pdf' ), true ) ) {
-		return papelito_direct_upload_error( 'papelito_fiscal_role_invalid', 'Informe o tipo de arquivo da nota fiscal.', 422 );
 	}
 
 	$order = papelito_vendor_dashboard_vendor_order( absint( $request->get_param( 'orderId' ) ), $user_id );
@@ -393,9 +373,6 @@ function papelito_direct_upload_vendor_fiscal_ticket( WP_REST_Request $request, 
 			array(
 				'vendor_id' => $user_id,
 				'order_id'  => (int) $order->get_id(),
-				'role'      => $role,
-				'mode'      => 'replace' === sanitize_key( (string) $request->get_param( 'mode' ) ) ? 'replace' : 'attach',
-				'declared'  => papelito_fiscal_declared_from_input( (array) $request->get_param( 'declared' ) ),
 			)
 		),
 		201
