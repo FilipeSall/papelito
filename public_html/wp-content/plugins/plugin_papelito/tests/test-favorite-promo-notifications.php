@@ -24,7 +24,7 @@ $GLOBALS['papelito_mail_log']  = array();
 $GLOBALS['papelito_now']       = strtotime( '2026-06-12 12:00:00 UTC' );
 
 class WP_User {
-	public $ID;
+	public $ID; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome da propriedade publica de WP_User no core.
 	public $user_email;
 	public $display_name;
 	public $roles;
@@ -66,7 +66,7 @@ function is_wp_error( $value ) {
 }
 
 class WP_Post {
-	public $ID;
+	public $ID; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome da propriedade publica de WP_Post no core.
 	public $post_type;
 	public $post_status;
 	public $post_name;
@@ -112,6 +112,7 @@ class WC_Product {
 	private $weight;
 	private $starts_at;
 	private $ends_at;
+	private $image_id;
 
 	public function __construct( array $args ) {
 		$this->id            = (int) $args['id'];
@@ -121,6 +122,7 @@ class WC_Product {
 		$this->regular_price = (string) ( $args['regular_price'] ?? '' );
 		$this->sale_price    = (string) ( $args['sale_price'] ?? '' );
 		$this->weight        = (string) ( $args['weight'] ?? '1' );
+		$this->image_id      = isset( $args['image_id'] ) ? (int) $args['image_id'] : 0;
 		$this->starts_at     = isset( $args['starts_at'] ) ? (int) $args['starts_at'] : 0;
 		$this->ends_at       = isset( $args['ends_at'] ) ? (int) $args['ends_at'] : 0;
 	}
@@ -183,7 +185,7 @@ class WC_Product {
 	}
 
 	public function get_image_id() {
-		return 0;
+		return $this->image_id;
 	}
 
 	public function get_average_rating() {
@@ -234,6 +236,7 @@ class WC_Coupon {
 		$this->amount = $amount;
 	}
 
+	public function set_free_shipping( $value ) {}
 	public function set_date_expires( $expires ) {}
 	public function set_usage_limit( $value ) {}
 	public function set_usage_limit_per_user( $value ) {}
@@ -603,7 +606,9 @@ function wc_format_decimal( $value ) {
 }
 
 function wc_price( $value ) {
-	return 'R$ ' . number_format( (float) $value, 2, ',', '.' );
+	return '<span class="woocommerce-Price-amount amount"><bdi><span class="woocommerce-Price-currencySymbol">&#82;&#36;</span>&nbsp;'
+		. number_format( (float) $value, 2, ',', '.' )
+		. '</bdi></span>';
 }
 
 function get_permalink( $post_id ) {
@@ -611,18 +616,59 @@ function get_permalink( $post_id ) {
 }
 
 function wp_get_attachment_image_url( $image_id, $size ) {
-	return '';
+	return $image_id > 0 ? 'https://cdn.papelito.test/produtos/' . (int) $image_id . '-' . $size . '.jpg' : '';
 }
 
 function wc_get_product_terms( $product_id, $taxonomy, $args ) {
 	return array();
 }
 
+function remove_action( $hook, $callback, $priority = 10 ) {
+	if ( empty( $GLOBALS['papelito_actions'][ $hook ][ $priority ] ) ) {
+		return false;
+	}
+
+	foreach ( $GLOBALS['papelito_actions'][ $hook ][ $priority ] as $index => $item ) {
+		if ( $item['callback'] === $callback ) {
+			unset( $GLOBALS['papelito_actions'][ $hook ][ $priority ][ $index ] );
+			return true;
+		}
+	}
+
+	return false;
+}
+
+function esc_html( $value ) {
+	return htmlspecialchars( (string) $value, ENT_QUOTES, 'UTF-8' );
+}
+
+function esc_attr( $value ) {
+	return htmlspecialchars( (string) $value, ENT_QUOTES, 'UTF-8' );
+}
+
+function esc_url( $value ) {
+	return htmlspecialchars( (string) $value, ENT_QUOTES, 'UTF-8' );
+}
+
+function papelito_auth_get_frontend_url() {
+	return 'https://papelito.test';
+}
+
+/** Espelha o PHPMailer o suficiente para provar que o corpo alternativo e anexado. */
+class Papelito_Test_PHPMailer {
+	public $AltBody = ''; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.PropertyNotSnakeCase,Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome da propriedade publica do PHPMailer.
+}
+
 function wp_mail( $to, $subject, $message, $headers ) {
+	$phpmailer = new Papelito_Test_PHPMailer();
+	do_action( 'phpmailer_init', $phpmailer );
+
 	$GLOBALS['papelito_mail_log'][] = array(
 		'to'      => $to,
 		'subject' => $subject,
 		'message' => $message,
+		'headers' => (array) $headers,
+		'alt'     => $phpmailer->AltBody, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
 	);
 	return true;
 }
@@ -657,6 +703,7 @@ function papelito_product_get_category( $product_id ) {
 		: array( 'id' => 1, 'name' => 'Sedas', 'slug' => 'sedas' );
 }
 
+require __DIR__ . '/../includes/notification_emails.php';
 require __DIR__ . '/../includes/favorites.php';
 require __DIR__ . '/../includes/notifications.php';
 require __DIR__ . '/../includes/flash_sale.php';
@@ -977,6 +1024,124 @@ papelito_assert( 'payload marks missing category', true, $payload['missing_categ
 unset( $GLOBALS['papelito_uncategorized_products'][30] );
 papelito_sync_product_data_notification( 30 );
 papelito_assert( 'category correction resolves notification', true, ! empty( $wpdb->notification_rows[0]['read_at'] ) );
+
+echo "Scenario 10: promo e-mail renders prices as text, not HTML entities\n";
+papelito_reset_notification_state();
+papelito_seed_user(
+	41,
+	'cliente41@papelito.test',
+	true,
+	array(
+		array(
+			'product_id' => 41,
+			'added_at'   => '2026-06-10T10:00:00Z',
+		),
+	)
+);
+papelito_seed_product(
+	array(
+		'id'            => 41,
+		'name'          => 'Seda Papelito Tropical Mini',
+		'status'        => 'publish',
+		'regular_price' => '93.00',
+		'sale_price'    => '89.00',
+		'image_id'      => 777,
+	)
+);
+do_action(
+	'papelito_product_on_promo',
+	41,
+	array(
+		'promo_type'      => 'sale_price',
+		'promo_label'     => 'preço promocional',
+		'promo_event_key' => 'sale_price:41:89.00:93.00:0:0',
+		'regular_price'   => '93.00',
+		'sale_price'      => '89.00',
+	)
+);
+
+papelito_assert( 'promo e-mail dispatched', 1, count( $GLOBALS['papelito_mail_log'] ) );
+$mail = $GLOBALS['papelito_mail_log'][0];
+
+papelito_assert( 'price formatter decodes the WooCommerce currency entity', 'R$ 93,00', papelito_notification_format_price( 93.0 ) );
+papelito_assert( 'HTML body carries no currency entity', false, false !== strpos( $mail['message'], '&#82;' ) );
+papelito_assert( 'HTML body carries no non-breaking-space entity', false, false !== strpos( $mail['message'], '&nbsp;93' ) );
+papelito_assert( 'text body carries no currency entity', false, false !== strpos( $mail['alt'], '&#82;' ) );
+papelito_assert( 'HTML body shows the sale price', true, false !== strpos( $mail['message'], 'R$ 89,00' ) );
+papelito_assert( 'HTML body shows the regular price', true, false !== strpos( $mail['message'], 'De R$ 93,00' ) );
+papelito_assert( 'text body relates both prices', true, false !== strpos( $mail['alt'], 'De R$ 93,00 por R$ 89,00.' ) );
+papelito_assert( 'subject leads with the discount', 'Seda Papelito Tropical Mini com 4% de desconto - Papelito', $mail['subject'] );
+papelito_assert( 'message is sent as HTML', true, in_array( 'Content-Type: text/html; charset=UTF-8', $mail['headers'], true ) );
+papelito_assert( 'plain-text alternative is attached', true, '' !== $mail['alt'] );
+papelito_assert( 'accented copy survives', true, false !== strpos( $mail['message'], 'O preço do seu favorito caiu.' ) );
+papelito_assert( 'text alternative repeats the headline', true, false !== strpos( $mail['alt'], 'O preço do seu favorito caiu.' ) );
+papelito_assert( 'discount badge is rendered', true, false !== strpos( $mail['message'], '4% OFF' ) );
+papelito_assert( 'category comes from the Papelito taxonomy', true, false !== strpos( $mail['message'], 'Sedas' ) );
+papelito_assert( 'product image is rendered with the product name as alt', true, false !== strpos( $mail['message'], 'alt="Seda Papelito Tropical Mini"' ) );
+papelito_assert( 'CTA points at the product', true, false !== strpos( $mail['message'], 'https://papelito.test/produtos/41' ) );
+papelito_assert( 'footer offers the opt-out route', true, false !== strpos( $mail['message'], 'https://papelito.test/perfil/configuracoes' ) );
+
+echo "Scenario 11: optional product data missing does not break the template\n";
+papelito_reset_notification_state();
+papelito_seed_user(
+	42,
+	'cliente42@papelito.test',
+	true,
+	array(
+		array(
+			'product_id' => 42,
+			'added_at'   => '2026-06-10T10:00:00Z',
+		),
+	)
+);
+papelito_seed_product(
+	array(
+		'id'            => 42,
+		'name'          => 'Dichavador <Neon> & Cia',
+		'status'        => 'publish',
+		'regular_price' => '30.00',
+		'sale_price'    => '',
+	)
+);
+$GLOBALS['papelito_uncategorized_products'][42] = true;
+do_action(
+	'papelito_product_on_promo',
+	42,
+	array(
+		'promo_type'      => 'coupon',
+		'promo_label'     => 'VOLTA10',
+		'promo_event_key' => 'coupon:912:42:1718201111',
+	)
+);
+unset( $GLOBALS['papelito_uncategorized_products'][42] );
+
+papelito_assert( 'coupon promo e-mail dispatched', 1, count( $GLOBALS['papelito_mail_log'] ) );
+$coupon_mail = $GLOBALS['papelito_mail_log'][0];
+
+papelito_assert( 'no image plate without a product image', false, false !== strpos( $coupon_mail['message'], '<img' ) );
+papelito_assert( 'no price plate without a sale price', false, false !== strpos( $coupon_mail['message'], 'Agora' ) );
+papelito_assert( 'subject falls back to the generic line', 'Dichavador <Neon> & Cia entrou em promoção - Papelito', $coupon_mail['subject'] );
+papelito_assert( 'product name is escaped in the HTML body', true, false !== strpos( $coupon_mail['message'], 'Dichavador &lt;Neon&gt; &amp; Cia' ) );
+papelito_assert( 'headline does not claim a price drop it cannot prove', false, false !== strpos( $coupon_mail['message'], 'O preço do seu favorito caiu.' ) );
+papelito_assert( 'headline states only what the event knows', true, false !== strpos( $coupon_mail['message'], 'Seu favorito entrou em promoção.' ) );
+papelito_assert( 'coupon code is the offer context', true, false !== strpos( $coupon_mail['message'], 'Use o cupom <strong style="font-weight:900;letter-spacing:0.06em;">VOLTA10</strong>' ) );
+papelito_assert( 'text alternative keeps the coupon instruction', true, false !== strpos( $coupon_mail['alt'], 'Use o cupom VOLTA10 no carrinho' ) );
+
+echo "Scenario 12: vendor purchase e-mail uses the same shell and clean prices\n";
+$purchase_html = papelito_new_purchase_email_html(
+	array(
+		'greeting'      => 'LL Distribuidora',
+		'order_number'  => '14110',
+		'order_url'     => 'https://papelito.test/vendor/pedidos/14110',
+		'created_at'    => '05/09/2026 14:39',
+		'customer_name' => 'Marcos Andrade',
+		'items_label'   => '3 itens',
+		'total_label'   => papelito_notification_format_price( 248.5 ),
+	)
+);
+papelito_assert( 'vendor total is plain text currency', true, false !== strpos( $purchase_html, 'R$ 248,50' ) );
+papelito_assert( 'vendor body carries no currency entity', false, false !== strpos( $purchase_html, '&#82;' ) );
+papelito_assert( 'vendor body keeps the brand masthead', true, false !== strpos( $purchase_html, '>PAPELITO<' ) );
 
 echo "\n";
 if ( $failures > 0 ) {

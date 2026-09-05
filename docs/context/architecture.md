@@ -150,6 +150,7 @@ O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grav
 | `account_admin_endpoints.php` | rotas de suspender/reativar conta e empresa, e histórico de estado |
 | `admin_reports.php` | snapshot de vendas com segmento e janela anterior, relatórios e exportações |
 | `notifications.php` | dispatcher **e todos os listeners** dos eventos de domínio |
+| `notification_emails.php` | camada de apresentação dos e-mails transacionais: casca da marca, chapas, botão e os corpos HTML/texto. Não conhece hook nem evento |
 
 ## Barramento de eventos
 

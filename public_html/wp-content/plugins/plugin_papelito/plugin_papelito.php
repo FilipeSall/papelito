@@ -48,6 +48,7 @@ require_once __DIR__ . '/includes/correios_prepostage.php';
 require_once __DIR__ . '/includes/vendor_geo.php';
 require_once __DIR__ . '/includes/vendor_stock.php';
 require_once __DIR__ . '/includes/kits.php';
+require_once __DIR__ . '/includes/notification_emails.php';
 require_once __DIR__ . '/includes/notifications.php';
 require_once __DIR__ . '/includes/correios_tracking.php';
 require_once __DIR__ . '/includes/active_vendor.php';

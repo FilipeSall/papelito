@@ -10,7 +10,7 @@ defined( 'ABSPATH' ) || exit;
 const PAPELITO_NOTIFICATION_API_NAMESPACE = 'papelito/v1';
 const PAPELITO_NOTIFICATION_EMAIL_HEADER = 'Content-Type: text/plain; charset=UTF-8';
 const PAPELITO_NOTIFICATION_PROMO_LABEL = 'Promoção';
-const PAPELITO_NOTIFICATION_GREETING_FORMAT = 'Ola %s,';
+const PAPELITO_NOTIFICATION_GREETING_FORMAT = 'Olá, %s.';
 const PAPELITO_NOTIFICATION_SIGNATURE = 'Time Papelito';
 
 if ( ! defined( 'PAPELITO_NOTIFICATIONS_TABLE' ) ) {
@@ -521,7 +521,12 @@ function papelito_notification_product_url( array $payload ) {
 }
 
 /**
- * Formata preço para texto simples em e-mails.
+ * Formata preço para e-mails, em texto legível.
+ *
+ * `wc_price()` devolve HTML: o símbolo do Real é a entidade `&#82;&#36;` e o
+ * separador é `&nbsp;`. `wp_strip_all_tags()` tira as tags e deixa as entidades,
+ * que chegariam cruas ao destinatário — por isso a decodificação acontece aqui,
+ * na única porta de saída de preço dos e-mails.
  *
  * @param float|null $value Valor monetário.
  * @return string
@@ -531,11 +536,13 @@ function papelito_notification_format_price( $value ) {
 		return '';
 	}
 
-	if ( function_exists( 'wc_price' ) ) {
-		return wp_strip_all_tags( wc_price( $value ) );
+	if ( ! function_exists( 'wc_price' ) ) {
+		return 'R$ ' . number_format( $value, 2, ',', '.' );
 	}
 
-	return 'R$ ' . number_format( $value, 2, ',', '.' );
+	$decoded = html_entity_decode( wp_strip_all_tags( wc_price( $value ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+
+	return trim( str_replace( "\xc2\xa0", ' ', $decoded ) );
 }
 
 /**
@@ -669,38 +676,34 @@ function papelito_orders_send_new_purchase_email( WP_User $vendor, $order ): boo
 	$store_name   = (string) get_user_meta( $vendor->ID, 'store_name', true );
 	$greeting     = '' !== $store_name ? $store_name : $vendor->display_name;
 	$order_number = (string) $order->get_order_number();
-	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : '';
-	$order_link   = sprintf( '%s/vendor/pedidos/%d', $frontend_url, (int) $order->get_id() );
-	$total        = function_exists( 'wc_price' ) ? wp_strip_all_tags( wc_price( $order->get_total() ) ) : (string) $order->get_total();
 	$created_at   = $order->get_date_created() ? wp_date( 'd/m/Y H:i', $order->get_date_created()->getTimestamp() ) : '';
+	$items_count  = 0;
 
-	$subject    = sprintf( 'Nova compra na sua loja - Papelito #%s', $order_number );
-	$headers    = array( PAPELITO_NOTIFICATION_EMAIL_HEADER );
-	$body_lines = array(
-		sprintf( PAPELITO_NOTIFICATION_GREETING_FORMAT, '' !== $greeting ? $greeting : $recipient ),
-		'',
-		'Você recebeu uma nova compra na Papelito.',
-		'',
-		sprintf( 'Pedido: #%s', $order_number ),
-	);
-
-	if ( '' !== $created_at ) {
-		$body_lines[] = sprintf( 'Data: %s', $created_at );
+	foreach ( $order->get_items( 'line_item' ) as $item ) {
+		$items_count += is_object( $item ) && method_exists( $item, 'get_quantity' ) ? (int) $item->get_quantity() : 0;
 	}
 
-	$body_lines = array_merge(
-		$body_lines,
-		array(
-			sprintf( 'Total: %s', $total ),
-			'',
-			'Separe o pedido e prepare o envio. Acesse o detalhe abaixo:',
-			$order_link,
-			'',
-			PAPELITO_NOTIFICATION_SIGNATURE,
-		)
+	$items_label = '';
+	if ( $items_count > 0 ) {
+		$items_label = sprintf( '%d %s', $items_count, 1 === $items_count ? 'item' : 'itens' );
+	}
+
+	$view = array(
+		'greeting'      => '' !== $greeting ? $greeting : $recipient,
+		'order_number'  => $order_number,
+		'order_url'     => papelito_notification_frontend_link( sprintf( '/vendor/pedidos/%d', (int) $order->get_id() ) ),
+		'created_at'    => $created_at,
+		'customer_name' => method_exists( $order, 'get_formatted_billing_full_name' ) ? (string) $order->get_formatted_billing_full_name() : '',
+		'items_label'   => $items_label,
+		'total_label'   => papelito_notification_format_price( papelito_notification_promo_number( $order->get_total() ) ),
 	);
 
-	return wp_mail( $recipient, $subject, implode( PHP_EOL, $body_lines ), $headers );
+	return papelito_email_send(
+		$recipient,
+		sprintf( 'Nova compra na sua loja - Papelito #%s', $order_number ),
+		papelito_new_purchase_email_html( $view ),
+		papelito_new_purchase_email_text( $view )
+	);
 }
 
 /**
@@ -1015,7 +1018,111 @@ function papelito_handle_stock_zeroed_notification( int $vendor_id, int $product
 add_action( 'papelito_stock_zeroed', 'papelito_handle_stock_zeroed_notification', 10, 2 );
 
 /**
- * Envia e-mail de favorito em promoção, seguindo o padrão texto simples do projeto.
+ * Link de uma rota do frontend, para uso em e-mail.
+ *
+ * @param string $path Caminho iniciado por barra.
+ * @return string
+ */
+function papelito_notification_frontend_link( $path ) {
+	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : '';
+
+	return rtrim( $frontend_url, '/' ) . '/' . ltrim( (string) $path, '/' );
+}
+
+/**
+ * Dados de vitrine do produto — imagem e categoria — para o e-mail.
+ *
+ * Resolvidos uma vez por produto: um evento de promoção notifica vários usuários
+ * e nenhum deles justifica repetir a leitura.
+ *
+ * @param int $product_id Produto em promoção.
+ * @return array{image_url:string,category:string}
+ */
+function papelito_notification_product_presentation( $product_id ) {
+	static $cache = array();
+
+	$product_id = absint( $product_id );
+
+	if ( isset( $cache[ $product_id ] ) ) {
+		return $cache[ $product_id ];
+	}
+
+	$product   = function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null;
+	$image_url = '';
+
+	if ( $product instanceof WC_Product ) {
+		$image_id  = absint( $product->get_image_id() );
+		$image_url = $image_id > 0 ? (string) wp_get_attachment_image_url( $image_id, 'woocommerce_thumbnail' ) : '';
+	}
+
+	$category = function_exists( 'papelito_product_get_category' ) ? papelito_product_get_category( $product_id ) : null;
+
+	$cache[ $product_id ] = array(
+		'image_url' => $image_url,
+		'category'  => is_array( $category ) ? (string) ( $category['name'] ?? '' ) : '',
+	);
+
+	return $cache[ $product_id ];
+}
+
+/**
+ * Monta a visão que o template do e-mail de favorito em promoção consome.
+ *
+ * @param WP_User             $user    Destinatário.
+ * @param array<string,mixed> $payload Payload do evento.
+ * @return array<string,mixed>
+ */
+function papelito_favorite_promo_email_view( WP_User $user, array $payload ) {
+	$recipient = sanitize_email( $user->user_email );
+
+	$greeting = (string) get_user_meta( $user->ID, 'first_name', true );
+	if ( '' === $greeting ) {
+		$greeting = $user->display_name ? (string) $user->display_name : $recipient;
+	}
+
+	$product_id   = absint( $payload['product_id'] ?? 0 );
+	$presentation = papelito_notification_product_presentation( $product_id );
+
+	return array(
+		'greeting'            => $greeting,
+		'product_id'          => $product_id,
+		'product_name'        => sanitize_text_field( (string) ( $payload['product_name'] ?? 'Produto favorito' ) ),
+		'product_url'         => papelito_notification_product_url( $payload ),
+		'settings_url'        => papelito_notification_frontend_link( '/perfil/configuracoes' ),
+		'category'            => $presentation['category'],
+		'image_url'           => $presentation['image_url'],
+		'promo_type'          => sanitize_key( (string) ( $payload['promo_type'] ?? '' ) ),
+		'promo_label'         => sanitize_text_field( (string) ( $payload['promo_label'] ?? '' ) ),
+		'regular_price_label' => papelito_notification_format_price( papelito_notification_promo_number( $payload['regular_price'] ?? null ) ),
+		'sale_price_label'    => papelito_notification_format_price( papelito_notification_promo_number( $payload['sale_price'] ?? null ) ),
+		'discount_percent'    => absint( $payload['discount_percent'] ?? 0 ),
+	);
+}
+
+/**
+ * Assunto do e-mail de favorito em promoção, com o dado mais forte disponível.
+ *
+ * @param array<string,mixed> $view Visão do e-mail.
+ * @return string
+ */
+function papelito_favorite_promo_email_subject( array $view ) {
+	$name     = (string) $view['product_name'];
+	$sale     = (string) $view['sale_price_label'];
+	$discount = absint( $view['discount_percent'] );
+
+	if ( $discount > 0 ) {
+		return sprintf( '%s com %d%% de desconto - Papelito', $name, $discount );
+	}
+
+	if ( '' !== $sale ) {
+		return sprintf( '%s por %s - Papelito', $name, $sale );
+	}
+
+	return sprintf( '%s entrou em promoção - Papelito', $name );
+}
+
+/**
+ * Envia o aviso de favorito em promoção, em HTML com alternativa em texto.
  *
  * @param WP_User             $user    Destinatário.
  * @param array<string,mixed> $payload Payload do evento.
@@ -1028,51 +1135,14 @@ function papelito_send_favorite_promo_email( WP_User $user, array $payload ) {
 		return false;
 	}
 
-	$name = (string) get_user_meta( $user->ID, 'first_name', true );
-	if ( '' === $name ) {
-		$name = $user->display_name ? (string) $user->display_name : $recipient;
-	}
+	$view = papelito_favorite_promo_email_view( $user, $payload );
 
-	$product_name = sanitize_text_field( (string) ( $payload['product_name'] ?? 'Produto favorito' ) );
-	$promo_label  = sanitize_text_field( (string) ( $payload['promo_label'] ?? 'Promoção' ) );
-	$link         = papelito_notification_product_url( $payload );
-	$regular      = papelito_notification_format_price( papelito_notification_promo_number( $payload['regular_price'] ?? null ) );
-	$sale         = papelito_notification_format_price( papelito_notification_promo_number( $payload['sale_price'] ?? null ) );
-	$discount     = absint( $payload['discount_percent'] ?? 0 );
-
-	$subject    = sprintf( '%s entrou em promoção - Papelito', $product_name );
-	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
-	$body_lines = array(
-		sprintf( 'Ola %s,', $name ),
-		'',
-		sprintf( 'Um produto dos seus favoritos entrou em promoção: %s.', $product_name ),
-		sprintf( 'Oferta: %s.', $promo_label ),
+	return papelito_email_send(
+		$recipient,
+		papelito_favorite_promo_email_subject( $view ),
+		papelito_favorite_promo_email_html( $view ),
+		papelito_favorite_promo_email_text( $view )
 	);
-
-	if ( $discount > 0 ) {
-		$body_lines[] = sprintf( 'Desconto: %d%%.', $discount );
-	}
-
-	if ( '' !== $regular ) {
-		$body_lines[] = sprintf( 'Preço regular: %s.', $regular );
-	}
-
-	if ( '' !== $sale ) {
-		$body_lines[] = sprintf( 'Preço promocional: %s.', $sale );
-	}
-
-	$body_lines = array_merge(
-		$body_lines,
-		array(
-			'',
-			'Veja o produto no link abaixo:',
-			$link,
-			'',
-			'Time Papelito',
-		)
-	);
-
-	return wp_mail( $recipient, $subject, implode( PHP_EOL, $body_lines ), $headers );
 }
 
 /**
