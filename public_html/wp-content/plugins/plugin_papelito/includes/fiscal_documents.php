@@ -59,6 +59,31 @@ function papelito_fiscal_table_names(): array {
 	);
 }
 
+/**
+ * Apaga versões antigas de nota deixadas pelo modelo anterior.
+ *
+ * O pedido passou a guardar **uma** nota, sem histórico. As linhas com
+ * `is_current` nulo eram versões substituídas; sem UI que as alcance elas
+ * seriam registros órfãos, e os arquivos delas, arquivos sem referência.
+ * Idempotente: roda de novo sem efeito quando não há o que limpar.
+ */
+function papelito_fiscal_documents_drop_superseded(): void {
+	global $wpdb;
+
+	$tables = papelito_fiscal_table_names();
+	$ids    = $wpdb->get_col( "SELECT id FROM {$tables['documents']} WHERE is_current IS NULL" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery
+
+	foreach ( array_map( 'intval', (array) $ids ) as $document_id ) {
+		if ( function_exists( 'papelito_fiscal_document_purge_files' ) && function_exists( 'papelito_fiscal_document_storage_keys' ) ) {
+			papelito_fiscal_document_purge_files( papelito_fiscal_document_storage_keys( $document_id ) );
+		}
+
+		$wpdb->delete( $tables['files'], array( 'fiscal_document_id' => $document_id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->delete( $tables['events'], array( 'fiscal_document_id' => $document_id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->delete( $tables['documents'], array( 'id' => $document_id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	}
+}
+
 function papelito_fiscal_documents_install_tables(): void {
 	global $wpdb;
 
@@ -413,6 +438,23 @@ function papelito_fiscal_event_safe_detail( array $detail ): array {
  * @param array<string,mixed> $context   Dados do pedido para cruzamento.
  * @return array<string,mixed>
  */
+/**
+ * Valor digitado quando há um, e o do XML quando não há.
+ *
+ * `??` não cai para o fallback diante de `''`, e string vazia é um valor
+ * legítimo aqui: é assim que o vendor apaga um dado que digitou errado. Sem
+ * esta distinção, limpar o campo deixava de aceitar o valor do XML e gravava
+ * vazio — o mesmo cuidado que `access_key` e `issued_at` já tomam à mão.
+ *
+ * @param array<string,mixed> $declared  Dados informados pelo vendor.
+ * @param array<string,mixed> $extracted Dados lidos do XML.
+ */
+function papelito_fiscal_declared_or_extracted( array $declared, string $declared_key, array $extracted, string $extracted_key ): string {
+	$value = trim( (string) ( $declared[ $declared_key ] ?? '' ) );
+
+	return '' !== $value ? $value : trim( (string) ( $extracted[ $extracted_key ] ?? '' ) );
+}
+
 function papelito_fiscal_document_build( array $declared, array $extracted = array(), array $context = array() ): array {
 	$doc_type = sanitize_key( (string) ( $declared['doc_type'] ?? 'nfe' ) );
 	$doc_type = in_array( $doc_type, papelito_fiscal_document_types(), true ) ? $doc_type : 'other';
@@ -433,11 +475,11 @@ function papelito_fiscal_document_build( array $declared, array $extracted = arr
 		'doc_type'          => $doc_type,
 		'access_key'        => $access_key,
 		'access_key_status' => papelito_fiscal_key_status( $access_key ),
-		'doc_number'        => trim( (string) ( $declared['doc_number'] ?? ( $extracted['number'] ?? '' ) ) ),
-		'doc_series'        => trim( (string) ( $declared['doc_series'] ?? ( $extracted['series'] ?? '' ) ) ),
-		'protocol'          => trim( (string) ( $declared['protocol'] ?? ( $extracted['protocol'] ?? '' ) ) ),
-		'issuer_cnpj'       => papelito_fiscal_key_normalize( (string) ( $declared['issuer_cnpj'] ?? ( $extracted['issuer_cnpj'] ?? '' ) ) ),
-		'issuer_name'       => sanitize_text_field( (string) ( $declared['issuer_name'] ?? ( $extracted['issuer_name'] ?? '' ) ) ),
+		'doc_number'        => papelito_fiscal_declared_or_extracted( $declared, 'doc_number', $extracted, 'number' ),
+		'doc_series'        => papelito_fiscal_declared_or_extracted( $declared, 'doc_series', $extracted, 'series' ),
+		'protocol'          => papelito_fiscal_declared_or_extracted( $declared, 'protocol', $extracted, 'protocol' ),
+		'issuer_cnpj'       => papelito_fiscal_key_normalize( papelito_fiscal_declared_or_extracted( $declared, 'issuer_cnpj', $extracted, 'issuer_cnpj' ) ),
+		'issuer_name'       => sanitize_text_field( papelito_fiscal_declared_or_extracted( $declared, 'issuer_name', $extracted, 'issuer_name' ) ),
 		'issued_at'         => $issued_at,
 		'total_cents'       => (int) ( $declared['total_cents'] ?? 0 ),
 		'has_xml'           => ! empty( $extracted ),

@@ -268,6 +268,67 @@ function papelito_direct_upload_pre_account_document( array $ticket, array $file
 	);
 }
 
+/**
+ * Anexo de nota fiscal ao pedido do vendor.
+ *
+ * O tíquete já carrega pedido, papel, modo e os campos digitados: o endpoint
+ * direto não exige JWT, então nada que decida autorização pode chegar do
+ * navegador neste momento. A conferência de dono do pedido acontece de novo
+ * aqui, porque o tíquete pode ter sido emitido e o vínculo mudado desde então.
+ *
+ * @param array<string,mixed> $ticket Tíquete consumido.
+ * @param array<string,mixed> $file   Arquivo recebido.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_direct_upload_vendor_fiscal_document( array $ticket, array $file ) {
+	$context   = (array) ( $ticket['context'] ?? array() );
+	$vendor_id = (int) ( $context['vendor_id'] ?? 0 );
+	$order_id  = (int) ( $context['order_id'] ?? 0 );
+	$role      = (string) ( $context['role'] ?? '' );
+
+	if ( $vendor_id <= 0 || $order_id <= 0 || ! in_array( $role, array( 'xml', 'danfe_pdf' ), true ) ) {
+		return papelito_direct_upload_error( 'papelito_upload_not_allowed', 'Você não tem permissão para anexar esta nota fiscal.', 403 );
+	}
+
+	$enabled = papelito_fiscal_documents_require_enabled();
+	if ( is_wp_error( $enabled ) ) {
+		return $enabled;
+	}
+
+	$order = papelito_vendor_dashboard_vendor_order( $order_id, $vendor_id );
+	if ( is_wp_error( $order ) ) {
+		return $order;
+	}
+
+	if ( '' !== papelito_fiscal_order_block_reason( $order ) ) {
+		return papelito_direct_upload_error( 'papelito_fiscal_order_not_ready', 'Este pedido ainda não aceita nota fiscal.', 409 );
+	}
+
+	$validated = papelito_fiscal_document_validate_upload( $file, $role );
+	if ( is_wp_error( $validated ) ) {
+		return $validated;
+	}
+
+	$result = papelito_fiscal_document_attach_file(
+		$order,
+		$vendor_id,
+		array(
+			'role'      => $role,
+			'file'      => $file,
+			'validated' => $validated,
+			'declared'  => (array) ( $context['declared'] ?? array() ),
+			'mode'      => 'replace' === (string) ( $context['mode'] ?? 'attach' ) ? 'replace' : 'attach',
+		),
+		$vendor_id
+	);
+
+	if ( is_wp_error( $result ) ) {
+		return $result;
+	}
+
+	return papelito_fiscal_order_block( $order, $vendor_id );
+}
+
 function papelito_direct_upload_catalog( array $ticket, array $file ) {
 	$user_id = (int) ( $ticket['context']['user_id'] ?? 0 );
 	if ( $user_id <= 0 || ! user_can( $user_id, 'manage_options' ) ) {
@@ -280,6 +341,65 @@ function papelito_direct_upload_catalog( array $ticket, array $file ) {
 	$response = papelito_catalog_pdf_upload( $request );
 
 	return is_wp_error( $response ) ? $response : $response->get_data();
+}
+
+/**
+ * Emite o tíquete de anexo de nota fiscal, com a autorização já resolvida.
+ *
+ * Pedido, papel, modo e campos digitados são fixados aqui — na chamada
+ * autenticada — e não aceitos do navegador no momento do upload.
+ *
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_direct_upload_vendor_fiscal_ticket( WP_REST_Request $request, int $user_id ) {
+	if ( $user_id <= 0 ) {
+		return papelito_direct_upload_error( 'papelito_upload_not_authenticated', 'Autenticação necessária.', 401 );
+	}
+
+	$seller = papelito_vendor_dashboard_require_seller();
+	if ( is_wp_error( $seller ) ) {
+		return $seller;
+	}
+
+	$enabled = papelito_fiscal_documents_require_enabled();
+	if ( is_wp_error( $enabled ) ) {
+		return $enabled;
+	}
+
+	$role = sanitize_key( (string) $request->get_param( 'role' ) );
+	if ( ! in_array( $role, array( 'xml', 'danfe_pdf' ), true ) ) {
+		return papelito_direct_upload_error( 'papelito_fiscal_role_invalid', 'Informe o tipo de arquivo da nota fiscal.', 422 );
+	}
+
+	$order = papelito_vendor_dashboard_vendor_order( absint( $request->get_param( 'orderId' ) ), $user_id );
+	if ( is_wp_error( $order ) ) {
+		return $order;
+	}
+
+	$block_reason = papelito_fiscal_order_block_reason( $order );
+	if ( '' !== $block_reason ) {
+		return papelito_direct_upload_error(
+			'papelito_fiscal_order_not_ready',
+			'cancelado' === $block_reason
+				? 'Pedido cancelado não recebe nota fiscal.'
+				: 'A nota fiscal pode ser anexada depois da confirmação do pagamento.',
+			409
+		);
+	}
+
+	return new WP_REST_Response(
+		papelito_direct_upload_ticket_create(
+			'vendor-fiscal-document',
+			array(
+				'vendor_id' => $user_id,
+				'order_id'  => (int) $order->get_id(),
+				'role'      => $role,
+				'mode'      => 'replace' === sanitize_key( (string) $request->get_param( 'mode' ) ) ? 'replace' : 'attach',
+				'declared'  => papelito_fiscal_declared_from_input( (array) $request->get_param( 'declared' ) ),
+			)
+		),
+		201
+	);
 }
 
 function papelito_direct_upload_ticket_issue( WP_REST_Request $request ) {
@@ -325,6 +445,10 @@ function papelito_direct_upload_ticket_issue( WP_REST_Request $request ) {
 		);
 	}
 
+	if ( 'vendor-fiscal-document' === $purpose ) {
+		return papelito_direct_upload_vendor_fiscal_ticket( $request, $user_id );
+	}
+
 	if ( 'pre-account-document' === $purpose ) {
 		$application = papelito_pre_account_application_authorize( $application_token );
 		if ( is_wp_error( $application ) ) {
@@ -353,11 +477,12 @@ function papelito_direct_upload_receive( WP_REST_Request $request ) {
 	}
 
 	$result = match ( (string) $ticket['purpose'] ) {
-		'media'                => papelito_direct_upload_media( $ticket, $file ),
-		'catalog'              => papelito_direct_upload_catalog( $ticket, $file ),
-		'owner-document'       => papelito_direct_upload_owner_document( $ticket, $file ),
-		'pre-account-document' => papelito_direct_upload_pre_account_document( $ticket, $file ),
-		default                => papelito_direct_upload_error( 'papelito_upload_invalid_purpose', 'Finalidade de upload inválida.', 422 ),
+		'media'                  => papelito_direct_upload_media( $ticket, $file ),
+		'catalog'                => papelito_direct_upload_catalog( $ticket, $file ),
+		'owner-document'         => papelito_direct_upload_owner_document( $ticket, $file ),
+		'pre-account-document'   => papelito_direct_upload_pre_account_document( $ticket, $file ),
+		'vendor-fiscal-document' => papelito_direct_upload_vendor_fiscal_document( $ticket, $file ),
+		default                  => papelito_direct_upload_error( 'papelito_upload_invalid_purpose', 'Finalidade de upload inválida.', 422 ),
 	};
 
 	return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 201 );

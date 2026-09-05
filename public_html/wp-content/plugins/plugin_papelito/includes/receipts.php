@@ -562,6 +562,22 @@ function papelito_receipt_persist_with_retry( int $order_id, array $snapshot, st
  *
  * @return array<string,mixed>|WP_Error
  */
+/**
+ * Origens possíveis de emissão de um recibo.
+ *
+ * - `payment`: o evento de pagamento confirmado, que é o caminho normal.
+ * - `backfill`: a rotina que emite recibo de pedido antigo.
+ * - `on_demand`: alguém pediu o PDF de um pedido pago que ainda não tinha
+ *   recibo, e a geração emitiu na hora. Registrar isso como `payment` dizia que
+ *   o recibo nasceu do pagamento, o que não aconteceu — e o número da sequência
+ *   anual sai fora da ordem dos pagamentos justamente nesses casos.
+ *
+ * @return array<int,string>
+ */
+function papelito_receipt_origins(): array {
+	return array( 'payment', 'backfill', 'on_demand' );
+}
+
 function papelito_receipt_issue_for_order( int $order_id, string $origin = 'payment' ) {
 	$existing = papelito_receipt_get_by_order( $order_id );
 	if ( $existing ) {
@@ -574,7 +590,7 @@ function papelito_receipt_issue_for_order( int $order_id, string $origin = 'paym
 	}
 
 	$snapshot = papelito_receipt_build_snapshot( $order );
-	$origin   = in_array( $origin, array( 'payment', 'backfill' ), true ) ? $origin : 'payment';
+	$origin   = in_array( $origin, papelito_receipt_origins(), true ) ? $origin : 'payment';
 
 	return papelito_receipt_persist_with_retry( $order_id, $snapshot, $origin );
 }

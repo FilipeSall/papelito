@@ -15,6 +15,10 @@ if ( ! defined( 'PAPELITO_VENDOR_DEFAULT_LEAD_TIME_DAYS' ) ) {
 	define( 'PAPELITO_VENDOR_DEFAULT_LEAD_TIME_DAYS', 2 );
 }
 
+if ( ! defined( 'PAPELITO_VENDOR_NON_DIGIT_PATTERN' ) ) {
+	define( 'PAPELITO_VENDOR_NON_DIGIT_PATTERN', '/\D+/' );
+}
+
 if ( ! defined( 'PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT' ) ) {
 	define( 'PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT', 'aguardando_pagamento' );
 	define( 'PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT', 'aguardando_envio' );
@@ -345,6 +349,20 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
 		return $result;
 	}
 
+	return papelito_vendor_dashboard_map_order_detail( $order, $vendor_id, $include_receipt, $items, $result );
+}
+
+/**
+ * Completa o payload de detalhe de um pedido.
+ *
+ * @param object                         $order           Pedido WooCommerce.
+ * @param int|null                       $vendor_id       ID do vendor, quando aplicável.
+ * @param bool                           $include_receipt Se deve incluir o recibo do comprador.
+ * @param array<int,array<string,mixed>> $items         Itens já mapeados do pedido.
+ * @param array<string,mixed>            $result         Payload base do pedido.
+ * @return array<string,mixed>
+ */
+function papelito_vendor_dashboard_map_order_detail( $order, ?int $vendor_id, bool $include_receipt, array $items, array $result ): array {
 	$result['items'] = $items;
 	$result['subtotal'] = (float) $order->get_subtotal();
 	$result['shipping_total'] = (float) $order->get_shipping_total();
@@ -395,9 +413,68 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
 
 	if ( $include_receipt && null === $vendor_id && function_exists( 'papelito_receipt_public_summary' ) ) {
 		$result['receipt'] = papelito_receipt_public_summary( $order );
+
+		// `null` quando não há nota: a tela do comprador não anuncia ausência de
+		// nota fiscal, porque quem emite é o vendor e a pendência não é dele.
+		if ( function_exists( 'papelito_fiscal_customer_summary' ) ) {
+			$result['fiscal_document'] = papelito_fiscal_customer_summary( $order );
+		}
+	}
+
+	if ( null !== $vendor_id ) {
+		$result['next_statuses'] = papelito_vendor_dashboard_next_statuses( $result['vendor_status'] );
+		$result['billing']       = papelito_vendor_dashboard_billing( $order );
+
+		// A justificativa do cancelamento é obrigatória na transição; sem devolvê-la
+		// aqui, o vendor digita um motivo que nunca mais aparece em lugar nenhum.
+		$result['cancel_reason'] = sanitize_text_field( (string) $order->get_meta( '_papelito_vendor_cancel_reason', true ) );
+
+		// O recibo do pagamento fica anexado ao pedido também para o vendor. É o
+		// mesmo documento do comprador, lido do mesmo registro — o resumo não
+		// emite nada, só diz se já existe.
+		if ( function_exists( 'papelito_receipt_public_summary' ) ) {
+			$result['receipt'] = papelito_receipt_public_summary( $order );
+		}
+
+		if ( function_exists( 'papelito_fiscal_order_block' ) ) {
+			$result['fiscal'] = papelito_fiscal_order_block( $order, $vendor_id );
+		}
 	}
 
 	return $result;
+}
+
+/**
+ * Dados do comprador que o vendor precisa para emitir a nota por fora.
+ *
+ * Só vai para o detalhe do vendor dono do pedido: é o destinatário fiscal da
+ * venda dele, e sem isso a emissão obriga a pedir os dados por outro canal.
+ *
+ * @param object $order Pedido WooCommerce.
+ * @return array<string,mixed>
+ */
+function papelito_vendor_dashboard_billing( $order ): array {
+	$cnpj     = (string) preg_replace( PAPELITO_VENDOR_NON_DIGIT_PATTERN, '', (string) $order->get_meta( '_billing_cnpj', true ) );
+	$postcode = (string) preg_replace( PAPELITO_VENDOR_NON_DIGIT_PATTERN, '', (string) $order->get_meta( '_papelito_company_fiscal_cep', true ) );
+	$email    = (string) $order->get_meta( '_papelito_company_billing_email', true );
+	$phone    = (string) $order->get_meta( '_papelito_company_phone', true );
+
+	return array(
+		'legal_name'     => sanitize_text_field( (string) $order->get_billing_company() ),
+		'contact_name'   => sanitize_text_field( (string) $order->get_formatted_billing_full_name() ),
+		'cnpj'           => $cnpj,
+		'email'          => sanitize_email( '' !== $email ? $email : (string) $order->get_billing_email() ),
+		'phone'          => sanitize_text_field( '' !== $phone ? $phone : (string) $order->get_billing_phone() ),
+		'fiscal_address' => array(
+			'street'       => sanitize_text_field( (string) $order->get_meta( '_papelito_company_fiscal_street', true ) ),
+			'number'       => sanitize_text_field( (string) $order->get_meta( '_papelito_company_fiscal_number', true ) ),
+			'complement'   => sanitize_text_field( (string) $order->get_meta( '_papelito_company_fiscal_complement', true ) ),
+			'neighborhood' => sanitize_text_field( (string) $order->get_meta( '_papelito_company_fiscal_neighborhood', true ) ),
+			'city'         => sanitize_text_field( (string) $order->get_meta( '_papelito_company_fiscal_city', true ) ),
+			'state'        => sanitize_text_field( (string) $order->get_meta( '_papelito_company_fiscal_state', true ) ),
+			'postcode'     => $postcode,
+		),
+	);
 }
 
 /**
@@ -522,7 +599,7 @@ function papelito_vendor_dashboard_bucket( $order, string $interval ): string {
  *
  * @return array<string,mixed>|null
  */
-function papelito_vendor_dashboard_kpi_order_data( $order, int $vendor_id, array $period, array $sale_statuses ): ?array {
+function papelito_vendor_dashboard_kpi_order_data( mixed $order, int $vendor_id, array $period, array $sale_statuses ): ?array {
 	if ( ! papelito_vendor_dashboard_in_period( $order, $period['from'], $period['to'] ) ) {
 		return null;
 	}
@@ -848,6 +925,101 @@ function papelito_vendor_dashboard_update_order_status( int $order_id, int $vend
 }
 
 /**
+ * Filtra pedidos pela busca textual do painel do vendor.
+ *
+ * @param array<int,object> $orders Pedidos do vendor.
+ * @return array<int,object>
+ */
+function papelito_vendor_dashboard_filter_order_search( array $orders, string $search ): array {
+	if ( '' === $search ) {
+		return $orders;
+	}
+
+	$needle = function_exists( 'mb_strtolower' ) ? mb_strtolower( $search ) : strtolower( $search );
+
+	return array_values(
+		array_filter(
+			$orders,
+			static function ( mixed $order ) use ( $needle ): bool {
+				if ( ! papelito_vendor_dashboard_is_wc_instance( $order, 'WC_Order' ) ) {
+					return false;
+				}
+
+				$haystack = $order->get_order_number() . ' ' . $order->get_formatted_billing_full_name();
+				$haystack = function_exists( 'mb_strtolower' ) ? mb_strtolower( $haystack ) : strtolower( $haystack );
+
+				return false !== strpos( $haystack, $needle );
+			}
+		)
+	);
+}
+
+/**
+ * Filtra pedidos por status operacional.
+ *
+ * @param array<int,object> $orders Pedidos do vendor.
+ * @return array<int,object>
+ */
+function papelito_vendor_dashboard_filter_order_status( array $orders, string $status ): array {
+	if ( '' === $status || 'all' === $status || ! in_array( $status, papelito_vendor_dashboard_statuses(), true ) ) {
+		return $orders;
+	}
+
+	return array_values(
+		array_filter(
+			$orders,
+			static fn( mixed $order ): bool => papelito_vendor_dashboard_order_status( $order ) === $status
+		)
+	);
+}
+
+/**
+ * Filtra pedidos sem documento fiscal quando solicitado.
+ *
+ * Recebe o conjunto de pedidos com nota já resolvido pelo chamador: descobrir
+ * isso aqui obrigava uma consulta com um placeholder por pedido do vendor.
+ *
+ * @param array<int,object> $orders     Pedidos do vendor.
+ * @param array<int,int>    $documented Ids de pedido com documento corrente.
+ * @return array<int,object>
+ */
+function papelito_vendor_dashboard_filter_fiscal_pending( array $orders, array $documented, string $fiscal ): array {
+	if ( 'pending' !== $fiscal ) {
+		return $orders;
+	}
+
+	return array_values(
+		array_filter(
+			$orders,
+			static function ( mixed $order ) use ( $documented ): bool {
+				return papelito_vendor_dashboard_fiscal_is_pending( $order, isset( $documented[ (int) $order->get_id() ] ) );
+			}
+		)
+	);
+}
+
+/**
+ * Mapeia os pedidos da página para a resposta REST.
+ *
+ * @param array<int,object> $orders     Pedidos da página.
+ * @param array<int,mixed>  $documented IDs com documento fiscal.
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_vendor_dashboard_map_order_page( array $orders, int $vendor_id, array $documented ): array {
+	return array_map(
+		static function ( mixed $order ) use ( $vendor_id, $documented ): array {
+			$mapped                        = papelito_vendor_dashboard_map_order( $order, $vendor_id );
+			$mapped['next_statuses']       = papelito_vendor_dashboard_next_statuses( $mapped['vendor_status'] );
+			$mapped['has_fiscal_document'] = isset( $documented[ (int) $order->get_id() ] );
+			$mapped['fiscal_pending']      = papelito_vendor_dashboard_fiscal_is_pending( $order, $mapped['has_fiscal_document'] );
+
+			return $mapped;
+		},
+		$orders
+	);
+}
+
+/**
  * Paginated seller order list with lightweight in-memory filtering.
  *
  * @return array<string,mixed>
@@ -860,49 +1032,78 @@ function papelito_vendor_dashboard_list_orders( int $vendor_id, WP_REST_Request 
 	$page     = max( 1, (int) $request->get_param( 'page' ) );
 	$per_page = min( 100, max( 1, (int) $request->get_param( 'per_page' ) ?: 20 ) );
 	$status   = sanitize_key( (string) $request->get_param( 'status' ) );
+	$fiscal   = sanitize_key( (string) $request->get_param( 'fiscal' ) );
 	$search   = trim( sanitize_text_field( (string) $request->get_param( 'search' ) ) );
 	$orders   = papelito_vendor_dashboard_orders_for_vendor( $vendor_id );
+	$orders   = papelito_vendor_dashboard_filter_order_search( $orders, $search );
 
-	if ( '' !== $status && 'all' !== $status && in_array( $status, papelito_vendor_dashboard_statuses(), true ) ) {
-		$orders = array_values(
-			array_filter(
-				$orders,
-				static fn( $order ): bool => papelito_vendor_dashboard_order_status( $order ) === $status
-			)
-		);
-	}
+	$documented = function_exists( 'papelito_fiscal_documented_order_ids_for_vendor' )
+		? papelito_fiscal_documented_order_ids_for_vendor( $vendor_id )
+		: array();
 
-	if ( '' !== $search ) {
-		$needle = function_exists( 'mb_strtolower' ) ? mb_strtolower( $search ) : strtolower( $search );
-		$orders = array_values(
-			array_filter(
-				$orders,
-				static function ( $order ) use ( $needle ): bool {
-					if ( ! papelito_vendor_dashboard_is_wc_instance( $order, 'WC_Order' ) ) {
-						return false;
-					}
-
-					$haystack = $order->get_order_number() . ' ' . $order->get_formatted_billing_full_name();
-					$haystack = function_exists( 'mb_strtolower' ) ? mb_strtolower( $haystack ) : strtolower( $haystack );
-					return false !== strpos( $haystack, $needle );
-				}
-			)
-		);
-	}
+	$summary = papelito_vendor_dashboard_status_counts( $orders, $documented );
+	$orders  = papelito_vendor_dashboard_filter_order_status( $orders, $status );
+	$orders  = papelito_vendor_dashboard_filter_fiscal_pending( $orders, $documented, $fiscal );
 
 	$total = count( $orders );
 	$items = array_slice( $orders, ( $page - 1 ) * $per_page, $per_page );
 
 	return array(
-		'items'       => array_map(
-			static fn( $order ): array => papelito_vendor_dashboard_map_order( $order, $vendor_id ),
-			$items
-		),
+		'items'       => papelito_vendor_dashboard_map_order_page( $items, $vendor_id, $documented ),
+		'summary'     => $summary,
 		'total'       => $total,
 		'page'        => $page,
 		'per_page'    => $per_page,
 		'total_pages' => max( 1, (int) ceil( $total / $per_page ) ),
 	);
+}
+
+/**
+ * Pedido que já deveria ter nota anexada e ainda não tem.
+ *
+ * Só conta pagamento confirmado e pedido vivo: cobrar nota de pedido não pago
+ * ou cancelado transformaria o alerta em ruído permanente.
+ *
+ * @param object $order Pedido WooCommerce.
+ */
+function papelito_vendor_dashboard_fiscal_is_pending( $order, bool $has_document ): bool {
+	if ( $has_document || ! function_exists( 'papelito_fiscal_order_block_reason' ) || ! papelito_fiscal_documents_enabled() ) {
+		return false;
+	}
+
+	return '' === papelito_fiscal_order_block_reason( $order );
+}
+
+/**
+ * Contagens por situação sobre o recorte de busca, antes do filtro de status.
+ *
+ * Uma passada só sobre os pedidos já carregados, com o conjunto de pedidos que
+ * têm nota vindo pronto do chamador — sem isso a tela não conseguiria dizer
+ * quantos pedidos esperam ação em cada fila.
+ *
+ * @param array<int,object> $orders     Pedidos do vendor, já filtrados pela busca.
+ * @param array<int,int>    $documented Ids de pedido com documento corrente.
+ * @return array<string,int>
+ */
+function papelito_vendor_dashboard_status_counts( array $orders, array $documented ): array {
+	$counts = array( 'all' => count( $orders ) );
+
+	foreach ( papelito_vendor_dashboard_statuses() as $status ) {
+		$counts[ $status ] = 0;
+	}
+
+	$counts['fiscal_pending'] = 0;
+
+	foreach ( $orders as $order ) {
+		$status            = papelito_vendor_dashboard_order_status( $order );
+		$counts[ $status ] = ( $counts[ $status ] ?? 0 ) + 1;
+
+		if ( papelito_vendor_dashboard_fiscal_is_pending( $order, isset( $documented[ (int) $order->get_id() ] ) ) ) {
+			++$counts['fiscal_pending'];
+		}
+	}
+
+	return $counts;
 }
 
 /**
@@ -948,7 +1149,7 @@ function papelito_vendor_dashboard_settings( int $vendor_id ): array {
  * Format normalized CEP digits for display.
  */
 function papelito_vendor_dashboard_format_cep( string $cep ): string {
-	$digits = preg_replace( '/\D+/', '', $cep );
+	$digits = preg_replace( PAPELITO_VENDOR_NON_DIGIT_PATTERN, '', $cep );
 
 	if ( ! is_string( $digits ) || 8 !== strlen( $digits ) ) {
 		return $cep;
@@ -1341,7 +1542,7 @@ function papelito_vendor_dashboard_handle_delete_coverage_range( WP_REST_Request
 /**
  * Validate a coverage range identifier.
  */
-function papelito_vendor_dashboard_validate_coverage_id( $value ): bool {
+function papelito_vendor_dashboard_validate_coverage_id( mixed $value ): bool {
 	return is_numeric( $value ) && (int) $value > 0;
 }
 

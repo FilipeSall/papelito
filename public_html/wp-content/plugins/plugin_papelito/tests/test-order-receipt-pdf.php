@@ -51,8 +51,9 @@ function papelito_receipt_vendor_parts( int $receipt_id ): array {
 }
 
 function papelito_receipt_issue_for_order( int $order_id, string $origin = 'payment' ) {
-	global $receipt_store, $issued_orders;
-	$issued_orders[] = $order_id;
+	global $receipt_store, $issued_orders, $issued_origins;
+	$issued_orders[]  = $order_id;
+	$issued_origins[] = $origin;
 
 	if ( isset( $receipt_store[ $order_id ] ) ) {
 		return $receipt_store[ $order_id ];
@@ -322,6 +323,8 @@ foreach ( array(
 $fallback = papelito_receipt_document( new ReceiptTestOrder( 5555 ) );
 assert_receipt_pdf_true( 'pedido sem recibo dispara emissao idempotente', in_array( 5555, $issued_orders, true ) );
 assert_receipt_pdf( 'pedido sem recibo gera o documento apos a emissao', 'PPL-2026-000900', is_array( $fallback ) ? $fallback['receipt_number'] : null );
+// A emissao que nasce da geracao do PDF nao pode se declarar vinda do pagamento.
+assert_receipt_pdf( 'emissao pela geracao do PDF se marca como on_demand', 'on_demand', end( $issued_origins ) );
 
 // Recibo impossivel: erro controlado, nunca fatal.
 $unavailable = papelito_receipt_pdf( new ReceiptTestOrder( 6666 ) );

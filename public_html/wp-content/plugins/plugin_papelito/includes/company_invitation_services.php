@@ -256,6 +256,76 @@ function papelito_company_invitation_validate_acceptance( int $user_id, WP_User 
 }
 
 /**
+ * Resolve an existing membership before creating a new one.
+ *
+ * @param array<string,mixed>    $invitation Linha do convite.
+ * @param array<string,mixed>|null $existing Membership existente.
+ * @return array<string,mixed>|WP_Error|null
+ */
+function papelito_company_invitation_handle_existing_membership( int $user_id, int $company_id, array $invitation, ?array $existing ) {
+	if ( null === $existing ) {
+		return null;
+	}
+
+	if ( 'active' === (string) $existing['member_status'] ) {
+		$accepted = papelito_company_invitation_accept( (int) $invitation['id'], $user_id );
+		if ( is_wp_error( $accepted ) ) {
+			return $accepted;
+		}
+		papelito_company_audit( $company_id, $user_id, 'invitation_accepted_existing_member', array( 'invitation_id' => (int) $invitation['id'] ) );
+		return papelito_company_context( $user_id );
+	}
+
+	if ( 'suspended' === (string) $existing['member_status'] ) {
+		return new WP_Error( 'papelito_b2b_membership_suspended', 'Seu acesso a esta empresa está suspenso.', array( 'status' => 409 ) );
+	}
+
+	return null;
+}
+
+/**
+ * Atomically consume the invitation and create the active membership.
+ *
+ * @param array<string,mixed> $invitation Linha do convite.
+ * @return true|WP_Error
+ */
+function papelito_company_invitation_persist_acceptance( int $user_id, int $company_id, array $invitation ) {
+	global $wpdb;
+
+	$wpdb->query( 'START TRANSACTION' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	try {
+		$accepted = papelito_company_invitation_accept( (int) $invitation['id'], $user_id );
+		if ( is_wp_error( $accepted ) ) {
+			throw new RuntimeException( 'not acceptable' );
+		}
+
+		$member = papelito_company_member_upsert(
+			$company_id,
+			$user_id,
+			array(
+				'member_role'          => (string) $invitation['invited_role'],
+				'member_status'        => 'active',
+				'membership_origin'    => 'invitation',
+				'invited_by_user_id'   => (int) $invitation['invited_by_user_id'],
+				'approved_by_user_id'  => (int) $invitation['invited_by_user_id'],
+				'approved_at'          => current_time( 'mysql', true ),
+				'identity_requirement' => 'required',
+			)
+		);
+		if ( is_wp_error( $member ) ) {
+			throw new RuntimeException( 'member upsert failed' );
+		}
+
+		$wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	} catch ( Throwable $e ) {
+		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		return new WP_Error( 'papelito_b2b_invitation_accept_failed', 'Não foi possível aceitar o convite.', array( 'status' => 409 ) );
+	}
+
+	return true;
+}
+
+/**
  * Aceita um convite pelo token (usuário autenticado). Transacional e single-use.
  *
  * @return array<string,mixed>|WP_Error Contexto B2B atualizado.
@@ -278,51 +348,15 @@ function papelito_company_invitation_accept_token( int $user_id, string $token )
 
 	$company_id = (int) $invitation['company_id'];
 
-	// Aceitar duas vezes para um membro ativo é idempotente: consome este token, sem duplicar o
-	// vínculo N:N. Isso também elimina um convite pendente que se tornou redundante.
 	$existing = papelito_company_member_get( $company_id, $user_id );
-	if ( null !== $existing && 'active' === (string) $existing['member_status'] ) {
-		$accepted = papelito_company_invitation_accept( (int) $invitation['id'], $user_id );
-		if ( is_wp_error( $accepted ) ) {
-			return $accepted;
-		}
-		papelito_company_audit( $company_id, $user_id, 'invitation_accepted_existing_member', array( 'invitation_id' => (int) $invitation['id'] ) );
-		return papelito_company_context( $user_id );
-	}
-	if ( null !== $existing && 'suspended' === (string) $existing['member_status'] ) {
-		return new WP_Error( 'papelito_b2b_membership_suspended', 'Seu acesso a esta empresa está suspenso.', array( 'status' => 409 ) );
+	$existing_result = papelito_company_invitation_handle_existing_membership( $user_id, $company_id, $invitation, $existing );
+	if ( null !== $existing_result ) {
+		return $existing_result;
 	}
 
-	global $wpdb;
-	$wpdb->query( 'START TRANSACTION' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-	try {
-		// Invalidação single-use: o UPDATE só afeta convite ainda 'pending' (corrida perde).
-		$accepted = papelito_company_invitation_accept( (int) $invitation['id'], $user_id );
-		if ( is_wp_error( $accepted ) ) {
-			throw new RuntimeException( 'not acceptable' );
-		}
-
-		$member = papelito_company_member_upsert(
-			$company_id,
-			$user_id,
-			array(
-				'member_role'         => (string) $invitation['invited_role'],
-				'member_status'       => 'active',
-				'membership_origin'   => 'invitation',
-				'invited_by_user_id'  => (int) $invitation['invited_by_user_id'],
-				'approved_by_user_id' => (int) $invitation['invited_by_user_id'],
-				'approved_at'         => current_time( 'mysql', true ),
-				'identity_requirement' => 'required',
-			)
-		);
-		if ( is_wp_error( $member ) ) {
-			throw new RuntimeException( 'member upsert failed' );
-		}
-
-		$wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-	} catch ( Throwable $e ) {
-		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-		return new WP_Error( 'papelito_b2b_invitation_accept_failed', 'Não foi possível aceitar o convite.', array( 'status' => 409 ) );
+	$persisted = papelito_company_invitation_persist_acceptance( $user_id, $company_id, $invitation );
+	if ( is_wp_error( $persisted ) ) {
+		return $persisted;
 	}
 
 	papelito_b2b_mark_cohort( $user_id );

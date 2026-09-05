@@ -130,8 +130,11 @@ function papelito_receipt_record_for_order( object $order ) {
 	$order_id = (int) $order->get_id();
 	$receipt  = function_exists( 'papelito_receipt_get_by_order' ) ? papelito_receipt_get_by_order( $order_id ) : null;
 
+	// `on_demand` e não `payment`: quem chega aqui é a geração do PDF de um
+	// pedido pago cujo recibo ainda não existia. Herdar o padrão marcava a
+	// emissão como vinda do pagamento, que é outra coisa e outro momento.
 	if ( ! is_array( $receipt ) && function_exists( 'papelito_receipt_issue_for_order' ) ) {
-		$issued  = papelito_receipt_issue_for_order( $order_id );
+		$issued  = papelito_receipt_issue_for_order( $order_id, 'on_demand' );
 		$receipt = is_array( $issued ) ? $issued : null;
 	}
 
@@ -1000,7 +1003,7 @@ function papelito_receipt_pdf_block_header( string $title, float $x, float $top,
  * @param array<string,mixed> $doc Documento do recibo.
  * @return array{ops:array<int,string>,y:float}
  */
-function papelito_receipt_pdf_page_header( array $doc, bool $continuation ): array {
+function papelito_receipt_pdf_page_header( array $doc, bool $continuation, string $title = 'RECIBO DE PEDIDO' ): array {
 	$left  = PAPELITO_RECEIPT_PDF_LEFT;
 	$width = PAPELITO_RECEIPT_PDF_WIDTH;
 	$right = $left + $width;
@@ -1055,7 +1058,7 @@ function papelito_receipt_pdf_page_header( array $doc, bool $continuation ): arr
 				)
 			),
 			papelito_receipt_pdf_text(
-				'RECIBO DE PEDIDO',
+				$title,
 				$right - 18,
 				$top + 25,
 				array(
@@ -1613,18 +1616,37 @@ function papelito_receipt_pdf( object $order ) {
 		return $doc;
 	}
 
-	$pages           = papelito_receipt_pdf_pages( $doc );
-	$total_pages     = count( $pages );
+	$pages       = papelito_receipt_pdf_pages( $doc );
+	$total_pages = count( $pages );
+	$rendered    = array();
+
+	foreach ( $pages as $index => $page_ops ) {
+		$rendered[] = array_merge( $page_ops, papelito_receipt_pdf_footer( $doc, $index + 1, $total_pages ) );
+	}
+
+	return papelito_pdf_assemble( $rendered );
+}
+
+/**
+ * Monta o arquivo PDF a partir das paginas ja renderizadas.
+ *
+ * Fica separado do recibo porque o espelho da nota fiscal usa exatamente o
+ * mesmo desenho de pagina: duplicar o xref e a tabela de objetos daria duas
+ * implementacoes do formato para manter em sincronia.
+ *
+ * @param array<int,array<int,string>> $pages Operadores de content stream por pagina.
+ */
+function papelito_pdf_assemble( array $pages ): string {
 	$objects         = array();
 	$page_references = array();
 	$objects[1]      = '<< /Type /Catalog /Pages 2 0 R >>';
 	$objects[3]      = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>';
 	$objects[4]      = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>';
 
-	foreach ( $pages as $index => $page_ops ) {
+	foreach ( array_values( $pages ) as $index => $page_ops ) {
 		$content_id = 5 + ( $index * 2 );
 		$page_id    = $content_id + 1;
-		$content    = implode( "\n", array_filter( array_merge( $page_ops, papelito_receipt_pdf_footer( $doc, $index + 1, $total_pages ) ) ) );
+		$content    = implode( "\n", array_filter( $page_ops ) );
 
 		$objects[ $content_id ] = '<< /Length ' . strlen( $content ) . " >>\nstream\n" . $content . "\nendstream";
 		$objects[ $page_id ]    = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents ' . $content_id . ' 0 R >>';
