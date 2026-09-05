@@ -576,35 +576,30 @@ function papelito_home_assets_feature_subtitle_max_length(): int {
  */
 function papelito_home_assets_default_site_images(): array {
 	return array(
-		'productHero'                   => array(
+		'productHero'                 => array(
 			'imageId'  => 0,
 			'imageUrl' => '/images/Rectangle21.png',
 			'alt'      => 'Produtos Papelito - Made in Brazil.',
 		),
-		'aboutHero'                     => array(
+		'aboutHero'                   => array(
 			'imageId'  => 0,
 			'imageUrl' => '/images/sobre-page/sobre-banner.png',
 			'alt'      => 'Mulher sorrindo e segurando papéis Papelito diante de um fundo amarelo.',
 		),
-		'aboutStory'                    => array(
+		'aboutStory'                  => array(
 			'imageId'  => 0,
 			'imageUrl' => '/images/sobre-page/fabrica-papelito.jpg',
 			'alt'      => 'Sócios da Papelito em pé diante da linha de produção da fábrica.',
 		),
-		'revendedorBusinessMain'        => array(
+		'revendedorBusinessMain'      => array(
 			'imageId'  => 0,
 			'imageUrl' => '/images/revendedor/business-main.jpg',
 			'alt'      => 'Parceira Papelito sorrindo em um ponto de venda.',
 		),
-		'revendedorBusinessSecondary'   => array(
+		'revendedorBusinessSecondary' => array(
 			'imageId'  => 0,
 			'imageUrl' => '/images/revendedor/business-secondary.jpg',
 			'alt'      => 'Equipe parceira Papelito em loja.',
-		),
-		'revendedorBusinessIllustration' => array(
-			'imageId'  => 0,
-			'imageUrl' => '/images/revendedor/business-card-vector.svg',
-			'alt'      => 'Ilustração de atendimento a negócios revendedores.',
 		),
 	);
 }

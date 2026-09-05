@@ -1,6 +1,10 @@
 <?php
 
 define( 'ABSPATH', __DIR__ . '/../' );
+
+if ( ! defined( 'HOUR_IN_SECONDS' ) ) {
+	define( 'HOUR_IN_SECONDS', 3600 );
+}
 if ( ! defined( 'UPLOAD_ERR_OK' ) ) {
 	define( 'UPLOAD_ERR_OK', 0 );
 }

@@ -12,6 +12,7 @@ const PAPELITO_DIRECT_UPLOAD_TICKET_TTL = 300;
 const PAPELITO_DIRECT_UPLOAD_PURGE_HOOK = 'papelito_direct_upload_purge_claims_event';
 const PAPELITO_TEMPORARY_ADMIN_MEDIA_META = '_papelito_temporary_admin_media';
 const PAPELITO_TEMPORARY_ADMIN_MEDIA_TTL  = HOUR_IN_SECONDS;
+const PAPELITO_DIRECT_UPLOAD_SVG_MAX_BYTES = 2 * 1024 * 1024;
 
 function papelito_mark_temporary_admin_media( int $attachment_id, int $user_id ): void {
 	if ( $attachment_id <= 0 || $user_id <= 0 ) {
@@ -193,6 +194,89 @@ function papelito_direct_upload_media_failure( int $status, ?string $code ): WP_
 	return papelito_direct_upload_error( 'papelito_upload_media_failed', 'Não foi possível armazenar a imagem no servidor de mídia. Tente novamente.', 502 );
 }
 
+/**
+ * Normaliza o nome de um SVG preservando a extensao.
+ *
+ * O filtro `wp_check_filetype_and_ext` de `media_uploads.php` decide pelo nome do arquivo, entao
+ * perder o `.svg` aqui faria o WordPress recusar o que este modulo acabou de aprovar.
+ *
+ * @param string $file_name Nome enviado pelo navegador.
+ * @return string
+ */
+function papelito_direct_upload_svg_file_name( string $file_name ): string {
+	$base = sanitize_title( (string) preg_replace( '/\.[^.]*$/', '', $file_name ) );
+
+	return ( '' !== $base ? substr( $base, 0, 80 ) : 'imagem' ) . '.svg';
+}
+
+/**
+ * Valida um SVG recebido por upload direto.
+ *
+ * `papelito_direct_upload_validate_image()` espelha o validador raster do frontend e reconhece
+ * formato por assinatura de bytes; SVG e texto e nao tem assinatura, entao ele recusava com 415
+ * todo SVG — justamente o formato que a tela de Assets pede para logo e para icone de beneficio.
+ * A conferencia de conteudo reaproveita `papelito_media_svg_contents_are_safe()`, a mesma que
+ * governa o upload pela biblioteca de midia, para os dois caminhos recusarem pelo mesmo criterio.
+ *
+ * @param array<string,mixed> $file Entrada de `$_FILES`.
+ * @return array{mime:string,file_name:string,size:int}|WP_Error
+ */
+function papelito_direct_upload_validate_svg( array $file ) {
+	$path = (string) ( $file['tmp_name'] ?? '' );
+	$size = (int) ( $file['size'] ?? 0 );
+
+	if ( '' === $path || ! is_readable( $path ) ) {
+		return papelito_direct_upload_error( 'papelito_image_unreadable', 'Não foi possível ler o arquivo enviado. Selecione a imagem novamente.', 422 );
+	}
+
+	if ( $size <= 0 ) {
+		return papelito_direct_upload_error( 'papelito_image_empty', 'O arquivo enviado está vazio. Selecione uma imagem e tente novamente.', 422 );
+	}
+
+	if ( $size > PAPELITO_DIRECT_UPLOAD_SVG_MAX_BYTES ) {
+		return papelito_direct_upload_error( 'papelito_svg_too_large', 'O SVG excede o limite de 2 MB.', 413 );
+	}
+
+	$contents = file_get_contents( $path ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+
+	if ( false === $contents ) {
+		return papelito_direct_upload_error( 'papelito_image_unreadable', 'Não foi possível ler o arquivo enviado. Selecione a imagem novamente.', 422 );
+	}
+
+	// `.svgz` e gzip: os padroes proibidos nao aparecem nos bytes comprimidos, entao a conferencia
+	// de conteudo passaria sem ter olhado nada.
+	if ( str_starts_with( $contents, "\x1f\x8b" ) ) {
+		return papelito_direct_upload_error( 'papelito_svg_compressed', 'Envie o SVG sem compressão, com extensão .svg.', 415 );
+	}
+
+	if ( ! preg_match( '#<\s*svg[\s/>]#i', $contents ) ) {
+		return papelito_direct_upload_error( 'papelito_image_content_mismatch', 'O conteúdo do arquivo não corresponde à extensão informada. Salve a imagem no formato correto e envie novamente.', 415 );
+	}
+
+	if ( ! papelito_media_svg_contents_are_safe( $contents ) ) {
+		return papelito_direct_upload_error( 'papelito_svg_unsafe', 'SVG recusado: remova scripts, handlers de evento e referências externas antes de enviar.', 422 );
+	}
+
+	return array(
+		'mime'      => PAPELITO_MEDIA_SVG_MIME_TYPE,
+		'file_name' => papelito_direct_upload_svg_file_name( (string) ( $file['name'] ?? '' ) ),
+		'size'      => $size,
+	);
+}
+
+/**
+ * Informa se o arquivo enviado se apresenta como SVG.
+ *
+ * @param array<string,mixed> $file Entrada de `$_FILES`.
+ * @return bool
+ */
+function papelito_direct_upload_is_svg( array $file ): bool {
+	$declared = strtolower( trim( (string) ( $file['type'] ?? '' ) ) );
+
+	return papelito_media_is_svg_filename( (string) ( $file['name'] ?? '' ) )
+		|| PAPELITO_MEDIA_SVG_MIME_TYPE === $declared;
+}
+
 function papelito_direct_upload_media( array $ticket, array $file ) {
 	$user_id = (int) ( $ticket['context']['user_id'] ?? 0 );
 	if ( $user_id <= 0 || ! user_can( $user_id, 'manage_options' ) ) {
@@ -202,7 +286,9 @@ function papelito_direct_upload_media( array $ticket, array $file ) {
 	// O arquivo deixou de passar pelo proxy Next, onde `validateImageUpload()` conferia assinatura,
 	// divergencia entre conteudo e extensao e truncamento. A conferencia precisa existir aqui, ou o
 	// caminho direto aceita qualquer coisa que o WordPress engula.
-	$validated = papelito_direct_upload_validate_image( $file );
+	$validated = papelito_direct_upload_is_svg( $file )
+		? papelito_direct_upload_validate_svg( $file )
+		: papelito_direct_upload_validate_image( $file );
 	if ( is_wp_error( $validated ) ) {
 		return $validated;
 	}
