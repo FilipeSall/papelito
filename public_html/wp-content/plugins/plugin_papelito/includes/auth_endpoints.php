@@ -1387,15 +1387,15 @@ function papelito_auth_handle_invitation_register( WP_REST_Request $request ) {
 		return $user;
 	}
 	papelito_auth_mark_password_set( $user->ID );
-
-	$dispatch = papelito_auth_dispatch_verification_email( $user );
+	// O token pendente, validado acima contra e-mail e expiração, prova a posse da caixa convidada.
+	papelito_auth_mark_email_verified( $user->ID );
 	return new WP_REST_Response(
 		array(
 			'ok'                        => true,
 			'accountExists'             => false,
-			'requiresEmailVerification' => true,
+			'requiresEmailVerification' => false,
+			'requiresLogin'             => true,
 			'email'                     => $user->user_email,
-			'emailSent'                 => ! is_wp_error( $dispatch ),
 		),
 		201
 	);

@@ -51,6 +51,13 @@ function email_exists( string $email ) {
 }
 function wp_parse_url( string $url, int $component = -1 ) { return parse_url( $url, $component ); }
 function wp_get_environment_type() { return 'production'; }
+function wp_date( string $format, int|false $timestamp ) { return false === $timestamp ? '' : gmdate( $format, $timestamp ); }
+function esc_attr( string $value ) { return htmlspecialchars( $value, ENT_QUOTES, 'UTF-8' ); }
+function esc_html( string $value ) { return htmlspecialchars( $value, ENT_QUOTES, 'UTF-8' ); }
+function esc_url( string $value ) { return $value; }
+function absint( mixed $value ) { return abs( (int) $value ); }
+function add_action( mixed ...$args ) {}
+function remove_action( mixed ...$args ) {}
 /** @param mixed $d @return mixed */
 function papelito_env( string $k, $d = null ) {
 	// O link do convite passa pelo mesmo resolvedor do e-mail de faturamento; sem uma base
@@ -211,6 +218,7 @@ function papelito_company_profile_get( int $user_id ): ?array {
 }
 
 require_once __DIR__ . '/../includes/frontend_links.php';
+require_once __DIR__ . '/../includes/notification_emails.php';
 require_once __DIR__ . '/../includes/company_invitation_services.php';
 require_once __DIR__ . '/../includes/company_access_request_services.php';
 
@@ -333,6 +341,9 @@ ok( 'invitation email sent', ! empty( $invitation_mails ) );
 $invitation_body = (string) ( $invitation_mails[0]['body'] ?? '' );
 ok( 'invitation link uses the environment domain', str_contains( $invitation_body, 'https://marketplace.papelito.com/convite/' ) );
 ok( 'invitation link never uses localhost', ! str_contains( $invitation_body, 'localhost' ) );
+ok( 'invitation email uses the shared Papelito HTML shell', str_contains( $invitation_body, 'charset=UTF-8' ) );
+ok( 'invitation email exposes the acceptance CTA', str_contains( $invitation_body, 'Aceitar convite' ) );
+ok( 'invitation email identifies the company', str_contains( $invitation_body, 'ACME' ) );
 
 if ( $failures > 0 ) { echo "RESULT: {$failures} assertion(s) FAILED\n"; exit( 1 ); }
 echo "RESULT: all assertions passed\n";

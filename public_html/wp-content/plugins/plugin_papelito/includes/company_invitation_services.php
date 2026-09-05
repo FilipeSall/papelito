@@ -405,15 +405,31 @@ function papelito_company_invitation_send_email( int $company_id, string $email,
 	}
 
 	$company = papelito_company_get( $company_id );
-	$name    = $company ? (string) ( ! empty( $company['trade_name'] ) ? $company['trade_name'] : $company['legal_name'] ) : 'sua empresa';
+	$name       = $company ? (string) ( ! empty( $company['trade_name'] ) ? $company['trade_name'] : $company['legal_name'] ) : 'sua empresa';
+	$invitation = papelito_company_invitation_find_pending_by_token( $token );
+	$inviter    = $invitation ? get_userdata( (int) $invitation['invited_by_user_id'] ) : false;
+	$inviter_name = $inviter instanceof WP_User ? trim( (string) $inviter->display_name ) : '';
+	$expires_at        = $invitation ? (string) $invitation['expires_at'] : '';
+	$expires_timestamp = '' !== $expires_at ? strtotime( $expires_at ) : false;
+	$expires_label     = false !== $expires_timestamp ? wp_date( 'd/m/Y', $expires_timestamp ) : '';
+	$subject = sprintf( 'Convite para acessar %s no Papelito', $name );
 
-	$subject = 'Convite para acessar uma empresa no Papelito';
-	$body    = sprintf(
-		"Você foi convidado(a) para acessar %s no Papelito.\n\nAcesse o link abaixo para aceitar o convite:\n%s\n\nO convite expira em %d dias.",
-		$name,
-		$link,
-		PAPELITO_INVITATION_TTL_DAYS
+	$html = papelito_company_invitation_email_html(
+		array(
+			'company_name' => $name,
+			'inviter_name' => $inviter_name,
+			'link'         => $link,
+			'expires_at'   => $expires_label,
+		)
+	);
+	$text = papelito_company_invitation_email_text(
+		array(
+			'company_name' => $name,
+			'inviter_name' => $inviter_name,
+			'link'         => $link,
+			'expires_at'   => $expires_label,
+		)
 	);
 
-	wp_mail( $email, $subject, $body );
+	papelito_email_send( $email, $subject, $html, $text );
 }

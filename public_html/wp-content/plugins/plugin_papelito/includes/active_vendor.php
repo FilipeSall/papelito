@@ -32,7 +32,10 @@ function papelito_get_active_vendor_id( int $user_id ): ?int {
 }
 
 /**
- * CEP normalizado da conta do usuario.
+ * CEP normalizado efetivo da conta para cobertura regional.
+ *
+ * Em contexto B2B, o endereço fiscal da empresa ativa é a fonte de localização. O
+ * usermeta `cep` permanece como fallback para contas sem empresa ativa.
  *
  * @param int $user_id Usuario.
  * @return string CEP com 8 digitos, ou string vazia se ausente/invalido.
@@ -40,6 +43,16 @@ function papelito_get_active_vendor_id( int $user_id ): ?int {
 function papelito_get_user_account_cep( int $user_id ): string {
 	if ( $user_id <= 0 || ! function_exists( 'papelito_normalize_cep' ) ) {
 		return '';
+	}
+
+	if ( function_exists( 'papelito_company_context' ) ) {
+		$context = papelito_company_context( $user_id );
+		$company_cep = is_array( $context ) ? (string) ( $context['company']['fiscalAddress']['cep'] ?? '' ) : '';
+		$normalized_company_cep = papelito_normalize_cep( $company_cep );
+
+		if ( '' !== $normalized_company_cep ) {
+			return $normalized_company_cep;
+		}
 	}
 
 	$raw = (string) get_user_meta( $user_id, 'cep', true );

@@ -254,6 +254,75 @@ function papelito_email_headline( string $headline, string $lead ): string {
 }
 
 /**
+ * Corpo HTML do convite de empresa, usando a mesma casca dos e-mails de campanha.
+ *
+ * @param array<string,string> $view company_name, inviter_name, link, expires_at.
+ * @return string
+ */
+function papelito_company_invitation_email_html( array $view ): string {
+	$company = trim( (string) ( $view['company_name'] ?? '' ) );
+	$inviter = trim( (string) ( $view['inviter_name'] ?? '' ) );
+	$link    = (string) ( $view['link'] ?? '' );
+	$expires = trim( (string) ( $view['expires_at'] ?? '' ) );
+	$who     = '' !== $inviter ? sprintf( '<strong style="font-weight:900;">%s</strong>', esc_html( $inviter ) ) : 'uma pessoa da empresa';
+	$lead    = sprintf( '%s convidou você para fazer parte de <strong style="font-weight:900;">%s</strong> no Papelito.', $who, esc_html( $company ) );
+	$context = sprintf(
+		'<p style="margin:0;font-family:%1$s;font-size:14px;font-weight:500;line-height:22px;color:%2$s;">Ao continuar, você cria sua conta e aceita receber acesso à empresa com o papel definido no convite.</p>%3$s',
+		PAPELITO_EMAIL_FONT_STACK,
+		esc_attr( PAPELITO_EMAIL_TEXT_SOFT ),
+		'' !== $expires ? sprintf( '<p style="margin:12px 0 0;font-family:%1$s;font-size:13px;font-weight:900;line-height:20px;color:%2$s;">Este convite é válido até %3$s.</p>', PAPELITO_EMAIL_FONT_STACK, esc_attr( PAPELITO_EMAIL_INK ), esc_html( $expires ) ) : ''
+	);
+
+	$body  = papelito_email_headline( 'Você foi convidado.', $lead );
+	$body .= '<div style="height:24px;line-height:24px;font-size:0;">&nbsp;</div>';
+	$body .= papelito_email_plate(
+		$context,
+		array(
+			'background' => PAPELITO_EMAIL_PAPER,
+			'padding'    => PAPELITO_EMAIL_PLATE_PADDING,
+			'offset'     => 6,
+		)
+	);
+	$body .= '<div style="height:26px;line-height:26px;font-size:0;">&nbsp;</div>';
+	$body .= papelito_email_button( $link, 'Aceitar convite' );
+
+	return papelito_email_shell(
+		array(
+			'kicker'       => 'Acesso à empresa',
+			'preheader'    => sprintf( 'Convite para fazer parte de %s no Papelito.', $company ),
+			'body_html'    => $body,
+			'footer_lines' => array( 'Se você não esperava este convite, ignore este e-mail.' ),
+		)
+	);
+}
+
+/**
+ * Corpo texto do convite de empresa.
+ *
+ * @param array<string,string> $view company_name, inviter_name, link, expires_at.
+ * @return string
+ */
+function papelito_company_invitation_email_text( array $view ): string {
+	$company = trim( (string) ( $view['company_name'] ?? '' ) );
+	$inviter = trim( (string) ( $view['inviter_name'] ?? '' ) );
+	$lines   = array(
+		'Você foi convidado para fazer parte de ' . $company . ' no Papelito.',
+		'' !== $inviter ? sprintf( 'Quem convidou: %s.', $inviter ) : '',
+		'',
+		'Ao continuar, você cria sua conta e aceita receber acesso à empresa com o papel definido no convite.',
+	);
+	if ( '' !== trim( (string) ( $view['expires_at'] ?? '' ) ) ) {
+		$lines[] = 'Este convite é válido até ' . trim( (string) $view['expires_at'] ) . '.';
+	}
+	$lines[] = '';
+	$lines[] = 'Aceitar convite: ' . (string) ( $view['link'] ?? '' );
+	$lines[] = '';
+	$lines[] = 'Se você não esperava este convite, ignore este e-mail.';
+
+	return implode( "\n", $lines );
+}
+
+/**
  * Envia o e-mail em multipart: HTML para quem renderiza, texto para o resto.
  *
  * @param string $recipient Destinatario ja validado.

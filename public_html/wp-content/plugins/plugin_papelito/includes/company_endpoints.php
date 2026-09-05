@@ -173,6 +173,19 @@ add_action( 'rest_api_init', static function (): void { // NOSONAR -- bloco decl
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( papelito_company_context( $user_id ), 200 );
 	} ) );
 
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/identity/cpf/change', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
+		if ( ! papelito_auth_rate_limit( 'customer_identity_cpf_change', 5, 300 ) ) {
+			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+		}
+		$user_id = papelito_company_require_authenticated_user();
+		if ( is_wp_error( $user_id ) ) {
+			return $user_id;
+		}
+		$data = (array) $request->get_json_params();
+		$result = papelito_company_customer_cpf_change( $user_id, (string) ( $data['currentPassword'] ?? '' ), (string) ( $data['cpf'] ?? '' ) );
+		return is_wp_error( $result ) ? $result : new WP_REST_Response( papelito_company_context( $user_id ), 200 );
+	} ) );
+
 	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/companies', array( 'methods' => 'POST', 'permission_callback' => static fn() => get_current_user_id() > 0, 'callback' => static function ( WP_REST_Request $request ) {
 		if ( ! papelito_b2b_company_model_enabled() ) { return new WP_Error( 'papelito_b2b_company_rollout_disabled', 'Cadastro empresarial temporariamente indisponível.', array( 'status' => 503 ) ); }
 		$writes = papelito_b2b_require_company_writes(); if ( is_wp_error( $writes ) ) { return $writes; }

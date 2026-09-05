@@ -209,7 +209,20 @@ papelito_assert( 'conta nova foi criada uma vez', 1, count( $GLOBALS['pap_insert
 papelito_assert( 'conta nova guarda a senha escolhida pelo usuario', 'SenhaEscolhida1', $GLOBALS['pap_inserted'][0]['user_pass'] );
 $new_id = $GLOBALS['pap_emails']['novo@test.com'];
 papelito_assert( 'conta nova pode entrar por senha', array( 'password' ), papelito_auth_credential_methods( $new_id ) );
-papelito_assert( 'conta nova nasce pendente de confirmacao', 'pending', $GLOBALS['pap_meta'][ $new_id ]['papelito_email_verification_status'] );
+papelito_assert( 'conta nova nasce verificada pelo convite valido', 'verified', $GLOBALS['pap_meta'][ $new_id ]['papelito_email_verification_status'] );
+papelito_assert( 'conta nova nao dispara confirmacao redundante', 0, count( $GLOBALS['pap_mail'] ) );
+
+echo "Cenario 3c: token invalido nao cria conta nem verifica e-mail\n";
+
+$before_invalid_insert = count( $GLOBALS['pap_inserted'] );
+$GLOBALS['pap_invitation'] = array( 'token' => 'token-real', 'invited_email' => 'seguro@test.com' );
+$invalid_token = papelito_auth_handle_invitation_register(
+	new WP_REST_Request(
+		array( 'token' => 'token-falso', 'email' => 'seguro@test.com', 'password' => 'SenhaEscolhida1', 'first_name' => 'Seguro', 'last_name' => 'Teste', 'cpf' => '52998224725' )
+	)
+);
+papelito_assert( 'token invalido e recusado', 'papelito_invitation_registration_unavailable', $invalid_token->get_error_code() );
+papelito_assert( 'token invalido nao cria conta', $before_invalid_insert, count( $GLOBALS['pap_inserted'] ) );
 
 /* ---------- 3b. CPF ja usado por outra conta nao cria nada ---------- */
 echo "Cenario 3b: CPF de outra pessoa e recusado antes de existir conta\n";

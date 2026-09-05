@@ -99,6 +99,42 @@ function papelito_company_customer_cpf_upsert( int $user_id, string $cpf ): true
 	return is_wp_error( $result ) ? $result : true;
 }
 
+/**
+ * Troca o CPF verificado somente após prova da senha atual.
+ *
+ * @return true|WP_Error
+ */
+function papelito_company_customer_cpf_change( int $user_id, string $current_password, string $cpf ): true|WP_Error {
+	$user = get_userdata( $user_id );
+	if ( ! $user instanceof WP_User || ! in_array( papelito_user_context_type( $user ), array( 'customer', 'hybrid' ), true ) ) {
+		return new WP_Error( 'papelito_b2b_identity_not_required', 'Este tipo de conta não exige CPF empresarial.', array( 'status' => 422 ) );
+	}
+
+	if ( '' === $current_password || ! wp_check_password( $current_password, $user->user_pass, $user_id ) ) {
+		return new WP_Error( 'papelito_current_password_invalid', 'Não foi possível confirmar a senha atual.', array( 'status' => 403 ) );
+	}
+
+	$owner = papelito_customer_profile_find_user_by_cpf( $cpf );
+	if ( is_wp_error( $owner ) ) {
+		return $owner;
+	}
+	if ( null !== $owner && $owner !== $user_id ) {
+		return new WP_Error( 'papelito_pii_cpf_in_use', 'Este CPF já está associado a outra conta.', array( 'status' => 409 ) );
+	}
+
+	$result = papelito_customer_profile_upsert(
+		$user_id,
+		$cpf,
+		array(
+			'identity_status'     => 'verified',
+			'identity_method'     => 'self_attested_password',
+			'identity_checked_at' => current_time( 'mysql', true ),
+		)
+	);
+
+	return is_wp_error( $result ) ? $result : true;
+}
+
 function papelito_company_normalize_name( string $value ): string {
 	$value = trim( $value );
 
@@ -533,6 +569,8 @@ function papelito_company_context( int $user_id ): array {
 	$base    = array(
 		'isB2bCohort'              => papelito_b2b_is_cohort( $user_id ),
 		'identityStatus'             => $profile['identity_status'] ?? 'incomplete',
+		'cpfLast4'                 => ! empty( $profile['cpf_last4'] ) ? (string) $profile['cpf_last4'] : null,
+		'hasBirthDate'             => ! empty( $profile['birth_date_ciphertext'] ),
 		'companyId'                  => null,
 		'companyStatus'              => null,
 		'companyRegistryStatus'      => null,

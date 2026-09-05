@@ -3,9 +3,8 @@
  * Standalone regression test: o CPF pessoal preenche uma vez e pertence a uma conta so.
  *
  * `/identity/cpf` existe para o membro convidado completar a identidade que faltou (conta criada
- * por Google, ou vinculo criado antes de o CPF passar a ser exigido). Ele NAO e uma tela de troca
- * de CPF: sobrescrever um CPF ja verificado desfaria a evidencia que aprovou a titularidade (o CPF
- * conferido contra o QSA da Receita) e permitiria reciclar um CPF entre contas.
+ * por Google, ou vinculo criado antes de o CPF passar a ser exigido). A troca de CPF vive em uma
+ * operacao separada e exige a senha atual, sem permitir reciclar CPF entre contas.
  *
  * Usage: php tests/test-customer-cpf-identity-gate.php
  *
@@ -37,11 +36,18 @@ class WP_Error {
 
 function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
 function current_time( string $type, bool $gmt = false ): string { return '2026-09-04 12:00:00'; }
+class WP_User {
+	public function __construct( public int $ID, public string $user_pass ) {}
+}
+function get_userdata( int $user_id ): ?WP_User { return $GLOBALS['pap_users'][ $user_id ] ?? null; }
+function wp_check_password( string $password, string $hash, int $user_id ): bool { return $password === $hash; }
+function papelito_user_context_type( WP_User $user ): string { return 'customer'; }
 
 /** Perfis em memoria: user_id => array( identity_status ), e o dono de cada CPF. */
 $GLOBALS['pap_profiles']  = array();
 $GLOBALS['pap_cpf_owner'] = array();
 $GLOBALS['pap_upserts']   = array();
+$GLOBALS['pap_users']     = array( 10 => new WP_User( 10, 'senha-atual' ) );
 
 function papelito_company_profile_get( int $user_id ): ?array {
 	return $GLOBALS['pap_profiles'][ $user_id ] ?? null;
@@ -68,6 +74,12 @@ if ( false === $source || ! preg_match( '/function papelito_company_customer_cpf
 	exit( 1 );
 }
 eval( $match[0] ); // phpcs:ignore Squiz.PHP.Eval.Discouraged
+$change_match = array();
+if ( ! preg_match( '/function papelito_company_customer_cpf_change.*?\n}/s', $source, $change_match ) ) {
+	echo "FAIL: nao isolou papelito_company_customer_cpf_change\n";
+	exit( 1 );
+}
+eval( $change_match[0] ); // phpcs:ignore Squiz.PHP.Eval.Discouraged
 
 echo "Cenario 1: conta sem identidade preenche o proprio CPF\n";
 $result = papelito_company_customer_cpf_upsert( 10, '529.982.247-25' );
@@ -91,9 +103,24 @@ papelito_assert( 'troca responde 409', 409, $swap->get_error_data()['status'] );
 papelito_assert( 'CPF original permanece o unico gravado', 1, count( $GLOBALS['pap_upserts'] ) );
 papelito_assert( 'CPF original segue sendo o do usuario', 10, papelito_customer_profile_find_user_by_cpf( '52998224725' ) );
 
-echo "Cenario 4: identidade pendente ainda pode ser completada\n";
+echo "Cenario 4: troca exige senha e preserva unicidade\n";
+$wrong_password = papelito_company_customer_cpf_change( 10, 'senha-errada', '037.122.851-40' );
+papelito_assert( 'senha errada recusa a troca', true, is_wp_error( $wrong_password ) );
+papelito_assert( 'senha errada responde 403', 403, $wrong_password->get_error_data()['status'] );
+papelito_assert( 'senha errada nao grava CPF', 1, count( $GLOBALS['pap_upserts'] ) );
+$changed = papelito_company_customer_cpf_change( 10, 'senha-atual', '037.122.851-40' );
+papelito_assert( 'senha correta permite a troca', true, $changed );
+papelito_assert( 'novo CPF fica associado ao usuario', 10, papelito_customer_profile_find_user_by_cpf( '03712285140' ) );
+papelito_assert( 'troca grava uma vez', 2, count( $GLOBALS['pap_upserts'] ) );
+$GLOBALS['pap_cpf_owner']['16899535009'] = 20;
+$taken_change = papelito_company_customer_cpf_change( 10, 'senha-atual', '168.995.350-09' );
+papelito_assert( 'troca para CPF de terceiro e recusada', true, is_wp_error( $taken_change ) );
+papelito_assert( 'troca para CPF de terceiro responde 409', 409, $taken_change->get_error_data()['status'] );
+papelito_assert( 'CPF de terceiro nao e gravado', 2, count( $GLOBALS['pap_upserts'] ) );
+
+echo "Cenario 5: identidade pendente ainda pode ser completada\n";
 $GLOBALS['pap_profiles'][12] = array( 'identity_status' => 'pending' );
-$retry                       = papelito_company_customer_cpf_upsert( 12, '168.995.350-09' );
+$retry                       = papelito_company_customer_cpf_upsert( 12, '987.654.321-00' );
 papelito_assert( 'perfil pendente aceita o CPF', true, $retry );
 papelito_assert( 'perfil pendente vira verificado', 'verified', $GLOBALS['pap_profiles'][12]['identity_status'] );
 
