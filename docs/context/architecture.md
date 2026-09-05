@@ -103,6 +103,7 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `home_assets.php` | banners e assets da home |
 | `product_benefits.php` | benefícios da página de produto: schema, resolução por escopo e seed do grupo global |
 | `product_benefits_rest.php` | rota pública `/products/{id}/benefits` e CRUD admin de `/admin/benefit-groups` |
+| `product_sku.php` | geração imutável de SKU para produtos/variações, backfill admin e comando WP-CLI |
 | `media_uploads.php` | apoio a upload |
 
 ### Checkout, pagamento e frete
