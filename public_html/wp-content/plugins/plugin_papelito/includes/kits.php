@@ -23,9 +23,8 @@ function papelito_kits_table_names(): array {
 	global $wpdb;
 
 	return array(
-		'kits'        => $wpdb->prefix . 'papelito_kits',
-		'items'       => $wpdb->prefix . 'papelito_kit_items',
-		'merchandise' => $wpdb->prefix . 'papelito_kit_merchandise',
+		'kits'  => $wpdb->prefix . 'papelito_kits',
+		'items' => $wpdb->prefix . 'papelito_kit_items',
 	);
 }
 
@@ -58,21 +57,6 @@ function papelito_kits_install_tables(): void {
   quantity INT UNSIGNED NOT NULL,
   PRIMARY KEY  (kit_id, product_id),
   KEY idx_product (product_id)
-) {$charset};"
-	);
-	dbDelta(
-		"CREATE TABLE {$tables['merchandise']} (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  kit_id BIGINT UNSIGNED NOT NULL,
-  name VARCHAR(160) NOT NULL,
-  image_attachment_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
-  quantity INT UNSIGNED NOT NULL,
-  weight DECIMAL(12,4) NOT NULL,
-  length DECIMAL(12,2) NOT NULL,
-  width DECIMAL(12,2) NOT NULL,
-  height DECIMAL(12,2) NOT NULL,
-  PRIMARY KEY  (id),
-  KEY idx_kit (kit_id)
 ) {$charset};"
 	);
 }
@@ -157,11 +141,66 @@ function papelito_kits_using_component( int $component_id ): array {
 	return array_values( array_unique( array_filter( array_map( 'absint', is_array( $rows ) ? $rows : array() ) ) ) );
 }
 
+/**
+ * Brindes de um Kit, com os atributos físicos vindos do catálogo global.
+ *
+ * A forma do retorno é a mesma de quando o brinde era filho do Kit — peso,
+ * dimensões e quantidade — porque peso, frete e snapshot consomem esse formato e
+ * não deveriam saber de onde o dado vem.
+ *
+ * @param int $kit_id Id do Kit.
+ * @return array<int,array<string,mixed>>
+ */
 function papelito_kit_merchandise( int $kit_id ): array {
 	global $wpdb;
-	$tables = papelito_kits_table_names();
-	$rows   = $wpdb->get_results( $wpdb->prepare( "SELECT id, name, image_attachment_id, quantity, weight, length, width, height FROM {$tables['merchandise']} WHERE kit_id = %d ORDER BY id ASC", $kit_id ), ARRAY_A );
+	$tables = papelito_merchandise_table_names();
+	$rows   = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT m.id, m.name, m.image_attachment_id, l.quantity, m.weight, m.length, m.width, m.height FROM {$tables['kit_items']} l INNER JOIN {$tables['merchandise']} m ON m.id = l.merchandise_id WHERE l.kit_id = %d ORDER BY m.name ASC, m.id ASC",
+			$kit_id
+		),
+		ARRAY_A
+	);
 	return is_array( $rows ) ? $rows : array();
+}
+
+/**
+ * Kits que usam cada brinde informado, numa consulta só.
+ *
+ * @param array<int,mixed> $merchandise_ids Ids do catálogo de brindes.
+ * @return array<int,array<int,array<string,mixed>>>
+ */
+function papelito_kits_using_merchandise( array $merchandise_ids ): array {
+	global $wpdb;
+
+	$ids = array_values( array_unique( array_filter( array_map( 'absint', $merchandise_ids ) ) ) );
+	if ( empty( $ids ) ) {
+		return array();
+	}
+
+	$tables       = papelito_kits_table_names();
+	$link_tables  = papelito_merchandise_table_names();
+	$placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+	$rows         = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT l.merchandise_id, l.quantity, k.id AS kit_id, k.product_id, p.post_title, p.post_status FROM {$link_tables['kit_items']} l INNER JOIN {$tables['kits']} k ON k.id = l.kit_id INNER JOIN {$wpdb->posts} p ON p.ID = k.product_id WHERE l.merchandise_id IN ({$placeholders}) ORDER BY p.post_title ASC",
+			$ids
+		),
+		ARRAY_A
+	);
+
+	$usage = array();
+	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		$usage[ (int) $row['merchandise_id'] ][] = array(
+			'kitId'     => (int) $row['kit_id'],
+			'productId' => (int) $row['product_id'],
+			'name'      => sanitize_text_field( (string) $row['post_title'] ),
+			'status'    => sanitize_key( (string) $row['post_status'] ),
+			'quantity'  => (int) $row['quantity'],
+		);
+	}
+
+	return $usage;
 }
 
 function papelito_kit_package_dimensions( array $kit ): ?array {
@@ -259,12 +298,20 @@ function papelito_kit_validate_publication_payload( string $status, array $packa
 	return is_wp_error( $weight ) ? $weight : true;
 }
 
-function papelito_kit_logistics( int $kit_product_id, int $kit_quantity = 1 ) {
-	$kit = papelito_kit_get_by_product( $kit_product_id );
-	if ( ! $kit ) {
-		return new WP_Error( 'papelito_kit_not_found', PAPELITO_KIT_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
-	}
-	$weight = papelito_kit_calculate_weight_grams( (int) $kit['id'], $kit_quantity );
+/**
+ * Logística derivada de uma composição já em mãos.
+ *
+ * Existe separada de `papelito_kit_logistics()` para que a projeção de impacto
+ * de uma alteração de brinde use exatamente a mesma regra, sem tocar no banco.
+ *
+ * @param array<string,mixed>            $kit          Linha do Kit.
+ * @param array<int,array<string,mixed>> $items        Componentes.
+ * @param array<int,array<string,mixed>> $merchandise  Brindes com quantidade.
+ * @param int                            $kit_quantity Unidades do Kit.
+ * @return array<string,float>|WP_Error
+ */
+function papelito_kit_logistics_from_parts( array $kit, array $items, array $merchandise, int $kit_quantity = 1 ) {
+	$weight = papelito_kit_calculate_weight_from_parts( $items, $merchandise, $kit_quantity );
 	if ( is_wp_error( $weight ) ) {
 		return $weight;
 	}
@@ -275,6 +322,76 @@ function papelito_kit_logistics( int $kit_product_id, int $kit_quantity = 1 ) {
 	}
 
 	return array_merge( array( 'weight' => $weight ), $dimensions );
+}
+
+function papelito_kit_logistics( int $kit_product_id, int $kit_quantity = 1 ) {
+	$kit = papelito_kit_get_by_product( $kit_product_id );
+	if ( ! $kit ) {
+		return new WP_Error( 'papelito_kit_not_found', PAPELITO_KIT_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
+	}
+
+	return papelito_kit_logistics_from_parts(
+		$kit,
+		papelito_kit_items( (int) $kit['id'] ),
+		papelito_kit_merchandise( (int) $kit['id'] ),
+		$kit_quantity
+	);
+}
+
+/**
+ * Substitui os atributos físicos de um brinde na composição, sem gravar nada.
+ *
+ * @param array<int,array<string,mixed>> $merchandise    Composição atual.
+ * @param int                            $merchandise_id Brinde alterado.
+ * @param array<string,float>            $physical       Valores propostos.
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_kit_merchandise_with_override( array $merchandise, int $merchandise_id, array $physical ): array {
+	return array_map(
+		static fn( array $item ): array => (int) $item['id'] === $merchandise_id ? array_merge( $item, $physical ) : $item,
+		$merchandise
+	);
+}
+
+/**
+ * Quais Kits uma alteração física de brinde afeta e quais ela quebra.
+ *
+ * "Quebra" é o Kit publicado que hoje cota frete e deixaria de cotar. Kit que já
+ * estava inválido não conta: a alteração não é a causa dele.
+ *
+ * @param int                 $merchandise_id Id do brinde.
+ * @param array<string,float> $physical       Valores propostos.
+ * @return array{affectedKits:array<int,array<string,mixed>>,breakingKits:array<int,array<string,mixed>>}
+ */
+function papelito_kits_merchandise_change_impact( int $merchandise_id, array $physical ): array {
+	$affected = array();
+	$breaking = array();
+	$usage    = papelito_kits_using_merchandise( array( $merchandise_id ) );
+
+	foreach ( $usage[ $merchandise_id ] ?? array() as $reference ) {
+		$affected[] = $reference;
+		if ( 'publish' !== $reference['status'] ) {
+			continue;
+		}
+		$kit = papelito_kit_get( (int) $reference['kitId'] );
+		if ( ! is_array( $kit ) ) {
+			continue;
+		}
+		$items       = papelito_kit_items( (int) $kit['id'] );
+		$merchandise = papelito_kit_merchandise( (int) $kit['id'] );
+		if ( is_wp_error( papelito_kit_logistics_from_parts( $kit, $items, $merchandise ) ) ) {
+			continue;
+		}
+		$projected = papelito_kit_merchandise_with_override( $merchandise, $merchandise_id, $physical );
+		if ( is_wp_error( papelito_kit_logistics_from_parts( $kit, $items, $projected ) ) ) {
+			$breaking[] = $reference;
+		}
+	}
+
+	return array(
+		'affectedKits' => $affected,
+		'breakingKits' => $breaking,
+	);
 }
 
 function papelito_kits_should_skip_product_notification(): bool {
@@ -565,8 +682,8 @@ function papelito_kit_response( array $kit ): array {
 	}
 	$merchandise = array_map(
 		static fn( array $item ): array => array(
-			'id'                => (int) $item['id'],
-			'name'              => $item['name'],
+			'merchandiseId'     => (int) $item['id'],
+			'name'              => sanitize_text_field( (string) $item['name'] ),
 			'imageAttachmentId' => (int) $item['image_attachment_id'],
 			'imageUrl'          => (string) ( wp_get_attachment_image_url( (int) $item['image_attachment_id'], 'thumbnail' ) ?: PAPELITO_KIT_DEFAULT_IMAGE ),
 			'quantity'          => (int) $item['quantity'],
@@ -664,15 +781,26 @@ function papelito_kit_is_available_for_sale( array $kit ): bool {
 	return ! is_wp_error( papelito_kit_logistics( (int) $product->get_id() ) );
 }
 
-function papelito_kit_demote_if_incomplete( array $kit ): bool {
+/**
+ * Rebaixa um Kit publicado inconsistente e diz o que aconteceu.
+ *
+ * Separado do booleano porque `false` cobria dois casos opostos: "não precisava"
+ * e "precisava e a escrita falhou". Quem promete ao admin que o Kit voltou para
+ * rascunho precisa distinguir os dois — e reler o status do produto não serve,
+ * porque `set_status()` já mutou o objeto em memória antes de `save()` falhar.
+ *
+ * @param array<string,mixed> $kit Linha do Kit.
+ * @return string `skipped`, `demoted` ou `failed`.
+ */
+function papelito_kit_demote_outcome( array $kit ): string {
 	$product = wc_get_product( (int) ( $kit['product_id'] ?? 0 ) );
 	if ( ! $product instanceof WC_Product || 'publish' !== $product->get_status() ) {
-		return false;
+		return 'skipped';
 	}
 
 	$logistics = papelito_kit_logistics( (int) $product->get_id() );
 	if ( ! is_wp_error( $logistics ) ) {
-		return false;
+		return 'skipped';
 	}
 
 	do_action( 'papelito_kit_publication_invalid', (int) $product->get_id(), $kit, $logistics );
@@ -682,12 +810,16 @@ function papelito_kit_demote_if_incomplete( array $kit ): bool {
 		$product->save();
 	} catch ( Throwable $exception ) {
 		$GLOBALS['papelito_kits_skip_product_notification'] = false;
-		return false;
+		return 'failed';
 	}
 	$GLOBALS['papelito_kits_skip_product_notification'] = false;
 	papelito_kits_invalidate_public_cache();
 
-	return true;
+	return 'demoted';
+}
+
+function papelito_kit_demote_if_incomplete( array $kit ): bool {
+	return 'demoted' === papelito_kit_demote_outcome( $kit );
 }
 
 function papelito_kits_require_admin() {
@@ -707,9 +839,9 @@ function papelito_kit_validate_write_payload( array $payload ): array|WP_Error {
 	if ( is_wp_error( $components_valid ) ) {
 		return $components_valid;
 	}
-	$merchandise_valid = papelito_kit_validate_merchandise_items( $merchandise );
-	if ( is_wp_error( $merchandise_valid ) ) {
-		return $merchandise_valid;
+	$merchandise = papelito_kit_resolve_merchandise_items( $merchandise );
+	if ( is_wp_error( $merchandise ) ) {
+		return $merchandise;
 	}
 
 	return compact( 'name', 'regular_price', 'items', 'merchandise' );
@@ -730,22 +862,43 @@ function papelito_kit_validate_component_items( array $items ) {
 	return true;
 }
 
-function papelito_kit_validate_merchandise_items( array $items ) {
+/**
+ * Converte as referências de brinde do payload em composição resolvida.
+ *
+ * O Kit só manda `merchandiseId` e `quantity`; peso, dimensões e imagem são do
+ * catálogo. Resolver aqui evita uma segunda consulta na validação de publicação.
+ *
+ * @param array<int,mixed> $items Referências vindas do payload.
+ * @return array<int,array<string,mixed>>|WP_Error
+ */
+function papelito_kit_resolve_merchandise_items( array $items ) {
+	$quantities = array();
 	foreach ( $items as $item ) {
-		$dimensions = papelito_kit_merchandise_dimensions( $item );
-		if ( '' === sanitize_text_field( (string) ( $item['name'] ?? '' ) ) || absint( $item['quantity'] ?? 0 ) <= 0 || min( $dimensions ) <= 0 || ! wp_attachment_is_image( absint( $item['imageAttachmentId'] ?? 0 ) ) ) {
-			return new WP_Error( 'papelito_kit_merchandise_invalid', 'Todo brinde precisa de imagem, nome, quantidade, peso e dimensões positivos.', array( 'status' => 422 ) );
+		$merchandise_id = absint( $item['merchandiseId'] ?? 0 );
+		$quantity       = absint( $item['quantity'] ?? 0 );
+		if ( $merchandise_id <= 0 || $quantity <= 0 ) {
+			return new WP_Error( 'papelito_kit_merchandise_invalid', 'Todo brinde do Kit precisa de um brinde do catálogo e quantidade positiva.', array( 'status' => 422 ) );
 		}
+		if ( isset( $quantities[ $merchandise_id ] ) ) {
+			return new WP_Error( 'papelito_kit_merchandise_duplicate', 'Um brinde só pode ser adicionado uma vez ao Kit.', array( 'status' => 422 ) );
+		}
+		$quantities[ $merchandise_id ] = $quantity;
 	}
 
-	return true;
-}
+	if ( empty( $quantities ) ) {
+		return array();
+	}
 
-function papelito_kit_merchandise_dimensions( array $item ): array {
-	return array_map(
-		static fn( $value ): float => (float) wc_format_decimal( (string) $value ),
-		array( $item['weight'] ?? 0, $item['length'] ?? 0, $item['width'] ?? 0, $item['height'] ?? 0 )
-	);
+	$catalog  = papelito_merchandise_get_many( array_keys( $quantities ) );
+	$resolved = array();
+	foreach ( $quantities as $merchandise_id => $quantity ) {
+		if ( ! isset( $catalog[ $merchandise_id ] ) ) {
+			return new WP_Error( 'papelito_kit_merchandise_not_found', 'Um brinde selecionado não existe mais no catálogo.', array( 'status' => 422 ) );
+		}
+		$resolved[] = array_merge( $catalog[ $merchandise_id ], array( 'quantity' => $quantity ) );
+	}
+
+	return $resolved;
 }
 
 function papelito_kit_write_context( ?int $kit_id ): array|WP_Error {
@@ -867,9 +1020,11 @@ function papelito_kit_persist_items( int $kit_id, array $items, WC_Product $prod
 	}
 
 	$tables = papelito_kits_table_names();
-	$wpdb->delete( $tables['items'], array( 'kit_id' => $kit_id ), array( '%d' ) );
+	if ( false === $wpdb->delete( $tables['items'], array( 'kit_id' => $kit_id ), array( '%d' ) ) ) {
+		return new WP_Error( 'papelito_kit_component_write_failed', 'Não foi possível atualizar os produtos do Kit.', array( 'status' => 500 ) );
+	}
 	foreach ( $normalized_items as $component_id => $quantity ) {
-		$wpdb->insert(
+		$inserted = $wpdb->insert(
 			$tables['items'],
 			array(
 				'kit_id'     => $kit_id,
@@ -878,64 +1033,65 @@ function papelito_kit_persist_items( int $kit_id, array $items, WC_Product $prod
 			),
 			array( '%d', '%d', '%d' )
 		);
+		if ( false === $inserted ) {
+			return new WP_Error( 'papelito_kit_component_write_failed', 'Não foi possível salvar os produtos do Kit.', array( 'status' => 500 ) );
+		}
 	}
 
 	return true;
 }
 
+/**
+ * Reescreve os vínculos de brinde do Kit.
+ *
+ * Nunca toca no catálogo: um brinde que sai do Kit perde o vínculo e continua
+ * existindo para os outros Kits e para a aba Brindes.
+ *
+ * @param int                            $kit_id Id do Kit.
+ * @param array<int,array<string,mixed>> $items  Composição já resolvida.
+ * @return bool|WP_Error
+ */
 function papelito_kit_persist_merchandise( int $kit_id, array $items ): bool|WP_Error {
 	global $wpdb;
 
-	$tables                = papelito_kits_table_names();
-	$existing_merchandise  = array_map( 'intval', array_column( papelito_kit_merchandise( $kit_id ), 'id' ) );
-	$submitted_merchandise = array();
+	$tables      = papelito_merchandise_table_names();
+	$quantities  = array();
 	foreach ( $items as $item ) {
-		$name                = sanitize_text_field( (string) ( $item['name'] ?? '' ) );
-		$quantity            = absint( $item['quantity'] ?? 0 );
-		$dimensions          = papelito_kit_merchandise_dimensions( $item );
-		$image_attachment_id = absint( $item['imageAttachmentId'] ?? 0 );
-		if ( '' === $name || $quantity <= 0 || min( $dimensions ) <= 0 || ! wp_attachment_is_image( $image_attachment_id ) ) {
-			return new WP_Error( 'papelito_kit_merchandise_invalid', 'Todo brinde precisa de imagem, nome, quantidade, peso e dimensões positivos.', array( 'status' => 422 ) );
-		}
 		$merchandise_id = absint( $item['id'] ?? 0 );
-		if ( $merchandise_id > 0 && in_array( $merchandise_id, $existing_merchandise, true ) ) {
-			$wpdb->update(
-				$tables['merchandise'],
-				array(
-					'name'                => $name,
-					'image_attachment_id' => $image_attachment_id,
-					'quantity'            => $quantity,
-					'weight'              => $dimensions[0],
-					'length'              => $dimensions[1],
-					'width'               => $dimensions[2],
-					'height'              => $dimensions[3],
-				),
-				array( 'id' => $merchandise_id ),
-				array( '%s', '%d', '%d', '%f', '%f', '%f', '%f' ),
-				array( '%d' )
-			);
-		} else {
-			$wpdb->insert(
-				$tables['merchandise'],
-				array(
-					'kit_id'              => $kit_id,
-					'name'                => $name,
-					'image_attachment_id' => $image_attachment_id,
-					'quantity'            => $quantity,
-					'weight'              => $dimensions[0],
-					'length'              => $dimensions[1],
-					'width'               => $dimensions[2],
-					'height'              => $dimensions[3],
-				),
-				array( '%d', '%s', '%d', '%d', '%f', '%f', '%f', '%f' )
-			);
-			$merchandise_id = (int) $wpdb->insert_id;
+		$quantity       = absint( $item['quantity'] ?? 0 );
+		if ( $merchandise_id <= 0 || $quantity <= 0 ) {
+			return new WP_Error( 'papelito_kit_merchandise_invalid', 'Todo brinde do Kit precisa de um brinde do catálogo e quantidade positiva.', array( 'status' => 422 ) );
 		}
-		$submitted_merchandise[] = $merchandise_id;
+		$quantities[ $merchandise_id ] = $quantity;
 	}
 
-	foreach ( array_diff( $existing_merchandise, $submitted_merchandise ) as $merchandise_id ) {
-		$wpdb->delete( $tables['merchandise'], array( 'id' => $merchandise_id ), array( '%d' ) );
+	// A resolução do payload aconteceu antes da transação. Reconferir sob lock é
+	// o que impede gravar vínculo para um brinde excluído nesse intervalo.
+	$locked = papelito_merchandise_lock_ids( array_keys( $quantities ) );
+	if ( count( $locked ) !== count( $quantities ) ) {
+		return new WP_Error( 'papelito_kit_merchandise_not_found', 'Um brinde selecionado não existe mais no catálogo.', array( 'status' => 409 ) );
+	}
+
+	if ( false === $wpdb->delete( $tables['kit_items'], array( 'kit_id' => $kit_id ), array( '%d' ) ) ) {
+		return new WP_Error( 'papelito_kit_merchandise_write_failed', 'Não foi possível atualizar os brindes do Kit.', array( 'status' => 500 ) );
+	}
+
+	foreach ( $quantities as $merchandise_id => $quantity ) {
+		$inserted = $wpdb->insert(
+			$tables['kit_items'],
+			array(
+				'kit_id'         => $kit_id,
+				'merchandise_id' => $merchandise_id,
+				'quantity'       => $quantity,
+			),
+			array( '%d', '%d', '%d' )
+		);
+		// Sem esta checagem os vínculos antigos já foram apagados e o COMMIT
+		// seguiria: o Kit ficaria com composição parcial, e peso e frete
+		// passariam a ignorar o brinde perdido sem erro nenhum.
+		if ( false === $inserted ) {
+			return new WP_Error( 'papelito_kit_merchandise_write_failed', 'Não foi possível salvar os brindes do Kit.', array( 'status' => 500 ) );
+		}
 	}
 
 	return true;
@@ -1070,9 +1226,6 @@ function papelito_kit_attachment_ids( array $kit, WC_Product $product ): array {
 	}
 	$attachment_ids[] = absint( $product->get_image_id() );
 	$attachment_ids   = array_merge( $attachment_ids, array_map( 'absint', $product->get_gallery_image_ids() ) );
-	foreach ( papelito_kit_merchandise( (int) $kit['id'] ) as $merchandise ) {
-		$attachment_ids[] = absint( $merchandise['image_attachment_id'] ?? 0 );
-	}
 
 	return array_values( array_unique( array_filter( $attachment_ids ) ) );
 }
@@ -1080,10 +1233,11 @@ function papelito_kit_attachment_ids( array $kit, WC_Product $product ): array {
 function papelito_kit_delete_persisted( array $kit ): bool|WP_Error {
 	global $wpdb;
 
-	$tables = papelito_kits_table_names();
+	$tables             = papelito_kits_table_names();
+	$merchandise_tables = papelito_merchandise_table_names();
 	$wpdb->query( 'START TRANSACTION' );
-	foreach ( array( 'items', 'merchandise' ) as $table_key ) {
-		if ( false === $wpdb->delete( $tables[ $table_key ], array( 'kit_id' => (int) $kit['id'] ), array( '%d' ) ) ) {
+	foreach ( array( $tables['items'], $merchandise_tables['kit_items'] ) as $table ) {
+		if ( false === $wpdb->delete( $table, array( 'kit_id' => (int) $kit['id'] ), array( '%d' ) ) ) {
 			$wpdb->query( 'ROLLBACK' );
 			return new WP_Error( 'papelito_kit_delete_failed', 'Não foi possível remover a composição do Kit.', array( 'status' => 500 ) );
 		}

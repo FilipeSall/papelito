@@ -21,9 +21,17 @@ function papelito_admin_media_cleanup_referenced( int $attachment_id ): bool {
 	if ( $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$wpdb->options} WHERE option_value LIKE %s LIMIT 1", $id_like ) ) ) {
 		return true;
 	}
-	$tables = function_exists( 'papelito_kits_table_names' ) ? papelito_kits_table_names() : array();
-	foreach ( array( 'kits', 'merchandise' ) as $key ) {
-		if ( isset( $tables[ $key ] ) && $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$tables[ $key ]} WHERE image_attachment_id = %d LIMIT 1", $attachment_id ) ) ) {
+	$image_tables = array();
+	if ( function_exists( 'papelito_kits_table_names' ) ) {
+		$kit_tables     = papelito_kits_table_names();
+		$image_tables[] = $kit_tables['kits'] ?? '';
+	}
+	if ( function_exists( 'papelito_merchandise_table_names' ) ) {
+		$merchandise_tables = papelito_merchandise_table_names();
+		$image_tables[]     = $merchandise_tables['merchandise'] ?? '';
+	}
+	foreach ( array_filter( $image_tables ) as $table ) {
+		if ( $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$table} WHERE image_attachment_id = %d LIMIT 1", $attachment_id ) ) ) {
 			return true;
 		}
 	}

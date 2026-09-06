@@ -44,7 +44,7 @@ class Kit_Admin_Delete_DB {
 		2 => array( 'id' => 2, 'product_id' => 900, 'image_source' => 'custom', 'image_attachment_id' => 70, 'package_length' => '20', 'package_width' => '10', 'package_height' => '5' ),
 	);
 	public array $merchandise = array(
-		array( 'id' => 4, 'kit_id' => 2, 'name' => 'Brinde', 'image_attachment_id' => 71, 'quantity' => 1, 'weight' => '0.1', 'length' => '2', 'width' => '2', 'height' => '2' ),
+		array( 'id' => 4, 'name' => 'Brinde', 'image_attachment_id' => 71, 'quantity' => 1, 'weight' => '0.1', 'length' => '2', 'width' => '2', 'height' => '2' ),
 	);
 	public array $deletes = array();
 	public array $queries = array();
@@ -70,7 +70,7 @@ class Kit_Admin_Delete_DB {
 		return null;
 	}
 	public function get_results( string $query, $output = null ): array {
-		return str_contains( $query, 'kit_merchandise' ) ? $this->merchandise : array();
+		return str_contains( $query, 'kit_merchandise_items' ) ? $this->merchandise : array();
 	}
 	public function get_var( string $query ): mixed { return null; }
 	public function esc_like( string $value ): string { return $value; }
@@ -140,6 +140,7 @@ $GLOBALS['pap_deleted_products'] = array();
 $GLOBALS['pap_deleted_transients'] = array();
 $GLOBALS['pap_fail_product_delete'] = false;
 require __DIR__ . '/../includes/admin_media_cleanup.php';
+require __DIR__ . '/../includes/merchandise.php';
 require __DIR__ . '/../includes/kits.php';
 
 $failures = 0;
@@ -161,7 +162,13 @@ echo "Scenario 2: exclusão remove Kit, produto e mídia exclusiva\n";
 $response = papelito_kit_admin_delete( new WP_REST_Request( array( 'id' => 2 ) ) );
 kit_admin_delete_assert( 'retorna sucesso', $response instanceof WP_REST_Response && true === $response->data['deleted'] );
 kit_admin_delete_assert( 'remove o produto comercial', array( 900 ) === $GLOBALS['pap_deleted_products'] );
-kit_admin_delete_assert( 'deduplica e remove as mídias exclusivas', array( 70, 72, 71 ) === $GLOBALS['pap_deleted_attachments'] );
+kit_admin_delete_assert( 'deduplica e remove as mídias exclusivas do Kit', array( 70, 72 ) === $GLOBALS['pap_deleted_attachments'] );
+kit_admin_delete_assert( 'não apaga a imagem do brinde global', ! in_array( 71, $GLOBALS['pap_deleted_attachments'], true ) );
+kit_admin_delete_assert(
+	'desfaz só o vínculo com o brinde, nunca o catálogo',
+	in_array( array( 'wp_papelito_kit_merchandise_items', array( 'kit_id' => 2 ) ), $wpdb->deletes, true )
+		&& ! in_array( 'wp_papelito_merchandise', array_column( $wpdb->deletes, 0 ), true )
+);
 kit_admin_delete_assert( 'invalida as chaves de cache público', array( 'papelito_kits_public', 'papelito_kits_public_v2' ) === $GLOBALS['pap_deleted_transients'] );
 
 echo "Scenario 3: mídia vinculada a outro conteúdo é preservada\n";

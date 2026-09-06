@@ -39,7 +39,7 @@ class Papelito_Kits_Test_WPDB {
 		if ( str_contains( $query, 'wp_papelito_kit_items' ) ) {
 			return $this->items[ $kit_id ] ?? array();
 		}
-		if ( str_contains( $query, 'wp_papelito_kit_merchandise' ) ) {
+		if ( str_contains( $query, 'wp_papelito_kit_merchandise_items' ) ) {
 			return $this->merchandise[ $kit_id ] ?? array();
 		}
 		return array();
@@ -103,6 +103,7 @@ function papelito_adjust_vendor_stock( int $vendor_id, int $product_id, int $del
 
 $wpdb = new Papelito_Kits_Test_WPDB();
 
+require __DIR__ . '/../includes/merchandise.php';
 require __DIR__ . '/../includes/kits.php';
 
 $failures = 0;

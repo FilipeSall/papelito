@@ -54,6 +54,7 @@ function wp_attachment_is_image( int $attachment_id ): bool { return 999 === $at
 function wc_get_product( int $product_id ) { return 10 === $product_id ? new WC_Product() : null; }
 
 $wpdb = new Kit_Image_Test_DB();
+require __DIR__ . '/../includes/merchandise.php';
 require __DIR__ . '/../includes/kits.php';
 
 $failures = 0;

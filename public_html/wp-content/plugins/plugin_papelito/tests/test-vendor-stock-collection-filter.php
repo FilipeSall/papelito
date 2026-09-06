@@ -42,9 +42,8 @@ function papelito_products_category_map( array $ids ) { return array(); }
 function papelito_products_subcategory_map( array $ids ) { return array(); }
 function papelito_kits_table_names() {
 	return array(
-		'kits'        => 'wp_papelito_kits',
-		'items'       => 'wp_papelito_kit_items',
-		'merchandise' => 'wp_papelito_kit_merchandise',
+		'kits'  => 'wp_papelito_kits',
+		'items' => 'wp_papelito_kit_items',
 	);
 }
 

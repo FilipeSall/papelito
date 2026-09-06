@@ -29,7 +29,7 @@ class Papelito_Kit_Logistics_DB {
 		if ( str_contains( $query, 'papelito_kit_items' ) ) {
 			return $this->items[ $kit_id ] ?? array();
 		}
-		if ( str_contains( $query, 'papelito_kit_merchandise' ) ) {
+		if ( str_contains( $query, 'papelito_kit_merchandise_items' ) ) {
 			return $this->merchandise[ $kit_id ] ?? array();
 		}
 		return array();
@@ -56,6 +56,7 @@ function wc_format_decimal( string $value ): string { return $value; }
 function wc_get_product( int $product_id ) { return $GLOBALS['papelito_kit_test_products'][ $product_id ] ?? null; }
 
 $wpdb = new Papelito_Kit_Logistics_DB();
+require __DIR__ . '/../includes/merchandise.php';
 require __DIR__ . '/../includes/kits.php';
 
 $failures = 0;

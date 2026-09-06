@@ -162,6 +162,27 @@ CREATE TABLE wp_papelito_messages (
 
 Uma thread por pedido.
 
+### Kits e brindes
+
+Quatro tabelas. **Brinde não é produto WooCommerce**: não tem preço, SKU, estoque por vendor, categoria, slug nem vitrine, e é justamente por não ser um `post` que ele não vaza para nenhuma listagem de produto.
+
+- **`wp_papelito_kits`** — um Kit por produto comercial (`UNIQUE product_id`), com a imagem e as dimensões da embalagem final de uma unidade.
+- **`wp_papelito_kit_items`** — composição de produtos, `PRIMARY KEY (kit_id, product_id)` + `quantity`. É o que decide disponibilidade e baixa de estoque.
+- **`wp_papelito_merchandise`** — **catálogo global de brindes**: `id`, `name`, `image_attachment_id`, `weight` (kg), `length`/`width`/`height` (cm), `created_at`, `updated_at`, com `KEY idx_name` para a busca do painel. Uma linha por objeto físico; nada de preço, estoque ou quantidade aqui.
+- **`wp_papelito_kit_merchandise_items`** — o vínculo N:N, `PRIMARY KEY (kit_id, merchandise_id)` + `quantity`, mais `KEY idx_merchandise` para responder "quais Kits usam este brinde" sem varrer a tabela.
+
+**`quantity` é do vínculo, não do brinde.** "Piteira Especial pesa 0,05 kg" é do catálogo; "duas por unidade do Kit Premium" é da linha de vínculo. Foi essa separação que acabou com a cópia por Kit — antes, `wp_papelito_kit_merchandise` carregava `kit_id` na própria linha do brinde, então o mesmo objeto físico virava um registro novo (e um upload novo) a cada Kit. Essa tabela foi removida em `PAPELITO_DB_VERSION` 1.42.0 por `papelito_merchandise_drop_legacy_table()`; produção não tinha brinde cadastrado e não houve dado a migrar.
+
+`papelito_kit_merchandise( $kit_id )` faz o JOIN e devolve `id`, `name`, `image_attachment_id`, `quantity`, `weight` e as três dimensões — a mesma forma de antes, que é o que mantém cálculo de peso, cotação de frete e snapshot do pedido sem saber de onde o dado vem.
+
+**Ciclo de vida.** Excluir Kit apaga as linhas de vínculo e **nunca** o brinde nem a imagem dele (`papelito_kit_attachment_ids()` não lista imagem de brinde). Excluir brinde só é permitido sem vínculo — em uso, `409 papelito_merchandise_in_use`. A imagem só sai do storage se `papelito_admin_media_cleanup_referenced()` não achar mais referência, e essa função consulta `wp_papelito_merchandise` justamente para isso.
+
+**Editar brinde é global e pode despublicar Kit.** Peso e dimensão entram na cotação dos Correios, então `papelito_kits_merchandise_change_impact()` projeta a alteração antes de gravar; se algum Kit publicado deixar de cotar, a escrita é recusada com `409` até vir `confirmImpact` — estritamente o booleano `true`. Depois do commit, `papelito_merchandise_settle_kits()` rebaixa **apenas os Kits que a projeção apontou como quebrados** (reavaliar os demais seria trabalho por definição inútil) e o transiente `papelito_kits_public_v2` é invalidado.
+
+`papelito_kit_demote_outcome()` devolve `skipped`, `demoted` ou `failed`, e `papelito_kit_demote_if_incomplete()` é o açúcar booleano em cima dela. A distinção existe porque o `false` antigo colapsava "não precisava" com "precisava e a escrita falhou" — e reler o status do produto não resolve, já que `set_status()` muta o objeto em memória antes de `save()` estourar. Kit em `failed` volta na resposta da API para o admin tratar à mão.
+
+**Sem chave estrangeira, o lock é a garantia.** `papelito_merchandise_lock_ids()` faz `SELECT ... FOR UPDATE` no catálogo, e tanto a exclusão de brinde quanto a gravação de vínculo passam por ele dentro da própria transação. É o que impede um Kit salvo em paralelo apontar para um brinde recém-excluído. As escritas de composição (`papelito_kit_persist_items()` e `papelito_kit_persist_merchandise()`) checam o retorno de cada `delete`/`insert` e devolvem `WP_Error`, provocando `ROLLBACK`: sem isso o `COMMIT` seguia depois de um insert falho e o Kit ficava com composição parcial, mudando peso e frete em silêncio.
+
 ### Logística
 
 - **`wp_papelito_shipments`** — associação **imutável** entre pedido, vendor, pré-postagem e código S10. Colunas de tentativa: `generation_status`, `idempotency_key`, `active`, `last_error_code`, `creation_outcome` (`not_created|created|uncertain`), `manual_fallback_eligible` (`0|1`, default `0`), `manual_fallback_consumed_at`, `is_test` (`0|1`, default `0`, **marca imutável** de remessa sem validade postal).

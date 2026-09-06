@@ -34,7 +34,7 @@ class Papelito_Kit_Publication_DB {
 			return $this->items[ $kit_id ] ?? array();
 		}
 
-		if ( str_contains( $query, 'papelito_kit_merchandise' ) ) {
+		if ( str_contains( $query, 'papelito_kit_merchandise_items' ) ) {
 			return $this->merchandise[ $kit_id ] ?? array();
 		}
 
@@ -66,6 +66,7 @@ function delete_transient( string $key ): bool { return true; }
 function wc_get_product( int $product_id ) { return $GLOBALS['papelito_kit_publication_products'][ $product_id ] ?? null; }
 
 $wpdb = new Papelito_Kit_Publication_DB();
+require __DIR__ . '/../includes/merchandise.php';
 require __DIR__ . '/../includes/kits.php';
 
 $failures = 0;
