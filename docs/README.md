@@ -15,6 +15,7 @@ Contexto **específico do backend**. Tudo que é compartilhado com o frontend (m
 
 | Documento | Conteúdo |
 |---|---|
+| [database-entity-map.md](database-entity-map.md) + [`.excalidraw`](database-entity-map.excalidraw) | inventário do schema real levantado contra o banco: as 193 tabelas classificadas por camada, colunas, PKs, índices que fazem papel de regra, e o mapa visual das relações — todas lógicas, porque **não existe uma FK no banco** |
 | [context/correios-integration.md](context/correios-integration.md) | contrato do adapter, modos de pré-postagem, polling, mapa de eventos, credenciais |
 | [context/legacy-stack-removal.md](context/legacy-stack-removal.md) | o que ficou fora do pipeline headless e o critério para excluir |
 
