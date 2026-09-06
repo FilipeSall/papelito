@@ -394,7 +394,24 @@ echo "\nREST admin: leitura e escrita\n";
 $admin = api_test_request( 'GET', PAPELITO_TAXONOMY_API_ADMIN_CATEGORIES_ROUTE );
 
 assert_api( 'admin/categories responde 200', 200, $admin['status'] );
-assert_api( 'admin lista as coleções curadas', array( 'premium' ), $admin['data']['collections'] );
+// Premium precisa estar sempre lá, mas a lista deixou de ser fechada: o admin
+// cria coleção pela UI, então travar o conjunto inteiro quebraria o teste a cada
+// coleção nova e não protegeria nada.
+assert_api( 'admin lista Premium entre as coleções', true, in_array( 'premium', $admin['data']['collections'], true ) );
+assert_api( 'admin devolve o catálogo completo de coleções', true, isset( $admin['data']['collectionsCatalog'] ) && is_array( $admin['data']['collectionsCatalog'] ) );
+assert_api(
+	'catálogo administrativo traz nome e contagem de Premium',
+	true,
+	( static function () use ( $admin ) {
+		foreach ( (array) $admin['data']['collectionsCatalog'] as $collection ) {
+			if ( 'premium' === ( $collection['slug'] ?? '' ) ) {
+				return 'Premium' === ( $collection['name'] ?? '' ) && isset( $collection['productCount']['total'] );
+			}
+		}
+
+		return false;
+	} )()
+);
 
 $sedas_admin = null;
 
@@ -563,7 +580,292 @@ assert_api(
 $lido = api_test_request( 'GET', PAPELITO_TAXONOMY_API_ADMIN_PRODUCTS_ROUTE . $alvo . PAPELITO_TAXONOMY_API_TAXONOMY_ROUTE );
 
 assert_api( 'GET devolve a subcategoria gravada', 1, count( $lido['data']['subcategories'] ) );
-assert_api( 'GET devolve a coleção gravada', array( 'kits' ), $lido['data']['collections'] );
+
+// `kits` deixou de ser coleção em 20/08: é descartado em silêncio para que uma
+// edição comum consiga removê-lo sem reintroduzir a classificação antiga.
+assert_api( 'coleção legada kits é descartada em silêncio', array(), $lido['data']['collections'] );
+
+echo "\nREST admin: catálogo de coleções manuais\n";
+
+$colecao_a = papelito_collection_create(
+	array(
+		'name' => 'Papelito Teste Edição Limitada',
+		'slug' => 'papelito-teste-edicao-limitada',
+	)
+);
+$colecao_b = papelito_collection_create(
+	array(
+		'name' => 'Papelito Teste Seleção Especial',
+		'slug' => 'papelito-teste-selecao-especial',
+	)
+);
+
+assert_api( 'catálogo aceita coleção nova', true, is_int( $colecao_a ) && $colecao_a > 0 );
+assert_api( 'slug é derivado com acento removido', 'papelito-teste-edicao-limitada', papelito_collection_get( $colecao_a )['slug'] );
+
+$slug_a = papelito_collection_get( $colecao_a )['slug'];
+$slug_b = papelito_collection_get( $colecao_b )['slug'];
+
+assert_api(
+	'coleção criada fica disponível sem editar código',
+	true,
+	in_array( $slug_a, papelito_curated_collections(), true ) && in_array( $slug_b, papelito_curated_collections(), true )
+);
+
+$multi = api_test_request(
+	'PUT',
+	PAPELITO_TAXONOMY_API_ADMIN_PRODUCTS_ROUTE . $alvo . PAPELITO_TAXONOMY_API_TAXONOMY_ROUTE,
+	array( 'collections' => array( 'premium', $slug_a, $slug_b ) )
+);
+
+sort( $multi['data']['collections'] );
+$esperado_multi = array( 'premium', $slug_a, $slug_b );
+sort( $esperado_multi );
+
+assert_api( 'produto aceita várias coleções ao mesmo tempo', $esperado_multi, $multi['data']['collections'] );
+
+$duplicado = api_test_request(
+	'PUT',
+	PAPELITO_TAXONOMY_API_ADMIN_PRODUCTS_ROUTE . $alvo . PAPELITO_TAXONOMY_API_TAXONOMY_ROUTE,
+	array( 'collections' => array( 'premium', 'premium', $slug_a, $slug_b ) )
+);
+
+sort( $duplicado['data']['collections'] );
+
+assert_api( 'associação duplicada não duplica vínculo', $esperado_multi, $duplicado['data']['collections'] );
+
+$parcial = api_test_request(
+	'PUT',
+	PAPELITO_TAXONOMY_API_ADMIN_PRODUCTS_ROUTE . $alvo . PAPELITO_TAXONOMY_API_TAXONOMY_ROUTE,
+	array( 'collections' => array( $slug_a, $slug_b ) )
+);
+
+sort( $parcial['data']['collections'] );
+$esperado_parcial = array( $slug_a, $slug_b );
+sort( $esperado_parcial );
+
+assert_api( 'remover uma coleção preserva as outras', $esperado_parcial, $parcial['data']['collections'] );
+
+papelito_collection_update( $colecao_a, array( 'isActive' => false ) );
+
+$inativa = api_test_request(
+	'PUT',
+	PAPELITO_TAXONOMY_API_ADMIN_PRODUCTS_ROUTE . $alvo . PAPELITO_TAXONOMY_API_TAXONOMY_ROUTE,
+	array( 'collections' => array( $slug_a, $slug_b ) )
+);
+
+sort( $inativa['data']['collections'] );
+
+assert_api( 'coleção inativa já vinculada sobrevive a um novo save', $esperado_parcial, $inativa['data']['collections'] );
+
+$outro_produto = $produtos[2];
+$nova_inativa  = api_test_request(
+	'PUT',
+	PAPELITO_TAXONOMY_API_ADMIN_PRODUCTS_ROUTE . $outro_produto . PAPELITO_TAXONOMY_API_TAXONOMY_ROUTE,
+	array( 'collections' => array( $slug_a ) )
+);
+
+assert_api( 'coleção inativa recusa vínculo novo', 422, $nova_inativa['status'] );
+
+papelito_collection_update( $colecao_a, array( 'isActive' => true ) );
+
+assert_api(
+	'slug duplicado é recusado',
+	'papelito_collection_slug_taken',
+	papelito_collection_create( array( 'name' => 'Papelito Teste Edição Limitada' ) )->get_error_code()
+);
+
+assert_api(
+	'nomes que normalizam para o mesmo slug colidem',
+	'papelito_collection_slug_taken',
+	papelito_collection_create( array( 'name' => 'Papelito Teste Edicao Limitada' ) )->get_error_code()
+);
+
+assert_api(
+	'slug reservado por coleção automática é recusado',
+	'papelito_collection_slug_reserved',
+	papelito_collection_create( array( 'name' => 'Novidades' ) )->get_error_code()
+);
+
+assert_api(
+	'nome vazio é recusado',
+	'papelito_collection_name_required',
+	papelito_collection_create( array( 'name' => '   ' ) )->get_error_code()
+);
+
+assert_api(
+	'slug trava depois do primeiro vínculo',
+	'papelito_collection_slug_locked',
+	papelito_collection_update( $colecao_a, array( 'slug' => 'papelito-teste-outro-slug' ) )->get_error_code()
+);
+
+// Renomear não é trocar de identificador: sem fixar o slug atual, o update o
+// rederivava do nome novo e a trava recusava uma edição legítima.
+assert_api(
+	'renomear coleção com produtos é aceito',
+	true,
+	true === papelito_collection_update( $colecao_a, array( 'name' => 'Papelito Teste Edição Limitada 2026' ) )
+);
+assert_api( 'renomear preserva o identificador', $slug_a, papelito_collection_get( $colecao_a )['slug'] );
+assert_api( 'renomear preserva os vínculos', true, in_array( $slug_a, papelito_product_get_collections( $alvo ), true ) );
+
+assert_api(
+	'coleção inativa recusa vínculo novo com código próprio',
+	'papelito_collection_inactive',
+	( static function () use ( $colecao_b, $slug_b, $produtos ) {
+		papelito_collection_update( $colecao_b, array( 'isActive' => false ) );
+		$erro = papelito_product_replace_taxonomy( $produtos[3], array( 'collections' => array( $slug_b ) ) );
+		papelito_collection_update( $colecao_b, array( 'isActive' => true ) );
+
+		return is_wp_error( $erro ) ? $erro->get_error_code() : 'sem erro';
+	} )()
+);
+
+$contagens = papelito_collection_product_counts();
+
+assert_api( 'contagem agregada enxerga o vínculo', true, ( $contagens[ $slug_a ]['total'] ?? 0 ) >= 1 );
+
+assert_api( 'arquivar uma coleção preserva os vínculos', true, true === papelito_collection_archive( $colecao_b ) );
+assert_api( 'vínculo sobrevive ao arquivamento', true, in_array( $slug_b, papelito_product_get_collections( $alvo ), true ) );
+assert_api( 'coleção arquivada sai do catálogo ativo', false, in_array( $slug_b, papelito_curated_collections(), true ) );
+// Editar o status para "Ativa" precisa desarquivar: a listagem ativa exige
+// `is_active = 1` E `archived_at IS NULL`.
+papelito_collection_archive( $colecao_b );
+papelito_collection_update( $colecao_b, array( 'isActive' => true ) );
+
+assert_api( 'marcar Ativa limpa o arquivamento', null, papelito_collection_get( $colecao_b )['archivedAt'] );
+assert_api( 'e a coleção volta ao catálogo ativo', true, in_array( $slug_b, papelito_curated_collections(), true ) );
+
+papelito_collection_archive( $colecao_b );
+assert_api( 'restaurar devolve a coleção ao catálogo', true, true === papelito_collection_restore( $colecao_b ) );
+
+$cat_reativar = papelito_category_create( array( 'name' => 'Papelito Teste Reativar' ) );
+papelito_category_archive( $cat_reativar );
+papelito_category_update( $cat_reativar, array( 'isActive' => true ) );
+
+assert_api( 'categoria marcada como ativa também é desarquivada', null, papelito_category_get( $cat_reativar )['archivedAt'] );
+assert_api( 'e volta a aparecer na listagem ativa', true, in_array( $cat_reativar, array_column( papelito_categories_list(), 'id' ), true ) );
+
+papelito_category_archive( $cat_reativar );
+papelito_category_delete_permanently( $cat_reativar );
+assert_api( 'coleção restaurada volta ao catálogo ativo', true, in_array( $slug_b, papelito_curated_collections(), true ) );
+
+assert_api( 'relatório de integridade não acusa órfão para coleção conhecida', array(), papelito_category_integrity_report()['unknownCollections'] );
+
+echo "\nExclusão permanente\n";
+
+assert_api(
+	'coleção ativa não pode ser excluída em definitivo',
+	'papelito_collection_not_archived',
+	papelito_collection_delete_permanently( $colecao_b )->get_error_code()
+);
+
+$colecao_descartavel = papelito_collection_create( array( 'name' => 'Papelito Teste Descartavel' ) );
+$slug_descartavel    = papelito_collection_get( $colecao_descartavel )['slug'];
+
+papelito_product_replace_taxonomy( $alvo, array( 'collections' => array( $slug_a, $slug_b, $slug_descartavel ) ) );
+papelito_collection_archive( $colecao_descartavel );
+
+assert_api(
+	'coleção arquivada é excluída em definitivo',
+	true,
+	true === papelito_collection_delete_permanently( $colecao_descartavel )
+);
+assert_api( 'a linha some do catálogo', null, papelito_collection_get( $colecao_descartavel ) );
+assert_api( 'os vínculos daquela coleção somem', false, in_array( $slug_descartavel, papelito_product_get_collections( $alvo ), true ) );
+
+// Excluir uma coleção não pode levar as outras junto: o produto continua nas
+// duas que sobraram.
+$restantes = papelito_product_get_collections( $alvo );
+sort( $restantes );
+$esperado_restante = array( $slug_a, $slug_b );
+sort( $esperado_restante );
+assert_api( 'as outras coleções do produto sobrevivem', $esperado_restante, $restantes );
+
+assert_api(
+	'excluir coleção inexistente devolve 404',
+	'papelito_collection_not_found',
+	papelito_collection_delete_permanently( 999999 )->get_error_code()
+);
+
+// Excluir o produto tem de levar os vínculos junto, senão a linha órfã continua
+// contando na tela administrativa.
+$produto_efemero = api_test_product( 'efemero' );
+papelito_product_replace_taxonomy( $produto_efemero, array( 'categoryId' => $sedas, 'collections' => array( 'premium' ) ) );
+
+global $wpdb;
+$tabela_vinculo = papelito_product_taxonomy_table_names()['product_collection'];
+$antes_delete   = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$tabela_vinculo} WHERE product_id = %d", $produto_efemero ) );
+
+wp_delete_post( $produto_efemero, true );
+
+$depois_delete = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$tabela_vinculo} WHERE product_id = %d", $produto_efemero ) );
+
+assert_api( 'o vínculo existia antes de apagar o produto', 1, $antes_delete );
+assert_api( 'apagar o produto não deixa vínculo órfão', 0, $depois_delete );
+
+$cat_descartavel = papelito_category_create( array( 'name' => 'Papelito Teste Categoria Descartavel' ) );
+papelito_subcategory_create(
+	array(
+		'categoryId' => $cat_descartavel,
+		'name'       => 'Papelito Teste Sub Descartavel',
+	)
+);
+
+assert_api(
+	'categoria ativa não pode ser excluída em definitivo',
+	'papelito_category_not_archived',
+	papelito_category_delete_permanently( $cat_descartavel )->get_error_code()
+);
+
+papelito_category_archive( $cat_descartavel );
+
+assert_api(
+	'categoria arquivada é excluída com as subcategorias',
+	true,
+	true === papelito_category_delete_permanently( $cat_descartavel )
+);
+assert_api( 'a categoria some', null, papelito_category_get( $cat_descartavel ) );
+assert_api( 'as subcategorias somem junto', array(), papelito_subcategories_list( $cat_descartavel, array( 'active_only' => false, 'include_archived' => true ) ) );
+
+assert_api(
+	'arquivar categoria com produto vinculado é recusado',
+	'papelito_category_in_use',
+	papelito_category_archive( $sedas )->get_error_code()
+);
+
+// A guarda de produto vinculado dentro da exclusão é defesa em profundidade: o
+// arquivamento já barra o caso normal. Só se chega aqui por deriva de dados, que
+// é o que este bloco simula, porque produto sem categoria principal sai da
+// vitrine em silêncio.
+$cat_deriva = papelito_category_create( array( 'name' => 'Papelito Teste Deriva' ) );
+papelito_category_archive( $cat_deriva );
+
+global $wpdb;
+$tabelas = papelito_product_taxonomy_table_names();
+$wpdb->query(
+	$wpdb->prepare(
+		"INSERT INTO {$tabelas['product_category']} (product_id, category_id) VALUES (%d, %d) ON DUPLICATE KEY UPDATE category_id = VALUES(category_id)",
+		$produtos[4],
+		$cat_deriva
+	)
+);
+
+assert_api(
+	'categoria arquivada com produto vinculado é recusada na exclusão',
+	'papelito_category_in_use',
+	papelito_category_delete_permanently( $cat_deriva )->get_error_code()
+);
+
+$wpdb->delete( $tabelas['product_category'], array( 'product_id' => $produtos[4] ) );
+assert_api( 'sem o vínculo, a exclusão passa', true, true === papelito_category_delete_permanently( $cat_deriva ) );
+
+api_test_request( 'PUT', PAPELITO_TAXONOMY_API_ADMIN_PRODUCTS_ROUTE . $alvo . PAPELITO_TAXONOMY_API_TAXONOMY_ROUTE, array( 'collections' => array() ) );
+api_test_request( 'PUT', PAPELITO_TAXONOMY_API_ADMIN_PRODUCTS_ROUTE . $outro_produto . PAPELITO_TAXONOMY_API_TAXONOMY_ROUTE, array( 'collections' => array() ) );
+
+global $wpdb;
+$wpdb->delete( $wpdb->prefix . 'papelito_collections', array( 'id' => $colecao_a ) );
+$wpdb->delete( $wpdb->prefix . 'papelito_collections', array( 'id' => $colecao_b ) );
 
 assert_api(
 	'subcategoria de outra categoria devolve 422',

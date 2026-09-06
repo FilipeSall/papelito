@@ -41,6 +41,10 @@ if ( ! defined( 'PAPELITO_PRODUCT_COLLECTION_TABLE' ) ) {
 	define( 'PAPELITO_PRODUCT_COLLECTION_TABLE', 'papelito_product_collection' );
 }
 
+if ( ! defined( 'PAPELITO_COLLECTIONS_TABLE' ) ) {
+	define( 'PAPELITO_COLLECTIONS_TABLE', 'papelito_collections' );
+}
+
 if ( ! defined( 'PAPELITO_CATEGORY_NOT_FOUND_MESSAGE' ) ) {
 	define( 'PAPELITO_CATEGORY_NOT_FOUND_MESSAGE', 'Categoria não encontrada.' );
 }
@@ -52,7 +56,7 @@ if ( ! defined( 'PAPELITO_CATEGORY_NOT_FOUND_MESSAGE' ) ) {
 /**
  * Resolve nomes completos (com prefixo) das tabelas de taxonomia.
  *
- * @return array{categories:string,subcategories:string,product_category:string,product_subcategory:string,product_collection:string}
+ * @return array{categories:string,subcategories:string,collections:string,product_category:string,product_subcategory:string,product_collection:string}
  */
 function papelito_product_taxonomy_table_names() {
 	global $wpdb;
@@ -63,6 +67,7 @@ function papelito_product_taxonomy_table_names() {
 		'product_category'    => $wpdb->prefix . PAPELITO_PRODUCT_CATEGORY_TABLE,
 		'product_subcategory' => $wpdb->prefix . PAPELITO_PRODUCT_SUBCATEGORY_TABLE,
 		'product_collection'  => $wpdb->prefix . PAPELITO_PRODUCT_COLLECTION_TABLE,
+		'collections'         => $wpdb->prefix . PAPELITO_COLLECTIONS_TABLE,
 	);
 }
 
@@ -137,8 +142,24 @@ function papelito_product_taxonomy_install_tables() {
   KEY idx_collection (collection_slug, product_id)
 ) {$charset_collate};";
 
+	$collections_sql = "CREATE TABLE {$tables['collections']} (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  slug VARCHAR(48) NOT NULL,
+  name VARCHAR(120) NOT NULL,
+  description TEXT NULL DEFAULT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  archived_at DATETIME NULL DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY  (id),
+  UNIQUE KEY uniq_slug (slug),
+  KEY idx_active_sort (is_active, sort_order, id)
+) {$charset_collate};";
+
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
+	dbDelta( $collections_sql );
 	dbDelta( $categories_sql );
 	dbDelta( $subcategories_sql );
 	dbDelta( $product_category_sql );
@@ -151,15 +172,55 @@ function papelito_product_taxonomy_install_tables() {
 // ------------------------------------------------------------------
 
 /**
- * Coleções curadas aceitas em `papelito_product_set_collections`.
+ * Slugs das coleções manuais ativas, na ordem do catálogo.
  *
- * Lista fixa e curta de propósito: são recortes comerciais, não entidade. Se um
- * dia a operação precisar criar coleção pela UI, isto vira tabela.
+ * A fonte de verdade é `wp_papelito_collections`. O array literal só sobrevive
+ * como rede de deploy: o deploy é sync de arquivos e a migração roda em
+ * `plugins_loaded`, então existe uma janela com código novo e tabela ausente —
+ * devolver conjunto vazio ali faria Premium sumir da vitrine. Depois da
+ * migração o banco manda, inclusive quando o catálogo estiver legitimamente
+ * vazio.
  *
  * @return string[]
  */
 function papelito_curated_collections() {
-	return (array) apply_filters( 'papelito_curated_collections', array( 'premium' ) );
+	static $cache = null;
+
+	if ( null !== $cache && ! papelito_taxonomy_cache_is_stale( $cache['version'] ) ) {
+		return (array) apply_filters( 'papelito_curated_collections', $cache['slugs'] );
+	}
+
+	if ( ! function_exists( 'papelito_collections_list' ) || ! papelito_collections_table_ready() ) {
+		return (array) apply_filters( 'papelito_curated_collections', array( 'premium' ) );
+	}
+
+	$slugs = array_values(
+		array_filter(
+			array_map(
+				static function ( array $collection ) {
+					return (string) $collection['slug'];
+				},
+				papelito_collections_list()
+			)
+		)
+	);
+
+	$cache = array(
+		'slugs'   => $slugs,
+		'version' => papelito_product_taxonomy_version(),
+	);
+
+	return (array) apply_filters( 'papelito_curated_collections', $slugs );
+}
+
+/**
+ * Diz se um valor memoizado por request ficou para trás de uma escrita.
+ *
+ * @param int $version Versão capturada junto do valor.
+ * @return bool
+ */
+function papelito_taxonomy_cache_is_stale( $version ) {
+	return (int) $version !== papelito_product_taxonomy_version();
 }
 
 /**
@@ -517,7 +578,15 @@ function papelito_category_update_active_field( array $category, array $data ) {
 		return new WP_Error( 'papelito_category_in_use', 'Reclassifique os produtos antes de desativar a categoria.', array( 'status' => 409 ) );
 	}
 
-	return array( 'is_active' => $data['isActive'] ? 1 : 0 );
+	// Reativar limpa o arquivamento: a listagem ativa exige `is_active = 1` e
+	// `archived_at IS NULL`, então mexer só no primeiro deixaria a categoria
+	// arquivada com o salvamento aparentando sucesso.
+	return $data['isActive']
+		? array(
+			'is_active'   => 1,
+			'archived_at' => null,
+		)
+		: array( 'is_active' => 0 );
 }
 
 /**
@@ -665,6 +734,90 @@ function papelito_category_restore( $category_id ) {
 		),
 		array( 'id' => $category['id'] )
 	);
+
+	papelito_product_taxonomy_touch( 'category', $category['id'] );
+
+	return true;
+}
+
+/**
+ * Exclui uma categoria em definitivo, com as subcategorias e os vínculos.
+ *
+ * Só aceita categoria já arquivada: exclusão permanente não tem volta, e exigir
+ * o arquivamento antes transforma um clique acidental em dois passos
+ * deliberados. Produto vinculado também barra — produto sem categoria principal
+ * sai da vitrine em silêncio, e essa consequência não pode ser efeito colateral
+ * de uma limpeza de catálogo.
+ *
+ * @param int $category_id Id da categoria.
+ * @return true|WP_Error
+ */
+function papelito_category_delete_permanently( $category_id ) {
+	global $wpdb;
+
+	$category = papelito_category_get( $category_id );
+
+	if ( null === $category ) {
+		return new WP_Error( 'papelito_category_not_found', PAPELITO_CATEGORY_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
+	}
+
+	if ( null === $category['archivedAt'] ) {
+		return new WP_Error(
+			'papelito_category_not_archived',
+			'Arquive a categoria antes de excluí-la em definitivo.',
+			array( 'status' => 409 )
+		);
+	}
+
+	$in_use = papelito_category_product_count( $category['id'] );
+
+	if ( $in_use > 0 ) {
+		return new WP_Error(
+			'papelito_category_in_use',
+			sprintf( 'A categoria ainda tem %d produto(s) vinculado(s). Reclassifique antes de excluir.', $in_use ),
+			array(
+				'status'       => 409,
+				'productCount' => $in_use,
+			)
+		);
+	}
+
+	$tables = papelito_product_taxonomy_table_names();
+
+	if ( false === $wpdb->query( 'START TRANSACTION' ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		return new WP_Error( 'papelito_category_delete_failed', 'Não foi possível iniciar a exclusão.', array( 'status' => 500 ) );
+	}
+
+	$subcategory_ids = array_map(
+		'intval',
+		(array) $wpdb->get_col( $wpdb->prepare( "SELECT id FROM {$tables['subcategories']} WHERE category_id = %d", $category['id'] ) ) // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	);
+
+	$ok = true;
+
+	if ( ! empty( $subcategory_ids ) ) {
+		$placeholders = implode( ',', array_fill( 0, count( $subcategory_ids ), '%d' ) );
+		$sql          = "DELETE FROM {$tables['product_subcategory']} WHERE subcategory_id IN ({$placeholders})"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$ok           = false !== $wpdb->query( $wpdb->prepare( $sql, $subcategory_ids ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared
+	}
+
+	if ( $ok ) {
+		$ok = false !== $wpdb->delete( $tables['subcategories'], array( 'category_id' => $category['id'] ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	}
+
+	if ( $ok ) {
+		$ok = false !== $wpdb->delete( $tables['product_category'], array( 'category_id' => $category['id'] ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	}
+
+	if ( $ok ) {
+		$ok = false !== $wpdb->delete( $tables['categories'], array( 'id' => $category['id'] ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	}
+
+	if ( ! $ok || false === $wpdb->query( 'COMMIT' ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+		return new WP_Error( 'papelito_category_delete_failed', 'Não foi possível excluir a categoria.', array( 'status' => 500 ) );
+	}
 
 	papelito_product_taxonomy_touch( 'category', $category['id'] );
 
@@ -1151,12 +1304,18 @@ function papelito_product_taxonomy_resolve_subcategory_ids( $category, array $cu
 }
 
 /**
- * Resolve as coleções curadas do payload.
+ * Resolve as coleções manuais do payload.
  *
- * @param array<string,mixed> $data Payload da edição.
+ * Coleção inativa some do seletor mas não do produto: um vínculo que já existe
+ * continua aceito, senão salvar um produto pelo painel apagaria em silêncio uma
+ * curadoria que a interface nem chegou a carregar. Vínculo novo com coleção
+ * inativa continua recusado.
+ *
+ * @param string[]            $current_collections Vínculos atuais do produto.
+ * @param array<string,mixed> $data                Payload da edição.
  * @return string[]|WP_Error
  */
-function papelito_product_taxonomy_resolve_collections( array $data ) {
+function papelito_product_taxonomy_resolve_collections( array $current_collections, array $data ) {
 	if ( ! array_key_exists( 'collections', $data ) ) {
 		return array();
 	}
@@ -1177,13 +1336,25 @@ function papelito_product_taxonomy_resolve_collections( array $data ) {
 		}
 
 		if ( ! in_array( $slug, $allowed, true ) ) {
-			return new WP_Error( 'papelito_collection_unknown', 'Coleção desconhecida: ' . $slug, array( 'status' => 422 ) );
+			$known = papelito_collection_get_by_slug( $slug );
+
+			if ( null === $known ) {
+				return new WP_Error( 'papelito_collection_unknown', 'Coleção desconhecida: ' . $slug, array( 'status' => 422 ) );
+			}
+
+			if ( ! in_array( $slug, $current_collections, true ) ) {
+				return new WP_Error(
+					'papelito_collection_inactive',
+					sprintf( 'A coleção "%s" está inativa e não aceita vínculo novo.', $known['name'] ),
+					array( 'status' => 422 )
+				);
+			}
 		}
 
 		$collections[ $slug ] = $slug;
 	}
 
-	return $collections;
+	return array_values( $collections );
 }
 
 /**
@@ -1253,33 +1424,53 @@ function papelito_product_taxonomy_replace_subcategory_links( $product_id, array
 }
 
 /**
- * Regrava os vínculos de coleção curada.
+ * Sincroniza os vínculos de coleção manual pelo diff do conjunto.
  *
- * @param int                  $product_id      Id do produto.
- * @param array<string,string> $tables          Nomes das tabelas.
- * @param bool                 $has_collections Se o payload trouxe a chave.
- * @param string[]             $collections     Coleções resolvidas.
+ * Grava só a diferença em vez de apagar tudo e reinserir: um `DELETE` seguido
+ * de `INSERT` reescreve linhas que não mudaram e abre uma janela dentro da
+ * transação em que o produto não pertence a nenhuma coleção. O `INSERT IGNORE`
+ * fecha a corrida de duas requisições simultâneas — a chave primária
+ * `(product_id, collection_slug)` é quem garante a unicidade do par.
+ *
+ * @param int                  $product_id          Id do produto.
+ * @param array<string,string> $tables              Nomes das tabelas.
+ * @param bool                 $has_collections     Se o payload trouxe a chave.
+ * @param string[]             $collections         Coleções resolvidas.
+ * @param string[]             $current_collections Vínculos atuais.
  * @return bool
  */
-function papelito_product_taxonomy_replace_collection_links( $product_id, array $tables, $has_collections, array $collections ) {
+function papelito_product_taxonomy_replace_collection_links( $product_id, array $tables, $has_collections, array $collections, array $current_collections ) {
 	global $wpdb;
 
 	if ( ! $has_collections ) {
 		return true;
 	}
 
-	if ( false === $wpdb->delete( $tables['product_collection'], array( 'product_id' => $product_id ) ) ) { // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-		return false;
-	}
+	$to_add    = array_values( array_diff( $collections, $current_collections ) );
+	$to_remove = array_values( array_diff( $current_collections, $collections ) );
 
-	foreach ( $collections as $slug ) {
-		if ( false === $wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	foreach ( $to_remove as $slug ) {
+		if ( false === $wpdb->delete( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 			$tables['product_collection'],
 			array(
 				'product_id'      => $product_id,
 				'collection_slug' => $slug,
 			)
 		) ) {
+			return false;
+		}
+	}
+
+	foreach ( $to_add as $slug ) {
+		$inserted = $wpdb->query( // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+			$wpdb->prepare(
+				"INSERT IGNORE INTO {$tables['product_collection']} (product_id, collection_slug) VALUES (%d, %s)", // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+				$product_id,
+				$slug
+			)
+		);
+
+		if ( false === $inserted ) {
 			return false;
 		}
 	}
@@ -1304,7 +1495,7 @@ function papelito_product_taxonomy_replace_write( $product_id, array $tables, ar
 		return false;
 	}
 
-	return papelito_product_taxonomy_replace_collection_links( $product_id, $tables, $plan['hasCollections'], $plan['collections'] );
+	return papelito_product_taxonomy_replace_collection_links( $product_id, $tables, $plan['hasCollections'], $plan['collections'], $plan['currentCollections'] );
 }
 
 /**
@@ -1342,7 +1533,8 @@ function papelito_product_replace_taxonomy( $product_id, array $data ) {
 		return $subcategory_ids;
 	}
 
-	$collections = papelito_product_taxonomy_resolve_collections( $data );
+	$current_collections = papelito_product_get_collections( $product_id );
+	$collections         = papelito_product_taxonomy_resolve_collections( $current_collections, $data );
 
 	if ( is_wp_error( $collections ) ) {
 		return $collections;
@@ -1362,12 +1554,13 @@ function papelito_product_replace_taxonomy( $product_id, array $data ) {
 		$product_id,
 		$tables,
 		array(
-			'category'         => $category,
-			'categoryChanged'  => $category_changed,
-			'collections'      => $collections,
-			'hasCollections'   => $has_collections,
-			'hasSubcategories' => $has_subcategories,
-			'subcategoryIds'   => $subcategory_ids,
+			'category'           => $category,
+			'categoryChanged'    => $category_changed,
+			'collections'        => $collections,
+			'currentCollections' => $current_collections,
+			'hasCollections'     => $has_collections,
+			'hasSubcategories'   => $has_subcategories,
+			'subcategoryIds'     => $subcategory_ids,
 		)
 	);
 
@@ -1517,6 +1710,27 @@ function papelito_product_clear_taxonomy( $product_id ) {
 
 	return true;
 }
+
+/**
+ * Limpa a taxonomia Papelito quando um produto é excluído em definitivo.
+ *
+ * Sem isto, apagar um produto deixa as linhas de categoria, subcategoria e
+ * coleção apontando para um post que não existe mais. Órfão não quebra consulta
+ * — os filtros usam `INNER JOIN` com `wp_posts` —, mas infla a contagem da tela
+ * administrativa, que conta a linha de vínculo.
+ *
+ * @param int $post_id Id do post sendo excluído.
+ * @return void
+ */
+function papelito_taxonomy_clear_on_product_delete( $post_id ) {
+	if ( ! papelito_taxonomy_is_product( $post_id ) ) {
+		return;
+	}
+
+	papelito_product_clear_taxonomy( (int) $post_id );
+}
+
+add_action( 'before_delete_post', 'papelito_taxonomy_clear_on_product_delete' );
 
 // ------------------------------------------------------------------
 // Loaders em lote
@@ -1725,8 +1939,21 @@ function papelito_category_integrity_report() {
 	$sql                = "SELECT DISTINCT collection_slug FROM {$tables['product_collection']}"; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	$unknown_collection = $wpdb->get_col( $sql ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.NotPrepared
 
-	$allowed            = papelito_curated_collections();
-	$unknown_collection = array_values( array_diff( array_map( 'strval', is_array( $unknown_collection ) ? $unknown_collection : array() ), $allowed ) );
+	// Coleção desativada ou arquivada continua sendo coleção conhecida: só é
+	// órfão o slug que não existe mais no catálogo. Comparar com a lista ativa
+	// deixaria o relatório sujo sempre que o admin pausasse uma coleção.
+	$known              = array_map(
+		static function ( array $collection ) {
+			return (string) $collection['slug'];
+		},
+		function_exists( 'papelito_collections_list' ) ? papelito_collections_list(
+			array(
+				'active_only'      => false,
+				'include_archived' => true,
+			)
+		) : array()
+	);
+	$unknown_collection = array_values( array_diff( array_map( 'strval', is_array( $unknown_collection ) ? $unknown_collection : array() ), $known ) );
 
 	$report = array(
 		'publishedWithoutCategory' => array_map( 'intval', is_array( $missing_category ) ? $missing_category : array() ),

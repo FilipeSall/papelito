@@ -1094,13 +1094,32 @@ function papelito_vendor_stock_collections(): array {
 		$counts[ (string) ( $row['collection_slug'] ?? '' ) ] = (int) ( $row['total'] ?? 0 );
 	}
 
+	// O nome vem do catálogo: derivar do slug produzia "Edicao Limitada", sem
+	// acento e sem controle editorial. O fallback só cobre a janela de deploy
+	// em que o catálogo ainda não existe.
+	$names = array();
+
+	if ( function_exists( 'papelito_collections_list' ) ) {
+		foreach ( papelito_collections_list() as $collection ) {
+			$names[ (string) $collection['slug'] ] = (string) $collection['name'];
+		}
+	}
+
 	$collections = array();
 
 	foreach ( $slugs as $slug ) {
+		$total = (int) ( $counts[ $slug ] ?? 0 );
+
+		// O drawer serve para achar produto que existe: coleção sem produto
+		// publicado só adicionaria uma opção que devolve lista vazia.
+		if ( $total <= 0 ) {
+			continue;
+		}
+
 		$collections[] = array(
 			'slug'  => $slug,
-			'name'  => ucwords( str_replace( '-', ' ', $slug ) ),
-			'count' => (int) ( $counts[ $slug ] ?? 0 ),
+			'name'  => $names[ $slug ] ?? ucwords( str_replace( '-', ' ', $slug ) ),
+			'count' => $total,
 		);
 	}
 

@@ -23,6 +23,7 @@ require_once __DIR__ . '/includes/contact_config.php';
 require_once __DIR__ . '/includes/collections_config.php';
 require_once __DIR__ . '/includes/auth_endpoints.php';
 require_once __DIR__ . '/includes/product_taxonomy.php';
+require_once __DIR__ . '/includes/product_collections.php';
 require_once __DIR__ . '/includes/product_taxonomy_rest.php';
 require_once __DIR__ . '/includes/product_taxonomy_graphql.php';
 require_once __DIR__ . '/includes/product_taxonomy_query.php';
@@ -99,7 +100,7 @@ require_once __DIR__ . '/includes/account_status.php';
 require_once __DIR__ . '/includes/account_admin_endpoints.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.40.0' );
+	define( 'PAPELITO_DB_VERSION', '1.41.0' );
 }
 
 /**
@@ -161,6 +162,7 @@ function papelito_maybe_migrate_db() {
 
 		papelito_run_optional_db_migrations(
 			array(
+				'papelito_collections_seed_premium',
 				'papelito_product_benefits_seed_global',
 				'papelito_home_assets_seed_promo_marquee',
 				'papelito_home_assets_seed_features',

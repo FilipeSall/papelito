@@ -248,9 +248,13 @@ function papelito_taxonomy_admin_payload() {
 	$sub_counts      = papelito_subcategory_product_counts();
 
 	return array(
-		'version'     => papelito_product_taxonomy_version(),
-		'collections' => papelito_curated_collections(),
-		'categories'  => array_map(
+		'version'            => papelito_product_taxonomy_version(),
+		// `collections` continua sendo a lista de slugs ativos que o editor de
+		// produto sempre consumiu; `collectionsCatalog` é o objeto completo,
+		// com nome, status e contagem, para a tela de administração.
+		'collections'        => papelito_curated_collections(),
+		'collectionsCatalog' => function_exists( 'papelito_collections_admin_list' ) ? papelito_collections_admin_list() : array(),
+		'categories'         => array_map(
 			static function ( array $category ) use ( $category_counts, $sub_counts ) {
 				return papelito_taxonomy_admin_category( $category, $category_counts, $sub_counts );
 			},
@@ -262,6 +266,35 @@ function papelito_taxonomy_admin_payload() {
 // ------------------------------------------------------------------
 // Helpers de request
 // ------------------------------------------------------------------
+
+/**
+ * Diz se o request pediu exclusão permanente.
+ *
+ * `?force=true` é a convenção da própria REST do WordPress para separar lixeira
+ * de exclusão definitiva (`/wp/v2/posts/{id}?force=true`). Sem o parâmetro, o
+ * DELETE continua arquivando.
+ *
+ * @param WP_REST_Request $request Request.
+ * @return bool
+ */
+function papelito_taxonomy_wants_force( WP_REST_Request $request ) {
+	return rest_sanitize_boolean( $request->get_param( 'force' ) );
+}
+
+/**
+ * Resposta das rotas administrativas de coleção.
+ *
+ * Toda escrita devolve o catálogo inteiro, como as rotas de categoria: a tela
+ * recarrega de uma vez e a contagem nunca fica defasada em relação à lista.
+ *
+ * @return array<string,mixed>
+ */
+function papelito_collections_admin_payload() {
+	return array(
+		'version'     => papelito_product_taxonomy_version(),
+		'collections' => papelito_collections_admin_list(),
+	);
+}
 
 /**
  * Só administrador escreve taxonomia.
@@ -366,6 +399,110 @@ add_action(
 
 		register_rest_route(
 			'papelito/v1/admin',
+			'/collections',
+			array(
+				array(
+					'methods'             => WP_REST_Server::READABLE,
+					'permission_callback' => 'papelito_taxonomy_admin_permission',
+					'callback'            => static function (): WP_REST_Response {
+						return new WP_REST_Response( papelito_collections_admin_payload(), 200 );
+					},
+				),
+				array(
+					'methods'             => WP_REST_Server::CREATABLE,
+					'permission_callback' => 'papelito_taxonomy_admin_permission',
+					'callback'            => static function ( WP_REST_Request $request ) {
+						$created = papelito_collection_create(
+							papelito_taxonomy_pick( $request, array( 'name', 'slug', 'description', 'sortOrder', 'isActive' ) )
+						);
+
+						if ( is_wp_error( $created ) ) {
+							return $created;
+						}
+
+						return new WP_REST_Response( papelito_collections_admin_payload(), 201 );
+					},
+				),
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/collections/reorder',
+			array(
+				'methods'             => WP_REST_Server::EDITABLE,
+				'permission_callback' => 'papelito_taxonomy_admin_permission',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$result = papelito_collections_reorder( papelito_taxonomy_id_list( $request, 'ids' ) );
+
+					if ( is_wp_error( $result ) ) {
+						return $result;
+					}
+
+					return new WP_REST_Response( papelito_collections_admin_payload(), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/collections/(?P<id>\d+)',
+			array(
+				array(
+					'methods'             => WP_REST_Server::EDITABLE,
+					'permission_callback' => 'papelito_taxonomy_admin_permission',
+					'callback'            => static function ( WP_REST_Request $request ) {
+						$result = papelito_collection_update(
+							(int) $request['id'],
+							papelito_taxonomy_pick( $request, array( 'name', 'slug', 'description', 'sortOrder', 'isActive' ) )
+						);
+
+						if ( is_wp_error( $result ) ) {
+							return $result;
+						}
+
+						return new WP_REST_Response( papelito_collections_admin_payload(), 200 );
+					},
+				),
+				array(
+					'methods'             => WP_REST_Server::DELETABLE,
+					'permission_callback' => 'papelito_taxonomy_admin_permission',
+					'callback'            => static function ( WP_REST_Request $request ) {
+						$collection_id = (int) $request['id'];
+						$result        = papelito_taxonomy_wants_force( $request )
+							? papelito_collection_delete_permanently( $collection_id )
+							: papelito_collection_archive( $collection_id );
+
+						if ( is_wp_error( $result ) ) {
+							return $result;
+						}
+
+						return new WP_REST_Response( papelito_collections_admin_payload(), 200 );
+					},
+				),
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
+			'/collections/(?P<id>\d+)/restore',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'permission_callback' => 'papelito_taxonomy_admin_permission',
+				'callback'            => static function ( WP_REST_Request $request ) {
+					$result = papelito_collection_restore( (int) $request['id'] );
+
+					if ( is_wp_error( $result ) ) {
+						return $result;
+					}
+
+					return new WP_REST_Response( papelito_collections_admin_payload(), 200 );
+				},
+			)
+		);
+
+		register_rest_route(
+			'papelito/v1/admin',
 			'/categories/reorder',
 			array(
 				'methods'             => WP_REST_Server::EDITABLE,
@@ -423,7 +560,20 @@ add_action(
 					'permission_callback' => 'papelito_taxonomy_admin_permission',
 					'callback'            => static function ( WP_REST_Request $request ) {
 						$category_id = (int) $request['id'];
-						$result      = papelito_category_archive( $category_id );
+
+						if ( papelito_taxonomy_wants_force( $request ) ) {
+							$deleted = papelito_category_delete_permanently( $category_id );
+
+							if ( is_wp_error( $deleted ) ) {
+								return $deleted;
+							}
+
+							// A categoria deixou de existir: devolver o objeto dela
+							// daria 404 no shape. O payload é a árvore restante.
+							return new WP_REST_Response( papelito_taxonomy_admin_payload(), 200 );
+						}
+
+						$result = papelito_category_archive( $category_id );
 
 						if ( is_wp_error( $result ) ) {
 							return $result;

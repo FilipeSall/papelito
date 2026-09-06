@@ -29,6 +29,42 @@ categoria) e `wp_papelito_product_subcategory`. O catálogo headless lê somente
 produto; trocar categoria limpa as subcategorias antigas. Filtros aplicam OR dentro da mesma faceta e AND
 entre facetas.
 
+## Coleções manuais
+
+`wp_papelito_collections` é o catálogo das coleções manuais: `slug` (único, `VARCHAR(48)`), `name`,
+`description`, `sort_order`, `is_active` e `archived_at` — soft delete, como nas categorias. O vínculo
+com o produto vive em `wp_papelito_product_collection`, cuja **chave primária `(product_id,
+collection_slug)`** é a garantia de que a relação é N:N sem par duplicado: um produto pertence a
+quantas coleções fizerem sentido e uma coleção reúne quantos produtos existirem.
+
+A associação usa `collection_slug`, não `collection_id`. O slug é a chave estrangeira natural em oito
+predicados SQL espalhados por busca, estoque e benefícios, e no campo GraphQL `papelitoCollections`.
+Em troca, **o identificador é imutável depois do primeiro vínculo** (`papelito_collection_slug_locked`);
+renomear a coleção continua livre e não toca no slug.
+
+`papelito_curated_collections()` lê os slugs ativos dessa tabela, em `sort_order`. A lista literal
+`['premium']` sobrevive apenas como rede de deploy: o deploy é sync de arquivos e a migração roda em
+`plugins_loaded`, então há uma janela com código novo e tabela ausente em que devolver vazio faria
+Premium sumir da vitrine. Depois da migração o banco é a fonte de verdade.
+
+Coleção não é `product_tag`. A taxonomia do WooCommerce continua sendo palavra-chave de busca e não
+classifica nada; não há sincronização entre as duas, de propósito.
+
+Marcar uma categoria ou coleção arquivada como **Ativa** limpa `archived_at` junto com `is_active`:
+a listagem ativa exige as duas condições, e mexer só na primeira deixava a entidade arquivada com o
+salvamento aparentando sucesso.
+
+Arquivar é reversível e preserva tudo. A exclusão permanente
+(`papelito_collection_delete_permanently()` e `papelito_category_delete_permanently()`) só aceita
+entidade já arquivada, roda em transação e apaga também os dados dependentes — subcategorias e
+vínculos, no caso da categoria; vínculos, no caso da coleção. Categoria com produto vinculado é
+recusada, porque produto sem categoria principal sai da vitrine em silêncio.
+
+Coleção inativa mantém os vínculos existentes e recusa vínculo novo
+(`papelito_collection_inactive`). Um produto que já a tem continua com ela mesmo quando salvo pelo
+painel — o seletor renderiza a coleção inativa marcada, para que o formulário não apague o que não
+carregou.
+
 ## Benefícios da página de produto
 
 Três tabelas: `wp_papelito_benefit_groups` (configuração nomeada, com `is_global`, `global_key` e `is_active`),
