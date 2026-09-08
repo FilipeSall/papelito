@@ -10,7 +10,7 @@ define( 'PAPELITO_NOTIF_COMPANY_OWNER_APPROVED', 'company_owner_approved' );
 define( 'PAPELITO_NOTIF_COMPANY_OWNER_REJECTED', 'company_owner_rejected' );
 
 class WP_User {
-	public function __construct( public int $ID, public string $user_email ) {}
+	public function __construct( public int $ID, public string $user_email ) {} // NOSONAR -- nomes de propriedades publicas de WP_User no core.
 }
 
 $sent_email = array();
@@ -23,12 +23,14 @@ function wp_mail( string $to, string $subject, string $body, array $headers ): b
 	return true;
 }
 
+require_once __DIR__ . '/support/email_presentation_boot.php';
+
 $source = file_get_contents( __DIR__ . '/../includes/company_owner_applications.php' );
 if ( ! preg_match( '/function papelito_company_owner_application_send_decision_email\(.*?\n}/s', $source, $match ) ) {
 	echo "FAIL: could not isolate decision email function\n";
 	exit( 1 );
 }
-eval( $match[0] ); // phpcs:ignore Squiz.PHP.Eval.Discouraged
+eval( $match[0] ); // phpcs:ignore Squiz.PHP.Eval.Discouraged -- NOSONAR codigo do proprio plugin lido do disco e isolado por regex; nenhuma entrada externa chega aqui.
 
 papelito_company_owner_application_send_decision_email(
 	array(

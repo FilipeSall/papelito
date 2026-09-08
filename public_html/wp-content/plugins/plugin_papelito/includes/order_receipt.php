@@ -1788,11 +1788,19 @@ function papelito_receipt_send_email( object $order ) {
 		return $temp_file;
 	}
 
-	$sent = wp_mail(
+	$order_number = sanitize_text_field( (string) $order->get_order_number() );
+	$view         = array(
+		'kicker'       => 'Recibo',
+		'headline'     => sprintf( 'Recibo do pedido #%s.', $order_number ),
+		'lead'         => 'O recibo do seu pedido está em anexo, em PDF.',
+		'facts'        => array( 'Pedido' => '#' . $order_number ),
+		'footer_lines' => array( 'Guarde este recibo — ele registra os valores congelados do pedido.' ),
+	);
+	$sent         = papelito_email_send(
 		$recipient,
-		sprintf( 'Recibo do pedido #%s', sanitize_text_field( (string) $order->get_order_number() ) ),
-		"Ola,\n\nSegue em anexo o recibo do seu pedido.\n",
-		array( 'Content-Type: text/plain; charset=UTF-8' ),
+		sprintf( 'Recibo do pedido #%s', $order_number ),
+		papelito_email_notice_html( $view ),
+		papelito_email_notice_text( $view ),
 		array( papelito_receipt_filename( $order ) => $temp_file )
 	);
 	wp_delete_file( $temp_file );

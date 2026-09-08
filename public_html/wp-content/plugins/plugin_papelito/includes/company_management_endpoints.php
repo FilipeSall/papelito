@@ -149,23 +149,17 @@ function papelito_company_mgmt_invitation_view( array $row ): array {
  * @param string $link Link de confirmacao.
  * @return string
  */
-function papelito_company_mgmt_billing_email_body( string $link ): string {
-	return implode(
-		PHP_EOL,
-		array(
-			'Ola,',
-			'',
-			'Este endereço foi informado como e-mail de faturamento de uma empresa na Papelito.',
-			'Confirme para que ele passe a receber os documentos fiscais dos pedidos.',
-			'',
-			'Abra o link abaixo para confirmar:',
-			$link,
-			'',
-			'Este link expira em 24 horas e só pode ser usado uma vez.',
-			'Se você não reconhece esta solicitação, ignore esta mensagem.',
-			'',
-			'Time Papelito',
-		)
+function papelito_company_mgmt_billing_email_view( string $link ): array {
+	return array(
+		'kicker'       => 'E-mail de faturamento',
+		'headline'     => 'Confirme este e-mail de faturamento.',
+		'lead'         => 'Este endereço foi informado como e-mail de faturamento de uma empresa na Papelito. Confirme para que ele passe a receber os documentos fiscais dos pedidos.',
+		'cta'          => array(
+			'label' => 'Confirmar e-mail',
+			'url'   => $link,
+		),
+		'notes'        => array( 'Este link expira em 24 horas e só pode ser usado uma vez.' ),
+		'footer_lines' => array( 'Se você não reconhece esta solicitação, ignore esta mensagem.' ),
 	);
 }
 
@@ -207,7 +201,13 @@ function papelito_company_mgmt_send_billing_email_confirmation( int $company_id,
 	if ( is_wp_error( $updated ) ) {
 		return $updated;
 	}
-	$sent = wp_mail( $email, 'Confirme o e-mail de faturamento da Papelito', papelito_company_mgmt_billing_email_body( (string) $link ), array( 'Content-Type: text/plain; charset=UTF-8' ) );
+	$view = papelito_company_mgmt_billing_email_view( (string) $link );
+	$sent = papelito_email_send(
+		$email,
+		'Confirme o e-mail de faturamento da Papelito',
+		papelito_email_notice_html( $view ),
+		papelito_email_notice_text( $view )
+	);
 	if ( ! $sent ) {
 		return new WP_Error( 'papelito_b2b_billing_email_send_failed', 'Não foi possível enviar o e-mail de confirmação. Tente novamente em alguns instantes.', array( 'status' => 500 ) );
 	}

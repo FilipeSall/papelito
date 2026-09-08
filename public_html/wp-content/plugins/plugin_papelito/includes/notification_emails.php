@@ -24,8 +24,55 @@ const PAPELITO_EMAIL_WIDTH      = 600;
 /** Respiro interno da chapa branca de conteudo. */
 const PAPELITO_EMAIL_PLATE_PADDING = '20px 22px';
 
+/**
+ * Divisor claro entre linhas de dado — a tinta a 10% chapada sobre o branco.
+ *
+ * `rgba()` nao e confiavel no Outlook, entao a transparencia ja vem resolvida.
+ */
+const PAPELITO_EMAIL_RULE = '#e8e8e8';
+
 /** Respiro interno da chapa amarela de destaque, mais apertado por ser menor. */
 const PAPELITO_EMAIL_ACCENT_PADDING = '16px 20px';
+
+/** Dimensoes de exibicao do logo na tarja — as mesmas do rodape publico. */
+const PAPELITO_EMAIL_LOGO_WIDTH  = 183;
+const PAPELITO_EMAIL_LOGO_HEIGHT = 31;
+
+/**
+ * URL absoluta do logo branco usado na tarja de todo e-mail.
+ *
+ * O arquivo e o mesmo desenho de `papelito-web/public/images/logo3.svg`
+ * rasterizado em 2x sobre a tinta da tarja: cliente de e-mail nao renderiza SVG
+ * e o fundo chapado evita que o modo escuro inverta o wordmark. Fica em codigo,
+ * versionado com o plugin — a identidade do e-mail nao e administravel.
+ *
+ * @return string
+ */
+function papelito_email_logo_url(): string {
+	return plugins_url(
+		'assets/email/papelito-logo-email@2x.png',
+		dirname( __DIR__ ) . '/plugin_papelito.php'
+	);
+}
+
+/**
+ * Wordmark da tarja: imagem quando carrega, texto da marca quando bloqueada.
+ *
+ * O `alt` recebe o mesmo tratamento tipografico do wordmark antigo, entao o
+ * cliente que bloqueia imagem continua mostrando PAPELITO em caixa alta branca
+ * no lugar exato — nao um icone quebrado.
+ *
+ * @return string
+ */
+function papelito_email_logo(): string {
+	return sprintf(
+		'<img class="papelito-logo" src="%1$s" width="%2$d" height="%3$d" alt="Papelito" style="display:block;width:%2$dpx;height:%3$dpx;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;font-family:%4$s;font-size:19px;font-weight:900;letter-spacing:0.22em;text-transform:uppercase;color:#ffffff;" />',
+		esc_url( papelito_email_logo_url() ),
+		PAPELITO_EMAIL_LOGO_WIDTH,
+		PAPELITO_EMAIL_LOGO_HEIGHT,
+		PAPELITO_EMAIL_FONT_STACK
+	);
+}
 
 /**
  * Dados publicos do remetente, exibidos no rodape de todo e-mail.
@@ -178,6 +225,7 @@ function papelito_email_shell( array $parts ): string {
 		.papelito-media { width:100%% !important; max-width:100%% !important; }
 		.papelito-offset { width:100%% !important; }
 		.papelito-offset-spacer { width:20px !important; }
+		.papelito-logo { width:150px !important; height:26px !important; }
 	}
 </style>
 </head>
@@ -191,8 +239,8 @@ function papelito_email_shell( array $parts ): string {
 					<td class="papelito-pad" style="background-color:%6$s;padding:22px 28px;">
 						<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%%" style="width:100%%;">
 							<tr>
-								<td align="left" style="font-family:%7$s;font-size:19px;font-weight:900;line-height:22px;letter-spacing:0.22em;text-transform:uppercase;color:#ffffff;">PAPELITO</td>
-								<td align="right" style="font-family:%7$s;font-size:10px;font-weight:900;line-height:22px;letter-spacing:0.22em;text-transform:uppercase;color:%2$s;">%8$s</td>
+								<td align="left" valign="middle" style="line-height:0;font-size:0;">%15$s</td>
+								<td align="right" valign="middle" style="font-family:%7$s;font-size:10px;font-weight:900;line-height:16px;letter-spacing:0.22em;text-transform:uppercase;color:%2$s;padding-left:16px;">%8$s</td>
 							</tr>
 						</table>
 					</td>
@@ -230,7 +278,8 @@ function papelito_email_shell( array $parts ): string {
 		esc_html( $sender['name'] ),
 		esc_html( $sender['tax_id'] ),
 		esc_html( $sender['address'] ),
-		esc_html( $sender['age_notice'] )
+		esc_html( $sender['age_notice'] ),
+		papelito_email_logo()
 	);
 }
 
@@ -297,6 +346,280 @@ function papelito_company_invitation_email_html( array $view ): string {
 }
 
 /**
+ * Aviso transacional simples: manchete, chamada, fatos, acao e observacoes.
+ *
+ * Quase todo e-mail do produto tem esta forma. Ter uma montagem so evita que
+ * cada rotina invente a propria casca — foi assim que os avisos em texto puro
+ * apareceram — e mantem tarja, logo, fita e rodape iguais em todos eles.
+ *
+ * @param array<string,mixed> $view kicker, preheader, headline, lead, facts,
+ *                                  cta{label,url}, notes, footer_lines.
+ * @return string
+ */
+function papelito_email_notice_html( array $view ): string {
+	$facts = isset( $view['facts'] ) && is_array( $view['facts'] ) ? $view['facts'] : array();
+	$cta   = isset( $view['cta'] ) && is_array( $view['cta'] ) ? $view['cta'] : array();
+	$notes = array_values( array_filter( (array) ( $view['notes'] ?? array() ) ) );
+
+	$body = papelito_email_headline(
+		(string) ( $view['headline'] ?? '' ),
+		esc_html( (string) ( $view['lead'] ?? '' ) )
+	);
+
+	if ( ! empty( $facts ) ) {
+		$rows = '';
+
+		foreach ( $facts as $label => $value ) {
+			$rows .= sprintf(
+				'<tr><td style="%1$spadding:14px 20px;">%2$s<p style="margin:5px 0 0;font-family:%3$s;font-size:15px;font-weight:900;line-height:21px;color:%4$s;word-break:break-word;">%5$s</p></td></tr>',
+				'' !== $rows ? sprintf( 'border-top:2px solid %s;', esc_attr( PAPELITO_EMAIL_RULE ) ) : '',
+				papelito_email_label( (string) $label ),
+				PAPELITO_EMAIL_FONT_STACK,
+				esc_attr( PAPELITO_EMAIL_INK ),
+				esc_html( (string) $value )
+			);
+		}
+
+		$body .= '<div style="height:24px;line-height:24px;font-size:0;">&nbsp;</div>';
+		$body .= papelito_email_plate(
+			sprintf(
+				'<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%%" style="width:100%%;border-collapse:collapse;">%s</table>',
+				$rows
+			),
+			array(
+				'background' => PAPELITO_EMAIL_PAPER,
+				'padding'    => '0',
+				'offset'     => 6,
+			)
+		);
+	}
+
+	if ( '' !== (string) ( $cta['url'] ?? '' ) && '' !== (string) ( $cta['label'] ?? '' ) ) {
+		$body .= '<div style="height:26px;line-height:26px;font-size:0;">&nbsp;</div>';
+		$body .= papelito_email_button( (string) $cta['url'], (string) $cta['label'] );
+	}
+
+	foreach ( $notes as $index => $note ) {
+		$body .= sprintf(
+			'<p style="margin:%1$s 0 0;font-family:%2$s;font-size:13px;font-weight:500;line-height:20px;color:%3$s;">%4$s</p>',
+			0 === $index ? '20px' : '8px',
+			PAPELITO_EMAIL_FONT_STACK,
+			esc_attr( PAPELITO_EMAIL_TEXT_SOFT ),
+			esc_html( (string) $note )
+		);
+	}
+
+	return papelito_email_shell(
+		array(
+			'kicker'       => (string) ( $view['kicker'] ?? '' ),
+			'preheader'    => (string) ( $view['preheader'] ?? ( $view['lead'] ?? '' ) ),
+			'body_html'    => $body,
+			'footer_lines' => (array) ( $view['footer_lines'] ?? array() ),
+		)
+	);
+}
+
+/**
+ * Alternativa em texto do aviso transacional, com os mesmos dados do HTML.
+ *
+ * @param array<string,mixed> $view Mesma estrutura de papelito_email_notice_html().
+ * @return string
+ */
+function papelito_email_notice_text( array $view ): string {
+	$facts = isset( $view['facts'] ) && is_array( $view['facts'] ) ? $view['facts'] : array();
+	$cta   = isset( $view['cta'] ) && is_array( $view['cta'] ) ? $view['cta'] : array();
+	$notes = array_values( array_filter( (array) ( $view['notes'] ?? array() ) ) );
+
+	$lines = array( (string) ( $view['headline'] ?? '' ), '', (string) ( $view['lead'] ?? '' ) );
+
+	if ( ! empty( $facts ) ) {
+		$lines[] = '';
+		foreach ( $facts as $label => $value ) {
+			$lines[] = $label . ': ' . $value;
+		}
+	}
+
+	if ( '' !== (string) ( $cta['url'] ?? '' ) ) {
+		$lines[] = '';
+		$lines[] = trim( (string) ( $cta['label'] ?? 'Acessar' ) ) . ': ' . (string) $cta['url'];
+	}
+
+	if ( ! empty( $notes ) ) {
+		$lines[] = '';
+		foreach ( $notes as $note ) {
+			$lines[] = (string) $note;
+		}
+	}
+
+	foreach ( (array) ( $view['footer_lines'] ?? array() ) as $footer_line ) {
+		$footer_line = trim( wp_strip_all_tags( (string) $footer_line ) );
+		if ( '' !== $footer_line ) {
+			$lines[] = '';
+			$lines[] = $footer_line;
+		}
+	}
+
+	return implode( "\n", $lines );
+}
+
+/**
+ * Quadro de campos pendentes: barra de resumo preta e linhas agrupadas.
+ *
+ * E a `ResultFrame` do painel traduzida para tabela — barra com a contagem,
+ * rotulo de secao sobre kraft e uma linha por campo — porque o vendor precisa
+ * ler isto como roteiro de preenchimento, nao como texto corrido.
+ *
+ * @param array<int, array{label:string, fields:array<int,string>}> $groups Grupos ja rotulados.
+ * @param int                                                       $count  Total de campos pendentes.
+ * @return string
+ */
+function papelito_vendor_pending_fields_plate( array $groups, int $count ): string {
+	$rows = sprintf(
+		'<tr>
+			<td style="background-color:%1$s;padding:13px 20px;">
+				<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%%" style="width:100%%;border-collapse:collapse;">
+					<tr>
+						<td align="left" style="font-family:%2$s;font-size:11px;font-weight:900;line-height:16px;letter-spacing:0.18em;text-transform:uppercase;color:%3$s;">Campos pendentes</td>
+						<td align="right" style="font-family:%2$s;font-size:15px;font-weight:900;line-height:16px;color:%3$s;">%4$d</td>
+					</tr>
+				</table>
+			</td>
+		</tr>',
+		esc_attr( PAPELITO_EMAIL_INK ),
+		PAPELITO_EMAIL_FONT_STACK,
+		esc_attr( PAPELITO_EMAIL_YELLOW ),
+		$count
+	);
+
+	foreach ( $groups as $group ) {
+		$rows .= sprintf(
+			'<tr>
+				<td style="background-color:%1$s;padding:9px 20px;font-family:%2$s;font-size:10px;font-weight:900;line-height:15px;letter-spacing:0.18em;text-transform:uppercase;color:%3$s;">%4$s</td>
+			</tr>',
+			esc_attr( PAPELITO_EMAIL_KRAFT ),
+			PAPELITO_EMAIL_FONT_STACK,
+			esc_attr( PAPELITO_EMAIL_INK ),
+			esc_html( (string) ( $group['label'] ?? '' ) )
+		);
+
+		$fields = isset( $group['fields'] ) && is_array( $group['fields'] ) ? array_values( $group['fields'] ) : array();
+
+		foreach ( $fields as $index => $field ) {
+			$rows .= sprintf(
+				'<tr>
+					<td style="%1$spadding:11px 20px;font-family:%2$s;font-size:14px;font-weight:500;line-height:20px;color:%3$s;">%4$s</td>
+				</tr>',
+				$index > 0 ? sprintf( 'border-top:2px solid %s;', esc_attr( PAPELITO_EMAIL_RULE ) ) : '',
+				PAPELITO_EMAIL_FONT_STACK,
+				esc_attr( PAPELITO_EMAIL_INK ),
+				esc_html( (string) $field )
+			);
+		}
+	}
+
+	return papelito_email_plate(
+		sprintf(
+			'<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%%" style="width:100%%;border-collapse:collapse;">%s</table>',
+			$rows
+		),
+		array(
+			'background' => PAPELITO_EMAIL_PAPER,
+			'padding'    => '0',
+			'offset'     => 6,
+		)
+	);
+}
+
+/**
+ * Corpo HTML do aviso de cadastro de vendor incompleto.
+ *
+ * @param array<string,mixed> $view greeting, link, groups, pending_count.
+ * @return string
+ */
+function papelito_vendor_pending_registration_email_html( array $view ): string {
+	$greeting = trim( (string) ( $view['greeting'] ?? '' ) );
+	$link     = (string) ( $view['link'] ?? '' );
+	$count    = max( 0, (int) ( $view['pending_count'] ?? 0 ) );
+	$groups   = isset( $view['groups'] ) && is_array( $view['groups'] ) ? $view['groups'] : array();
+
+	$headline = 1 === $count
+		? 'Falta 1 campo para sua loja vender.'
+		: sprintf( 'Faltam %d campos para sua loja vender.', $count );
+
+	$context = 'cadastro de vendor foi criado pelo time Papelito. Enquanto estes dados não chegarem, sua loja fica fora do catálogo e não recebe pedidos.';
+	$lead    = '' !== $greeting
+		? sprintf( '<strong style="font-weight:900;">%s</strong>, seu %s', esc_html( $greeting ), $context )
+		: sprintf( 'Seu %s', $context );
+
+	$body  = papelito_email_headline( $headline, $lead );
+	$body .= '<div style="height:24px;line-height:24px;font-size:0;">&nbsp;</div>';
+	$body .= papelito_vendor_pending_fields_plate( $groups, $count );
+	$body .= '<div style="height:26px;line-height:26px;font-size:0;">&nbsp;</div>';
+	$body .= papelito_email_button( $link, 'Completar cadastro' );
+	$body .= sprintf(
+		'<p style="margin:20px 0 0;font-family:%1$s;font-size:13px;font-weight:500;line-height:20px;color:%2$s;">Assim que o último campo for salvo, a Papelito envia seus dados para a Pagar.me e sua loja volta ao catálogo automaticamente.</p>',
+		PAPELITO_EMAIL_FONT_STACK,
+		esc_attr( PAPELITO_EMAIL_TEXT_SOFT )
+	);
+
+	return papelito_email_shell(
+		array(
+			'kicker'       => 'Cadastro de vendor',
+			'preheader'    => 1 === $count
+				? 'Falta 1 campo para liberar sua loja no marketplace.'
+				: sprintf( 'Faltam %d campos para liberar sua loja no marketplace.', $count ),
+			'body_html'    => $body,
+			'footer_lines' => array( 'Você recebeu este aviso porque sua loja ainda não pode receber pedidos.' ),
+		)
+	);
+}
+
+/**
+ * Corpo texto do aviso de cadastro de vendor incompleto.
+ *
+ * @param array<string,mixed> $view greeting, link, groups, pending_count.
+ * @return string
+ */
+function papelito_vendor_pending_registration_email_text( array $view ): string {
+	$greeting = trim( (string) ( $view['greeting'] ?? '' ) );
+	$count    = max( 0, (int) ( $view['pending_count'] ?? 0 ) );
+	$groups   = isset( $view['groups'] ) && is_array( $view['groups'] ) ? $view['groups'] : array();
+
+	$lines = array(
+		'' !== $greeting ? sprintf( 'Olá %s,', $greeting ) : 'Olá,',
+		'',
+		1 === $count
+			? 'Falta 1 campo para sua loja vender.'
+			: sprintf( 'Faltam %d campos para sua loja vender.', $count ),
+		'Seu cadastro de vendor foi criado pelo time Papelito. Enquanto estes dados não chegarem, sua loja fica fora do catálogo e não recebe pedidos.',
+		'',
+		'CAMPOS PENDENTES',
+	);
+
+	foreach ( $groups as $group ) {
+		$fields = isset( $group['fields'] ) && is_array( $group['fields'] ) ? $group['fields'] : array();
+
+		if ( empty( $fields ) ) {
+			continue;
+		}
+
+		$lines[] = '';
+		$lines[] = mb_strtoupper( (string) ( $group['label'] ?? '' ) );
+
+		foreach ( $fields as $field ) {
+			$lines[] = '- ' . $field;
+		}
+	}
+
+	$lines[] = '';
+	$lines[] = 'Completar cadastro: ' . (string) ( $view['link'] ?? '' );
+	$lines[] = '';
+	$lines[] = 'Assim que o último campo for salvo, a Papelito envia seus dados para a Pagar.me e sua loja volta ao catálogo automaticamente.';
+
+	return implode( "\n", $lines );
+}
+
+/**
  * Corpo texto do convite de empresa.
  *
  * @param array<string,string> $view company_name, inviter_name, link, expires_at.
@@ -325,13 +648,14 @@ function papelito_company_invitation_email_text( array $view ): string {
 /**
  * Envia o e-mail em multipart: HTML para quem renderiza, texto para o resto.
  *
- * @param string $recipient Destinatario ja validado.
- * @param string $subject   Assunto.
- * @param string $html      Corpo HTML.
- * @param string $text      Corpo alternativo em texto simples.
+ * @param string               $recipient   Destinatario ja validado.
+ * @param string               $subject     Assunto.
+ * @param string               $html        Corpo HTML.
+ * @param string               $text        Corpo alternativo em texto simples.
+ * @param array<string,string> $attachments Anexos no formato aceito por wp_mail().
  * @return bool
  */
-function papelito_email_send( string $recipient, string $subject, string $html, string $text ): bool {
+function papelito_email_send( string $recipient, string $subject, string $html, string $text, array $attachments = array() ): bool {
 	$attach_alt_body = static function ( $phpmailer ) use ( $text ) {
 		if ( is_object( $phpmailer ) ) {
 			$phpmailer->AltBody = $text; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
@@ -339,7 +663,7 @@ function papelito_email_send( string $recipient, string $subject, string $html, 
 	};
 
 	add_action( 'phpmailer_init', $attach_alt_body );
-	$sent = wp_mail( $recipient, $subject, $html, array( 'Content-Type: text/html; charset=UTF-8' ) );
+	$sent = wp_mail( $recipient, $subject, $html, array( 'Content-Type: text/html; charset=UTF-8' ), $attachments );
 	remove_action( 'phpmailer_init', $attach_alt_body );
 
 	return (bool) $sent;

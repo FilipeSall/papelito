@@ -625,24 +625,27 @@ function papelito_auth_send_verification_email( WP_User $user, string $token ): 
 	if ( '/convite' === $return_path ) {
 		$link .= '&callbackUrl=' . rawurlencode( $return_path );
 	}
-	$subject    = 'Confirme seu e-mail - Papelito';
-	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
-	$body_lines = array(
-		sprintf( 'Ola %s,', '' !== $first_name ? $first_name : $recipient ),
-		'',
-		'Recebemos o seu cadastro na Papelito.',
-		'Confirme seu e-mail para liberar o login com senha e concluir a ativacao da conta.',
-		'',
-		'Abra o link abaixo para confirmar:',
-		$link,
-		'',
-		'Este link expira em 24 horas.',
-		'Se você não fez esse cadastro, ignore esta mensagem.',
-		'',
-		'Time Papelito',
+	$view = array(
+		'kicker'       => 'Confirmação de e-mail',
+		'headline'     => 'Confirme seu e-mail.',
+		'lead'         => sprintf(
+			'Olá %s, recebemos o seu cadastro na Papelito. Confirme seu e-mail para liberar o login com senha e concluir a ativação da conta.',
+			'' !== $first_name ? $first_name : $recipient
+		),
+		'cta'          => array(
+			'label' => 'Confirmar e-mail',
+			'url'   => $link,
+		),
+		'notes'        => array( 'Este link expira em 24 horas.' ),
+		'footer_lines' => array( 'Se você não fez esse cadastro, ignore esta mensagem.' ),
 	);
 
-	return wp_mail( $recipient, $subject, implode( PHP_EOL, $body_lines ), $headers );
+	return papelito_email_send(
+		$recipient,
+		'Confirme seu e-mail - Papelito',
+		papelito_email_notice_html( $view ),
+		papelito_email_notice_text( $view )
+	);
 }
 
 /**
@@ -707,23 +710,27 @@ function papelito_auth_send_password_reset_email( WP_User $user, string $key ): 
 		return false;
 	}
 
-	$subject    = 'Redefina sua senha - Papelito';
-	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
-	$body_lines = array(
-		sprintf( 'Ola %s,', '' !== $first_name ? $first_name : $recipient ),
-		'',
-		'Recebemos uma solicitação para redefinir a senha da sua conta na Papelito.',
-		'',
-		'Abra o link abaixo para cadastrar uma nova senha:',
-		$link,
-		'',
-		'Este link expira em 24 horas e pode ser usado uma única vez.',
-		'Se você não fez esta solicitação, ignore esta mensagem.',
-		'',
-		'Time Papelito',
+	$view = array(
+		'kicker'       => 'Acesso à conta',
+		'headline'     => 'Redefina sua senha.',
+		'lead'         => sprintf(
+			'Olá %s, recebemos uma solicitação para redefinir a senha da sua conta na Papelito.',
+			'' !== $first_name ? $first_name : $recipient
+		),
+		'cta'          => array(
+			'label' => 'Cadastrar nova senha',
+			'url'   => $link,
+		),
+		'notes'        => array( 'Este link expira em 24 horas e pode ser usado uma única vez.' ),
+		'footer_lines' => array( 'Se você não fez esta solicitação, ignore esta mensagem.' ),
 	);
 
-	return wp_mail( $recipient, $subject, implode( PHP_EOL, $body_lines ), $headers );
+	return papelito_email_send(
+		$recipient,
+		'Redefina sua senha - Papelito',
+		papelito_email_notice_html( $view ),
+		papelito_email_notice_text( $view )
+	);
 }
 
 /**

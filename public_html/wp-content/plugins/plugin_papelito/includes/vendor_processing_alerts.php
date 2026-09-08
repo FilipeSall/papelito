@@ -170,27 +170,32 @@ function papelito_vendor_processing_overdue_send_email( WP_User $vendor, $order,
 	$frontend_url = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : '';
 	$order_link   = sprintf( '%s/vendor/pedidos/%d', $frontend_url, (int) $order->get_id() );
 
-	$subject    = sprintf( 'Prazo de separação vencido - Papelito #%s', $order_number );
-	$headers    = array( 'Content-Type: text/plain; charset=UTF-8' );
-	$body_lines = array(
-		sprintf( 'Ola %s,', '' !== $greeting ? $greeting : $recipient ),
-		'',
-		sprintf(
-			'O pedido #%s passou do prazo de processamento de %d dia(s) e ainda não entrou em separação.',
-			$order_number,
+	$view = array(
+		'kicker'       => 'Prazo de separação',
+		'headline'     => sprintf( 'O pedido #%s passou do prazo.', $order_number ),
+		'lead'         => sprintf(
+			'%s, o prazo de processamento de %d dia(s) terminou e este pedido ainda não entrou em separação.',
+			'' !== $greeting ? $greeting : $recipient,
 			$lead_time
 		),
-		sprintf( 'Atraso atual: %d dia(s).', $days_overdue ),
-		'',
-		'Separe e prepare o envio com urgência para não impactar o prazo do cliente.',
-		'',
-		'Acesse o detalhe abaixo:',
-		$order_link,
-		'',
-		'Time Papelito',
+		'facts'        => array(
+			'Pedido'       => '#' . $order_number,
+			'Atraso atual' => sprintf( '%d dia(s)', $days_overdue ),
+		),
+		'cta'          => array(
+			'label' => 'Abrir pedido',
+			'url'   => $order_link,
+		),
+		'notes'        => array( 'Separe e prepare o envio com urgência para não impactar o prazo do cliente.' ),
+		'footer_lines' => array( 'Você recebeu este aviso porque é o vendor responsável por este pedido.' ),
 	);
 
-	return wp_mail( $recipient, $subject, implode( PHP_EOL, $body_lines ), $headers );
+	return papelito_email_send(
+		$recipient,
+		sprintf( 'Prazo de separação vencido - Papelito #%s', $order_number ),
+		papelito_email_notice_html( $view ),
+		papelito_email_notice_text( $view )
+	);
 }
 
 /**

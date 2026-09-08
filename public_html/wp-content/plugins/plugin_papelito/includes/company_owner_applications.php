@@ -412,13 +412,27 @@ function papelito_company_owner_application_send_decision_email( array $applicat
 
 	if ( 'approved' === $status ) {
 		$subject = 'Cadastro empresarial aprovado - Papelito';
-		$body    = "Seu cadastro empresarial foi aprovado.\n\nVocê já pode acessar sua conta e realizar compras na Papelito.";
+		$view    = array(
+			'kicker'   => 'Cadastro empresarial',
+			'headline' => 'Seu cadastro empresarial foi aprovado.',
+			'lead'     => 'Você já pode acessar sua conta e realizar compras na Papelito.',
+		);
 	} else {
 		$subject = 'Cadastro empresarial não aprovado - Papelito';
-		$body    = "Não foi possível aprovar seu cadastro empresarial porque encontramos divergências nos dados analisados.\n\nEsta solicitação foi encerrada. Para realizar uma nova tentativa, será necessário iniciar novamente o processo de cadastro empresarial.";
+		$view    = array(
+			'kicker'   => 'Cadastro empresarial',
+			'headline' => 'Seu cadastro empresarial não foi aprovado.',
+			'lead'     => 'Não foi possível aprovar seu cadastro empresarial porque encontramos divergências nos dados analisados.',
+			'notes'    => array( 'Esta solicitação foi encerrada. Para realizar uma nova tentativa, será necessário iniciar novamente o processo de cadastro empresarial.' ),
+		);
 	}
 
-	wp_mail( $user->user_email, $subject, $body, array( 'Content-Type: text/plain; charset=UTF-8' ) );
+	papelito_email_send(
+		$user->user_email,
+		$subject,
+		papelito_email_notice_html( $view ),
+		papelito_email_notice_text( $view )
+	);
 }
 
 /**

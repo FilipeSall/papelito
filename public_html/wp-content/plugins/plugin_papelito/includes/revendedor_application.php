@@ -285,15 +285,13 @@ function papelito_get_vendor_bank_account_detail( int $user_id ): ?array {
  */
 function papelito_vendor_pending_registration_allowed_fields(): array {
 	return array(
+		'phoneNumber',
 		'companyName',
 		'tradingName',
-		'corporationType',
-		'foundingDate',
 		'annualRevenue',
 		'partner.name',
 		'partner.email',
 		'partner.document',
-		'partner.motherName',
 		'partner.birthdate',
 		'partner.monthlyIncome',
 		'partner.professionalOccupation',
@@ -444,13 +442,40 @@ function papelito_sanitize_vendor_pagarme_step3_partial( array $step3, array $co
 }
 
 /**
- * Calcula os campos pendentes do draft financeiro.
+ * Indica se o telefone informado atende ao formato brasileiro com DDD.
  *
- * @param array<string, mixed> $step3 Draft normalizado.
+ * A Pagar.me exige `phone_numbers` no recebedor e no representante legal; sem
+ * um numero real o payload sai com o preenchimento tecnico de
+ * papelito_pagarme_recipient_phone_payload(), que e dado inventado num cadastro
+ * de PLD/FT. Por isso o telefone bloqueia a conclusao do cadastro.
+ *
+ * @param string $phone Telefone cru.
+ * @return bool
+ */
+function papelito_vendor_phone_is_valid( string $phone ): bool {
+	return null === papelito_phone_validation_error( $phone );
+}
+
+/**
+ * Coleta os campos de conta pendentes que nao vivem no draft financeiro.
+ *
+ * @param string $phone Telefone salvo em usermeta.
  * @return array<int, string>
  */
-function papelito_collect_vendor_pending_registration_fields( array $step3 ): array {
+function papelito_collect_vendor_pending_account_fields( string $phone ): array {
+	return papelito_vendor_phone_is_valid( $phone ) ? array() : array( 'phoneNumber' );
+}
+
+/**
+ * Calcula os campos pendentes do cadastro do vendor.
+ *
+ * @param array<string, mixed> $step3 Draft normalizado.
+ * @param string               $phone Telefone do vendor (usermeta `phone_number`).
+ * @return array<int, string>
+ */
+function papelito_collect_vendor_pending_registration_fields( array $step3, string $phone = '' ): array {
 	$pending = array_merge(
+		papelito_collect_vendor_pending_account_fields( $phone ),
 		papelito_collect_vendor_pending_company_fields( $step3 ),
 		papelito_collect_vendor_pending_partner_fields( $step3 ),
 		papelito_collect_vendor_pending_bank_fields( $step3 )
@@ -466,24 +491,16 @@ function papelito_collect_vendor_pending_registration_fields( array $step3 ): ar
  * @return array<int, string>
  */
 function papelito_collect_vendor_pending_company_fields( array $step3 ): array {
-	$pending          = array();
-	$company_name     = sanitize_text_field( (string) ( $step3['companyName'] ?? '' ) );
-	$trading_name     = sanitize_text_field( (string) ( $step3['tradingName'] ?? '' ) );
-	$corporation_type = sanitize_text_field( (string) ( $step3['corporationType'] ?? '' ) );
-	$founding_date    = sanitize_text_field( (string) ( $step3['foundingDate'] ?? '' ) );
-	$annual_revenue   = str_replace( ',', '.', sanitize_text_field( (string) ( $step3['annualRevenue'] ?? '' ) ) );
+	$pending        = array();
+	$company_name   = sanitize_text_field( (string) ( $step3['companyName'] ?? '' ) );
+	$trading_name   = sanitize_text_field( (string) ( $step3['tradingName'] ?? '' ) );
+	$annual_revenue = str_replace( ',', '.', sanitize_text_field( (string) ( $step3['annualRevenue'] ?? '' ) ) );
 
 	if ( '' === $company_name ) {
 		$pending[] = 'companyName';
 	}
 	if ( '' === $trading_name ) {
 		$pending[] = 'tradingName';
-	}
-	if ( '' === $corporation_type ) {
-		$pending[] = 'corporationType';
-	}
-	if ( 1 !== preg_match( PAPELITO_VENDOR_DATE_PATTERN, $founding_date ) ) {
-		$pending[] = 'foundingDate';
 	}
 	if ( ! is_numeric( $annual_revenue ) || (float) $annual_revenue <= 0 ) {
 		$pending[] = 'annualRevenue';
@@ -509,9 +526,6 @@ function papelito_collect_vendor_pending_partner_identity_fields( array $partner
 	}
 	if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' ) ) ) {
 		$pending[] = 'partner.document';
-	}
-	if ( '' === sanitize_text_field( (string) ( $partner['motherName'] ?? '' ) ) ) {
-		$pending[] = 'partner.motherName';
 	}
 	if ( 1 !== preg_match( PAPELITO_VENDOR_DATE_PATTERN, sanitize_text_field( (string) ( $partner['birthdate'] ?? '' ) ) ) ) {
 		$pending[] = 'partner.birthdate';
@@ -708,7 +722,10 @@ function papelito_resolve_vendor_pending_registration_fields( int $user_id ): ar
 			'lastName'     => (string) get_user_meta( $user_id, 'last_name', true ),
 		)
 	);
-	$fields     = papelito_collect_vendor_pending_registration_fields( $normalized );
+	$fields     = papelito_collect_vendor_pending_registration_fields(
+		$normalized,
+		(string) get_user_meta( $user_id, 'phone_number', true )
+	);
 
 	if ( ! empty( $fields ) ) {
 		papelito_save_vendor_pending_registration_fields( $user_id, $fields );
@@ -725,7 +742,10 @@ function papelito_resolve_vendor_pending_registration_fields( int $user_id ): ar
  * @return array<int, string>
  */
 function papelito_refresh_vendor_pending_registration_state( int $user_id, array $step3 ): array {
-	$fields = papelito_collect_vendor_pending_registration_fields( $step3 );
+	$fields = papelito_collect_vendor_pending_registration_fields(
+		$step3,
+		(string) get_user_meta( $user_id, 'phone_number', true )
+	);
 	papelito_save_vendor_pending_registration_fields( $user_id, $fields );
 	return $fields;
 }
@@ -958,6 +978,10 @@ function papelito_validate_vendor_pending_registration_account( int $user_id, ar
 function papelito_validate_vendor_pending_registration_store( array $step1, array $step2 ) {
 	if ( '' === sanitize_text_field( (string) ( $step1['storeName'] ?? '' ) ) ) {
 		return new WP_Error( 'papelito_vendor_missing_store_name', PAPELITO_VENDOR_MISSING_STORE_NAME_MESSAGE, array( 'status' => 422 ) );
+	}
+
+	if ( ! papelito_vendor_phone_is_valid( (string) ( $step1['phone'] ?? '' ) ) ) {
+		return new WP_Error( 'papelito_vendor_invalid_phone', 'Informe um telefone com DDD.', array( 'status' => 422 ) );
 	}
 
 	foreach ( array( 'street', 'number', 'neighborhood', 'city', 'state' ) as $field ) {
@@ -1202,10 +1226,9 @@ function papelito_validate_vendor_pagarme_company_fields( array $step3, WP_Error
 	if ( '' === $trading_name ) {
 		$errors->add( 'tradingName', 'Informe o nome fantasia.' );
 	}
-	if ( '' === $corporation_type ) {
-		$errors->add( 'corporationType', 'Informe a natureza jurídica.' );
-	}
-	if ( 1 !== preg_match( PAPELITO_VENDOR_DATE_PATTERN, $founding_date ) ) {
+	// Natureza jurídica e data de fundacao sao opcionais no contrato da Pagar.me;
+	// so o formato da data e cobrado quando ela vem preenchida.
+	if ( '' !== $founding_date && 1 !== preg_match( PAPELITO_VENDOR_DATE_PATTERN, $founding_date ) ) {
 		$errors->add( 'foundingDate', 'Informe uma data de fundacao válida.' );
 	}
 	if ( ! is_numeric( $annual_revenue ) || (float) $annual_revenue <= 0 ) {
@@ -1229,9 +1252,6 @@ function papelito_validate_vendor_pagarme_partner_identity( array $partner, WP_E
 	}
 	if ( ! papelito_revendedor_validate_cpf( (string) ( $partner['document'] ?? '' ) ) ) {
 		$errors->add( 'partnerDocument', 'Informe um CPF válido para o socio.' );
-	}
-	if ( '' === sanitize_text_field( (string) ( $partner['motherName'] ?? '' ) ) ) {
-		$errors->add( 'partnerMotherName', 'Informe o nome da mae do socio.' );
 	}
 	if ( 1 !== preg_match( PAPELITO_VENDOR_DATE_PATTERN, sanitize_text_field( (string) ( $partner['birthdate'] ?? '' ) ) ) ) {
 		$errors->add( 'partnerBirthdate', 'Informe a data de nascimento do socio.' );
@@ -2435,6 +2455,9 @@ function papelito_admin_vendors_normalize_direct_profile( array $input, string $
 	}
 	if ( '' === $profile['street'] || '' === $profile['number'] || '' === $profile['neighborhood'] || '' === $profile['city'] || '' === $profile['state'] ) {
 		return new WP_Error( 'papelito_admin_vendor_incomplete_address', 'Informe o endereço comercial completo do vendor.', array( 'status' => 422 ) );
+	}
+	if ( ! papelito_vendor_phone_is_valid( (string) ( $input['phoneNumber'] ?? '' ) ) ) {
+		return new WP_Error( 'papelito_admin_vendor_invalid_phone', 'Informe um telefone com DDD.', array( 'status' => 422 ) );
 	}
 
 	return $profile;

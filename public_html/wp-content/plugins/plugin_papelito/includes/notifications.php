@@ -283,12 +283,22 @@ function papelito_send_manual_shipment_email( WC_Order $order, string $type, str
 	}
 	$url = 'https://rastreamento.correios.com.br/app/index.php?objetos=' . rawurlencode( $tracking_code );
 	$subject = PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED === $type ? 'Atualizacao do rastreamento do seu pedido - Papelito' : 'Seu pedido foi enviado - Papelito';
-	$body = implode( PHP_EOL, array(
-		'Atualizamos o envio do seu pedido ' . $order->get_order_number() . '.',
-		'Código de rastreamento: ' . $tracking_code,
-		'Acompanhe nos Correios: ' . $url,
-	) );
-	wp_mail( $recipient, $subject, $body, array( PAPELITO_NOTIFICATION_EMAIL_HEADER ) );
+	$view = array(
+		'kicker'   => 'Envio do pedido',
+		'headline' => PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED === $type
+			? 'O rastreamento do seu pedido mudou.'
+			: 'Seu pedido foi enviado.',
+		'lead'     => sprintf( 'Atualizamos o envio do seu pedido %s.', $order->get_order_number() ),
+		'facts'    => array(
+			'Pedido'                => (string) $order->get_order_number(),
+			'Código de rastreamento' => $tracking_code,
+		),
+		'cta'      => array(
+			'label' => 'Acompanhar nos Correios',
+			'url'   => $url,
+		),
+	);
+	papelito_email_send( $recipient, $subject, papelito_email_notice_html( $view ), papelito_email_notice_text( $view ) );
 }
 add_action( 'papelito_manual_shipment_notified', 'papelito_send_manual_shipment_email', 10, 4 );
 
@@ -837,15 +847,13 @@ add_action( 'papelito_vendor_rejected', 'papelito_handle_vendor_rejected_notific
  */
 function papelito_vendor_pending_registration_field_labels(): array {
 	return array(
+		'phoneNumber'                   => 'Telefone com DDD',
 		'companyName'                   => 'Razao social',
 		'tradingName'                   => 'Nome fantasia',
-		'corporationType'               => 'Natureza jurídica',
-		'foundingDate'                  => 'Data de fundacao',
 		'annualRevenue'                 => 'Faturamento anual',
 		'partner.name'                  => 'Nome do socio administrador',
 		'partner.email'                 => 'E-mail do socio administrador',
 		'partner.document'              => 'CPF do socio administrador',
-		'partner.motherName'            => 'Nome da mae do socio administrador',
 		'partner.birthdate'             => 'Data de nascimento do socio administrador',
 		'partner.monthlyIncome'         => 'Renda mensal do socio administrador',
 		'partner.professionalOccupation' => 'Ocupacao profissional do socio administrador',
@@ -865,6 +873,95 @@ function papelito_vendor_pending_registration_field_labels(): array {
 }
 
 /**
+ * Agrupa os campos pendentes pelas mesmas secoes do formulario de onboarding.
+ *
+ * O vendor preenche o cadastro por blocos; listar os pendentes na ordem e com o
+ * nome desses blocos transforma a lista em roteiro ("abra Dados bancarios e
+ * preencha dois campos") em vez de um inventario solto.
+ *
+ * @return array<string, array{label:string, fields:array<int,string>}>
+ */
+function papelito_vendor_pending_registration_field_sections(): array {
+	return array(
+		'account' => array(
+			'label'  => 'Conta',
+			'fields' => array( 'phoneNumber' ),
+		),
+		'company' => array(
+			'label'  => 'KYC da empresa',
+			'fields' => array( 'companyName', 'tradingName', 'annualRevenue' ),
+		),
+		'partner' => array(
+			'label'  => 'Responsável legal / socio administrador',
+			'fields' => array(
+				'partner.name',
+				'partner.email',
+				'partner.document',
+				'partner.birthdate',
+				'partner.monthlyIncome',
+				'partner.professionalOccupation',
+				'partner.address.zipCode',
+				'partner.address.street',
+				'partner.address.streetNumber',
+				'partner.address.neighborhood',
+				'partner.address.city',
+				'partner.address.state',
+			),
+		),
+		'bank'    => array(
+			'label'  => 'Dados bancários',
+			'fields' => array(
+				'bankAccount.holderName',
+				'bankAccount.holderDocument',
+				'bankAccount.bankCode',
+				'bankAccount.branchNumber',
+				'bankAccount.accountNumber',
+				'bankAccount.accountCheckDigit',
+			),
+		),
+	);
+}
+
+/**
+ * Converte a lista crua de campos pendentes em grupos rotulados para o e-mail.
+ *
+ * @param array<int, string> $pending_fields Campos pendentes.
+ * @return array<int, array{label:string, fields:array<int,string>}>
+ */
+function papelito_vendor_pending_registration_grouped_labels( array $pending_fields ): array {
+	$labels  = papelito_vendor_pending_registration_field_labels();
+	$pending = array();
+
+	foreach ( $pending_fields as $field ) {
+		$field = sanitize_text_field( (string) $field );
+		if ( isset( $labels[ $field ] ) ) {
+			$pending[ $field ] = true;
+		}
+	}
+
+	$groups = array();
+
+	foreach ( papelito_vendor_pending_registration_field_sections() as $section ) {
+		$section_fields = array();
+
+		foreach ( $section['fields'] as $field ) {
+			if ( isset( $pending[ $field ] ) ) {
+				$section_fields[] = $labels[ $field ];
+			}
+		}
+
+		if ( ! empty( $section_fields ) ) {
+			$groups[] = array(
+				'label'  => $section['label'],
+				'fields' => $section_fields,
+			);
+		}
+	}
+
+	return $groups;
+}
+
+/**
  * Envia e-mail quando o vendor ainda precisa concluir dados obrigatorios.
  *
  * @param WP_User            $user Usuario destino.
@@ -878,47 +975,37 @@ function papelito_send_vendor_pending_registration_email( WP_User $user, array $
 		return false;
 	}
 
-	$labels      = papelito_vendor_pending_registration_field_labels();
-	$field_lines = array();
+	$groups = papelito_vendor_pending_registration_grouped_labels( $pending_fields );
 
-	foreach ( $pending_fields as $field ) {
-		$field = sanitize_text_field( (string) $field );
-		if ( isset( $labels[ $field ] ) ) {
-			$field_lines[] = '- ' . $labels[ $field ];
-		}
+	if ( empty( $groups ) ) {
+		$groups = array(
+			array(
+				'label'  => 'Dados financeiros',
+				'fields' => array( 'Revise os dados financeiros do cadastro.' ),
+			),
+		);
+	}
+
+	$count = 0;
+	foreach ( $groups as $group ) {
+		$count += count( $group['fields'] );
 	}
 
 	$store_name = (string) get_user_meta( $user->ID, 'store_name', true );
-	$greeting   = '' !== $store_name ? $store_name : $user->display_name;
 	$frontend   = function_exists( 'papelito_auth_get_frontend_url' ) ? papelito_auth_get_frontend_url() : '';
-	$vendor_url = $frontend . '/vendor/dashboard';
 
-	$body_lines = array(
-		sprintf( 'Ola %s,', $greeting ),
-		'',
-		'Seu cadastro foi criado pelo time Papelito, mas ainda faltam alguns dados obrigatórios para concluir a operação financeira e a integração.',
-		'',
-		'Campos pendentes:',
+	$view = array(
+		'greeting'      => '' !== $store_name ? $store_name : (string) $user->display_name,
+		'link'          => $frontend . '/vendor/onboarding',
+		'groups'        => $groups,
+		'pending_count' => $count,
 	);
 
-	$body_lines = array_merge( $body_lines, ! empty( $field_lines ) ? $field_lines : array( '- Revise os dados financeiros do cadastro.' ) );
-
-	$body_lines = array_merge(
-		$body_lines,
-		array(
-			'',
-			'Acesse sua área de vendor para revisar e completar essas informações:',
-			$vendor_url,
-			'',
-			'Time Papelito',
-		)
-	);
-
-	return wp_mail(
+	return papelito_email_send(
 		$recipient,
 		'Complete seu cadastro de vendor - Papelito',
-		implode( PHP_EOL, $body_lines ),
-		array( 'Content-Type: text/plain; charset=UTF-8' )
+		papelito_vendor_pending_registration_email_html( $view ),
+		papelito_vendor_pending_registration_email_text( $view )
 	);
 }
 

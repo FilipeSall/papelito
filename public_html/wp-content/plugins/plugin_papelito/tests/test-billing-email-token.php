@@ -110,6 +110,7 @@ $GLOBALS['wpdb'] = new Papelito_Test_Wpdb();
 require_once __DIR__ . '/../includes/support.php';
 require_once __DIR__ . '/../includes/frontend_links.php';
 require_once __DIR__ . '/../includes/billing_email_sync.php';
+require_once __DIR__ . '/support/email_presentation_boot.php';
 require_once __DIR__ . '/../includes/company_management_endpoints.php';
 
 $failures = 0;
@@ -191,7 +192,7 @@ papelito_assert( 'destinatario e o endereco pendente', 'segundo@empresa.com', $l
 papelito_assert( 'link usa o dominio do ambiente', true, str_contains( $last['body'], 'https://marketplace.papelito.com/confirmar-email-faturamento?token=' ) );
 papelito_assert( 'link nao usa localhost', false, str_contains( $last['body'], 'localhost' ) );
 papelito_assert( 'corpo avisa da expiracao', true, str_contains( $last['body'], 'expira em 24 horas' ) );
-papelito_assert( 'define content-type', true, in_array( 'Content-Type: text/plain; charset=UTF-8', $last['headers'], true ) );
+papelito_assert( 'define content-type', true, in_array( 'Content-Type: text/html; charset=UTF-8', $last['headers'], true ) );
 
 /* --- base de preview na allowlist gera link de preview --- */
 $GLOBALS['pap_env']['PAPELITO_ALLOWED_ORIGINS'] = 'https://marketplace.papelito.com,https://papelito-web.vercel.app';

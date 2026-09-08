@@ -103,6 +103,7 @@ function papelito_dispatch_notification( int $user_id, string $type, array $payl
 	return count( $notification_dispatches );
 }
 
+require_once __DIR__ . '/support/email_presentation_boot.php';
 require __DIR__ . '/../includes/company_pre_account_applications.php';
 require __DIR__ . '/../includes/admin_users.php';
 

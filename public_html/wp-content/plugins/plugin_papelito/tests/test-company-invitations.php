@@ -54,6 +54,18 @@ function wp_get_environment_type() { return 'production'; }
 function wp_date( string $format, int|false $timestamp ) { return false === $timestamp ? '' : gmdate( $format, $timestamp ); }
 function esc_attr( string $value ) { return htmlspecialchars( $value, ENT_QUOTES, 'UTF-8' ); }
 function esc_html( string $value ) { return htmlspecialchars( $value, ENT_QUOTES, 'UTF-8' ); }
+/**
+ * URL publica de um arquivo do plugin.
+ *
+ * @param string $path   Caminho relativo dentro do plugin.
+ * @param string $plugin Arquivo principal do plugin, ignorado no stub.
+ * @return string
+ */
+function plugins_url( $path, $plugin = '' ) {
+	unset( $plugin );
+
+	return 'https://papelito.test/wp-content/plugins/plugin_papelito/' . ltrim( (string) $path, '/' );
+}
 function esc_url( string $value ) { return $value; }
 function absint( mixed $value ) { return abs( (int) $value ); }
 function add_action( mixed ...$args ) {}

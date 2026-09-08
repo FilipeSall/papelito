@@ -12,6 +12,14 @@ define( 'ARRAY_A', 'ARRAY_A' );
 define( 'MINUTE_IN_SECONDS', 60 );
 define( 'HOUR_IN_SECONDS', 3600 );
 
+define( 'PAPELITO_TEST_FAVORITE_ADDED_AT', '2026-06-10T10:00:00Z' );
+define( 'PAPELITO_TEST_PRODUCT_NAME', 'Tubelito Tradicional' );
+define( 'PAPELITO_TEST_PENDING_PRODUCT_NAME', 'Produto pendente' );
+define( 'PAPELITO_TEST_PRICE_HIGH', '20.00' );
+define( 'PAPELITO_TEST_PRICE_LOW', '10.00' );
+define( 'PAPELITO_TEST_CURRENCY_ENTITY', '&#82;' );
+define( 'PAPELITO_TEST_PRICE_DROP_HEADLINE', 'O preço do seu favorito caiu.' );
+
 $GLOBALS['papelito_actions']   = array();
 $GLOBALS['papelito_filters']   = array();
 $GLOBALS['papelito_users']     = array();
@@ -24,10 +32,10 @@ $GLOBALS['papelito_mail_log']  = array();
 $GLOBALS['papelito_now']       = strtotime( '2026-06-12 12:00:00 UTC' );
 
 class WP_User {
-	public $ID; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome da propriedade publica de WP_User no core.
-	public $user_email;
-	public $display_name;
-	public $roles;
+	public int $ID; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome da propriedade publica de WP_User no core.
+	public string $user_email; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome de propriedade publica do WordPress/WooCommerce no core.
+	public string $display_name; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome de propriedade publica do WordPress/WooCommerce no core.
+	public array $roles; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome de propriedade publica do WordPress/WooCommerce no core.
 
 	public function __construct( int $id, string $email, string $display_name, array $roles = array() ) {
 		$this->ID           = $id;
@@ -66,11 +74,11 @@ function is_wp_error( $value ) {
 }
 
 class WP_Post {
-	public $ID; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome da propriedade publica de WP_Post no core.
-	public $post_type;
-	public $post_status;
-	public $post_name;
-	public $post_title;
+	public int $ID; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome da propriedade publica de WP_Post no core.
+	public string $post_type; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome de propriedade publica do WordPress/WooCommerce no core.
+	public string $post_status; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome de propriedade publica do WordPress/WooCommerce no core.
+	public string $post_name; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome de propriedade publica do WordPress/WooCommerce no core.
+	public string $post_title; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome de propriedade publica do WordPress/WooCommerce no core.
 
 	public function __construct( int $id, string $post_type, string $post_status, string $post_name, string $post_title ) {
 		$this->ID          = $id;
@@ -107,12 +115,12 @@ class WC_Product {
 	private $name;
 	private $slug;
 	private $status;
-	private $regular_price;
-	private $sale_price;
+	private $regular_price; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR snake_case exigido pelo WordPress coding standards.
+	private $sale_price; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR snake_case exigido pelo WordPress coding standards.
 	private $weight;
-	private $starts_at;
-	private $ends_at;
-	private $image_id;
+	private $starts_at; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR snake_case exigido pelo WordPress coding standards.
+	private $ends_at; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR snake_case exigido pelo WordPress coding standards.
+	private $image_id; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR snake_case exigido pelo WordPress coding standards.
 
 	public function __construct( array $args ) {
 		$this->id            = (int) $args['id'];
@@ -189,7 +197,7 @@ class WC_Product {
 	}
 
 	public function get_average_rating() {
-		return 0;
+		return 0.0;
 	}
 
 	public function get_review_count() {
@@ -216,7 +224,7 @@ class WC_Product {
 class WC_Coupon {
 	private $id;
 	private $code = '';
-	private $discount_type = '';
+	private $discount_type = ''; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR snake_case exigido pelo WordPress coding standards.
 	private $amount = 0;
 	private $status = 'draft';
 
@@ -236,11 +244,21 @@ class WC_Coupon {
 		$this->amount = $amount;
 	}
 
-	public function set_free_shipping( $value ) {}
-	public function set_date_expires( $expires ) {}
-	public function set_usage_limit( $value ) {}
-	public function set_usage_limit_per_user( $value ) {}
-	public function set_minimum_amount( $value ) {}
+	public function set_free_shipping( $value ) {
+		// Stub inerte: o cupom do teste so precisa de valor, tipo e status.
+	}
+	public function set_date_expires( $expires ) {
+		// Stub inerte: o cupom do teste so precisa de valor, tipo e status.
+	}
+	public function set_usage_limit( $value ) {
+		// Stub inerte: o cupom do teste so precisa de valor, tipo e status.
+	}
+	public function set_usage_limit_per_user( $value ) {
+		// Stub inerte: o cupom do teste so precisa de valor, tipo e status.
+	}
+	public function set_minimum_amount( $value ) {
+		// Stub inerte: o cupom do teste so precisa de valor, tipo e status.
+	}
 
 	public function set_status( string $status ) {
 		$this->status = $status;
@@ -267,12 +285,12 @@ class WC_Coupon {
 
 class Papelito_Test_WPDB {
 	public $prefix = 'wp_';
-	public $last_error = '';
-	public $insert_id = 0;
-	public $notification_rows = array();
-	public $email_log_rows = array();
-	private $next_notification_id = 1;
-	private $next_email_log_id = 1;
+	public string $last_error = ''; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome de propriedade publica do WordPress/WooCommerce no core.
+	public int $insert_id = 0; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR nome de propriedade publica do WordPress/WooCommerce no core.
+	public array $notification_rows = array(); // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR snake_case exigido pelo WordPress coding standards.
+	public array $email_log_rows = array(); // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR snake_case exigido pelo WordPress coding standards.
+	private $next_notification_id = 1; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR snake_case exigido pelo WordPress coding standards.
+	private $next_email_log_id = 1; // phpcs:ignore Squiz.Commenting.VariableComment.WrongStyle -- NOSONAR snake_case exigido pelo WordPress coding standards.
 
 	public function get_charset_collate() {
 		return '';
@@ -402,7 +420,9 @@ function apply_filters( $hook, $value, ...$args ) {
 	return $value;
 }
 
-function register_rest_route( ...$args ) {}
+function register_rest_route( ...$args ) {
+	// Stub inerte: o teste chama os handlers direto, sem passar pela camada REST.
+}
 function is_user_logged_in() { return true; }
 function current_user_can( ...$args ) { return true; }
 function user_can( $user_id, $capability ) { return false; }
@@ -703,11 +723,26 @@ function papelito_product_get_category( $product_id ) {
 		: array( 'id' => 1, 'name' => 'Sedas', 'slug' => 'sedas' );
 }
 
-require __DIR__ . '/../includes/notification_emails.php';
-require __DIR__ . '/../includes/favorites.php';
-require __DIR__ . '/../includes/notifications.php';
-require __DIR__ . '/../includes/flash_sale.php';
-require __DIR__ . '/../includes/coupons.php';
+if ( ! function_exists( 'plugins_url' ) ) {
+	/**
+	 * URL publica de um arquivo do plugin.
+	 *
+	 * @param string $path   Caminho relativo dentro do plugin.
+	 * @param string $plugin Arquivo principal do plugin, ignorado no stub.
+	 * @return string
+	 */
+	function plugins_url( $path, $plugin = '' ) {
+		unset( $plugin );
+
+		return 'https://papelito.test/wp-content/plugins/plugin_papelito/' . ltrim( (string) $path, '/' );
+	}
+}
+
+require_once __DIR__ . '/../includes/notification_emails.php';
+require_once __DIR__ . '/../includes/favorites.php';
+require_once __DIR__ . '/../includes/notifications.php';
+require_once __DIR__ . '/../includes/flash_sale.php';
+require_once __DIR__ . '/../includes/coupons.php';
 
 function papelito_reset_notification_state() {
 	global $wpdb;
@@ -752,7 +787,7 @@ papelito_seed_user(
 	array(
 		array(
 			'product_id' => 10,
-			'added_at'   => '2026-06-10T10:00:00Z',
+			'added_at'   => PAPELITO_TEST_FAVORITE_ADDED_AT,
 		),
 	)
 );
@@ -760,9 +795,9 @@ papelito_seed_user(
 papelito_seed_product(
 	array(
 		'id'            => 10,
-		'name'          => 'Tubelito Tradicional',
+		'name'          => PAPELITO_TEST_PRODUCT_NAME,
 		'status'        => 'publish',
-		'regular_price' => '20.00',
+		'regular_price' => PAPELITO_TEST_PRICE_HIGH,
 		'sale_price'    => '',
 	)
 );
@@ -846,9 +881,9 @@ $future_end   = $future_start + 3600;
 $current_product = new WC_Product(
 	array(
 		'id'            => 10,
-		'name'          => 'Tubelito Tradicional',
+		'name'          => PAPELITO_TEST_PRODUCT_NAME,
 		'status'        => 'publish',
-		'regular_price' => '20.00',
+		'regular_price' => PAPELITO_TEST_PRICE_HIGH,
 		'sale_price'    => '15.00',
 		'starts_at'     => $future_start,
 		'ends_at'       => $future_end,
@@ -871,9 +906,9 @@ $GLOBALS['papelito_now'] = $real_now;
 $GLOBALS['papelito_products'][10] = papelito_seed_product(
 	array(
 		'id'            => 10,
-		'name'          => 'Tubelito Tradicional',
+		'name'          => PAPELITO_TEST_PRODUCT_NAME,
 		'status'        => 'publish',
-		'regular_price' => '20.00',
+		'regular_price' => PAPELITO_TEST_PRICE_HIGH,
 		'sale_price'    => '',
 	)
 );
@@ -918,17 +953,17 @@ update_user_meta(
 	array(
 		array(
 			'product_id' => 10,
-			'added_at'   => '2026-06-10T10:00:00Z',
+			'added_at'   => PAPELITO_TEST_FAVORITE_ADDED_AT,
 		),
 	)
 );
 $GLOBALS['papelito_products'][10] = papelito_seed_product(
 	array(
 		'id'            => 10,
-		'name'          => 'Tubelito Tradicional',
+		'name'          => PAPELITO_TEST_PRODUCT_NAME,
 		'status'        => 'draft',
-		'regular_price' => '20.00',
-		'sale_price'    => '10.00',
+		'regular_price' => PAPELITO_TEST_PRICE_HIGH,
+		'sale_price'    => PAPELITO_TEST_PRICE_LOW,
 	)
 );
 do_action(
@@ -948,7 +983,7 @@ $GLOBALS['papelito_users'][99] = new WP_User( 99, 'admin@papelito.test', 'Admin'
 $GLOBALS['papelito_products'][20] = papelito_seed_product(
 	array(
 		'id'            => 20,
-		'name'          => 'Produto pendente',
+		'name'          => PAPELITO_TEST_PENDING_PRODUCT_NAME,
 		'status'        => 'publish',
 		'regular_price' => '',
 		'weight'        => '1',
@@ -966,9 +1001,9 @@ papelito_assert( 'repeat scan does not duplicate notification', 1, count( $wpdb-
 $GLOBALS['papelito_products'][20] = papelito_seed_product(
 	array(
 		'id'            => 20,
-		'name'          => 'Produto pendente',
+		'name'          => PAPELITO_TEST_PENDING_PRODUCT_NAME,
 		'status'        => 'publish',
-		'regular_price' => '10.00',
+		'regular_price' => PAPELITO_TEST_PRICE_LOW,
 		'weight'        => '',
 	)
 );
@@ -981,7 +1016,7 @@ papelito_assert( 'weight-only payload marks weight', true, $payload['missing_wei
 $GLOBALS['papelito_products'][20] = papelito_seed_product(
 	array(
 		'id'            => 20,
-		'name'          => 'Produto pendente',
+		'name'          => PAPELITO_TEST_PENDING_PRODUCT_NAME,
 		'status'        => 'publish',
 		'regular_price' => '',
 		'weight'        => '',
@@ -996,9 +1031,9 @@ papelito_assert( 'both payload marks weight', true, $payload['missing_weight'] )
 $GLOBALS['papelito_products'][20] = papelito_seed_product(
 	array(
 		'id'            => 20,
-		'name'          => 'Produto pendente',
+		'name'          => PAPELITO_TEST_PENDING_PRODUCT_NAME,
 		'status'        => 'publish',
-		'regular_price' => '10.00',
+		'regular_price' => PAPELITO_TEST_PRICE_LOW,
 		'weight'        => '1',
 	)
 );
@@ -1012,7 +1047,7 @@ $GLOBALS['papelito_products'][30] = papelito_seed_product(
 		'id'            => 30,
 		'name'          => 'Produto sem categoria',
 		'status'        => 'publish',
-		'regular_price' => '10.00',
+		'regular_price' => PAPELITO_TEST_PRICE_LOW,
 		'weight'        => '1',
 	)
 );
@@ -1034,7 +1069,7 @@ papelito_seed_user(
 	array(
 		array(
 			'product_id' => 41,
-			'added_at'   => '2026-06-10T10:00:00Z',
+			'added_at'   => PAPELITO_TEST_FAVORITE_ADDED_AT,
 		),
 	)
 );
@@ -1064,17 +1099,17 @@ papelito_assert( 'promo e-mail dispatched', 1, count( $GLOBALS['papelito_mail_lo
 $mail = $GLOBALS['papelito_mail_log'][0];
 
 papelito_assert( 'price formatter decodes the WooCommerce currency entity', 'R$ 93,00', papelito_notification_format_price( 93.0 ) );
-papelito_assert( 'HTML body carries no currency entity', false, false !== strpos( $mail['message'], '&#82;' ) );
+papelito_assert( 'HTML body carries no currency entity', false, false !== strpos( $mail['message'], PAPELITO_TEST_CURRENCY_ENTITY ) );
 papelito_assert( 'HTML body carries no non-breaking-space entity', false, false !== strpos( $mail['message'], '&nbsp;93' ) );
-papelito_assert( 'text body carries no currency entity', false, false !== strpos( $mail['alt'], '&#82;' ) );
+papelito_assert( 'text body carries no currency entity', false, false !== strpos( $mail['alt'], PAPELITO_TEST_CURRENCY_ENTITY ) );
 papelito_assert( 'HTML body shows the sale price', true, false !== strpos( $mail['message'], 'R$ 89,00' ) );
 papelito_assert( 'HTML body shows the regular price', true, false !== strpos( $mail['message'], 'De R$ 93,00' ) );
 papelito_assert( 'text body relates both prices', true, false !== strpos( $mail['alt'], 'De R$ 93,00 por R$ 89,00.' ) );
 papelito_assert( 'subject leads with the discount', 'Seda Papelito Tropical Mini com 4% de desconto - Papelito', $mail['subject'] );
 papelito_assert( 'message is sent as HTML', true, in_array( 'Content-Type: text/html; charset=UTF-8', $mail['headers'], true ) );
 papelito_assert( 'plain-text alternative is attached', true, '' !== $mail['alt'] );
-papelito_assert( 'accented copy survives', true, false !== strpos( $mail['message'], 'O preço do seu favorito caiu.' ) );
-papelito_assert( 'text alternative repeats the headline', true, false !== strpos( $mail['alt'], 'O preço do seu favorito caiu.' ) );
+papelito_assert( 'accented copy survives', true, false !== strpos( $mail['message'], PAPELITO_TEST_PRICE_DROP_HEADLINE ) );
+papelito_assert( 'text alternative repeats the headline', true, false !== strpos( $mail['alt'], PAPELITO_TEST_PRICE_DROP_HEADLINE ) );
 papelito_assert( 'discount badge is rendered', true, false !== strpos( $mail['message'], '4% OFF' ) );
 papelito_assert( 'category comes from the Papelito taxonomy', true, false !== strpos( $mail['message'], 'Sedas' ) );
 papelito_assert( 'product image is rendered with the product name as alt', true, false !== strpos( $mail['message'], 'alt="Seda Papelito Tropical Mini"' ) );
@@ -1090,7 +1125,7 @@ papelito_seed_user(
 	array(
 		array(
 			'product_id' => 42,
-			'added_at'   => '2026-06-10T10:00:00Z',
+			'added_at'   => PAPELITO_TEST_FAVORITE_ADDED_AT,
 		),
 	)
 );
@@ -1118,11 +1153,11 @@ unset( $GLOBALS['papelito_uncategorized_products'][42] );
 papelito_assert( 'coupon promo e-mail dispatched', 1, count( $GLOBALS['papelito_mail_log'] ) );
 $coupon_mail = $GLOBALS['papelito_mail_log'][0];
 
-papelito_assert( 'no image plate without a product image', false, false !== strpos( $coupon_mail['message'], '<img' ) );
+papelito_assert( 'no image plate without a product image', false, false !== strpos( $coupon_mail['message'], 'class="papelito-media"' ) );
 papelito_assert( 'no price plate without a sale price', false, false !== strpos( $coupon_mail['message'], 'Agora' ) );
 papelito_assert( 'subject falls back to the generic line', 'Dichavador <Neon> & Cia entrou em promoção - Papelito', $coupon_mail['subject'] );
 papelito_assert( 'product name is escaped in the HTML body', true, false !== strpos( $coupon_mail['message'], 'Dichavador &lt;Neon&gt; &amp; Cia' ) );
-papelito_assert( 'headline does not claim a price drop it cannot prove', false, false !== strpos( $coupon_mail['message'], 'O preço do seu favorito caiu.' ) );
+papelito_assert( 'headline does not claim a price drop it cannot prove', false, false !== strpos( $coupon_mail['message'], PAPELITO_TEST_PRICE_DROP_HEADLINE ) );
 papelito_assert( 'headline states only what the event knows', true, false !== strpos( $coupon_mail['message'], 'Seu favorito entrou em promoção.' ) );
 papelito_assert( 'coupon code is the offer context', true, false !== strpos( $coupon_mail['message'], 'Use o cupom <strong style="font-weight:900;letter-spacing:0.06em;">VOLTA10</strong>' ) );
 papelito_assert( 'text alternative keeps the coupon instruction', true, false !== strpos( $coupon_mail['alt'], 'Use o cupom VOLTA10 no carrinho' ) );
@@ -1140,8 +1175,9 @@ $purchase_html = papelito_new_purchase_email_html(
 	)
 );
 papelito_assert( 'vendor total is plain text currency', true, false !== strpos( $purchase_html, 'R$ 248,50' ) );
-papelito_assert( 'vendor body carries no currency entity', false, false !== strpos( $purchase_html, '&#82;' ) );
-papelito_assert( 'vendor body keeps the brand masthead', true, false !== strpos( $purchase_html, '>PAPELITO<' ) );
+papelito_assert( 'vendor body carries no currency entity', false, false !== strpos( $purchase_html, PAPELITO_TEST_CURRENCY_ENTITY ) );
+papelito_assert( 'vendor body keeps the brand masthead', true, false !== strpos( $purchase_html, 'class="papelito-logo"' ) );
+papelito_assert( 'masthead degrada para o wordmark com imagem bloqueada', true, false !== strpos( $purchase_html, 'alt="Papelito"' ) );
 
 echo "\n";
 if ( $failures > 0 ) {

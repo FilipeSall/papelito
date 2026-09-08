@@ -163,6 +163,7 @@ function receipt_email_fixture( int $order_id, string $number ): array {
 	);
 }
 
+require_once __DIR__ . '/support/email_presentation_boot.php';
 require_once __DIR__ . '/../includes/order_receipt.php';
 
 $failures = 0;

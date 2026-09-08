@@ -262,12 +262,11 @@ function papelito_pagarme_partner_payload( array $partner, string $fallback_phon
 		$phone = $fallback_phone;
 	}
 
-	return array(
+	$payload = array(
 		'name'                             => sanitize_text_field( (string) ( $partner['name'] ?? '' ) ),
 		'email'                            => sanitize_email( (string) ( $partner['email'] ?? '' ) ),
 		'document'                         => $document,
 		'type'                             => 'individual',
-		'mother_name'                      => sanitize_text_field( (string) ( $partner['motherName'] ?? '' ) ),
 		'birthdate'                        => sanitize_text_field( (string) ( $partner['birthdate'] ?? '' ) ),
 		'monthly_income'                   => (int) round( (float) str_replace( ',', '.', preg_replace( '/[^\d,.-]/', '', (string) ( $partner['monthlyIncome'] ?? '0' ) ) ) ),
 		'professional_occupation'          => sanitize_text_field( (string) ( $partner['professionalOccupation'] ?? '' ) ),
@@ -277,6 +276,16 @@ function papelito_pagarme_partner_payload( array $partner, string $fallback_phon
 		),
 		'address'                          => papelito_pagarme_recipient_address_payload( isset( $partner['address'] ) && is_array( $partner['address'] ) ? $partner['address'] : array() ),
 	);
+
+	// `mother_name` e opcional no contrato do representante legal. Enviar string
+	// vazia e recusado como formato invalido, entao o campo so entra preenchido.
+	$mother_name = sanitize_text_field( (string) ( $partner['motherName'] ?? '' ) );
+
+	if ( '' !== $mother_name ) {
+		$payload['mother_name'] = $mother_name;
+	}
+
+	return $payload;
 }
 
 /**
@@ -369,6 +378,14 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 		);
 	}
 
+	if ( ! papelito_vendor_phone_is_valid( $phone ) ) {
+		return new WP_Error(
+			'papelito_pagarme_invalid_phone',
+			'O vendor precisa ter telefone válido com DDD para criar o recebedor.',
+			array( 'status' => 422 )
+		);
+	}
+
 	if ( empty( $partners ) || ! is_array( $partners[0] ) ) {
 		return new WP_Error(
 			'papelito_pagarme_missing_partner',
@@ -400,6 +417,34 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 		);
 	}
 
+	$register_information = array(
+		'type'              => 'corporation',
+		'company_name'      => $company_name,
+		'trading_name'      => sanitize_text_field( (string) ( $draft['tradingName'] ?? $store_name ) ),
+		'email'             => sanitize_email( (string) $user->user_email ),
+		'document'          => $cnpj,
+		'annual_revenue'    => (int) round( (float) str_replace( ',', '.', preg_replace( '/[^\d,.-]/', '', (string) ( $draft['annualRevenue'] ?? '0' ) ) ) ),
+		'phone_numbers'     => array(
+			papelito_pagarme_recipient_phone_payload( $phone ),
+		),
+		'main_address'      => $main_address,
+		'managing_partners' => array( $partner ),
+	);
+
+	// `corporation_type` e `founding_date` sao opcionais no contrato de dados
+	// minimos da Pagar.me. String vazia e recusada como formato invalido, entao
+	// os dois so entram no payload quando o vendor os preencheu.
+	$corporation_type = sanitize_text_field( (string) ( $draft['corporationType'] ?? '' ) );
+	$founding_date    = sanitize_text_field( (string) ( $draft['foundingDate'] ?? '' ) );
+
+	if ( '' !== $corporation_type ) {
+		$register_information['corporation_type'] = $corporation_type;
+	}
+
+	if ( '' !== $founding_date ) {
+		$register_information['founding_date'] = $founding_date;
+	}
+
 	return array(
 		'code'                 => sprintf( 'vendor-%d', $user_id ),
 		'payment_mode'         => 'bank_transfer',
@@ -409,21 +454,7 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 			'transfer_day'      => (int) ( $transfer['day'] ?? 0 ),
 		),
 		'default_bank_account' => papelito_pagarme_bank_account_payload( $bank_account, $store_name, $cnpj ),
-		'register_information' => array(
-			'type'               => 'corporation',
-			'company_name'       => $company_name,
-			'trading_name'       => sanitize_text_field( (string) ( $draft['tradingName'] ?? $store_name ) ),
-			'email'              => sanitize_email( (string) $user->user_email ),
-			'document'           => $cnpj,
-			'corporation_type'   => sanitize_text_field( (string) ( $draft['corporationType'] ?? '' ) ),
-			'founding_date'      => sanitize_text_field( (string) ( $draft['foundingDate'] ?? '' ) ),
-			'annual_revenue'     => (int) round( (float) str_replace( ',', '.', preg_replace( '/[^\d,.-]/', '', (string) ( $draft['annualRevenue'] ?? '0' ) ) ) ),
-			'phone_numbers'      => array(
-				papelito_pagarme_recipient_phone_payload( $phone ),
-			),
-			'main_address'       => $main_address,
-			'managing_partners'  => array( $partner ),
-		),
+		'register_information' => $register_information,
 		'metadata'             => array(
 			'user_id'    => (string) $user_id,
 			'store_name' => $store_name,
