@@ -100,7 +100,7 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `coupons.php` | motor de cupons sobre `shop_coupon` |
 | `pricing.php` | `/cart/pricing` |
 | `catalog-pdf.php` | catálogo em PDF administrável |
-| `home_assets.php` | banners e assets da home |
+| `home_assets.php` | banners e assets da home, incluindo o corredor "Explore por coleção" (`papelito_home_collections_nav`) |
 | `product_benefits.php` | benefícios da página de produto: schema, resolução por escopo e seed do grupo global |
 | `product_benefits_rest.php` | rota pública `/products/{id}/benefits` e CRUD admin de `/admin/benefit-groups` |
 | `product_sku.php` | geração imutável de SKU para produtos/variações, backfill admin e comando WP-CLI |

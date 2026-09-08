@@ -101,7 +101,7 @@ require_once __DIR__ . '/includes/account_status.php';
 require_once __DIR__ . '/includes/account_admin_endpoints.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.42.0' );
+	define( 'PAPELITO_DB_VERSION', '1.43.0' );
 }
 
 /**
@@ -169,6 +169,7 @@ function papelito_maybe_migrate_db() {
 				'papelito_product_benefits_seed_global',
 				'papelito_home_assets_seed_promo_marquee',
 				'papelito_home_assets_seed_features',
+				'papelito_home_assets_seed_collections_nav',
 				'papelito_home_assets_migrate_free_shipping_placeholder',
 			)
 		);

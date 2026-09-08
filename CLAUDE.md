@@ -67,7 +67,7 @@ Tabela completa em [docs/context/architecture.md](docs/context/architecture.md#c
 ```bash
 docker compose up -d
 docker compose exec web wp <comando>     # o serviço é "web"
-composer phpcs
+docker compose --profile quality run --rm phpcs
 php -l <arquivo>
 php public_html/wp-content/plugins/plugin_papelito/tests/test-<x>.php
 bash scripts/pull-from-prod.sh

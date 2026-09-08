@@ -53,6 +53,15 @@ function papelito_home_assets_features_option_name(): string {
 }
 
 /**
+ * Nome da option dos cards do corredor "Explore por colecao" da Home.
+ *
+ * @return string
+ */
+function papelito_home_assets_collections_nav_option_name(): string {
+	return 'papelito_home_collections_nav';
+}
+
+/**
  * Nome da option do partner banner.
  *
  * @return string
@@ -570,6 +579,97 @@ function papelito_home_assets_feature_subtitle_max_length(): int {
 }
 
 /**
+ * Defaults do corredor "Explore por colecao" da Home.
+ *
+ * Espelha a lista que o frontend mantinha cravada no componente, para que instalacao nova e
+ * instalacao antiga cheguem no mesmo estado sem ninguem precisar cadastrar nada.
+ *
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_home_assets_default_collections_nav_items(): array {
+	return array(
+		array(
+			'id'         => 'kits',
+			'title'      => 'Kits',
+			'subtitle'   => 'Kits exclusivos',
+			'href'       => '/kits',
+			'collection' => 'kits',
+			'order'      => 1,
+			'isActive'   => true,
+		),
+		array(
+			'id'         => 'premium',
+			'title'      => 'Premium',
+			'subtitle'   => 'Top sellers',
+			'href'       => '/premium',
+			'collection' => '',
+			'order'      => 2,
+			'isActive'   => true,
+		),
+		array(
+			'id'         => 'promocoes',
+			'title'      => 'Promoções',
+			'subtitle'   => 'Ofertas disponíveis',
+			'href'       => '/promocoes',
+			'collection' => 'promocoes',
+			'order'      => 3,
+			'isActive'   => true,
+		),
+		array(
+			'id'         => 'novidades',
+			'title'      => 'Novidades',
+			'subtitle'   => 'Recém chegados',
+			'href'       => '/novidades',
+			'collection' => '',
+			'order'      => 4,
+			'isActive'   => true,
+		),
+	);
+}
+
+/**
+ * Limite do titulo de um card do corredor de colecoes.
+ *
+ * @return int
+ */
+function papelito_home_assets_collection_nav_title_max_length(): int {
+	return 24;
+}
+
+/**
+ * Limite do texto auxiliar de um card do corredor de colecoes.
+ *
+ * @return int
+ */
+function papelito_home_assets_collection_nav_subtitle_max_length(): int {
+	return 40;
+}
+
+/**
+ * Teto de cards do corredor de colecoes.
+ *
+ * Os chips ficam em uma unica fila que quebra; acima disso a fila vira paragrafo e o corredor
+ * deixa de ser um atalho.
+ *
+ * @return int
+ */
+function papelito_home_assets_collection_nav_max_items(): int {
+	return 8;
+}
+
+/**
+ * Colecoes derivadas que alimentam o texto auxiliar dinamico de um card.
+ *
+ * Whitelist explicita e curta de proposito: so `kits` e `promocoes` tem numero proprio no
+ * catalogo. Aceitar outros slugs aqui persistiria um vinculo que nao muda nada na vitrine.
+ *
+ * @return array<int, string>
+ */
+function papelito_home_assets_allowed_collection_nav_collections(): array {
+	return array( 'kits', 'promocoes' );
+}
+
+/**
  * Defaults das imagens administraveis das paginas.
  *
  * @return array<string, array<string, mixed>>
@@ -717,6 +817,43 @@ function papelito_home_assets_seed_features(): void {
 	update_option(
 		papelito_home_assets_features_option_name(),
 		papelito_home_assets_default_features(),
+		false
+	);
+}
+
+/**
+ * Busca option do corredor de colecoes.
+ *
+ * Lista vazia gravada e uma decisao do admin ("nao quero o corredor") e precisa sobreviver: so a
+ * ausencia de option cai nos defaults.
+ *
+ * @return array<int, mixed>
+ */
+function papelito_home_assets_get_raw_collections_nav_items(): array {
+	$value = get_option( papelito_home_assets_collections_nav_option_name(), null );
+
+	if ( ! is_array( $value ) ) {
+		return papelito_home_assets_default_collections_nav_items();
+	}
+
+	return array_values( $value );
+}
+
+/**
+ * Cria a configuracao inicial do corredor sem sobrescrever edicoes existentes.
+ *
+ * @return void
+ */
+function papelito_home_assets_seed_collections_nav(): void {
+	$value = get_option( papelito_home_assets_collections_nav_option_name(), null );
+
+	if ( null !== $value ) {
+		return;
+	}
+
+	update_option(
+		papelito_home_assets_collections_nav_option_name(),
+		papelito_home_assets_default_collections_nav_items(),
 		false
 	);
 }
@@ -1213,6 +1350,287 @@ function papelito_home_assets_validate_feature_item( $item, int $index ) {
 		'iconId'          => $icon_id,
 		'iconUrl'         => papelito_home_assets_resolve_svg_url( $icon_id, $item['iconUrl'] ?? '' ),
 	);
+}
+
+/**
+ * Gera um ID para card do corredor de colecoes.
+ *
+ * @return string
+ */
+function papelito_home_assets_generate_collection_nav_id(): string {
+	if ( function_exists( 'wp_generate_uuid4' ) ) {
+		return wp_generate_uuid4();
+	}
+
+	return uniqid( 'collection_nav_', true );
+}
+
+/**
+ * Reduz a colecao derivada de um card ao que o frontend sabe resolver.
+ *
+ * @param mixed $value Valor bruto.
+ * @return string
+ */
+function papelito_home_assets_normalize_collection_nav_collection( $value ): string {
+	$collection = sanitize_key( (string) $value );
+
+	return in_array( $collection, papelito_home_assets_allowed_collection_nav_collections(), true )
+		? $collection
+		: '';
+}
+
+/**
+ * Normaliza um card do corredor de colecoes.
+ *
+ * @param array<string, mixed> $item  Item armazenado.
+ * @param int                  $index Posicao de fallback.
+ * @return array<string, mixed>
+ */
+function papelito_home_assets_normalize_collection_nav_item( array $item, int $index ): array {
+	$id = sanitize_key( (string) ( $item['id'] ?? '' ) );
+
+	if ( '' === $id ) {
+		$id = papelito_home_assets_generate_collection_nav_id();
+	}
+
+	return array(
+		'id'         => $id,
+		'title'      => papelito_home_assets_clean_text( $item['title'] ?? '' ),
+		'subtitle'   => papelito_home_assets_clean_text( $item['subtitle'] ?? '' ),
+		'href'       => papelito_home_assets_normalize_href( $item['href'] ?? '' ),
+		'collection' => papelito_home_assets_normalize_collection_nav_collection( $item['collection'] ?? '' ),
+		'order'      => max( 1, absint( $item['order'] ?? ( $index + 1 ) ) ),
+		'isActive'   => papelito_home_assets_to_bool( $item['isActive'] ?? true ),
+	);
+}
+
+/**
+ * Normaliza e reordena todos os cards do corredor.
+ *
+ * A ordem publicada e sempre a posicao final na lista, nunca o numero gravado: ordem repetida ou
+ * com buraco continuaria determinista, mas deixaria o painel e a vitrine discordando.
+ *
+ * @param array<int, mixed> $items Itens armazenados.
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_home_assets_normalize_collections_nav_items( array $items ): array {
+	$normalized = array();
+
+	foreach ( array_values( $items ) as $index => $item ) {
+		if ( ! is_array( $item ) ) {
+			continue;
+		}
+
+		$normalized[] = papelito_home_assets_normalize_collection_nav_item( $item, $index );
+	}
+
+	usort(
+		$normalized,
+		static function ( array $left, array $right ): int {
+			return (int) $left['order'] <=> (int) $right['order'];
+		}
+	);
+
+	foreach ( $normalized as $index => &$item ) {
+		$item['order'] = $index + 1;
+	}
+	unset( $item );
+
+	return $normalized;
+}
+
+/**
+ * Lista issues administrativas do corredor de colecoes.
+ *
+ * @param array<int, array<string, mixed>> $items Itens normalizados.
+ * @return array<int, string>
+ */
+function papelito_home_assets_collect_collections_nav_issues( array $items ): array {
+	$issues = array();
+	$ids    = array();
+
+	foreach ( $items as $index => $item ) {
+		$number = $index + 1;
+
+		if ( '' === (string) $item['title'] || '' === (string) $item['subtitle'] ) {
+			$issues[] = sprintf( 'Card #%d precisa ter título e texto auxiliar.', $number );
+		}
+
+		if ( '' === (string) $item['href'] ) {
+			$issues[] = sprintf( 'Card #%d precisa apontar para um caminho interno começando com barra.', $number );
+		}
+
+		if ( papelito_home_assets_text_length( (string) $item['title'] ) > papelito_home_assets_collection_nav_title_max_length() ) {
+			$issues[] = sprintf(
+				'Título do card #%d excede o limite de %d caracteres.',
+				$number,
+				papelito_home_assets_collection_nav_title_max_length()
+			);
+		}
+
+		if ( papelito_home_assets_text_length( (string) $item['subtitle'] ) > papelito_home_assets_collection_nav_subtitle_max_length() ) {
+			$issues[] = sprintf(
+				'Texto auxiliar do card #%d excede o limite de %d caracteres.',
+				$number,
+				papelito_home_assets_collection_nav_subtitle_max_length()
+			);
+		}
+
+		if ( isset( $ids[ $item['id'] ] ) ) {
+			$issues[] = sprintf( 'Card #%d possui ID duplicado.', $number );
+		}
+
+		$ids[ $item['id'] ] = true;
+	}
+
+	if ( count( $items ) > papelito_home_assets_collection_nav_max_items() ) {
+		$issues[] = sprintf(
+			'O corredor aceita no máximo %d cards.',
+			papelito_home_assets_collection_nav_max_items()
+		);
+	}
+
+	return $issues;
+}
+
+/**
+ * Snapshot admin do corredor de colecoes.
+ *
+ * @return array<string, mixed>
+ */
+function papelito_home_assets_get_admin_collections_nav_snapshot(): array {
+	$items = papelito_home_assets_normalize_collections_nav_items(
+		papelito_home_assets_get_raw_collections_nav_items()
+	);
+
+	return array(
+		'items'  => $items,
+		'issues' => papelito_home_assets_collect_collections_nav_issues( $items ),
+	);
+}
+
+/**
+ * Valida payload do corredor de colecoes para escrita.
+ *
+ * @param mixed $input Valor recebido.
+ * @return array<int, array<string, mixed>>|WP_Error
+ */
+function papelito_home_assets_validate_collections_nav_payload( $input ) {
+	if ( ! is_array( $input ) ) {
+		return new WP_Error(
+			'papelito_home_assets_invalid_collections_nav_payload',
+			'Payload do corredor de coleções inválido.',
+			array( 'status' => 422 )
+		);
+	}
+
+	if ( count( $input ) > papelito_home_assets_collection_nav_max_items() ) {
+		return new WP_Error(
+			'papelito_home_assets_too_many_collections_nav_items',
+			sprintf(
+				'O corredor aceita no máximo %d cards.',
+				papelito_home_assets_collection_nav_max_items()
+			),
+			array( 'status' => 422 )
+		);
+	}
+
+	$validated = array();
+	$ids       = array();
+
+	foreach ( array_values( $input ) as $index => $item ) {
+		$entry = papelito_home_assets_validate_collection_nav_item( $item, $index );
+
+		if ( is_wp_error( $entry ) ) {
+			return $entry;
+		}
+
+		if ( isset( $ids[ $entry['id'] ] ) ) {
+			return new WP_Error(
+				'papelito_home_assets_duplicate_collection_nav_id',
+				sprintf( 'Card #%d possui ID duplicado.', $index + 1 ),
+				array( 'status' => 422 )
+			);
+		}
+
+		$ids[ $entry['id'] ] = true;
+		$entry['order']      = $index + 1;
+		$validated[]         = $entry;
+	}
+
+	return $validated;
+}
+
+/**
+ * Valida um card do corredor isolado.
+ *
+ * @param mixed $item  Item recebido.
+ * @param int   $index Posicao na lista.
+ * @return array<string, mixed>|WP_Error
+ */
+function papelito_home_assets_validate_collection_nav_item( $item, int $index ) {
+	$number = $index + 1;
+
+	if ( ! is_array( $item ) ) {
+		return new WP_Error(
+			'papelito_home_assets_invalid_collection_nav_item',
+			sprintf( 'Card #%d está em formato inválido.', $number ),
+			array( 'status' => 422 )
+		);
+	}
+
+	$raw_title    = trim( (string) ( $item['title'] ?? '' ) );
+	$raw_subtitle = trim( (string) ( $item['subtitle'] ?? '' ) );
+
+	if ( wp_strip_all_tags( $raw_title ) !== $raw_title || wp_strip_all_tags( $raw_subtitle ) !== $raw_subtitle ) {
+		return new WP_Error(
+			'papelito_home_assets_html_collection_nav_text',
+			sprintf( 'Card #%d aceita apenas texto simples.', $number ),
+			array( 'status' => 422 )
+		);
+	}
+
+	$normalized = papelito_home_assets_normalize_collection_nav_item( $item, $index );
+
+	if ( '' === $normalized['title'] || '' === $normalized['subtitle'] ) {
+		return new WP_Error(
+			'papelito_home_assets_empty_collection_nav_text',
+			sprintf( 'Card #%d precisa ter título e texto auxiliar.', $number ),
+			array( 'status' => 422 )
+		);
+	}
+
+	if ( papelito_home_assets_text_length( $normalized['title'] ) > papelito_home_assets_collection_nav_title_max_length()
+		|| papelito_home_assets_text_length( $normalized['subtitle'] ) > papelito_home_assets_collection_nav_subtitle_max_length() ) {
+		return new WP_Error(
+			'papelito_home_assets_long_collection_nav_text',
+			sprintf( 'Card #%d excede o limite de texto permitido.', $number ),
+			array( 'status' => 422 )
+		);
+	}
+
+	if ( '' === $normalized['href'] ) {
+		return new WP_Error(
+			'papelito_home_assets_invalid_collection_nav_href',
+			sprintf( 'Card #%d precisa apontar para um caminho interno começando com barra.', $number ),
+			array( 'status' => 422 )
+		);
+	}
+
+	return $normalized;
+}
+
+/**
+ * Decide se um card do corredor pode aparecer na vitrine.
+ *
+ * @param array<string, mixed> $item Item normalizado.
+ * @return bool
+ */
+function papelito_home_assets_is_public_collection_nav_item( array $item ): bool {
+	return ! empty( $item['isActive'] )
+		&& '' !== (string) $item['title']
+		&& '' !== (string) $item['subtitle']
+		&& '' !== (string) $item['href'];
 }
 
 /**
@@ -2099,6 +2517,28 @@ function papelito_home_assets_rest_get_features(): WP_REST_Response {
 }
 
 /**
+ * Cards publicos do corredor de colecoes, ja ordenados e sem item incompleto.
+ *
+ * Diferente dos beneficios, card com problema sai sozinho em vez de derrubar a lista inteira para
+ * o padrao: o corredor e um atalho, e tres atalhos corretos valem mais que quatro inventados.
+ *
+ * @return WP_REST_Response
+ */
+function papelito_home_assets_rest_get_collections_nav(): WP_REST_Response {
+	$items = papelito_home_assets_normalize_collections_nav_items(
+		papelito_home_assets_get_raw_collections_nav_items()
+	);
+
+	$public_items = array_slice(
+		array_values( array_filter( $items, 'papelito_home_assets_is_public_collection_nav_item' ) ),
+		0,
+		papelito_home_assets_collection_nav_max_items()
+	);
+
+	return new WP_REST_Response( array( 'items' => $public_items ), 200 );
+}
+
+/**
  * Partner banner publico.
  *
  * @return WP_REST_Response
@@ -2320,6 +2760,31 @@ function papelito_home_assets_rest_admin_save_features( WP_REST_Request $request
 }
 
 /**
+ * Snapshot administrativo do corredor de colecoes.
+ *
+ * @return WP_REST_Response
+ */
+function papelito_home_assets_rest_admin_get_collections_nav(): WP_REST_Response {
+	return new WP_REST_Response( papelito_home_assets_get_admin_collections_nav_snapshot(), 200 );
+}
+
+/**
+ * Grava o corredor de colecoes.
+ *
+ * @param WP_REST_Request $request Requisicao.
+ * @return WP_REST_Response
+ */
+function papelito_home_assets_rest_admin_save_collections_nav( WP_REST_Request $request ): WP_REST_Response {
+	return papelito_home_assets_rest_save(
+		$request,
+		'items',
+		'papelito_home_assets_validate_collections_nav_payload',
+		papelito_home_assets_collections_nav_option_name(),
+		'papelito_home_assets_get_admin_collections_nav_snapshot'
+	);
+}
+
+/**
  * Snapshot administrativo do partner banner.
  *
  * @return WP_REST_Response
@@ -2351,13 +2816,14 @@ function papelito_home_assets_rest_admin_save_partner_banner( WP_REST_Request $r
  */
 function papelito_home_assets_register_public_routes(): void {
 	$public_routes = array(
-		'/home/hero-banners'   => 'papelito_home_assets_rest_get_hero_banners',
-		'/home/promo-banner'   => 'papelito_home_assets_rest_get_promo_banner',
-		'/home/promo-marquee'  => 'papelito_home_assets_rest_get_promo_marquee',
-		'/home/features'       => 'papelito_home_assets_rest_get_features',
-		'/home/partner-banner' => 'papelito_home_assets_rest_get_partner_banner',
-		'/site/image-assets'   => 'papelito_home_assets_rest_get_site_images',
-		'/site/logos'          => 'papelito_home_assets_rest_get_logos',
+		'/home/hero-banners'    => 'papelito_home_assets_rest_get_hero_banners',
+		'/home/promo-banner'    => 'papelito_home_assets_rest_get_promo_banner',
+		'/home/promo-marquee'   => 'papelito_home_assets_rest_get_promo_marquee',
+		'/home/features'        => 'papelito_home_assets_rest_get_features',
+		'/home/collections-nav' => 'papelito_home_assets_rest_get_collections_nav',
+		'/home/partner-banner'  => 'papelito_home_assets_rest_get_partner_banner',
+		'/site/image-assets'    => 'papelito_home_assets_rest_get_site_images',
+		'/site/logos'           => 'papelito_home_assets_rest_get_logos',
 	);
 
 	foreach ( $public_routes as $route => $callback ) {
@@ -2386,6 +2852,7 @@ function papelito_home_assets_register_admin_read_routes(): void {
 		'/assets/promo-banner'           => 'papelito_home_assets_rest_admin_get_promo_banner',
 		'/assets/promo-marquee'          => 'papelito_home_assets_rest_admin_get_promo_marquee',
 		'/assets/features'               => 'papelito_home_assets_rest_admin_get_features',
+		'/assets/collections-nav'        => 'papelito_home_assets_rest_admin_get_collections_nav',
 		'/assets/partner-banner'         => 'papelito_home_assets_rest_admin_get_partner_banner',
 	);
 
@@ -2415,6 +2882,7 @@ function papelito_home_assets_register_admin_write_routes(): void {
 		'/assets/promo-banner'           => 'papelito_home_assets_rest_admin_save_promo_banner',
 		'/assets/promo-marquee'          => 'papelito_home_assets_rest_admin_save_promo_marquee',
 		'/assets/features'               => 'papelito_home_assets_rest_admin_save_features',
+		'/assets/collections-nav'        => 'papelito_home_assets_rest_admin_save_collections_nav',
 		'/assets/partner-banner'         => 'papelito_home_assets_rest_admin_save_partner_banner',
 	);
 

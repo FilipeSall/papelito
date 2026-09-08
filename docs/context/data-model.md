@@ -411,6 +411,11 @@ Options relevantes: `papelito_catalog_pdf_id` (override do catálogo em PDF), `p
 
 `papelito_home_promo_marquee` e `papelito_home_features` guardam, além do texto puro, o conteúdo estruturado das faixas (`content` / `subtitleContent`): lista plana de nós `text`/`token`, sem HTML. O texto puro é derivado dos nós de texto e serve de fallback de leitura.
 
+`papelito_home_collections_nav` guarda os cards da seção **Explore por coleção** da Home: lista de `{ id, title, subtitle, href, collection, order, isActive }`, gravada com `autoload false` como os demais assets. Duas armadilhas registradas:
+
+- **Array vazio não é "sem configuração".** Só a option **ausente** cai nos quatro cards padrão (`papelito_home_assets_default_collections_nav_items()`); `array()` gravado significa "o admin desligou a seção" e precisa sobreviver. Quem trocar o `is_array()` do getter por `empty()` ressuscita os defaults e reabre a seção sem ninguém pedir.
+- **`collection` não é a coleção manual do catálogo.** Aceita apenas `kits` e `promocoes` — as coleções *derivadas* que têm número próprio no catálogo. Não há relação com `wp_papelito_collections`: um card que aponta para uma coleção cadastrada faz isso pelo `href` (`/colecoes?colecao=<slug>`), não por esse campo.
+
 ## Criptografia de PII
 
 Em `customer_identity.php`:

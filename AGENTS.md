@@ -13,7 +13,7 @@ O frontend fica no repositório irmão `../papelito-web`. Mudança que cruza os 
 
 ```bash
 php -l <arquivos alterados>
-composer phpcs
+docker compose --profile quality run --rm phpcs
 php public_html/wp-content/plugins/plugin_papelito/tests/test-<relevante>.php
 ```
 
