@@ -85,16 +85,36 @@ function papelito_taxonomy_public_category( array $category ) {
  */
 function papelito_taxonomy_public_payload() {
 	$version = papelito_product_taxonomy_version();
-	$key     = 'papelito_taxonomy_public_v' . $version;
+	$key     = 'papelito_taxonomy_public_v' . $version . '_collections3';
 	$cached  = get_transient( $key );
 
 	if ( is_array( $cached ) ) {
 		return $cached;
 	}
 
+	$collections = papelito_collections_list();
+	if ( function_exists( 'papelito_collection_cards_collection_shape' ) ) {
+		$collections = array_map( 'papelito_collection_cards_collection_shape', $collections );
+	} elseif ( function_exists( 'papelito_collection_shape' ) ) {
+		$collections = array_values( array_filter( array_map( static function ( array $collection ): ?array {
+			$shaped = papelito_collection_shape( $collection );
+			if ( ! is_array( $shaped ) ) {
+				return null;
+			}
+			$slug            = (string) ( $shaped['slug'] ?? '' );
+			$shaped['path']  = in_array( $slug, array( 'premium', 'promocoes', 'novidades', 'kits' ), true )
+				? '/' . $slug
+				: '/colecoes?colecao=' . rawurlencode( $slug );
+			return $shaped;
+		}, $collections ) ) );
+	} else {
+		$collections = array();
+	}
+
 	$payload = array(
 		'version' => $version,
 		'categories' => array_map( 'papelito_taxonomy_public_category', papelito_categories_list() ),
+		'collections' => $collections,
 	);
 
 	set_transient( $key, $payload, PAPELITO_TAXONOMY_PUBLIC_TTL );
@@ -413,7 +433,7 @@ add_action(
 					'permission_callback' => 'papelito_taxonomy_admin_permission',
 					'callback'            => static function ( WP_REST_Request $request ) {
 						$created = papelito_collection_create(
-							papelito_taxonomy_pick( $request, array( 'name', 'slug', 'description', 'sortOrder', 'isActive' ) )
+							papelito_taxonomy_pick( $request, array( 'name', 'slug', 'description', 'imageAttachmentId', 'imageUrl', 'sortOrder', 'isActive' ) )
 						);
 
 						if ( is_wp_error( $created ) ) {
@@ -454,7 +474,7 @@ add_action(
 					'callback'            => static function ( WP_REST_Request $request ) {
 						$result = papelito_collection_update(
 							(int) $request['id'],
-							papelito_taxonomy_pick( $request, array( 'name', 'slug', 'description', 'sortOrder', 'isActive' ) )
+							papelito_taxonomy_pick( $request, array( 'name', 'slug', 'description', 'imageAttachmentId', 'imageUrl', 'sortOrder', 'isActive' ) )
 						);
 
 						if ( is_wp_error( $result ) ) {

@@ -50,6 +50,9 @@ function papelito_collection_shape( $row ) {
 		'slug'        => (string) $row['slug'],
 		'name'        => (string) $row['name'],
 		'description' => null === $row['description'] ? '' : (string) $row['description'],
+		'systemKey'   => (string) ( $row['system_key'] ?? '' ),
+		'imageAttachmentId' => (int) ( $row['image_attachment_id'] ?? 0 ),
+		'imageUrl'    => (string) ( $row['image_url'] ?? '' ),
 		'sortOrder'   => (int) $row['sort_order'],
 		'isActive'    => 1 === (int) $row['is_active'],
 		'archivedAt'  => null === $row['archived_at'] ? null : (string) $row['archived_at'],
@@ -319,6 +322,8 @@ function papelito_collection_create( array $data ) {
 			'slug'        => $identity['slug'],
 			'name'        => $identity['name'],
 			'description' => isset( $data['description'] ) ? sanitize_textarea_field( (string) $data['description'] ) : null,
+			'image_attachment_id' => absint( $data['imageAttachmentId'] ?? 0 ) ?: null,
+			'image_url'   => esc_url_raw( (string) ( $data['imageUrl'] ?? '' ) ) ?: null,
 			'sort_order'  => isset( $data['sortOrder'] ) ? (int) $data['sortOrder'] : papelito_collection_next_sort_order(),
 			'is_active'   => array_key_exists( 'isActive', $data ) && ! $data['isActive'] ? 0 : 1,
 			'created_at'  => $now,
@@ -392,6 +397,14 @@ function papelito_collection_update( $collection_id, array $data ) {
 			return $identity;
 		}
 
+		if ( ! empty( $collection['systemKey'] ) && $identity['slug'] !== $collection['slug'] ) {
+			return new WP_Error(
+				'papelito_collection_system_slug_locked',
+				'O slug de uma coleção sistêmica não pode ser alterado.',
+				array( 'status' => 409 )
+			);
+		}
+
 		if ( $identity['slug'] !== $collection['slug'] && papelito_collection_product_count( $collection['slug'] ) > 0 ) {
 			return new WP_Error(
 				'papelito_collection_slug_locked',
@@ -406,6 +419,14 @@ function papelito_collection_update( $collection_id, array $data ) {
 
 	if ( array_key_exists( 'description', $data ) ) {
 		$fields['description'] = sanitize_textarea_field( (string) $data['description'] );
+	}
+
+	if ( array_key_exists( 'imageAttachmentId', $data ) ) {
+		$fields['image_attachment_id'] = absint( $data['imageAttachmentId'] ) ?: null;
+	}
+
+	if ( array_key_exists( 'imageUrl', $data ) ) {
+		$fields['image_url'] = esc_url_raw( (string) $data['imageUrl'] ) ?: null;
 	}
 
 	if ( array_key_exists( 'sortOrder', $data ) ) {
@@ -455,6 +476,9 @@ function papelito_collection_archive( $collection_id ) {
 	if ( null === $collection ) {
 		return new WP_Error( 'papelito_collection_not_found', PAPELITO_COLLECTION_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
+	if ( ! empty( $collection['systemKey'] ) ) {
+		return new WP_Error( 'papelito_collection_system_locked', 'Coleções sistêmicas não podem ser arquivadas.', array( 'status' => 409 ) );
+	}
 
 	$tables = papelito_product_taxonomy_table_names();
 	$now    = papelito_taxonomy_now();
@@ -468,6 +492,9 @@ function papelito_collection_archive( $collection_id ) {
 		),
 		array( 'id' => $collection['id'] )
 	);
+	if ( function_exists( 'papelito_collection_cards_table' ) ) {
+		$wpdb->update( papelito_collection_cards_table(), array( 'is_active' => 0 ), array( 'collection_id' => $collection['id'] ), array( '%d' ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+	}
 
 	papelito_product_taxonomy_touch( 'collection', $collection['id'] );
 
@@ -526,6 +553,9 @@ function papelito_collection_delete_permanently( $collection_id ) {
 	if ( null === $collection ) {
 		return new WP_Error( 'papelito_collection_not_found', PAPELITO_COLLECTION_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
 	}
+	if ( ! empty( $collection['systemKey'] ) ) {
+		return new WP_Error( 'papelito_collection_system_locked', 'Coleções sistêmicas não podem ser excluídas.', array( 'status' => 409 ) );
+	}
 
 	if ( null === $collection['archivedAt'] ) {
 		return new WP_Error(
@@ -542,6 +572,12 @@ function papelito_collection_delete_permanently( $collection_id ) {
 	}
 
 	$ok = false !== $wpdb->delete( $tables['product_collection'], array( 'collection_slug' => $collection['slug'] ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	if ( $ok ) {
+		if ( function_exists( 'papelito_collection_cards_table' ) ) {
+			$ok = false !== $wpdb->delete( papelito_collection_cards_table(), array( 'collection_id' => $collection['id'] ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		}
+	}
 
 	if ( $ok ) {
 		$ok = false !== $wpdb->delete( $tables['collections'], array( 'id' => $collection['id'] ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery

@@ -147,6 +147,9 @@ function papelito_product_taxonomy_install_tables() {
   slug VARCHAR(48) NOT NULL,
   name VARCHAR(120) NOT NULL,
   description TEXT NULL DEFAULT NULL,
+  system_key VARCHAR(32) NULL DEFAULT NULL,
+  image_attachment_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  image_url TEXT NULL DEFAULT NULL,
   sort_order INT NOT NULL DEFAULT 0,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   archived_at DATETIME NULL DEFAULT NULL,
@@ -154,6 +157,7 @@ function papelito_product_taxonomy_install_tables() {
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY  (id),
   UNIQUE KEY uniq_slug (slug),
+  UNIQUE KEY uniq_system_key (system_key),
   KEY idx_active_sort (is_active, sort_order, id)
 ) {$charset_collate};";
 
@@ -198,7 +202,7 @@ function papelito_curated_collections() {
 		array_filter(
 			array_map(
 				static function ( array $collection ) {
-					return (string) $collection['slug'];
+					return empty( $collection['systemKey'] ) ? (string) $collection['slug'] : '';
 				},
 				papelito_collections_list()
 			)

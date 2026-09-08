@@ -654,7 +654,7 @@ function papelito_home_assets_collection_nav_subtitle_max_length(): int {
  * @return int
  */
 function papelito_home_assets_collection_nav_max_items(): int {
-	return 8;
+	return 6;
 }
 
 /**
@@ -2525,17 +2525,12 @@ function papelito_home_assets_rest_get_features(): WP_REST_Response {
  * @return WP_REST_Response
  */
 function papelito_home_assets_rest_get_collections_nav(): WP_REST_Response {
-	$items = papelito_home_assets_normalize_collections_nav_items(
-		papelito_home_assets_get_raw_collections_nav_items()
+	return new WP_REST_Response(
+		function_exists( 'papelito_collection_cards_snapshot' )
+			? papelito_collection_cards_snapshot( false )
+			: array( 'items' => array_values( array_filter( papelito_home_assets_normalize_collections_nav_items( papelito_home_assets_get_raw_collections_nav_items() ), 'papelito_home_assets_is_public_collection_nav_item' ) ) ),
+		200
 	);
-
-	$public_items = array_slice(
-		array_values( array_filter( $items, 'papelito_home_assets_is_public_collection_nav_item' ) ),
-		0,
-		papelito_home_assets_collection_nav_max_items()
-	);
-
-	return new WP_REST_Response( array( 'items' => $public_items ), 200 );
 }
 
 /**
@@ -2765,7 +2760,10 @@ function papelito_home_assets_rest_admin_save_features( WP_REST_Request $request
  * @return WP_REST_Response
  */
 function papelito_home_assets_rest_admin_get_collections_nav(): WP_REST_Response {
-	return new WP_REST_Response( papelito_home_assets_get_admin_collections_nav_snapshot(), 200 );
+	return new WP_REST_Response(
+		function_exists( 'papelito_collection_cards_snapshot' ) ? papelito_collection_cards_snapshot( true ) : papelito_home_assets_get_admin_collections_nav_snapshot(),
+		200
+	);
 }
 
 /**
@@ -2775,13 +2773,21 @@ function papelito_home_assets_rest_admin_get_collections_nav(): WP_REST_Response
  * @return WP_REST_Response
  */
 function papelito_home_assets_rest_admin_save_collections_nav( WP_REST_Request $request ): WP_REST_Response {
-	return papelito_home_assets_rest_save(
-		$request,
-		'items',
-		'papelito_home_assets_validate_collections_nav_payload',
-		papelito_home_assets_collections_nav_option_name(),
-		'papelito_home_assets_get_admin_collections_nav_snapshot'
-	);
+	if ( ! function_exists( 'papelito_collection_cards_save' ) ) {
+		return papelito_home_assets_rest_save(
+			$request,
+			'items',
+			'papelito_home_assets_validate_collections_nav_payload',
+			papelito_home_assets_collections_nav_option_name(),
+			'papelito_home_assets_get_admin_collections_nav_snapshot'
+		);
+	}
+	$body = $request->get_json_params();
+	$result = papelito_collection_cards_save( is_array( $body ) && is_array( $body['items'] ?? null ) ? $body['items'] : array() );
+	if ( is_wp_error( $result ) ) {
+		return papelito_home_assets_rest_error_response( $result );
+	}
+	return new WP_REST_Response( papelito_collection_cards_snapshot( true ), 200 );
 }
 
 /**

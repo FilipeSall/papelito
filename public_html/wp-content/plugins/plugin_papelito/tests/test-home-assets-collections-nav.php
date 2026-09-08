@@ -178,7 +178,7 @@ $duplicated[1]['id'] = $duplicated[0]['id'];
 papelito_assert( 'duplicate id is rejected', 'papelito_home_assets_duplicate_collection_nav_id', papelito_home_assets_validate_collections_nav_payload( $duplicated )->get_error_code() );
 
 $overflow = array();
-for ( $i = 0; $i < 9; $i++ ) {
+for ( $i = 0; $i < 7; $i++ ) {
 	$overflow[] = array(
 		'id'       => 'card-' . $i,
 		'title'    => 'Card',
@@ -187,7 +187,7 @@ for ( $i = 0; $i < 9; $i++ ) {
 		'isActive' => true,
 	);
 }
-papelito_assert( 'more than eight cards is rejected', 'papelito_home_assets_too_many_collections_nav_items', papelito_home_assets_validate_collections_nav_payload( $overflow )->get_error_code() );
+papelito_assert( 'more than six cards is rejected', 'papelito_home_assets_too_many_collections_nav_items', papelito_home_assets_validate_collections_nav_payload( $overflow )->get_error_code() );
 
 papelito_assert( 'empty list is accepted', array(), papelito_home_assets_validate_collections_nav_payload( array() ) );
 

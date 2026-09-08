@@ -31,8 +31,9 @@ entre facetas.
 
 ## Coleções manuais
 
-`wp_papelito_collections` é o catálogo das coleções manuais: `slug` (único, `VARCHAR(48)`), `name`,
-`description`, `sort_order`, `is_active` e `archived_at` — soft delete, como nas categorias. O vínculo
+`wp_papelito_collections` é a fonte de verdade de toda coleção: `slug` (único, `VARCHAR(48)`), `name`,
+`description`, `system_key`, `image_attachment_id`, `image_url`, `sort_order`, `is_active` e
+`archived_at` — soft delete, como nas categorias. O vínculo
 com o produto vive em `wp_papelito_product_collection`, cuja **chave primária `(product_id,
 collection_slug)`** é a garantia de que a relação é N:N sem par duplicado: um produto pertence a
 quantas coleções fizerem sentido e uma coleção reúne quantos produtos existirem.
@@ -46,6 +47,22 @@ renomear a coleção continua livre e não toca no slug.
 `['premium']` sobrevive apenas como rede de deploy: o deploy é sync de arquivos e a migração roda em
 `plugins_loaded`, então há uma janela com código novo e tabela ausente em que devolver vazio faria
 Premium sumir da vitrine. Depois da migração o banco é a fonte de verdade.
+
+`system_key` identifica as projeções `promotions`, `new_arrivals` e `kits`; `Tudo` continua virtual e
+não possui linha. `wp_papelito_collection_cards` guarda a exposição editorial na Home: `collection_id`
+(UNIQUE), título, texto auxiliar, `indicator_key`, ordem e estado. O card não duplica slug, caminho,
+imagem ou texto calculado.
+
+As políticas de indicador são centralizadas no backend: Promoções força `MAX_DISCOUNT_PERCENT`,
+Recém Chegados força `NEW_ITEMS_COUNT` e Kits força `ITEM_COUNT`; coleções comuns podem selecionar
+`NONE` (usa o texto auxiliar) ou apenas métricas calculáveis para seus produtos. Premium começa com
+`NONE` como padrão.
+
+A migração de `papelito_home_collections_nav` é marcada uma única vez em
+`papelito_collection_cards_migration_done`; novas versões do plugin não recriam cards removidos pelo
+admin. O snapshot público usa a versão da taxonomia como chave e um transient curto, invalidado após
+alterações nos cards, para evitar consultas repetidas sem manter destaques desatualizados por longos
+períodos.
 
 Coleção não é `product_tag`. A taxonomia do WooCommerce continua sendo palavra-chave de busca e não
 classifica nada; não há sincronização entre as duas, de propósito.
@@ -411,10 +428,16 @@ Options relevantes: `papelito_catalog_pdf_id` (override do catálogo em PDF), `p
 
 `papelito_home_promo_marquee` e `papelito_home_features` guardam, além do texto puro, o conteúdo estruturado das faixas (`content` / `subtitleContent`): lista plana de nós `text`/`token`, sem HTML. O texto puro é derivado dos nós de texto e serve de fallback de leitura.
 
-`papelito_home_collections_nav` guarda os cards da seção **Explore por coleção** da Home: lista de `{ id, title, subtitle, href, collection, order, isActive }`, gravada com `autoload false` como os demais assets. Duas armadilhas registradas:
+`papelito_home_collections_nav` é legado e foi migrado para `wp_papelito_collection_cards`. A nova
+fonte guarda `{ collection_id, title, subtitle, indicator_key, order, is_active }`; o backend calcula
+path, imagem e destaque em cada leitura. Duas armadilhas registradas:
 
 - **Array vazio não é "sem configuração".** Só a option **ausente** cai nos quatro cards padrão (`papelito_home_assets_default_collections_nav_items()`); `array()` gravado significa "o admin desligou a seção" e precisa sobreviver. Quem trocar o `is_array()` do getter por `empty()` ressuscita os defaults e reabre a seção sem ninguém pedir.
-- **`collection` não é a coleção manual do catálogo.** Aceita apenas `kits` e `promocoes` — as coleções *derivadas* que têm número próprio no catálogo. Não há relação com `wp_papelito_collections`: um card que aponta para uma coleção cadastrada faz isso pelo `href` (`/colecoes?colecao=<slug>`), não por esse campo.
+- **O card não possui slug independente.** O caminho é derivado do slug da coleção. O indicador guarda
+  somente uma chave (`NONE`, `ITEM_COUNT`, `MAX_DISCOUNT_PERCENT`, `NEW_ITEMS_COUNT` ou
+  `ACTIVE_DEALS_COUNT`);
+  o texto é calculado ao consultar os produtos da coleção; `NONE` deixa o texto auxiliar do card
+  assumir essa linha.
 
 ## Criptografia de PII
 

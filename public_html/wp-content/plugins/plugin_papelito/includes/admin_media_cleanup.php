@@ -40,6 +40,9 @@ function papelito_admin_media_cleanup_referenced( int $attachment_id ): bool {
 		if ( $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM {$taxonomy_tables['categories']} WHERE icon_attachment_id = %d LIMIT 1", $attachment_id ) ) ) {
 			return true;
 		}
+		if ( function_exists( 'papelito_collection_cards_table' ) && $wpdb->get_var( $wpdb->prepare( "SELECT 1 FROM " . papelito_product_taxonomy_table_names()['collections'] . " WHERE image_attachment_id = %d LIMIT 1", $attachment_id ) ) ) {
+			return true;
+		}
 	}
 	if ( function_exists( 'papelito_product_benefits_table_names' ) ) {
 		$benefit_tables = papelito_product_benefits_table_names();

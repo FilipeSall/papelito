@@ -24,6 +24,7 @@ require_once __DIR__ . '/includes/collections_config.php';
 require_once __DIR__ . '/includes/auth_endpoints.php';
 require_once __DIR__ . '/includes/product_taxonomy.php';
 require_once __DIR__ . '/includes/product_collections.php';
+require_once __DIR__ . '/includes/collection_cards.php';
 require_once __DIR__ . '/includes/product_taxonomy_rest.php';
 require_once __DIR__ . '/includes/product_taxonomy_graphql.php';
 require_once __DIR__ . '/includes/product_taxonomy_query.php';
@@ -101,7 +102,7 @@ require_once __DIR__ . '/includes/account_status.php';
 require_once __DIR__ . '/includes/account_admin_endpoints.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.43.0' );
+	define( 'PAPELITO_DB_VERSION', '1.44.5' );
 }
 
 /**
@@ -154,6 +155,8 @@ function papelito_maybe_migrate_db() {
 				'papelito_fiscal_documents_drop_legacy',
 				'papelito_fiscal_documents_install_tables',
 				'papelito_product_taxonomy_install_tables',
+				'papelito_collection_cards_install_tables',
+				'papelito_collection_cards_migrate_legacy_nav',
 				'papelito_integration_secret_install_tables',
 				'papelito_account_status_install_tables',
 			)
@@ -169,7 +172,6 @@ function papelito_maybe_migrate_db() {
 				'papelito_product_benefits_seed_global',
 				'papelito_home_assets_seed_promo_marquee',
 				'papelito_home_assets_seed_features',
-				'papelito_home_assets_seed_collections_nav',
 				'papelito_home_assets_migrate_free_shipping_placeholder',
 			)
 		);

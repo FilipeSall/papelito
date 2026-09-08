@@ -183,7 +183,8 @@ Metadados da linha — e onde o **vendor é gravado por item**:
 | `wp_papelito_subcategories` | Subcategoria opcional dentro de uma categoria | PK `id`; UNIQUE `(category_id, slug)`; `facet` → agrupa em facetas de filtro; `sort_order`, `is_active` |
 | `wp_papelito_product_category` | Produto → categoria | **PK `product_id`** — um produto tem no máximo **uma** categoria. A regra está na PK, não no código; `category_id` |
 | `wp_papelito_product_subcategory` | Produto → subcategorias | PK `(product_id, subcategory_id)` — N:N real |
-| `wp_papelito_collections` | Agrupamento comercial transversal (ex.: `premium`) | PK `id`; UNIQUE `slug` |
+| `wp_papelito_collections` | Fonte de verdade da coleção, incluindo imagem e coleções sistêmicas | PK `id`; UNIQUE `slug`; UNIQUE `system_key`; `image_attachment_id`, `image_url` |
+| `wp_papelito_collection_cards` | Exposição editorial de uma coleção na Home | PK `id`; UNIQUE `collection_id`; `indicator_key` (`NONE` ou métrica), `sort_order`, `is_active` |
 | `wp_papelito_product_collection` ⚠️ | Produto → coleção, **por slug em texto** | PK `(product_id, collection_slug)`. Ver *Relações frágeis* |
 | `wp_papelito_benefit_groups` | Grupo de benefícios da página de produto | PK `id`; UNIQUE `global_key` → força **exatamente um** grupo global |
 | `wp_papelito_benefit_items` | Itens do grupo | PK `id`; `group_id`; `icon_type` ∈ `emoji`\|`svg` (nunca HTML); `icon_attachment_id` |
