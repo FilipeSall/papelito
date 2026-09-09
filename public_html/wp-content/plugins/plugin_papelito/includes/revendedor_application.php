@@ -40,6 +40,7 @@ const PAPELITO_VENDOR_MISSING_STORE_NAME_MESSAGE         = 'Informe o nome da lo
 const PAPELITO_VENDOR_UNAUTHENTICATED_MESSAGE            = 'Usuario nao autenticado.';
 const PAPELITO_VENDOR_INVALID_PAYLOAD_MESSAGE            = 'Payload invalido.';
 const PAPELITO_VENDOR_NOT_FOUND_MESSAGE                  = 'Vendor nao encontrado.';
+const PAPELITO_ADMIN_VENDORS_REST_NAMESPACE              = 'papelito/v1/admin';
 
 /**
  * Retorna data/hora em UTC no mesmo formato usado pelo fluxo de mensagens.
@@ -1214,11 +1215,10 @@ function papelito_validate_vendor_pagarme_step3( array $step3 ) {
  */
 function papelito_validate_vendor_pagarme_company_fields( array $step3, WP_Error $errors ): void {
 
-	$company_name     = sanitize_text_field( (string) ( $step3['companyName'] ?? '' ) );
-	$trading_name     = sanitize_text_field( (string) ( $step3['tradingName'] ?? '' ) );
-	$corporation_type = sanitize_text_field( (string) ( $step3['corporationType'] ?? '' ) );
-	$founding_date    = sanitize_text_field( (string) ( $step3['foundingDate'] ?? '' ) );
-	$annual_revenue   = str_replace( ',', '.', sanitize_text_field( (string) ( $step3['annualRevenue'] ?? '' ) ) );
+	$company_name   = sanitize_text_field( (string) ( $step3['companyName'] ?? '' ) );
+	$trading_name   = sanitize_text_field( (string) ( $step3['tradingName'] ?? '' ) );
+	$founding_date  = sanitize_text_field( (string) ( $step3['foundingDate'] ?? '' ) );
+	$annual_revenue = str_replace( ',', '.', sanitize_text_field( (string) ( $step3['annualRevenue'] ?? '' ) ) );
 
 	if ( '' === $company_name ) {
 		$errors->add( 'companyName', 'Informe a razao social.' );
@@ -2711,11 +2711,158 @@ function papelito_admin_vendors_handle_get( WP_REST_Request $request ) {
 	return is_wp_error( $detail ) ? $detail : new WP_REST_Response( $detail, 200 );
 }
 
+/**
+ * Resolve o vendor alvo de uma operacao administrativa.
+ *
+ * Um customer comum nunca vira vendor por aqui: a rota so opera sobre quem ja tem
+ * a role `seller`. Promocao continua exclusiva de POST /admin/vendors.
+ *
+ * @param int $user_id Usuario alvo.
+ * @return WP_User|WP_Error
+ */
+function papelito_admin_vendors_resolve_editable_vendor( int $user_id ) {
+	$user = $user_id > 0 ? get_userdata( $user_id ) : null;
+
+	if ( ! $user instanceof WP_User || ! papelito_user_has_role( $user, 'seller' ) ) {
+		return new WP_Error( 'papelito_vendor_not_found', PAPELITO_VENDOR_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
+	}
+
+	return $user;
+}
+
+/**
+ * Mescla o draft recebido sobre o draft ja gravado, respeitando chaves ausentes.
+ *
+ * A presenca da chave e que decide: enviar `motherName => ''` limpa o campo, omitir
+ * a chave preserva o valor gravado. Sem isso, um payload que nao carrega um bloco
+ * inteiro (bankAccount, por exemplo) apagaria os dados existentes ao passar pelo
+ * sanitizador, que preenche o que falta com o contexto cadastral.
+ *
+ * @param mixed $stored Valor atual.
+ * @param mixed $incoming Valor recebido.
+ * @return mixed
+ */
+function papelito_admin_vendors_merge_vendor_draft( $stored, $incoming ) {
+	if ( ! is_array( $stored ) || ! is_array( $incoming ) ) {
+		return $incoming;
+	}
+
+	$merged = $stored;
+
+	foreach ( $incoming as $key => $value ) {
+		$merged[ $key ] = array_key_exists( $key, $stored )
+			? papelito_admin_vendors_merge_vendor_draft( $stored[ $key ], $value )
+			: $value;
+	}
+
+	return $merged;
+}
+
+/**
+ * Atualiza os dados cadastrais de um vendor existente pelo painel admin.
+ *
+ * Reaproveita integralmente papelito_update_vendor_pending_registration_rest(), a mesma
+ * operacao que o proprio vendor usa em POST /vendor/registration-pending: mesmas validacoes
+ * de e-mail, CNPJ, telefone, endereco e faixas de CEP, mesmo recalculo de pendencias e mesma
+ * ressincronizacao do recebedor Pagar.me. O admin nao ganha um caminho de escrita paralelo.
+ *
+ * @param int                  $user_id     Vendor alvo.
+ * @param array<string, mixed> $payload     Representacao editavel completa.
+ * @param int                  $reviewer_id Admin responsavel.
+ * @return array<string, mixed>|WP_Error
+ */
+function papelito_admin_vendors_update_vendor( int $user_id, array $payload, int $reviewer_id ) {
+	if ( ! current_user_can( 'manage_options' ) || get_current_user_id() !== $reviewer_id ) {
+		return new WP_Error( 'papelito_admin_forbidden', 'Apenas administradores podem editar vendors.', array( 'status' => 403 ) );
+	}
+
+	$vendor = papelito_admin_vendors_resolve_editable_vendor( $user_id );
+	if ( is_wp_error( $vendor ) ) {
+		return $vendor;
+	}
+
+	$application = isset( $payload['application'] ) && is_array( $payload['application'] ) ? $payload['application'] : null;
+
+	if ( null === $application ) {
+		return new WP_Error(
+			'papelito_admin_vendor_missing_application',
+			'Envie a representacao completa do cadastro do vendor.',
+			array( 'status' => 400 )
+		);
+	}
+
+	$stored_draft   = papelito_get_vendor_pagarme_recipient_draft( $user_id );
+	$incoming_draft = isset( $payload['draft'] ) && is_array( $payload['draft'] ) ? $payload['draft'] : array();
+	$merged_draft   = papelito_admin_vendors_merge_vendor_draft(
+		is_array( $stored_draft ) ? $stored_draft : array(),
+		$incoming_draft
+	);
+
+	$result = papelito_update_vendor_pending_registration_rest(
+		$user_id,
+		array(
+			'application' => $application,
+			'draft'       => $merged_draft,
+		)
+	);
+
+	if ( is_wp_error( $result ) ) {
+		return $result;
+	}
+
+	return papelito_admin_vendors_get_registration( $user_id );
+}
+
+/**
+ * Monta a representacao editavel do vendor para o painel admin.
+ *
+ * Mesma forma consumida pelo formulario do proprio vendor, para que os dois lados
+ * carreguem e devolvam exatamente o mesmo contrato.
+ *
+ * @param int $user_id Vendor alvo.
+ * @return array<string, mixed>|WP_Error
+ */
+function papelito_admin_vendors_get_registration( int $user_id ) {
+	$vendor = papelito_admin_vendors_resolve_editable_vendor( $user_id );
+
+	return is_wp_error( $vendor ) ? $vendor : papelito_get_vendor_pending_registration_rest_response( $user_id );
+}
+
+/**
+ * GET /admin/vendors/{id}/registration — representacao editavel do cadastro.
+ *
+ * @param WP_REST_Request $request Requisicao REST.
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_admin_vendors_handle_get_registration( WP_REST_Request $request ) {
+	$registration = papelito_admin_vendors_get_registration( (int) $request['id'] );
+
+	return is_wp_error( $registration ) ? $registration : new WP_REST_Response( $registration, 200 );
+}
+
+/**
+ * PUT /admin/vendors/{id}/registration — substitui a representacao editavel.
+ *
+ * @param WP_REST_Request $request Requisicao REST.
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_admin_vendors_handle_update_registration( WP_REST_Request $request ) {
+	$payload = $request->get_json_params();
+
+	if ( ! is_array( $payload ) ) {
+		return new WP_Error( 'papelito_invalid_payload', PAPELITO_VENDOR_INVALID_PAYLOAD_MESSAGE, array( 'status' => 400 ) );
+	}
+
+	$result = papelito_admin_vendors_update_vendor( (int) $request['id'], $payload, get_current_user_id() );
+
+	return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+}
+
 add_action(
 	'rest_api_init',
 	static function (): void {
 		register_rest_route(
-			'papelito/v1/admin',
+			PAPELITO_ADMIN_VENDORS_REST_NAMESPACE,
 			'/vendors',
 			array(
 				array(
@@ -2732,7 +2879,7 @@ add_action(
 		);
 
 		register_rest_route(
-			'papelito/v1/admin',
+			PAPELITO_ADMIN_VENDORS_REST_NAMESPACE,
 			'/vendors/(?P<id>\d+)',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
@@ -2743,6 +2890,28 @@ add_action(
 					),
 				),
 				'callback'            => 'papelito_admin_vendors_handle_get',
+			)
+		);
+
+		register_rest_route(
+			PAPELITO_ADMIN_VENDORS_REST_NAMESPACE,
+			'/vendors/(?P<id>\d+)/registration',
+			array(
+				'args' => array(
+					'id' => array(
+						'validate_callback' => 'papelito_admin_vendors_validate_id',
+					),
+				),
+				array(
+					'methods'             => WP_REST_Server::READABLE,
+					'permission_callback' => 'papelito_admin_vendors_require_admin',
+					'callback'            => 'papelito_admin_vendors_handle_get_registration',
+				),
+				array(
+					'methods'             => 'PUT',
+					'permission_callback' => 'papelito_admin_vendors_require_admin',
+					'callback'            => 'papelito_admin_vendors_handle_update_registration',
+				),
 			)
 		);
 	}
