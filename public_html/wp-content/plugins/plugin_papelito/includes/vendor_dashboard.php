@@ -781,6 +781,21 @@ function papelito_vendor_dashboard_previous_gross_revenue( int $vendor_id, array
  * @param array<string, string> $period    Periodo com from, to, interval e segment.
  * @return array<string, mixed>
  */
+/** Valores de devolução por datas próprias: pedidos no requested_at, caixa no refunded_at. */
+function papelito_vendor_dashboard_return_financials( int $vendor_id, array $period ): array {
+	global $wpdb;
+	if ( ! defined( 'PAPELITO_RETURN_REQUESTS_TABLE' ) ) { return array( 'manual_refunds' => 0.0, 'return_requests' => 0 ); }
+	$table = $wpdb->prefix . PAPELITO_RETURN_REQUESTS_TABLE;
+	$bounds = function_exists( 'papelito_return_period_utc_bounds' )
+		? papelito_return_period_utc_bounds( sanitize_text_field( (string) ( $period['from'] ?? '' ) ), sanitize_text_field( (string) ( $period['to'] ?? '' ) ) )
+		: array( sanitize_text_field( (string) ( $period['from'] ?? '' ) ) . ' 00:00:00', sanitize_text_field( (string) ( $period['to'] ?? '' ) ) . ' 23:59:59' );
+	$from = $bounds[0];
+	$to = $bounds[1];
+	$refund_cents = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COALESCE(SUM(f.amount_cents), 0) FROM {$wpdb->prefix}papelito_return_refunds f INNER JOIN {$table} r ON r.id = f.return_request_id WHERE r.vendor_id = %d AND f.refunded_at BETWEEN %s AND %s", $vendor_id, $from, $to ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$requests = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE vendor_id = %d AND requested_at BETWEEN %s AND %s", $vendor_id, $from, $to ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	return array( 'manual_refunds' => $refund_cents / 100, 'return_requests' => $requests );
+}
+
 function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array {
 	$orders         = papelito_vendor_dashboard_orders_for_vendor( $vendor_id );
 	$segment        = isset( $period['segment'] ) ? (string) $period['segment'] : 'all';
@@ -815,12 +830,16 @@ function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array 
 		$products,
 		static fn( array $left, array $right ): int => $right['revenue'] <=> $left['revenue']
 	);
+	$return_financials = papelito_vendor_dashboard_return_financials( $vendor_id, $period );
 
 	return array(
 		'period'                  => $period,
 		'segment'                 => $segment,
 		'previous_gross_revenue'  => papelito_vendor_dashboard_previous_gross_revenue( $vendor_id, $period ),
 		'gross_revenue'           => round( $gross_revenue, 2 ),
+		'manual_refunds'          => round( (float) $return_financials['manual_refunds'], 2 ),
+		'net_revenue'             => round( $gross_revenue - (float) $return_financials['manual_refunds'], 2 ),
+		'return_requests'         => (int) $return_financials['return_requests'],
 		'average_ticket'          => $orders_count > 0 ? round( $gross_revenue / $orders_count, 2 ) : 0.0,
 		'pending_orders'          => $pending_orders,
 		'awaiting_payment_orders' => $awaiting_payment_count,

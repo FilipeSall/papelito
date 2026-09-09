@@ -1177,6 +1177,19 @@ function papelito_admin_reports_get_sales_snapshot( array $filters ): array {
 	$order_volume       = array();
 	$product_revenue    = array();
 	$payment_mix        = array();
+	$manual_return_refunds = 0.0;
+	$return_requests = 0;
+	if ( defined( 'PAPELITO_RETURN_REQUESTS_TABLE' ) ) {
+		global $wpdb;
+		$returns_table = $wpdb->prefix . PAPELITO_RETURN_REQUESTS_TABLE;
+		$bounds = function_exists( 'papelito_return_period_utc_bounds' )
+			? papelito_return_period_utc_bounds( sanitize_text_field( (string) $filters['from'] ), sanitize_text_field( (string) $filters['to'] ) )
+			: array( sanitize_text_field( (string) $filters['from'] ) . ' 00:00:00', sanitize_text_field( (string) $filters['to'] ) . ' 23:59:59' );
+		$from = $bounds[0];
+		$to = $bounds[1];
+		$manual_return_refunds = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COALESCE(SUM(f.amount_cents), 0) FROM {$wpdb->prefix}papelito_return_refunds f INNER JOIN {$returns_table} r ON r.id = f.return_request_id WHERE f.refunded_at BETWEEN %s AND %s", $from, $to ) ) / 100; // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$return_requests = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$returns_table} WHERE requested_at BETWEEN %s AND %s", $from, $to ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	}
 
 	foreach ( $scope_orders as $order ) {
 		$status = sanitize_key( (string) $order->get_status() );
@@ -1248,7 +1261,9 @@ function papelito_admin_reports_get_sales_snapshot( array $filters ): array {
 
 	return array(
 		'grossRevenue'      => round( $gross_revenue, 2 ),
-		'netRevenue'        => round( max( 0.0, $gross_revenue - $shipping_total - $taxes_total - $refunds_total ), 2 ),
+		'netRevenue'        => round( max( 0.0, $gross_revenue - $refunds_total - $manual_return_refunds ), 2 ),
+		'manualRefunds'     => round( $manual_return_refunds, 2 ),
+		'returnRequests'    => $return_requests,
 		'orders'            => count( $revenue_orders ),
 		'avgOrderValue'     => count( $revenue_orders ) > 0 ? round( $gross_revenue / count( $revenue_orders ), 2 ) : 0.0,
 		'discountsTotal'    => round( $discounts_total, 2 ),

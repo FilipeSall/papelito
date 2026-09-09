@@ -252,6 +252,31 @@ function papelito_adjust_vendor_stock( $vendor_id, $product_id, $delta, $reason 
 }
 
 /**
+ * Ajuste por fato externo idempotente. A tabela de log legada aceita motivos
+ * repetidos para ajustes manuais; por isso a exclusão é por lock nomeado +
+ * razão determinística, sem mudar a semântica dos caminhos existentes.
+ *
+ * @return array{ok:bool,qty:int,prev_qty:int,zeroed_event_fired:bool,delta:int}|WP_Error
+ */
+function papelito_adjust_vendor_stock_idempotent( int $vendor_id, int $product_id, int $delta, string $reason ) {
+	global $wpdb;
+	$tables = papelito_vendor_stock_table_names();
+	$lock = 'papelito_stock_event_' . hash( 'sha256', $vendor_id . '|' . $product_id . '|' . $reason );
+	if ( '1' !== (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 10)', $lock ) ) ) {
+		return new WP_Error( 'papelito_stock_event_busy', 'Outra atualização de estoque está em andamento.', array( 'status' => 409 ) );
+	}
+	try {
+		$exists = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$tables['log']} WHERE vendor_id = %d AND product_id = %d AND reason = %s LIMIT 1", $vendor_id, $product_id, $reason ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		if ( $exists ) {
+			return array( 'ok' => true, 'qty' => 0, 'prev_qty' => 0, 'zeroed_event_fired' => false, 'delta' => 0 );
+		}
+		return papelito_adjust_vendor_stock( $vendor_id, $product_id, $delta, $reason );
+	} finally {
+		$wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock ) );
+	}
+}
+
+/**
  * Define a quantidade em estoque do vendor para o produto.
  *
  * Faz transação com SELECT ... FOR UPDATE para impedir race condition

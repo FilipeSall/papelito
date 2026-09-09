@@ -51,6 +51,7 @@ function papelito_messaging_install_tables(): void {
 	$threads_sql = "CREATE TABLE {$tables['threads']} (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   order_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  return_request_id BIGINT UNSIGNED NULL DEFAULT NULL,
   customer_id BIGINT UNSIGNED NOT NULL,
   vendor_id BIGINT UNSIGNED NOT NULL,
   context VARCHAR(64) NOT NULL DEFAULT 'order',
@@ -60,6 +61,7 @@ function papelito_messaging_install_tables(): void {
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY  (id),
   UNIQUE KEY uniq_order (order_id),
+	UNIQUE KEY uniq_return_request (return_request_id),
   UNIQUE KEY uniq_support_key (support_key),
   KEY idx_customer_updated (customer_id, updated_at),
   KEY idx_vendor_updated (vendor_id, updated_at),
@@ -91,6 +93,10 @@ function papelito_messaging_install_tables(): void {
 	dbDelta( $reads_sql );
 
 	$wpdb->query( "ALTER TABLE {$tables['threads']} MODIFY order_id BIGINT UNSIGNED NULL DEFAULT NULL" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$column = $wpdb->get_var( $wpdb->prepare( "SHOW COLUMNS FROM {$tables['threads']} LIKE %s", 'return_request_id' ) );
+	if ( null === $column ) {
+		$wpdb->query( "ALTER TABLE {$tables['threads']} ADD return_request_id BIGINT UNSIGNED NULL DEFAULT NULL, ADD UNIQUE KEY uniq_return_request (return_request_id)" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	}
 }
 
 /**
@@ -189,7 +195,7 @@ function papelito_messaging_get_thread( int $thread_id ): ?array {
 	$table = papelito_messaging_tables()['threads'];
 	$row   = $wpdb->get_row(
 		$wpdb->prepare(
-			"SELECT id, order_id, customer_id, vendor_id, context, support_key, escalated_at, created_at, updated_at FROM {$table} WHERE id = %d",
+			"SELECT id, order_id, return_request_id, customer_id, vendor_id, context, support_key, escalated_at, created_at, updated_at FROM {$table} WHERE id = %d",
 			$thread_id
 		),
 		ARRAY_A
@@ -216,6 +222,14 @@ function papelito_messaging_get_thread_by_order( int $order_id ): ?array {
 		ARRAY_A
 	);
 
+	return is_array( $row ) ? $row : null;
+}
+
+/** Conversa específica de uma Return Request; não reutiliza a thread legada do pedido. */
+function papelito_messaging_get_thread_by_return_request( int $return_request_id ): ?array {
+	global $wpdb;
+	$table = papelito_messaging_tables()['threads'];
+	$row = $wpdb->get_row( $wpdb->prepare( "SELECT id, order_id, return_request_id, customer_id, vendor_id, context, support_key, escalated_at, created_at, updated_at FROM {$table} WHERE return_request_id = %d", $return_request_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	return is_array( $row ) ? $row : null;
 }
 
@@ -926,6 +940,30 @@ function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
 	return new WP_REST_Response( papelito_messaging_thread_detail( $thread, $user_id ), 201 );
 }
 
+/** POST /messages/return-threads — uma conversa independente por Return Request. */
+function papelito_messaging_handle_create_return_thread( WP_REST_Request $request ) {
+	$user_id = get_current_user_id();
+	$return_id = absint( $request->get_param( 'return_request_id' ) );
+	$row = function_exists( 'papelito_return_get' ) ? papelito_return_get( $return_id ) : null;
+	if ( ! $row || ( $user_id !== (int) $row['customer_id'] && $user_id !== (int) $row['vendor_id'] ) ) {
+		return new WP_Error( 'papelito_message_return_forbidden', 'Devolução não encontrada.', array( 'status' => 404 ) );
+	}
+	$existing = papelito_messaging_get_thread_by_return_request( $return_id );
+	if ( null !== $existing ) { return new WP_REST_Response( papelito_messaging_thread_detail( $existing, $user_id ), 200 ); }
+	$body = papelito_messaging_validate_body( $request->get_param( 'body' ) );
+	if ( is_wp_error( $body ) ) { return $body; }
+	$now = current_time( 'mysql', true );
+	$created = papelito_messaging_create_thread_with_initial_message(
+		array( 'order_id' => null, 'return_request_id' => $return_id, 'customer_id' => (int) $row['customer_id'], 'vendor_id' => (int) $row['vendor_id'], 'context' => 'return', 'created_at' => $now, 'updated_at' => $now ),
+		array( '%d', '%d', '%d', '%d', '%s', '%s', '%s' ), $user_id, $body
+	);
+	if ( is_wp_error( $created ) ) { $existing = papelito_messaging_get_thread_by_return_request( $return_id ); return null !== $existing ? new WP_REST_Response( papelito_messaging_thread_detail( $existing, $user_id ), 200 ) : $created; }
+	$thread = papelito_messaging_get_thread( $created['thread_id'] );
+	if ( null === $thread ) { return new WP_Error( 'papelito_message_thread_insert_failed', PAPELITO_MESSAGE_THREAD_START_FAILED, array( 'status' => 500 ) ); }
+	papelito_messaging_after_message_insert( $created['thread_id'], $user_id, $created['message_id'] );
+	return new WP_REST_Response( papelito_messaging_thread_detail( $thread, $user_id ), 201 );
+}
+
 /**
  * GET /messages/threads/{id} — detalhe de uma thread.
  */
@@ -1052,6 +1090,16 @@ add_action(
 					'permission_callback' => 'papelito_messaging_require_auth',
 					'callback'            => 'papelito_messaging_handle_create_thread',
 				),
+			)
+		);
+
+		register_rest_route(
+			PAPELITO_REST_NAMESPACE,
+			'/messages/return-threads',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'permission_callback' => 'papelito_messaging_require_auth',
+				'callback'            => 'papelito_messaging_handle_create_return_thread',
 			)
 		);
 

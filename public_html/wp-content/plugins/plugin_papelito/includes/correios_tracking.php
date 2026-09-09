@@ -347,15 +347,20 @@ function papelito_tracking_event_key( int $shipment_id, array $event ): string {
 }
 
 /** Busca os envios de um pedido. */
-function papelito_tracking_order_shipments( int $order_id, bool $include_inactive = false ): array {
+function papelito_tracking_order_shipments( int $order_id, bool $include_inactive = false, string $direction = 'outbound' ): array {
 	global $wpdb;
 	$table = papelito_tracking_shipments_table_name();
 	$sql   = "SELECT * FROM {$table} WHERE order_id = %d";
+	$args  = array( $order_id );
+	if ( '' !== $direction ) {
+		$sql .= ' AND direction = %s';
+		$args[] = sanitize_key( $direction );
+	}
 	if ( ! $include_inactive ) {
 		$sql .= ' AND active = 1';
 	}
 	$sql .= ' ORDER BY id ASC';
-	$rows = $wpdb->get_results( $wpdb->prepare( $sql, $order_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+	$rows = $wpdb->get_results( $wpdb->prepare( $sql, $args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 	return is_array( $rows ) ? $rows : array();
 }
 
@@ -480,6 +485,8 @@ function papelito_tracking_create_shipment( int $order_id, int $vendor_id, array
 	global $wpdb;
 
 	$provider      = sanitize_key( (string) ( $data['provider'] ?? 'correios' ) );
+	$direction     = in_array( sanitize_key( (string) ( $data['direction'] ?? 'outbound' ) ), array( 'outbound', 'reverse' ), true ) ? sanitize_key( (string) ( $data['direction'] ?? 'outbound' ) ) : 'outbound';
+	$return_request_id = 'reverse' === $direction ? absint( $data['return_request_id'] ?? 0 ) : 0;
 	$is_test       = ! empty( $data['is_test'] );
 	$tracking_code = papelito_tracking_normalize_code( $data['tracking_code'] ?? '' );
 	$prepost_id    = sanitize_text_field( (string) ( $data['prepost_id'] ?? '' ) );
@@ -493,7 +500,8 @@ function papelito_tracking_create_shipment( int $order_id, int $vendor_id, array
 		array(
 			'order_id'       => $order_id,
 			'vendor_id'      => $vendor_id,
-			'direction'      => 'outbound',
+			'direction'      => $direction,
+			'return_request_id' => $return_request_id ?: null,
 			'provider'       => '' !== $provider ? $provider : 'correios',
 			'generation_status' => sanitize_key( (string) ( $data['generation_status'] ?? 'generated' ) ),
 			'creation_outcome' => 'created',
@@ -514,7 +522,7 @@ function papelito_tracking_create_shipment( int $order_id, int $vendor_id, array
 			'created_at'     => current_time( 'mysql', true ),
 			'updated_at'     => current_time( 'mysql', true ),
 		),
-		array( '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s' )
+		array( '%d', '%d', '%s', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%s' )
 	);
 
 	if ( false === $inserted ) {
@@ -1520,8 +1528,14 @@ function papelito_tracking_ingest_event( array $shipment, array $event, string $
 	$wpdb->query( 'COMMIT' );
 
 	if ( $changed && is_array( $mapping ) ) {
-		papelito_tracking_reconcile_order_status( absint( $locked['order_id'] ) );
-		papelito_tracking_notify_event( absint( $locked['order_id'] ), absint( $locked['vendor_id'] ), $shipment_id, $mapping['status'], $event_key );
+		if ( 'reverse' === sanitize_key( (string) ( $locked['direction'] ?? 'outbound' ) ) ) {
+			if ( function_exists( 'papelito_return_tracking_event' ) ) {
+				papelito_return_tracking_event( $locked, $mapping['status'], $event_key );
+			}
+		} else {
+			papelito_tracking_reconcile_order_status( absint( $locked['order_id'] ) );
+			papelito_tracking_notify_event( absint( $locked['order_id'] ), absint( $locked['vendor_id'] ), $shipment_id, $mapping['status'], $event_key );
+		}
 	}
 	return true;
 }

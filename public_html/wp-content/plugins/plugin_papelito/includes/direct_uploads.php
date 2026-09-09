@@ -400,6 +400,17 @@ function papelito_direct_upload_vendor_fiscal_document( array $ticket, array $fi
 	return papelito_fiscal_order_block( $order, $vendor_id );
 }
 
+/** Comprovante privado de um estorno manual; a autorização vem do tíquete. */
+function papelito_direct_upload_return_refund_proof( array $ticket, array $file ) {
+	$context = (array) ( $ticket['context'] ?? array() );
+	$vendor_id = absint( $context['vendor_id'] ?? 0 );
+	$return_id = absint( $context['return_id'] ?? 0 );
+	if ( $vendor_id <= 0 || $return_id <= 0 || ! function_exists( 'papelito_return_refund_proof_attach_file' ) ) {
+		return papelito_direct_upload_error( 'papelito_upload_not_allowed', 'Você não tem permissão para anexar este comprovante.', 403 );
+	}
+	return papelito_return_refund_proof_attach_file( $return_id, $vendor_id, $file, $vendor_id );
+}
+
 function papelito_direct_upload_catalog( array $ticket, array $file ) {
 	$user_id = (int) ( $ticket['context']['user_id'] ?? 0 );
 	if ( $user_id <= 0 || ! user_can( $user_id, 'manage_options' ) ) {
@@ -465,6 +476,18 @@ function papelito_direct_upload_vendor_fiscal_ticket( WP_REST_Request $request, 
 	);
 }
 
+function papelito_direct_upload_return_refund_proof_ticket( WP_REST_Request $request, int $user_id ) {
+	if ( $user_id <= 0 || ! function_exists( 'papelito_return_require_vendor' ) ) {
+		return papelito_direct_upload_error( 'papelito_upload_not_authenticated', 'Autenticação necessária.', 401 );
+	}
+	$row = papelito_return_require_vendor( absint( $request->get_param( 'returnId' ) ) );
+	if ( is_wp_error( $row ) ) { return $row; }
+	if ( 'refund_pending' !== (string) $row['status'] ) {
+		return papelito_direct_upload_error( 'papelito_return_proof_unavailable', 'O comprovante só pode ser anexado quando o estorno estiver pendente.', 409 );
+	}
+	return new WP_REST_Response( papelito_direct_upload_ticket_create( 'return-refund-proof', array( 'vendor_id' => $user_id, 'return_id' => (int) $row['id'] ) ), 201 );
+}
+
 function papelito_direct_upload_ticket_issue( WP_REST_Request $request ) {
 	$purpose = sanitize_key( (string) $request->get_param( 'purpose' ) );
 	$user_id = get_current_user_id();
@@ -511,6 +534,9 @@ function papelito_direct_upload_ticket_issue( WP_REST_Request $request ) {
 	if ( 'vendor-fiscal-document' === $purpose ) {
 		return papelito_direct_upload_vendor_fiscal_ticket( $request, $user_id );
 	}
+	if ( 'return-refund-proof' === $purpose ) {
+		return papelito_direct_upload_return_refund_proof_ticket( $request, $user_id );
+	}
 
 	if ( 'pre-account-document' === $purpose ) {
 		$application = papelito_pre_account_application_authorize( $application_token );
@@ -545,6 +571,7 @@ function papelito_direct_upload_receive( WP_REST_Request $request ) {
 		'owner-document'         => papelito_direct_upload_owner_document( $ticket, $file ),
 		'pre-account-document'   => papelito_direct_upload_pre_account_document( $ticket, $file ),
 		'vendor-fiscal-document' => papelito_direct_upload_vendor_fiscal_document( $ticket, $file ),
+		'return-refund-proof'    => papelito_direct_upload_return_refund_proof( $ticket, $file ),
 		default                  => papelito_direct_upload_error( 'papelito_upload_invalid_purpose', 'Finalidade de upload inválida.', 422 ),
 	};
 
