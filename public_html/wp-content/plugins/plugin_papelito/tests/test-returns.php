@@ -15,6 +15,7 @@ function wp_normalize_path( string $value ) { return $value; }
 function untrailingslashit( string $value ) { return rtrim( $value, '/' ); }
 function trailingslashit( string $value ) { return rtrim( $value, '/' ) . '/'; }
 function add_action( mixed ...$args ) { unset( $args ); }
+function wp_timezone() { return new DateTimeZone( 'America/Sao_Paulo' ); }
 
 class WP_Error {
 	public function __construct( private string $code = '', private string $message = '', private array $data = array() ) {}
@@ -45,8 +46,17 @@ assert_return( 'estorno igual ao teto é permitido', true, papelito_return_refun
 assert_return( 'estorno acima do teto é recusado', false, papelito_return_refund_amount_allowed( 5001, 5000 ) );
 assert_return( 'estorno sem valor é recusado', false, papelito_return_refund_amount_allowed( 0, 5000 ) );
 
+$deadline = papelito_return_window_deadline( '2026-09-05 20:42:51' );
+assert_return( 'janela começa no dia seguinte à entrega, no fuso do site', '2026-09-12 23:59:59', $deadline?->format( 'Y-m-d H:i:s' ) );
+assert_return( 'janela é ancorada no fuso do site, não em UTC', 'America/Sao_Paulo', $deadline?->getTimezone()->getName() );
+// Entrega 21h local vira o dia seguinte em UTC: a janela nao pode ganhar um dia por isso.
+assert_return( 'entrega noturna não desloca a janela em um dia', '2026-09-12 23:59:59', papelito_return_window_deadline( '2026-09-06 00:42:51' )?->format( 'Y-m-d H:i:s' ) );
+assert_return( 'entrega ilegível não vira prazo silencioso', null, papelito_return_window_deadline( 'nao-e-data' ) );
+
 $source = (string) file_get_contents( __DIR__ . '/../includes/returns.php' );
 assert_return( 'domínio não chama wc_create_refund', false, str_contains( $source, 'wc_create_refund' ) );
 assert_return( 'domínio não chama endpoint de refund Pagar.me', false, str_contains( strtolower( $source ), 'pagarme' ) );
+assert_return( 'vendor só formaliza retorno após chamado do comprador', true, str_contains( $source, 'papelito_messaging_return_support_exists' ) );
+assert_return( 'autorização reversa notifica o comprador', true, str_contains( $source, 'return_authorization_issued' ) );
 
 exit( $failures > 0 ? 1 : 0 );

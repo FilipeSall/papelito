@@ -7,6 +7,10 @@ const PAPELITO_RETURN_ITEMS_TABLE = 'papelito_return_items';
 const PAPELITO_RETURN_EVENTS_TABLE = 'papelito_return_events';
 const PAPELITO_RETURN_REFUNDS_TABLE = 'papelito_return_refunds';
 const PAPELITO_RETURN_PROOFS_TABLE = 'papelito_return_refund_proofs';
+const PAPELITO_RETURN_MYSQL_FORMAT = 'Y-m-d H:i:s';
+const PAPELITO_RETURN_SQL_BEGIN = 'START TRANSACTION';
+const PAPELITO_RETURN_MSG_NOT_FOUND = 'Devolução não encontrada.';
+const PAPELITO_RETURN_MSG_FORBIDDEN = 'Acesso negado.';
 const PAPELITO_RETURN_DEFAULT_WINDOW_DAYS = 7;
 const PAPELITO_RETURN_AUTHORIZATION_DAYS = 7;
 const PAPELITO_RETURN_MAINTENANCE_HOOK = 'papelito_return_maintenance_event';
@@ -159,8 +163,8 @@ function papelito_return_period_utc_bounds( string $from, string $to ): array {
 	try {
 		$timezone = wp_timezone();
 		return array(
-			( new DateTimeImmutable( $from . ' 00:00:00', $timezone ) )->setTimezone( new DateTimeZone( 'UTC' ) )->format( 'Y-m-d H:i:s' ),
-			( new DateTimeImmutable( $to . ' 23:59:59', $timezone ) )->setTimezone( new DateTimeZone( 'UTC' ) )->format( 'Y-m-d H:i:s' ),
+			( new DateTimeImmutable( $from . ' 00:00:00', $timezone ) )->setTimezone( new DateTimeZone( 'UTC' ) )->format( PAPELITO_RETURN_MYSQL_FORMAT ),
+			( new DateTimeImmutable( $to . ' 23:59:59', $timezone ) )->setTimezone( new DateTimeZone( 'UTC' ) )->format( PAPELITO_RETURN_MYSQL_FORMAT ),
 		);
 	} catch ( Exception $error ) {
 		return array( $from . ' 00:00:00', $to . ' 23:59:59' );
@@ -194,6 +198,9 @@ function papelito_return_event( int $return_id, string $event, ?string $from, ?s
 	), array( '%d', '%s', '%s', '%s', '%d', '%s', '%s' ) );
 }
 
+/**
+ * @param mixed $value Valor monetário vindo do WooCommerce.
+ */
 function papelito_return_decimal_to_cents( $value ): int {
 	$decimal = function_exists( 'wc_format_decimal' ) ? wc_format_decimal( $value, 2 ) : number_format( (float) $value, 2, '.', '' );
 	$negative = str_starts_with( ltrim( (string) $decimal ), '-' );
@@ -204,6 +211,9 @@ function papelito_return_decimal_to_cents( $value ): int {
 	return $negative ? -$cents : $cents;
 }
 
+/**
+ * @param WC_Order|object|null $order Pedido do WooCommerce.
+ */
 function papelito_return_order_delivered_at( $order ): ?string {
 	if ( ! function_exists( 'papelito_tracking_order_shipments' ) ) {
 		return null;
@@ -217,6 +227,19 @@ function papelito_return_order_delivered_at( $order ): ?string {
 	return empty( $dates ) ? null : max( $dates );
 }
 
+/** Fim da janela de solicitação: a contagem começa no dia seguinte à entrega. */
+function papelito_return_window_deadline( string $delivered_at ): ?DateTimeImmutable {
+	try {
+		$delivered = new DateTimeImmutable( $delivered_at, new DateTimeZone( 'UTC' ) );
+		return $delivered->setTimezone( wp_timezone() )->modify( '+1 day' )->setTime( 0, 0 )->modify( '+' . papelito_return_window_days() . ' days -1 second' );
+	} catch ( Exception $exception ) {
+		return null;
+	}
+}
+
+/**
+ * @param WC_Order|object|null $order Pedido do WooCommerce.
+ */
 function papelito_return_is_eligible( $order, int $customer_id ) {
 	if ( ! is_object( $order ) || ! method_exists( $order, 'get_customer_id' ) || (int) $order->get_customer_id() !== $customer_id ) {
 		return papelito_return_error( 'papelito_return_not_found', 'Pedido não encontrado.', 404 );
@@ -228,19 +251,19 @@ function papelito_return_is_eligible( $order, int $customer_id ) {
 	if ( null === $delivered_at ) {
 		return papelito_return_error( 'papelito_return_delivery_required', 'A devolução só pode ser solicitada depois da entrega confirmada.', 409 );
 	}
-	try {
-		$timezone = wp_timezone();
-		$delivered = new DateTimeImmutable( $delivered_at, new DateTimeZone( 'UTC' ) );
-		$deadline = $delivered->setTimezone( $timezone )->modify( '+1 day' )->setTime( 0, 0 )->modify( '+' . papelito_return_window_days() . ' days -1 second' );
-		if ( new DateTimeImmutable( 'now', $timezone ) > $deadline ) {
-			return papelito_return_error( 'papelito_return_window_expired', 'O prazo para solicitar esta devolução expirou.', 409 );
-		}
-	} catch ( Exception $exception ) {
+	$deadline = papelito_return_window_deadline( $delivered_at );
+	if ( null === $deadline ) {
 		return papelito_return_error( 'papelito_return_delivery_invalid', 'Não foi possível determinar o prazo de devolução.', 409 );
+	}
+	if ( new DateTimeImmutable( 'now', wp_timezone() ) > $deadline ) {
+		return papelito_return_error( 'papelito_return_window_expired', 'O prazo para solicitar esta devolução expirou.', 409 );
 	}
 	return $delivered_at;
 }
 
+/**
+ * @param WC_Order|object|null $order Pedido do WooCommerce.
+ */
 function papelito_return_order_vendor_id( $order ): int {
 	return absint( $order->get_meta( '_papelito_vendor_id', true ) );
 }
@@ -253,24 +276,111 @@ function papelito_return_consuming_statuses(): array {
 	return array_merge( papelito_return_active_statuses(), array( 'refunded' ) );
 }
 
-function papelito_return_create( WP_REST_Request $request ) {
+/**
+ * Quantidade já consumida por linha de pedido, em uma consulta só.
+ *
+ * @param int[] $order_item_ids Linhas do pedido a medir.
+ * @return array<int,int> Mapa de order_item_id para quantidade consumida.
+ */
+function papelito_return_consumed_qty_by_item( array $order_item_ids ): array {
 	global $wpdb;
-	$user_id = get_current_user_id();
-	$order = function_exists( 'wc_get_order' ) ? wc_get_order( absint( $request->get_param( 'orderId' ) ) ) : null;
-	$delivered_at = papelito_return_is_eligible( $order, $user_id );
-	if ( is_wp_error( $delivered_at ) ) {
-		return $delivered_at;
+	$order_item_ids = array_values( array_unique( array_filter( array_map( 'absint', $order_item_ids ) ) ) );
+	if ( empty( $order_item_ids ) ) {
+		return array();
 	}
+	$tables = papelito_return_tables();
+	$statuses = papelito_return_consuming_statuses();
+	$item_placeholders = implode( ',', array_fill( 0, count( $order_item_ids ), '%d' ) );
+	$status_placeholders = implode( ',', array_fill( 0, count( $statuses ), '%s' ) );
+	$rows = $wpdb->get_results( $wpdb->prepare( "SELECT i.order_item_id, COALESCE(SUM(i.requested_qty), 0) AS consumed FROM {$tables['items']} i INNER JOIN {$tables['requests']} r ON r.id = i.return_request_id WHERE i.order_item_id IN ({$item_placeholders}) AND r.status IN ({$status_placeholders}) GROUP BY i.order_item_id", array_merge( $order_item_ids, $statuses ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$consumed = array();
+	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		$consumed[ (int) $row['order_item_id'] ] = (int) $row['consumed'];
+	}
+	return $consumed;
+}
+
+/**
+ * Elegibilidade de devolução para a tela do comprador.
+ *
+ * A decisão continua sendo recalculada no POST; isto existe só para a interface
+ * não reimplementar a janela nem descobrir a recusa depois de preencher o formulário.
+ *
+ * @param object $order       Pedido do WooCommerce.
+ * @param int    $customer_id Comprador autenticado.
+ * @return array<string,mixed>
+ */
+function papelito_return_order_eligibility( $order, int $customer_id ): array {
+	$payload = array( 'can_request' => false, 'reason' => '', 'message' => '', 'window_days' => papelito_return_window_days(), 'window_ends_at' => '', 'items' => array() );
+	$delivered_at = papelito_return_is_eligible( $order, $customer_id );
+	if ( is_wp_error( $delivered_at ) ) {
+		$payload['reason'] = $delivered_at->get_error_code();
+		$payload['message'] = $delivered_at->get_error_message();
+		return $payload;
+	}
+	$deadline = papelito_return_window_deadline( $delivered_at );
+	$payload['window_ends_at'] = $deadline ? $deadline->setTimezone( new DateTimeZone( 'UTC' ) )->format( PAPELITO_RETURN_MYSQL_FORMAT ) : '';
 	$vendor_id = papelito_return_order_vendor_id( $order );
 	if ( $vendor_id <= 0 ) {
-		return papelito_return_error( 'papelito_return_vendor_missing', 'O pedido não possui vendor elegível para devolução.', 422 );
+		$payload['reason'] = 'papelito_return_vendor_missing';
+		$payload['message'] = 'O pedido não possui vendor elegível para devolução.';
+		return $payload;
 	}
+	$lines = array();
+	foreach ( $order->get_items( 'line_item' ) as $item_id => $item ) {
+		$lines[ (int) $item_id ] = $item;
+	}
+	$consumed = papelito_return_consumed_qty_by_item( array_keys( $lines ) );
+	$returnable_total = 0;
+	foreach ( $lines as $item_id => $item ) {
+		$item_vendor = absint( $item->get_meta( '_vendor_id', true ) ) ?: $vendor_id;
+		$available = $item_vendor === $vendor_id ? max( 0, (int) $item->get_quantity() - ( $consumed[ $item_id ] ?? 0 ) ) : 0;
+		$returnable_total += $available;
+		$payload['items'][] = array(
+			'order_item_id' => $item_id,
+			'name' => sanitize_text_field( (string) $item->get_name() ),
+			'purchased_qty' => (int) $item->get_quantity(),
+			'returnable_qty' => $available,
+		);
+	}
+	if ( $returnable_total <= 0 ) {
+		$payload['reason'] = 'papelito_return_item_already_requested';
+		$payload['message'] = 'Todos os itens deste pedido já possuem devolução registrada.';
+		return $payload;
+	}
+	$payload['can_request'] = true;
+	return $payload;
+}
+
+/**
+ * Motivo e detalhe livre, já sanitizados.
+ *
+ * @return array{reason:string,other:string}|WP_Error
+ */
+function papelito_return_validate_reason( WP_REST_Request $request ) {
 	$reason = sanitize_key( (string) $request->get_param( 'reason' ) );
-	$reason_other = sanitize_textarea_field( (string) $request->get_param( 'reasonOther' ) );
-	if ( ! in_array( $reason, papelito_return_reasons(), true ) || ( 'other' === $reason && '' === trim( $reason_other ) ) ) {
+	$other = sanitize_textarea_field( (string) $request->get_param( 'reasonOther' ) );
+	if ( ! in_array( $reason, papelito_return_reasons(), true ) ) {
 		return papelito_return_error( 'papelito_return_reason_invalid', 'Informe um motivo válido para a devolução.', 422 );
 	}
-	$selected = $request->get_param( 'items' );
+	if ( 'other' === $reason && '' === trim( $other ) ) {
+		return papelito_return_error( 'papelito_return_reason_invalid', 'Informe um motivo válido para a devolução.', 422 );
+	}
+	return array( 'reason' => $reason, 'other' => $other );
+}
+
+/**
+ * Casa a seleção recebida com as linhas reais do pedido.
+ *
+ * Só o pedido decide o que existe e em que quantidade: nada aqui confia no
+ * `orderItemId` nem na quantidade que chegaram do navegador.
+ *
+ * @param WC_Order|object $order     Pedido do WooCommerce.
+ * @param int             $vendor_id Vendor dono do pedido.
+ * @param mixed           $selected  Itens escolhidos.
+ * @return array<int,array{item:object,qty:int}>|WP_Error
+ */
+function papelito_return_normalize_selection( $order, int $vendor_id, $selected ) {
 	if ( ! is_array( $selected ) || empty( $selected ) ) {
 		return papelito_return_error( 'papelito_return_items_required', 'Selecione ao menos um item para devolver.', 422 );
 	}
@@ -280,19 +390,50 @@ function papelito_return_create( WP_REST_Request $request ) {
 	}
 	$normalized = array();
 	foreach ( $selected as $selected_item ) {
-		if ( ! is_array( $selected_item ) ) { continue; }
+		if ( ! is_array( $selected_item ) ) {
+			continue;
+		}
 		$item_id = absint( $selected_item['orderItemId'] ?? 0 );
 		$qty = absint( $selected_item['qty'] ?? 0 );
 		$item = $items_by_id[ $item_id ] ?? null;
 		if ( ! $item || $qty <= 0 || $qty > (int) $item->get_quantity() || isset( $normalized[ $item_id ] ) ) {
 			return papelito_return_error( 'papelito_return_item_invalid', 'Um item selecionado não pertence ao pedido ou possui quantidade inválida.', 422 );
 		}
-		$item_vendor = absint( $item->get_meta( '_vendor_id', true ) ) ?: $vendor_id;
-		if ( $item_vendor !== $vendor_id ) {
+		if ( ( absint( $item->get_meta( '_vendor_id', true ) ) ?: $vendor_id ) !== $vendor_id ) {
 			return papelito_return_error( 'papelito_return_vendor_invalid', 'Os itens selecionados não pertencem ao mesmo vendor.', 422 );
 		}
 		$normalized[ $item_id ] = array( 'item' => $item, 'qty' => $qty );
 	}
+	return $normalized;
+}
+
+/**
+ * Núcleo da abertura de devolução, compartilhado pelos dois atores.
+ *
+ * O comprador abre pedindo análise; o vendor abre depois de já ter combinado no
+ * chat, então entra direto em `awaiting_reverse_authorization`. Fora o estado
+ * inicial e quem é notificado, as guardas são as mesmas — elegibilidade, vendor
+ * único e quantidade ainda não consumida — e é por isso que vivem aqui e não
+ * duplicadas em cada entrada.
+ */
+function papelito_return_open( WP_REST_Request $request, int $customer_id, int $actor_id, string $initial_status, string $open_event ) {
+	global $wpdb;
+	$user_id = $customer_id;
+	$order = function_exists( 'wc_get_order' ) ? wc_get_order( absint( $request->get_param( 'orderId' ) ) ) : null;
+	$delivered_at = papelito_return_is_eligible( $order, $user_id );
+	if ( is_wp_error( $delivered_at ) ) {
+		return $delivered_at;
+	}
+	$vendor_id = papelito_return_order_vendor_id( $order );
+	if ( $vendor_id <= 0 ) {
+		return papelito_return_error( 'papelito_return_vendor_missing', 'O pedido não possui vendor elegível para devolução.', 422 );
+	}
+	$reason = papelito_return_validate_reason( $request );
+	if ( is_wp_error( $reason ) ) { return $reason; }
+	$reason_other = $reason['other'];
+	$reason = $reason['reason'];
+	$normalized = papelito_return_normalize_selection( $order, $vendor_id, $request->get_param( 'items' ) );
+	if ( is_wp_error( $normalized ) ) { return $normalized; }
 	$lock = 'papelito_return_order_' . absint( $order->get_id() );
 	if ( '1' !== (string) $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 10)', $lock ) ) ) {
 		return papelito_return_error( 'papelito_return_busy', 'Outra alteração está em andamento. Tente novamente.', 409 );
@@ -300,14 +441,11 @@ function papelito_return_create( WP_REST_Request $request ) {
 	$transaction_started = false;
 	try {
 		$tables = papelito_return_tables();
-		$wpdb->query( 'START TRANSACTION' );
+		$wpdb->query( PAPELITO_RETURN_SQL_BEGIN );
 		$transaction_started = true;
-		$active = implode( ',', array_fill( 0, count( papelito_return_consuming_statuses() ), '%s' ) );
+		$consumed = papelito_return_consumed_qty_by_item( array_keys( $normalized ) );
 		foreach ( $normalized as $item_id => $candidate ) {
-			$args = array_merge( array( $item_id ), papelito_return_consuming_statuses() );
-			$sql = $wpdb->prepare( "SELECT COALESCE(SUM(i.requested_qty), 0) FROM {$tables['items']} i INNER JOIN {$tables['requests']} r ON r.id = i.return_request_id WHERE i.order_item_id = %d AND r.status IN ({$active})", $args ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-			$already_requested = (int) $wpdb->get_var( $sql );
-			if ( $already_requested + $candidate['qty'] > (int) $candidate['item']->get_quantity() ) {
+			if ( ( $consumed[ $item_id ] ?? 0 ) + $candidate['qty'] > (int) $candidate['item']->get_quantity() ) {
 				$wpdb->query( 'ROLLBACK' );
 				return papelito_return_error( 'papelito_return_item_already_requested', 'A quantidade selecionada já possui uma devolução em andamento.', 409 );
 			}
@@ -315,7 +453,7 @@ function papelito_return_create( WP_REST_Request $request ) {
 		$now = papelito_return_now();
 		$written = $wpdb->insert( $tables['requests'], array(
 			'order_id' => (int) $order->get_id(), 'customer_id' => $user_id, 'vendor_id' => $vendor_id,
-			'status' => 'requested', 'reason' => $reason, 'reason_other' => $reason_other ?: null,
+			'status' => $initial_status, 'reason' => $reason, 'reason_other' => $reason_other ?: null,
 			'delivered_at' => $delivered_at, 'requested_at' => $now, 'created_at' => $now, 'updated_at' => $now,
 		), array( '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s' ) );
 		if ( false === $written ) { $wpdb->query( 'ROLLBACK' ); return papelito_return_error( 'papelito_return_create_failed', 'Não foi possível registrar a devolução.', 500 ); }
@@ -330,11 +468,13 @@ function papelito_return_create( WP_REST_Request $request ) {
 				'eligible_amount_cents' => $eligible, 'created_at' => $now, 'updated_at' => $now,
 			), array( '%d', '%d', '%d', '%s', '%d', '%d', '%s', '%s' ) );
 		}
-		papelito_return_event( $return_id, 'requested', null, 'requested', $user_id, array( 'reason' => $reason ) );
+		papelito_return_event( $return_id, $open_event, null, $initial_status, $actor_id, array( 'reason' => $reason ) );
 		$wpdb->query( 'COMMIT' );
 		$transaction_started = false;
 		if ( function_exists( 'papelito_dispatch_notification' ) ) {
-			papelito_dispatch_notification( $vendor_id, 'return_requested', array( 'return_id' => $return_id, 'order_id' => (int) $order->get_id() ), 'return:' . $return_id . ':requested' );
+			$notify_user = $actor_id === $vendor_id ? $user_id : $vendor_id;
+			$notify_type = $actor_id === $vendor_id ? 'return_opened' : 'return_requested';
+			papelito_dispatch_notification( $notify_user, $notify_type, array( 'return_id' => $return_id, 'order_id' => (int) $order->get_id() ), 'return:' . $return_id . ':' . $open_event );
 		}
 		return new WP_REST_Response( papelito_return_payload( papelito_return_get( $return_id ) ), 201 );
 	} catch ( Throwable $error ) {
@@ -346,12 +486,43 @@ function papelito_return_create( WP_REST_Request $request ) {
 	}
 }
 
+function papelito_return_create( WP_REST_Request $request ) {
+	$user_id = get_current_user_id();
+	$order_id = absint( $request->get_param( 'orderId' ) );
+	if ( ! function_exists( 'papelito_messaging_open_return_support' ) ) {
+		return papelito_return_error( 'papelito_return_support_unavailable', 'Não foi possível abrir o suporte da devolução.', 503 );
+	}
+	return papelito_messaging_open_return_support( $order_id, $user_id );
+}
+
+/**
+ * Vendor abre a devolução que combinou com o cliente pelo suporte do pedido.
+ *
+ * Não existe caminho em que o comprador registre sozinho: a solicitação nasce
+ * como conversa, e este endpoint é o que a transforma em processo auditável.
+ */
+function papelito_return_vendor_open( WP_REST_Request $request ) {
+	$vendor_id = get_current_user_id();
+	$user = get_userdata( $vendor_id );
+	if ( ! current_user_can( 'seller' ) && ! in_array( 'seller', is_object( $user ) ? (array) $user->roles : array(), true ) ) {
+		return papelito_return_error( 'papelito_return_forbidden', PAPELITO_RETURN_MSG_FORBIDDEN, 403 );
+	}
+	$order = function_exists( 'wc_get_order' ) ? wc_get_order( absint( $request->get_param( 'orderId' ) ) ) : null;
+	if ( ! is_object( $order ) || ! method_exists( $order, 'get_customer_id' ) || papelito_return_order_vendor_id( $order ) !== $vendor_id ) {
+		return papelito_return_error( 'papelito_return_not_found', 'Pedido não encontrado.', 404 );
+	}
+	if ( ! function_exists( 'papelito_messaging_return_support_exists' ) || ! papelito_messaging_return_support_exists( (int) $order->get_id() ) ) {
+		return papelito_return_error( 'papelito_return_support_required', 'A devolução só pode ser registrada depois da solicitação do comprador no suporte.', 409 );
+	}
+	return papelito_return_open( $request, (int) $order->get_customer_id(), $vendor_id, 'awaiting_reverse_authorization', 'opened_by_vendor' );
+}
+
 function papelito_return_transition( int $return_id, array $from, string $to, int $actor, array $updates = array(), array $payload = array() ) {
 	global $wpdb;
 	$tables = papelito_return_tables();
-	$wpdb->query( 'START TRANSACTION' );
+	$wpdb->query( PAPELITO_RETURN_SQL_BEGIN );
 	$row = papelito_return_get( $return_id, true );
-	if ( ! $row ) { $wpdb->query( 'ROLLBACK' ); return papelito_return_error( 'papelito_return_not_found', 'Devolução não encontrada.', 404 ); }
+	if ( ! $row ) { $wpdb->query( 'ROLLBACK' ); return papelito_return_error( 'papelito_return_not_found', PAPELITO_RETURN_MSG_NOT_FOUND, 404 ); }
 	if ( ! in_array( (string) $row['status'], $from, true ) ) { $wpdb->query( 'ROLLBACK' ); return papelito_return_error( 'papelito_return_transition_invalid', 'Esta ação não está disponível para o estado atual.', 409 ); }
 	$data = array_merge( $updates, array( 'status' => $to, 'version' => (int) $row['version'] + 1, 'updated_at' => papelito_return_now() ) );
 	$formats = array_fill( 0, count( $data ), '%s' );
@@ -365,15 +536,15 @@ function papelito_return_transition( int $return_id, array $from, string $to, in
 
 function papelito_return_require_vendor( int $return_id ) {
 	$row = papelito_return_get( $return_id );
-	if ( ! $row || (int) $row['vendor_id'] !== get_current_user_id() ) { return papelito_return_error( 'papelito_return_not_found', 'Devolução não encontrada.', 404 ); }
+	if ( ! $row || (int) $row['vendor_id'] !== get_current_user_id() ) { return papelito_return_error( 'papelito_return_not_found', PAPELITO_RETURN_MSG_NOT_FOUND, 404 ); }
 	$user = get_userdata( get_current_user_id() );
-	if ( ! current_user_can( 'seller' ) && ! in_array( 'seller', is_object( $user ) ? (array) $user->roles : array(), true ) ) { return papelito_return_error( 'papelito_return_forbidden', 'Acesso negado.', 403 ); }
+	if ( ! current_user_can( 'seller' ) && ! in_array( 'seller', is_object( $user ) ? (array) $user->roles : array(), true ) ) { return papelito_return_error( 'papelito_return_forbidden', PAPELITO_RETURN_MSG_FORBIDDEN, 403 ); }
 	return $row;
 }
 
 function papelito_return_customer_row( int $return_id ) {
 	$row = papelito_return_get( $return_id );
-	return $row && (int) $row['customer_id'] === get_current_user_id() ? $row : papelito_return_error( 'papelito_return_not_found', 'Devolução não encontrada.', 404 );
+	return $row && (int) $row['customer_id'] === get_current_user_id() ? $row : papelito_return_error( 'papelito_return_not_found', PAPELITO_RETURN_MSG_NOT_FOUND, 404 );
 }
 
 function papelito_return_approve( WP_REST_Request $request ) {
@@ -394,6 +565,28 @@ function papelito_return_reject( WP_REST_Request $request ) {
 	return is_wp_error( $result ) ? $result : new WP_REST_Response( papelito_return_payload( $result ), 200 );
 }
 
+/**
+ * Converte a validade informada para UTC, ou `null` quando ela não é uma data
+ * do calendário ou estoura o teto da política. Data inválida é entrada comum,
+ * não excepcional — por isso o retorno é nulo em vez de exceção.
+ */
+function papelito_return_authorization_expiry_utc( string $expires ): ?string {
+	$expiry = DateTimeImmutable::createFromFormat( '!Y-m-d', $expires, wp_timezone() );
+	$errors = DateTimeImmutable::getLastErrors();
+	if ( ! $expiry || ( is_array( $errors ) && ( $errors['warning_count'] > 0 || $errors['error_count'] > 0 ) ) ) {
+		return null;
+	}
+	if ( $expiry->format( 'Y-m-d' ) !== $expires ) {
+		return null;
+	}
+	$expiry = $expiry->setTime( 23, 59, 59 );
+	$now = new DateTimeImmutable( 'now', wp_timezone() );
+	if ( $expiry <= $now || $expiry > $now->modify( '+' . PAPELITO_RETURN_AUTHORIZATION_DAYS . ' days' )->setTime( 23, 59, 59 ) ) {
+		return null;
+	}
+	return $expiry->setTimezone( new DateTimeZone( 'UTC' ) )->format( PAPELITO_RETURN_MYSQL_FORMAT );
+}
+
 function papelito_return_authorize( WP_REST_Request $request ) {
 	$return_id = absint( $request->get_param( 'id' ) );
 	$row = papelito_return_require_vendor( $return_id );
@@ -402,14 +595,14 @@ function papelito_return_authorize( WP_REST_Request $request ) {
 	$instructions = sanitize_textarea_field( (string) $request->get_param( 'instructions' ) );
 	$expires = sanitize_text_field( (string) $request->get_param( 'expiresAt' ) );
 	if ( strlen( $code ) < 3 || '' === $expires ) { return papelito_return_error( 'papelito_return_authorization_invalid', 'Informe o código e a validade da autorização.', 422 ); }
-	try {
-		$expiry = new DateTimeImmutable( $expires, wp_timezone() );
-		$now = new DateTimeImmutable( 'now', wp_timezone() );
-		if ( $expiry <= $now || $expiry > $now->modify( '+' . PAPELITO_RETURN_AUTHORIZATION_DAYS . ' days' ) ) { throw new Exception(); }
-		$expires = $expiry->setTimezone( new DateTimeZone( 'UTC' ) )->format( 'Y-m-d H:i:s' );
-	} catch ( Exception $exception ) { return papelito_return_error( 'papelito_return_authorization_expiry_invalid', 'A autorização deve expirar em até 7 dias.', 422 ); }
+	$expires = papelito_return_authorization_expiry_utc( $expires );
+	if ( null === $expires ) { return papelito_return_error( 'papelito_return_authorization_expiry_invalid', 'A autorização deve expirar em até 7 dias.', 422 ); }
 	$result = papelito_return_transition( $return_id, array( 'awaiting_reverse_authorization' ), 'awaiting_posting', get_current_user_id(), array( 'authorization_code' => $code, 'authorization_instructions' => $instructions ?: null, 'authorization_expires_at' => $expires ), array( 'authorization_code' => $code ) );
-	return is_wp_error( $result ) ? $result : new WP_REST_Response( papelito_return_payload( $result ), 200 );
+	if ( is_wp_error( $result ) ) { return $result; }
+	if ( function_exists( 'papelito_dispatch_notification' ) ) {
+		papelito_dispatch_notification( (int) $row['customer_id'], 'return_authorization_issued', array( 'return_id' => $return_id, 'order_id' => (int) $row['order_id'] ), 'return:' . $return_id . ':authorization' );
+	}
+	return new WP_REST_Response( papelito_return_payload( $result ), 200 );
 }
 
 /** Expira a autorização sem alegar uma postagem ou evento inexistente dos Correios. */
@@ -434,7 +627,7 @@ function papelito_return_run_maintenance(): void {
 	foreach ( is_array( $restock_items ) ? $restock_items : array() as $item ) {
 		papelito_return_apply_stock( $item, absint( $item['vendor_id'] ) );
 	}
-	$cutoff = gmdate( 'Y-m-d H:i:s', time() - PAPELITO_RETURN_PROOF_ORPHAN_TTL );
+	$cutoff = gmdate( PAPELITO_RETURN_MYSQL_FORMAT, time() - PAPELITO_RETURN_PROOF_ORPHAN_TTL );
 	$proofs = $wpdb->get_results( $wpdb->prepare( "SELECT id, storage_key FROM {$tables['proofs']} WHERE attached_at IS NULL AND created_at < %s ORDER BY id ASC LIMIT 100", $cutoff ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	foreach ( is_array( $proofs ) ? $proofs : array() as $proof ) {
 		$key = (string) $proof['storage_key'];
@@ -533,6 +726,40 @@ function papelito_return_apply_stock( array $return_item, int $vendor_id ) {
 	return true;
 }
 
+/**
+ * Uma linha de inspeção validada contra os itens da própria devolução.
+ *
+ * @param mixed                   $input Linha recebida.
+ * @param array<int,array>        $by_id Itens da devolução, por id.
+ * @param array<int,bool>         $seen  Itens já inspecionados nesta chamada.
+ * @return array{id:int,condition:string,disposition:string,other:string,received:int}|WP_Error
+ */
+function papelito_return_validate_inspection_row( $input, array $by_id, array $seen ) {
+	$invalid = papelito_return_error( 'papelito_return_inspection_invalid', 'O resultado da inspeção é inválido.', 422 );
+	$id = absint( is_array( $input ) ? ( $input['id'] ?? 0 ) : 0 );
+	$item = $by_id[ $id ] ?? null;
+	if ( ! $item || isset( $seen[ $id ] ) ) {
+		return $invalid;
+	}
+	$condition = sanitize_key( (string) ( $input['condition'] ?? '' ) );
+	if ( ! in_array( $condition, array( 'sellable', 'defective', 'damaged', 'unsellable', 'other' ), true ) ) {
+		return $invalid;
+	}
+	$disposition = sanitize_key( (string) ( $input['stockDisposition'] ?? '' ) );
+	if ( ! in_array( $disposition, array( 'return_to_sellable_stock', 'do_not_restock' ), true ) ) {
+		return $invalid;
+	}
+	$received = absint( $input['receivedQty'] ?? 0 );
+	if ( $received <= 0 || $received > (int) $item['requested_qty'] ) {
+		return $invalid;
+	}
+	$other = sanitize_textarea_field( (string) ( $input['other'] ?? '' ) );
+	if ( 'other' === $condition && '' === trim( $other ) ) {
+		return $invalid;
+	}
+	return array( 'id' => $id, 'condition' => $condition, 'disposition' => $disposition, 'other' => $other, 'received' => $received );
+}
+
 function papelito_return_inspect( WP_REST_Request $request ) {
 	$return_id = absint( $request->get_param( 'id' ) );
 	$row = papelito_return_require_vendor( $return_id );
@@ -543,22 +770,18 @@ function papelito_return_inspect( WP_REST_Request $request ) {
 	$by_id = array_column( $items, null, 'id' );
 	$seen = array();
 	global $wpdb;
-	$wpdb->query( 'START TRANSACTION' );
+	$wpdb->query( PAPELITO_RETURN_SQL_BEGIN );
 	$locked = papelito_return_get( $return_id, true );
 	if ( ! $locked || 'under_inspection' !== (string) $locked['status'] || (int) $locked['vendor_id'] !== (int) $row['vendor_id'] ) { $wpdb->query( 'ROLLBACK' ); return papelito_return_error( 'papelito_return_transition_invalid', 'Esta ação não está disponível para o estado atual.', 409 ); }
 	foreach ( $inspection as $input ) {
-		$id = absint( is_array( $input ) ? ( $input['id'] ?? 0 ) : 0 );
-		$item = $by_id[ $id ] ?? null;
-		$condition = sanitize_key( (string) ( $input['condition'] ?? '' ) );
-		$disposition = sanitize_key( (string) ( $input['stockDisposition'] ?? '' ) );
-		$received = absint( $input['receivedQty'] ?? 0 );
-		if ( isset( $seen[ $id ] ) || ! $item || ! in_array( $condition, array( 'sellable', 'defective', 'damaged', 'unsellable', 'other' ), true ) || ! in_array( $disposition, array( 'return_to_sellable_stock', 'do_not_restock' ), true ) || $received <= 0 || $received > (int) $item['requested_qty'] || ( 'other' === $condition && '' === trim( (string) ( $input['other'] ?? '' ) ) ) ) { $wpdb->query( 'ROLLBACK' ); return papelito_return_error( 'papelito_return_inspection_invalid', 'O resultado da inspeção é inválido.', 422 ); }
-		$seen[ $id ] = true;
-		$wpdb->update( papelito_return_tables()['items'], array( 'received_qty' => $received, 'inspection_condition' => $condition, 'inspection_other' => sanitize_textarea_field( (string) ( $input['other'] ?? '' ) ) ?: null, 'stock_disposition' => $disposition, 'updated_at' => papelito_return_now() ), array( 'id' => $id ), array( '%d', '%s', '%s', '%s', '%s' ), array( '%d' ) );
+		$verdict = papelito_return_validate_inspection_row( $input, $by_id, $seen );
+		if ( is_wp_error( $verdict ) ) { $wpdb->query( 'ROLLBACK' ); return $verdict; }
+		$seen[ $verdict['id'] ] = true;
+		$wpdb->update( papelito_return_tables()['items'], array( 'received_qty' => $verdict['received'], 'inspection_condition' => $verdict['condition'], 'inspection_other' => $verdict['other'] ?: null, 'stock_disposition' => $verdict['disposition'], 'updated_at' => papelito_return_now() ), array( 'id' => $verdict['id'] ), array( '%d', '%s', '%s', '%s', '%s' ), array( '%d' ) );
 	}
 	if ( count( $seen ) !== count( $items ) ) { $wpdb->query( 'ROLLBACK' ); return papelito_return_error( 'papelito_return_inspection_incomplete', 'Inspecione todos os itens da devolução.', 422 ); }
 	$now = papelito_return_now();
-	$updated = $wpdb->update( papelito_return_tables()['requests'], array( 'status' => 'refund_pending', 'inspected_at' => $now, 'refund_due_at' => gmdate( 'Y-m-d H:i:s', time() + 7 * DAY_IN_SECONDS ), 'version' => (int) $locked['version'] + 1, 'updated_at' => $now ), array( 'id' => $return_id, 'version' => (int) $locked['version'] ), array( '%s', '%s', '%s', '%d', '%s' ), array( '%d', '%d' ) );
+	$updated = $wpdb->update( papelito_return_tables()['requests'], array( 'status' => 'refund_pending', 'inspected_at' => $now, 'refund_due_at' => gmdate( PAPELITO_RETURN_MYSQL_FORMAT, time() + 7 * DAY_IN_SECONDS ), 'version' => (int) $locked['version'] + 1, 'updated_at' => $now ), array( 'id' => $return_id, 'version' => (int) $locked['version'] ), array( '%s', '%s', '%s', '%d', '%s' ), array( '%d', '%d' ) );
 	if ( 1 !== $updated ) { $wpdb->query( 'ROLLBACK' ); return papelito_return_error( 'papelito_return_concurrent_update', 'A devolução mudou durante esta operação. Atualize a página.', 409 ); }
 	papelito_return_event( $return_id, 'status_changed', 'under_inspection', 'refund_pending', get_current_user_id(), array( 'inspection_completed' => true ) );
 	$wpdb->query( 'COMMIT' );
@@ -584,7 +807,7 @@ function papelito_return_proofs_dir(): string {
 /** Armazena uma prova privada ainda não vinculada a um estorno. */
 function papelito_return_refund_proof_attach_file( int $return_id, int $vendor_id, array $file, int $actor ) {
 	$row = papelito_return_get( $return_id );
-	if ( ! $row || (int) $row['vendor_id'] !== $vendor_id || $vendor_id <= 0 ) { return papelito_return_error( 'papelito_return_not_found', 'Devolução não encontrada.', 404 ); }
+	if ( ! $row || (int) $row['vendor_id'] !== $vendor_id || $vendor_id <= 0 ) { return papelito_return_error( 'papelito_return_not_found', PAPELITO_RETURN_MSG_NOT_FOUND, 404 ); }
 	if ( ! in_array( (string) $row['status'], array( 'refund_pending' ), true ) ) { return papelito_return_error( 'papelito_return_proof_unavailable', 'O comprovante só pode ser anexado quando o estorno estiver pendente.', 409 ); }
 	global $wpdb;
 	$pending_proofs = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM ' . papelito_return_tables()['proofs'] . ' WHERE return_request_id = %d AND attached_at IS NULL', $return_id ) );
@@ -606,25 +829,62 @@ function papelito_return_refund_proof_attach_file( int $return_id, int $vendor_i
 	return array( 'id' => $proof_id, 'originalName' => $validated['original_name'], 'mime' => $validated['mime'], 'sizeBytes' => $validated['size'] );
 }
 
+/**
+ * Campos do estorno manual, sanitizados e com a data já em UTC.
+ *
+ * O teto contra o valor elegível não entra aqui: ele depende da linha travada
+ * em transação e continua junto da escrita.
+ *
+ * @return array{amount:int,proof_id:int,method:string,method_other:string,reference:string,notes:string,refunded_at:string}|WP_Error
+ */
+function papelito_return_validate_refund_input( WP_REST_Request $request ) {
+	$amount = absint( $request->get_param( 'amountCents' ) );
+	$proof_id = absint( $request->get_param( 'proofId' ) );
+	$method = sanitize_key( (string) $request->get_param( 'method' ) );
+	$method_other = sanitize_text_field( (string) $request->get_param( 'methodOther' ) );
+	if ( $amount <= 0 || $proof_id <= 0 || ! in_array( $method, array( 'pix', 'bank_transfer', 'original_method', 'other' ), true ) ) {
+		return papelito_return_error( 'papelito_return_refund_invalid', 'Informe valor, método e comprovante válidos.', 422 );
+	}
+	if ( 'other' === $method && '' === $method_other ) {
+		return papelito_return_error( 'papelito_return_refund_invalid', 'Informe valor, método e comprovante válidos.', 422 );
+	}
+	try {
+		$refunded_at = ( new DateTimeImmutable( sanitize_text_field( (string) $request->get_param( 'refundedAt' ) ) ?: 'now', wp_timezone() ) )
+			->setTimezone( new DateTimeZone( 'UTC' ) )
+			->format( PAPELITO_RETURN_MYSQL_FORMAT );
+	} catch ( Exception $exception ) {
+		return papelito_return_error( 'papelito_return_refund_date_invalid', 'Informe uma data de estorno válida.', 422 );
+	}
+	return array(
+		'amount' => $amount,
+		'proof_id' => $proof_id,
+		'method' => $method,
+		'method_other' => $method_other,
+		'reference' => substr( sanitize_text_field( (string) $request->get_param( 'reference' ) ), 0, 191 ),
+		'notes' => sanitize_textarea_field( (string) $request->get_param( 'notes' ) ),
+		'refunded_at' => $refunded_at,
+	);
+}
+
 function papelito_return_register_refund( WP_REST_Request $request ) {
 	global $wpdb;
 	$return_id = absint( $request->get_param( 'id' ) );
 	$is_admin_exception = current_user_can( 'manage_options' );
 	$row = $is_admin_exception ? papelito_return_get( $return_id ) : papelito_return_require_vendor( $return_id );
 	if ( is_wp_error( $row ) ) { return $row; }
-	if ( ! $row ) { return papelito_return_error( 'papelito_return_not_found', 'Devolução não encontrada.', 404 ); }
+	if ( ! $row ) { return papelito_return_error( 'papelito_return_not_found', PAPELITO_RETURN_MSG_NOT_FOUND, 404 ); }
 	$exception_reason = sanitize_textarea_field( (string) $request->get_param( 'exceptionReason' ) );
 	if ( $is_admin_exception && '' === $exception_reason ) { return papelito_return_error( 'papelito_return_exception_reason_required', 'A exceção administrativa exige justificativa.', 422 ); }
-	$amount = absint( $request->get_param( 'amountCents' ) );
-	$proof_id = absint( $request->get_param( 'proofId' ) );
-	$method = sanitize_key( (string) $request->get_param( 'method' ) );
-	$method_other = sanitize_text_field( (string) $request->get_param( 'methodOther' ) );
-	$reference = substr( sanitize_text_field( (string) $request->get_param( 'reference' ) ), 0, 191 );
-	$notes = sanitize_textarea_field( (string) $request->get_param( 'notes' ) );
-	$refunded_at = sanitize_text_field( (string) $request->get_param( 'refundedAt' ) );
-	if ( $amount <= 0 || $proof_id <= 0 || ! in_array( $method, array( 'pix', 'bank_transfer', 'original_method', 'other' ), true ) || ( 'other' === $method && '' === $method_other ) ) { return papelito_return_error( 'papelito_return_refund_invalid', 'Informe valor, método e comprovante válidos.', 422 ); }
-	try { $refunded_at = ( new DateTimeImmutable( $refunded_at ?: 'now', wp_timezone() ) )->setTimezone( new DateTimeZone( 'UTC' ) )->format( 'Y-m-d H:i:s' ); } catch ( Exception $exception ) { return papelito_return_error( 'papelito_return_refund_date_invalid', 'Informe uma data de estorno válida.', 422 ); }
-	$wpdb->query( 'START TRANSACTION' );
+	$input = papelito_return_validate_refund_input( $request );
+	if ( is_wp_error( $input ) ) { return $input; }
+	$amount = $input['amount'];
+	$proof_id = $input['proof_id'];
+	$method = $input['method'];
+	$method_other = $input['method_other'];
+	$reference = $input['reference'];
+	$notes = $input['notes'];
+	$refunded_at = $input['refunded_at'];
+	$wpdb->query( PAPELITO_RETURN_SQL_BEGIN );
 	$locked = papelito_return_get( $return_id, true );
 	if ( ! $locked || 'refund_pending' !== (string) $locked['status'] ) { $wpdb->query( 'ROLLBACK' ); return papelito_return_error( 'papelito_return_refund_unavailable', 'O estorno não está disponível neste estado.', 409 ); }
 	$eligible = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COALESCE(SUM(eligible_amount_cents), 0) FROM ' . papelito_return_tables()['items'] . ' WHERE return_request_id = %d', $return_id ) );
@@ -667,13 +927,13 @@ function papelito_return_download_proof( WP_REST_Request $request ) {
 	exit;
 }
 
-function papelito_return_list_for( string $scope ): WP_REST_Response {
+function papelito_return_list_for( string $scope ): WP_REST_Response|WP_Error {
 	global $wpdb;
 	$table = papelito_return_tables()['requests'];
 	$where = '1=1'; $args = array();
 	if ( 'customer' === $scope ) { $where = 'customer_id = %d'; $args[] = get_current_user_id(); }
 	if ( 'vendor' === $scope ) { $where = 'vendor_id = %d'; $args[] = get_current_user_id(); }
-	if ( 'admin' === $scope && ! current_user_can( 'manage_options' ) ) { return papelito_return_error( 'papelito_return_forbidden', 'Acesso negado.', 403 ); }
+	if ( 'admin' === $scope && ! current_user_can( 'manage_options' ) ) { return papelito_return_error( 'papelito_return_forbidden', PAPELITO_RETURN_MSG_FORBIDDEN, 403 ); }
 	$sql = "SELECT * FROM {$table} WHERE {$where} ORDER BY requested_at DESC LIMIT 100";
 	$rows = $wpdb->get_results( empty( $args ) ? $sql : $wpdb->prepare( $sql, $args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	$rows = is_array( $rows ) ? $rows : array();
@@ -690,7 +950,7 @@ function papelito_return_list_for( string $scope ): WP_REST_Response {
 }
 
 function papelito_return_admin_settings( WP_REST_Request $request ) {
-	if ( ! current_user_can( 'manage_options' ) ) { return papelito_return_error( 'papelito_return_forbidden', 'Acesso negado.', 403 ); }
+	if ( ! current_user_can( 'manage_options' ) ) { return papelito_return_error( 'papelito_return_forbidden', PAPELITO_RETURN_MSG_FORBIDDEN, 403 ); }
 	if ( in_array( $request->get_method(), array( 'POST', 'PUT', 'PATCH' ), true ) ) {
 		$days = absint( $request->get_param( 'windowDays' ) );
 		if ( $days < PAPELITO_RETURN_DEFAULT_WINDOW_DAYS || $days > 90 ) { return papelito_return_error( 'papelito_return_window_invalid', 'O prazo deve ficar entre 7 e 90 dias.', 422 ); }
@@ -702,7 +962,7 @@ function papelito_return_admin_settings( WP_REST_Request $request ) {
 function papelito_return_audit( WP_REST_Request $request ) {
 	global $wpdb;
 	$row = papelito_return_get( absint( $request->get_param( 'id' ) ) );
-	if ( ! $row || ! papelito_return_can_access( $row ) ) { return papelito_return_error( 'papelito_return_not_found', 'Devolução não encontrada.', 404 ); }
+	if ( ! $row || ! papelito_return_can_access( $row ) ) { return papelito_return_error( 'papelito_return_not_found', PAPELITO_RETURN_MSG_NOT_FOUND, 404 ); }
 	$events = $wpdb->get_results( $wpdb->prepare( 'SELECT event, from_status, to_status, actor_user_id, payload, created_at FROM ' . papelito_return_tables()['events'] . ' WHERE return_request_id = %d ORDER BY id ASC', (int) $row['id'] ), ARRAY_A );
 	$is_admin = current_user_can( 'manage_options' );
 	return new WP_REST_Response( array( 'items' => array_map( static function( array $event ) use ( $is_admin ): array { $event['payload'] = json_decode( (string) $event['payload'], true ) ?: array(); if ( ! $is_admin ) { unset( $event['payload']['admin_exception_reason'] ); } return $event; }, is_array( $events ) ? $events : array() ) ), 200 );
@@ -739,11 +999,12 @@ function papelito_returns_register_routes(): void {
 	register_rest_route( PAPELITO_REST_NAMESPACE, '/vendor/me/returns/(?P<id>\d+)/received', array( 'methods' => WP_REST_Server::CREATABLE, 'permission_callback' => 'papelito_return_mutation_permission', 'callback' => 'papelito_return_confirm_received' ) );
 	register_rest_route( PAPELITO_REST_NAMESPACE, '/vendor/me/returns/(?P<id>\d+)/inspection', array( 'methods' => WP_REST_Server::CREATABLE, 'permission_callback' => 'papelito_return_mutation_permission', 'callback' => 'papelito_return_inspect' ) );
 	register_rest_route( PAPELITO_REST_NAMESPACE, '/vendor/me/returns/(?P<id>\d+)/refund', array( 'methods' => WP_REST_Server::CREATABLE, 'permission_callback' => 'papelito_return_mutation_permission', 'callback' => 'papelito_return_register_refund' ) );
+	register_rest_route( PAPELITO_REST_NAMESPACE, '/vendor/me/orders/(?P<orderId>\d+)/returns', array( array( 'methods' => WP_REST_Server::CREATABLE, 'permission_callback' => 'papelito_return_mutation_permission', 'callback' => 'papelito_return_vendor_open' ) ) );
 	register_rest_route( PAPELITO_REST_NAMESPACE, '/vendor/me/returns', array( 'methods' => WP_REST_Server::READABLE, 'permission_callback' => static fn() => is_user_logged_in(), 'callback' => static fn() => papelito_return_list_for( 'vendor' ) ) );
 	register_rest_route( PAPELITO_REST_NAMESPACE, '/returns/proofs/(?P<proofId>\d+)/download', array( 'methods' => WP_REST_Server::READABLE, 'permission_callback' => static fn() => is_user_logged_in(), 'callback' => 'papelito_return_download_proof' ) );
 	register_rest_route( PAPELITO_REST_NAMESPACE, '/returns/(?P<id>\d+)/events', array( 'methods' => WP_REST_Server::READABLE, 'permission_callback' => static fn() => is_user_logged_in(), 'callback' => 'papelito_return_audit' ) );
 	register_rest_route( PAPELITO_REST_NAMESPACE, '/admin/returns', array( 'methods' => WP_REST_Server::READABLE, 'permission_callback' => static fn() => is_user_logged_in(), 'callback' => static fn() => papelito_return_list_for( 'admin' ) ) );
-	register_rest_route( PAPELITO_REST_NAMESPACE, '/admin/returns/(?P<id>\d+)', array( 'methods' => WP_REST_Server::READABLE, 'permission_callback' => static fn() => is_user_logged_in(), 'callback' => static function( WP_REST_Request $request ) { if ( ! current_user_can( 'manage_options' ) ) { return papelito_return_error( 'papelito_return_forbidden', 'Acesso negado.', 403 ); } $row = papelito_return_get( absint( $request->get_param( 'id' ) ) ); return $row ? new WP_REST_Response( papelito_return_payload( $row ), 200 ) : papelito_return_error( 'papelito_return_not_found', 'Devolução não encontrada.', 404 ); } ) );
+	register_rest_route( PAPELITO_REST_NAMESPACE, '/admin/returns/(?P<id>\d+)', array( 'methods' => WP_REST_Server::READABLE, 'permission_callback' => static fn() => is_user_logged_in(), 'callback' => static function( WP_REST_Request $request ) { if ( ! current_user_can( 'manage_options' ) ) { return papelito_return_error( 'papelito_return_forbidden', PAPELITO_RETURN_MSG_FORBIDDEN, 403 ); } $row = papelito_return_get( absint( $request->get_param( 'id' ) ) ); return $row ? new WP_REST_Response( papelito_return_payload( $row ), 200 ) : papelito_return_error( 'papelito_return_not_found', PAPELITO_RETURN_MSG_NOT_FOUND, 404 ); } ) );
 	register_rest_route( PAPELITO_REST_NAMESPACE, '/admin/returns/(?P<id>\d+)/refund', array( 'methods' => WP_REST_Server::CREATABLE, 'permission_callback' => 'papelito_return_mutation_permission', 'callback' => 'papelito_return_register_refund' ) );
 	register_rest_route( PAPELITO_REST_NAMESPACE, '/admin/returns/settings', array( array( 'methods' => WP_REST_Server::READABLE, 'permission_callback' => static fn() => is_user_logged_in(), 'callback' => 'papelito_return_admin_settings' ), array( 'methods' => WP_REST_Server::EDITABLE, 'permission_callback' => 'papelito_return_mutation_permission', 'callback' => 'papelito_return_admin_settings' ) ) );
 }

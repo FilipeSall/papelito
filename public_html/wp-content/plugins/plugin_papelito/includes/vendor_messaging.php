@@ -15,6 +15,8 @@ if ( ! defined( 'PAPELITO_MESSAGE_THREADS_TABLE' ) ) {
 	define( 'PAPELITO_MESSAGE_ORDER_NOT_FOUND', 'Pedido nao encontrado.' );
 	define( 'PAPELITO_MESSAGE_THREAD_START_FAILED', 'Nao foi possivel iniciar a conversa.' );
 	define( 'PAPELITO_MESSAGE_THREAD_NOT_FOUND', 'Conversa nao encontrada.' );
+	define( 'PAPELITO_MESSAGE_RATE_LIMITED', 'Aguarde alguns instantes antes de iniciar outra conversa.' );
+	define( 'PAPELITO_MESSAGE_NOT_INFORMED', 'não informada' );
 }
 
 if ( ! defined( 'PAPELITO_REST_NAMESPACE' ) ) {
@@ -509,7 +511,7 @@ function papelito_messaging_handle_create_pagarme_bank_account_support( WP_REST_
 	}
 
 	if ( ! papelito_messaging_rate_limit( $vendor_id, 'pagarme_bank_account_support', 5, 60 ) ) {
-		return new WP_Error( 'papelito_message_rate_limited', 'Aguarde alguns instantes antes de iniciar outra conversa.', array( 'status' => 429 ) );
+		return new WP_Error( 'papelito_message_rate_limited', PAPELITO_MESSAGE_RATE_LIMITED, array( 'status' => 429 ) );
 	}
 
 	$existing = papelito_messaging_get_pagarme_bank_account_support_thread( $vendor_id );
@@ -664,6 +666,153 @@ function papelito_messaging_insert_message( array $thread, int $sender_id, strin
 	papelito_messaging_after_message_insert( $thread_id, $sender_id, $message_id );
 
 	return $message_id;
+}
+
+/** Marcador estável para tornar a abertura do suporte de devolução idempotente. */
+function papelito_messaging_return_support_marker(): string {
+	return '[Papelito: solicitacao-devolucao]';
+}
+
+/**
+ * A devolução só pode ser formalizada depois que o comprador abriu o suporte.
+ *
+ * Não basta haver uma conversa qualquer do pedido: exigimos a mensagem
+ * canônica, criada pelo servidor ao acionar "Solicitar devolução".
+ */
+function papelito_messaging_return_support_exists( int $order_id ): bool {
+	global $wpdb;
+	$thread = papelito_messaging_get_thread_by_order( $order_id );
+	if ( null === $thread ) {
+		return false;
+	}
+	$marker = '%' . $wpdb->esc_like( papelito_messaging_return_support_marker() ) . '%';
+	$found  = $wpdb->get_var( $wpdb->prepare( 'SELECT id FROM ' . papelito_messaging_tables()['messages'] . ' WHERE thread_id = %d AND sender_id = %d AND body LIKE %s LIMIT 1', (int) $thread['id'], (int) $thread['customer_id'], $marker ) );
+	return ! empty( $found );
+}
+
+/**
+ * Texto canônico enviado pelo comprador ao abrir o suporte de devolução.
+ *
+ * Valores vêm do pedido e a quantidade vem da mesma elegibilidade que protege
+ * a abertura formal; nada nesta mensagem depende de campos do navegador.
+ *
+ * @param object               $order       Pedido WooCommerce.
+ * @param array<string,mixed>  $eligibility Resultado de papelito_return_order_eligibility().
+ */
+function papelito_messaging_return_support_body( $order, array $eligibility ): string {
+	$by_item = array();
+	foreach ( (array) ( $eligibility['items'] ?? array() ) as $item ) {
+		if ( is_array( $item ) ) {
+			$by_item[ absint( $item['order_item_id'] ?? 0 ) ] = $item;
+		}
+	}
+	$lines = array();
+	foreach ( $order->get_items( 'line_item' ) as $item_id => $item ) {
+		$available = absint( $by_item[ (int) $item_id ]['returnable_qty'] ?? 0 );
+		if ( $available <= 0 ) {
+			continue;
+		}
+		$purchased = max( 1, (int) $item->get_quantity() );
+		$line_cents = function_exists( 'papelito_return_decimal_to_cents' ) ? papelito_return_decimal_to_cents( $item->get_total() ) : (int) round( (float) $item->get_total() * 100 );
+		$eligible_cents = intdiv( max( 0, $line_cents ) * $available, $purchased );
+		$lines[] = sprintf( '- %s — %d de %d unidade(s), valor líquido elegível R$ %s', sanitize_text_field( (string) $item->get_name() ), $available, $purchased, number_format( $eligible_cents / 100, 2, ',', '.' ) );
+	}
+	$created = method_exists( $order, 'get_date_created' ) && $order->get_date_created() ? $order->get_date_created()->date_i18n( 'd/m/Y H:i' ) : PAPELITO_MESSAGE_NOT_INFORMED;
+	$delivered = PAPELITO_MESSAGE_NOT_INFORMED;
+	if ( function_exists( 'papelito_return_order_delivered_at' ) ) {
+		$delivered = (string) ( papelito_return_order_delivered_at( $order ) ?: PAPELITO_MESSAGE_NOT_INFORMED );
+	}
+	$vendor = papelito_messaging_user_name( papelito_messaging_order_vendor_id( $order ) );
+	return implode( "\n", array_filter( array(
+		papelito_messaging_return_support_marker(),
+		'Olá! Quero solicitar uma devolução e preciso da sua análise.',
+		'Pedido: #' . sanitize_text_field( (string) $order->get_order_number() ),
+		'Loja: ' . $vendor,
+		'Compra realizada em: ' . $created,
+		'Entrega confirmada em: ' . $delivered,
+		'Itens disponíveis para devolução:',
+		implode( "\n", $lines ),
+		'Motivo: ',
+	), static fn( $line ) => '' !== $line ) );
+}
+
+/**
+ * Abre (ou reutiliza) o chamado de suporte de devolução e envia a mensagem
+ * pronta. Repetir o clique não cria nem envia uma segunda solicitação.
+ */
+/**
+ * Guardas de entrada da abertura do suporte de devolução.
+ *
+ * A elegibilidade é a mesma que protege a abertura formal — quem decide
+ * continua sendo `papelito_return_order_eligibility()`, não esta camada.
+ *
+ * @return array{order:object,eligibility:array,vendor_id:int}|WP_Error
+ */
+function papelito_messaging_return_support_context( int $order_id, int $customer_id ) {
+	if ( ! papelito_messaging_rate_limit( $customer_id, 'open_return_support', 10, 60 ) ) {
+		return new WP_Error( 'papelito_message_rate_limited', PAPELITO_MESSAGE_RATE_LIMITED, array( 'status' => 429 ) );
+	}
+	$order = papelito_messaging_order( $order_id );
+	if ( is_wp_error( $order ) || (int) $order->get_customer_id() !== $customer_id ) {
+		return new WP_Error( 'papelito_message_order_forbidden', PAPELITO_MESSAGE_ORDER_NOT_FOUND, array( 'status' => 404 ) );
+	}
+	if ( ! function_exists( 'papelito_return_order_eligibility' ) ) {
+		return new WP_Error( 'papelito_return_unavailable', 'O fluxo de devolução não está disponível.', array( 'status' => 503 ) );
+	}
+	$eligibility = papelito_return_order_eligibility( $order, $customer_id );
+	if ( empty( $eligibility['can_request'] ) ) {
+		return new WP_Error( sanitize_key( (string) ( $eligibility['reason'] ?? 'papelito_return_unavailable' ) ), (string) ( $eligibility['message'] ?? 'A devolução não está disponível para este pedido.' ), array( 'status' => 409 ) );
+	}
+	$vendor_id = papelito_messaging_order_vendor_id( $order );
+	if ( $vendor_id <= 0 ) {
+		return new WP_Error( 'papelito_message_vendor_missing', 'Este pedido não possui vendor para atendimento.', array( 'status' => 422 ) );
+	}
+	return array( 'order' => $order, 'eligibility' => $eligibility, 'vendor_id' => $vendor_id );
+}
+
+function papelito_messaging_open_return_support( int $order_id, int $customer_id ) {
+	$context = papelito_messaging_return_support_context( $order_id, $customer_id );
+	if ( is_wp_error( $context ) ) {
+		return $context;
+	}
+	$order = $context['order'];
+	$eligibility = $context['eligibility'];
+	$vendor_id = $context['vendor_id'];
+	$thread = papelito_messaging_get_thread_by_order( $order_id );
+	if ( null !== $thread && papelito_messaging_return_support_exists( $order_id ) ) {
+		return new WP_REST_Response( papelito_messaging_thread_detail( $thread, $customer_id ), 200 );
+	}
+	$body = papelito_messaging_return_support_body( $order, $eligibility );
+	if ( null === $thread ) {
+		$now = current_time( 'mysql', true );
+		$created = papelito_messaging_create_thread_with_initial_message(
+			array( 'order_id' => $order_id, 'customer_id' => $customer_id, 'vendor_id' => $vendor_id, 'created_at' => $now, 'updated_at' => $now ),
+			array( '%d', '%d', '%d', '%s', '%s' ),
+			$customer_id,
+			$body
+		);
+		if ( is_wp_error( $created ) ) {
+			$thread = papelito_messaging_get_thread_by_order( $order_id );
+			if ( null === $thread ) {
+				return $created;
+			}
+		} else {
+			$thread = papelito_messaging_get_thread( $created['thread_id'] );
+			if ( null === $thread ) {
+				return new WP_Error( 'papelito_message_thread_insert_failed', PAPELITO_MESSAGE_THREAD_START_FAILED, array( 'status' => 500 ) );
+			}
+			papelito_messaging_after_message_insert( $created['thread_id'], $customer_id, $created['message_id'] );
+			return new WP_REST_Response( papelito_messaging_thread_detail( $thread, $customer_id ), 201 );
+		}
+	}
+	if ( papelito_messaging_return_support_exists( $order_id ) ) {
+		return new WP_REST_Response( papelito_messaging_thread_detail( $thread, $customer_id ), 200 );
+	}
+	$message_id = papelito_messaging_insert_message( $thread, $customer_id, $body );
+	if ( is_wp_error( $message_id ) ) {
+		return $message_id;
+	}
+	return new WP_REST_Response( papelito_messaging_thread_detail( $thread, $customer_id ), 200 );
 }
 
 /**
@@ -876,7 +1025,7 @@ function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
 	$user_id = get_current_user_id();
 
 	if ( ! papelito_messaging_rate_limit( $user_id, 'create_thread', 10, 60 ) ) {
-		return new WP_Error( 'papelito_message_rate_limited', 'Aguarde alguns instantes antes de iniciar outra conversa.', array( 'status' => 429 ) );
+		return new WP_Error( 'papelito_message_rate_limited', PAPELITO_MESSAGE_RATE_LIMITED, array( 'status' => 429 ) );
 	}
 
 	$order_id = absint( $request->get_param( 'order_id' ) );
@@ -938,6 +1087,11 @@ function papelito_messaging_handle_create_thread( WP_REST_Request $request ) {
 	papelito_messaging_after_message_insert( $created['thread_id'], $user_id, $created['message_id'] );
 
 	return new WP_REST_Response( papelito_messaging_thread_detail( $thread, $user_id ), 201 );
+}
+
+/** POST /messages/orders/{id}/return-support — chamado canônico de devolução do comprador. */
+function papelito_messaging_handle_open_return_support( WP_REST_Request $request ) {
+	return papelito_messaging_open_return_support( absint( $request->get_param( 'orderId' ) ), get_current_user_id() );
 }
 
 /** POST /messages/return-threads — uma conversa independente por Return Request. */
@@ -1100,6 +1254,16 @@ add_action(
 				'methods'             => WP_REST_Server::CREATABLE,
 				'permission_callback' => 'papelito_messaging_require_auth',
 				'callback'            => 'papelito_messaging_handle_create_return_thread',
+			)
+		);
+
+		register_rest_route(
+			PAPELITO_REST_NAMESPACE,
+			'/messages/orders/(?P<orderId>\d+)/return-support',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'permission_callback' => 'papelito_messaging_require_auth',
+				'callback'            => 'papelito_messaging_handle_open_return_support',
 			)
 		);
 

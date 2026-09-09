@@ -411,6 +411,13 @@ function papelito_vendor_dashboard_map_order_detail( $order, ?int $vendor_id, bo
 			'state'  => '',
 		);
 
+	// Preso ao mesmo opt-in do recibo: a listagem do comprador reusa o modo
+	// detalhe, e medir a janela por pedido custaria rastreio + agregacao em cada
+	// linha da lista.
+	if ( $include_receipt && null === $vendor_id && function_exists( 'papelito_return_order_eligibility' ) ) {
+		$result['returns'] = papelito_return_order_eligibility( $order, (int) $order->get_customer_id() );
+	}
+
 	if ( $include_receipt && null === $vendor_id && function_exists( 'papelito_receipt_public_summary' ) ) {
 		$result['receipt'] = papelito_receipt_public_summary( $order );
 
