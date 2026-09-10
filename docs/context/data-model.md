@@ -159,25 +159,82 @@ CREATE TABLE wp_papelito_notifications (
 );
 ```
 
-### `wp_papelito_messages`
+### Chamados: `wp_papelito_message_threads`, `wp_papelito_messages`, `wp_papelito_message_reads`
+
+São três tabelas, não uma. O **chamado** é a thread; a mensagem é append-only; a leitura é um
+ponteiro por participante.
 
 ```sql
+CREATE TABLE wp_papelito_message_threads (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  order_id BIGINT UNSIGNED NULL,
+  return_request_id BIGINT UNSIGNED NULL,
+  customer_id BIGINT UNSIGNED NOT NULL,
+  vendor_id BIGINT UNSIGNED NOT NULL,
+  context VARCHAR(64) NOT NULL DEFAULT 'order',
+  support_key VARCHAR(100) NULL,
+  reason VARCHAR(48) NULL,
+  return_reason VARCHAR(32) NULL,
+  reason_other TEXT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'ABERTO',
+  closed_at DATETIME NULL,
+  closed_by BIGINT UNSIGNED NULL,
+  escalated_at DATETIME NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_return_request (return_request_id),
+  UNIQUE KEY uniq_support_key (support_key),
+  KEY idx_customer_updated (customer_id, updated_at),
+  KEY idx_vendor_updated (vendor_id, updated_at),
+  KEY idx_escalated_updated (escalated_at, updated_at),
+  KEY idx_order_status (order_id, status, updated_at),
+  KEY idx_customer_status_updated (customer_id, status, updated_at),
+  KEY idx_vendor_status_updated (vendor_id, status, updated_at),
+  KEY idx_status_updated (status, updated_at)
+);
+
 CREATE TABLE wp_papelito_messages (
   id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   thread_id BIGINT UNSIGNED NOT NULL,
-  order_id BIGINT UNSIGNED NOT NULL,
   sender_id BIGINT UNSIGNED NOT NULL,
-  recipient_id BIGINT UNSIGNED NOT NULL,
   body TEXT NOT NULL,
-  escalated_to_admin TINYINT(1) NOT NULL DEFAULT 0,
-  read_at DATETIME NULL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  KEY idx_thread (thread_id, created_at),
-  KEY idx_order (order_id)
+  body_content LONGTEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_thread_created (thread_id, created_at, id)
+);
+
+CREATE TABLE wp_papelito_message_reads (
+  thread_id BIGINT UNSIGNED NOT NULL,
+  user_id BIGINT UNSIGNED NOT NULL,
+  last_read_message_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  read_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (thread_id, user_id),
+  KEY idx_user_read (user_id, read_at)
 );
 ```
 
-Uma thread por pedido.
+**Um pedido pode ter vários chamados.** O `UNIQUE KEY uniq_order (order_id)` foi removido em
+09/2026 (`PAPELITO_DB_VERSION` 1.46.0): com o ciclo `ABERTO`/`ENCERRADO`, mantê-lo faria um
+chamado encerrado travar o pedido para sempre. O que impede duplicata agora é o par
+"lock consultivo por pedido + 409 quando já existe chamado aberto com o mesmo motivo" —
+regra de aplicação, não do banco, e por isso a serialização em
+`papelito_messaging_with_order_lock()` é obrigatória em qualquer novo caminho de criação.
+
+`reason` é **nullable de propósito**: `NOT NULL` estamparia `''` nas linhas anteriores ao modelo,
+tornando "sem motivo registrado" indistinguível de bug. A obrigatoriedade vive no PHP, na criação.
+A migração faz backfill de `reason = 'devolucao'` nas threads que carregam o marcador legado
+`[Papelito: solicitacao-devolucao]` — sem isso, todo pedido com devolução já pedida passaria a
+409 na formalização pelo vendor.
+
+**Conversa sem `order_id` não é chamado.** O canal `context = 'pagarme_bank_account_update'`
+(vendor ↔ Papelito, autorização bancária) e as threads de Return Request vivem na mesma tabela mas
+ficam fora das listas de chamado, na área *Solicitações à Papelito*. É o que torna "todo chamado
+tem pedido" verdadeiro por definição em vez de por exceção.
+
+`body` é a **projeção plana** e `body_content` o documento estruturado (JSON: nós de texto com
+`bold`/`italic`). O plano é sempre derivado do estruturado, nunca aceito em paralelo — do
+contrário a prévia da lista, a notificação e o e-mail poderiam discordar do que a pessoa lê na
+tela. Nenhum HTML entra: qualquer tag no nó é rejeitada com 422, não sanitizada.
 
 ### Kits e brindes
 

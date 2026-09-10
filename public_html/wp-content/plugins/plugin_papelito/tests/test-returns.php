@@ -18,8 +18,10 @@ function add_action( mixed ...$args ) { unset( $args ); }
 function wp_timezone() { return new DateTimeZone( 'America/Sao_Paulo' ); }
 
 class WP_Error {
-	public function __construct( private string $code = '', private string $message = '', private array $data = array() ) {}
+	public function __construct( private string $code = '', public string $message = '', public array $data = array() ) {}
 	public function get_error_code() { return $this->code; }
+}
+class WP_REST_Request {
 }
 
 require_once __DIR__ . '/../includes/private_files.php';
@@ -56,7 +58,39 @@ assert_return( 'entrega ilegível não vira prazo silencioso', null, papelito_re
 $source = (string) file_get_contents( __DIR__ . '/../includes/returns.php' );
 assert_return( 'domínio não chama wc_create_refund', false, str_contains( $source, 'wc_create_refund' ) );
 assert_return( 'domínio não chama endpoint de refund Pagar.me', false, str_contains( strtolower( $source ), 'pagarme' ) );
-assert_return( 'vendor só formaliza retorno após chamado do comprador', true, str_contains( $source, 'papelito_messaging_return_support_exists' ) );
+assert_return( 'vendor só formaliza retorno a partir de um chamado específico', true, str_contains( $source, 'papelito_messaging_return_chamado_for_vendor' ) );
 assert_return( 'autorização reversa notifica o comprador', true, str_contains( $source, 'return_authorization_issued' ) );
+
+// --- repasse do motivo escolhido pelo comprador no chamado -------------------
+class Papelito_Return_Reason_Request extends WP_REST_Request {
+	public function __construct( private array $params = array() ) {}
+	public function get_param( $key ) { return $this->params[ $key ] ?? null; }
+}
+
+$sem_reason  = new Papelito_Return_Reason_Request();
+$com_reason  = new Papelito_Return_Reason_Request( array( 'reason' => 'regret' ) );
+$do_chamado  = array( 'reason' => 'defective', 'other' => '' );
+
+$repassado = papelito_return_validate_reason( $sem_reason, $do_chamado );
+$vencedor  = papelito_return_validate_reason( $com_reason, $do_chamado, true );
+$sem_nada  = papelito_return_validate_reason( $sem_reason, null );
+$fallback_invalido = papelito_return_validate_reason( $sem_reason, array( 'reason' => 'duvida_pedido', 'other' => '' ) );
+
+assert_return( 'o motivo do chamado entra como padrão na formalização', 'defective', is_array( $repassado ) ? $repassado['reason'] : null );
+assert_return( 'a formalização ignora a escolha enviada pelo vendor', 'defective', is_array( $vencedor ) ? $vencedor['reason'] : null );
+assert_return( 'sem motivo e sem padrão continua sendo 422', true, $sem_nada instanceof WP_Error );
+assert_return( 'o padrão vindo do chamado também é validado', true, $fallback_invalido instanceof WP_Error );
+
+// Sem comentários: o docblock do helper extraído cita a função pelo nome.
+$codigo = '';
+foreach ( token_get_all( $source ) as $token ) {
+	if ( is_array( $token ) && in_array( $token[0], array( T_COMMENT, T_DOC_COMMENT ), true ) ) {
+		continue;
+	}
+	$codigo .= is_array( $token ) ? $token[1] : $token;
+}
+$aberturas = preg_match_all( '/papelito_return_open\s*\(/', $codigo );
+assert_return( 'papelito_return_open tem um chamador além da definição', 2, $aberturas );
+assert_return( 'a formalização lê o motivo gravado no chamado específico', true, str_contains( $source, 'papelito_messaging_return_chamado_for_vendor' ) && str_contains( $source, 'fallback_only' ) );
 
 exit( $failures > 0 ? 1 : 0 );

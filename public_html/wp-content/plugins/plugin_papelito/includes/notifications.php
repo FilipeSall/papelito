@@ -37,6 +37,7 @@ if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_STOCK_ZEROED', 'stock_zeroed' );
 	define( 'PAPELITO_NOTIF_SUPPORT_MESSAGE', 'support_message' );
 	define( 'PAPELITO_NOTIF_SUPPORT_ESCALATED', 'support_escalated' );
+	define( 'PAPELITO_NOTIF_SUPPORT_CLOSED', 'support_closed' );
 	define( 'PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT', 'product_missing_weight' );
 	define( 'PAPELITO_NOTIF_PRODUCT_DATA_INCOMPLETE', 'product_data_incomplete' );
 	define( 'PAPELITO_NOTIF_VENDOR_PRODUCT_DATA_REQUEST', 'vendor_product_data_request' );
@@ -135,6 +136,7 @@ function papelito_notification_allowed_types() {
 		PAPELITO_NOTIF_STOCK_ZEROED,
 		PAPELITO_NOTIF_SUPPORT_MESSAGE,
 		PAPELITO_NOTIF_SUPPORT_ESCALATED,
+		PAPELITO_NOTIF_SUPPORT_CLOSED,
 		PAPELITO_NOTIF_PRODUCT_MISSING_WEIGHT,
 		PAPELITO_NOTIF_PRODUCT_DATA_INCOMPLETE,
 		PAPELITO_NOTIF_VENDOR_PRODUCT_DATA_REQUEST,
@@ -1576,6 +1578,38 @@ function papelito_handle_support_escalated_notification( $thread_id, $customer_i
 	}
 }
 add_action( 'papelito_support_escalated', 'papelito_handle_support_escalated_notification', 10, 2 );
+
+/**
+ * Avisa os participantes quando o chamado e encerrado.
+ *
+ * Encerrar e o fim da conversa para quem abriu, entao o comprador precisa saber sem ter que
+ * voltar na tela. Quem encerrou nao recebe aviso do proprio ato.
+ *
+ * @param int $thread_id Thread identifier.
+ * @param int $actor_id  Quem encerrou.
+ */
+function papelito_handle_support_chamado_closed_notification( $thread_id, $actor_id ) {
+	if ( ! function_exists( 'papelito_messaging_get_thread' ) || ! function_exists( 'papelito_messaging_notification_recipients' ) ) {
+		return;
+	}
+
+	$thread_id = absint( $thread_id );
+	$actor_id  = absint( $actor_id );
+	$thread    = papelito_messaging_get_thread( $thread_id );
+
+	if ( null === $thread ) {
+		return;
+	}
+
+	foreach ( papelito_messaging_notification_recipients( $thread ) as $recipient_id ) {
+		if ( $recipient_id !== $actor_id ) {
+			$payload                   = papelito_messaging_notification_payload( $thread_id, $actor_id );
+			$payload['recipient_role'] = papelito_messaging_user_role( $recipient_id );
+			papelito_dispatch_notification( $recipient_id, PAPELITO_NOTIF_SUPPORT_CLOSED, $payload );
+		}
+	}
+}
+add_action( 'papelito_support_chamado_closed', 'papelito_handle_support_chamado_closed_notification', 10, 2 );
 
 /**
  * Retorna as notificações de pendência de cadastro de um produto para um administrador.

@@ -223,8 +223,8 @@ Metadados da linha — e onde o **vendor é gravado por item**:
 
 | Tabela | Papel | Chaves e colunas que importam |
 |---|---|---|
-| `wp_papelito_message_threads` | A conversa comprador ↔ vendor | PK `id`; UNIQUE `order_id` (nullable) e `support_key`; `customer_id`, `vendor_id` → `wp_users.ID`; `context` ∈ `order`\|`support`; `escalated_at` |
-| `wp_papelito_messages` | Mensagens da thread. Append-only | PK `id`; `thread_id`, `sender_id`, `body` |
+| `wp_papelito_message_threads` | O **chamado**: conversa com motivo e ciclo de vida | PK `id`; UNIQUE `support_key` e `return_request_id`; `order_id` nullable **sem UNIQUE** (N chamados por pedido); `customer_id`, `vendor_id` → `wp_users.ID`; `reason`, `return_reason`, `reason_other`; `return_request_id` liga, uma única vez, o chamado de devolução à `wp_papelito_return_requests`; `status` ∈ `ABERTO`\|`ENCERRADO`; `closed_at`, `closed_by`; `context`, `escalated_at` |
+| `wp_papelito_messages` | Mensagens do chamado. Append-only | PK `id`; `thread_id`, `sender_id`; `body` (projeção plana, derivada) + `body_content` (JSON de nós com negrito/itálico) |
 | `wp_papelito_message_reads` | Marcador de leitura por participante | PK `(thread_id, user_id)`; `last_read_message_id` — ponteiro, não registro por mensagem |
 | `wp_papelito_notifications` | Notificação in-app | PK `id`; UNIQUE `(user_id, type, dedupe_key)` → o dedupe do barramento de eventos; `payload`, `read_at` |
 | `wp_papelito_notification_email_log` | Espelho do dedupe no canal e-mail | PK `id`; UNIQUE `(user_id, type, dedupe_key)`. Tabela separada de propósito: apagar a notificação in-app não pode liberar o reenvio do e-mail |
@@ -255,7 +255,8 @@ Nenhuma é uma FK. A coluna "Tipo" abaixo diz como a relação foi determinada.
 | `receipt_vendor_parts` | `receipts` + `wp_users` | N:1 / N:1 | UNIQUE `(receipt_id, vendor_id)` |
 | `fiscal_documents` | pedido + vendor | 1:1 por par | UNIQUE `(order_id, vendor_id)` |
 | `tracking_events.shipment_id` | `shipments.id` | N:1 | UNIQUE `event_key` (idempotência) |
-| `message_threads.order_id` | `wp_posts` (shop_order) | **1:1** | UNIQUE `order_id`, nullable |
+| `message_threads.order_id` | `wp_posts` (shop_order) | **1:N** | sem UNIQUE desde 1.46.0; nullable (conversa sem pedido é solicitação, não chamado) |
+| `message_threads.return_request_id` | `papelito_return_requests.id` | **0:1 ↔ 0:1** | UNIQUE; vínculo formal do chamado de devolução, preenchido na mesma transação de abertura e usado para encerrar o chamado em `refunded` |
 | `message_reads` | `message_threads` + `wp_users` | N:N | PK composta |
 | `benefit_group_targets` | `benefit_groups` | N:1 | PK `(target_type, target_key)` |
 

@@ -3,51 +3,84 @@
 
 define( 'ABSPATH', __DIR__ );
 
-function add_action( ...$args ) {}
-function register_rest_route( ...$args ) {}
-function absint( $value ) { return abs( (int) $value ); }
-function sanitize_text_field( $value ) { return trim( (string) $value ); }
-function sanitize_textarea_field( $value ) { return trim( (string) $value ); }
-function get_user_meta( ...$args ) { return 'Loja Exemplo'; }
+function add_action( ...$args ) {
+	// Só a montagem da mensagem é exercitada; hooks não participam.
+}
+function register_rest_route( ...$args ) {
+	// Idem para rotas.
+}
+function absint( mixed $value ): int { return abs( (int) $value ); }
+function sanitize_key( mixed $value ): string { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $value ) ); }
+function sanitize_text_field( mixed $value ): string { return trim( (string) $value ); }
+function sanitize_textarea_field( mixed $value ): string { return trim( (string) $value ); }
+function wp_strip_all_tags( mixed $value ): string { return strip_tags( (string) $value ); }
+function rest_sanitize_boolean( mixed $value ): bool { return ! in_array( $value, array( false, 0, '0', '', 'false', null ), true ); }
+function get_user_meta( ...$args ): string { return 'Loja Exemplo'; }
 function get_userdata( ...$args ) { return null; }
-function papelito_return_order_delivered_at( $order ) { return '2026-09-08 13:00:00'; }
-function papelito_return_decimal_to_cents( $value ) { return (int) round( (float) $value * 100 ); }
+function get_avatar_url( ...$args ): string { return ''; }
+function papelito_return_reasons() { return array( 'regret', 'defective', 'damaged', 'incorrect_item', 'incomplete_item', 'other' ); }
+function papelito_return_reason_labels() {
+	return array(
+		'regret'          => 'Desistência da compra',
+		'defective'       => 'Produto com defeito',
+		'damaged'         => 'Danificado no transporte',
+		'incorrect_item'  => 'Item errado',
+		'incomplete_item' => 'Item incompleto',
+		'other'           => 'Outro motivo',
+	);
+}
+function papelito_return_reason_label( string $reason, string $other = '' ) {
+	$labels = papelito_return_reason_labels();
+	$label  = $labels[ sanitize_key( $reason ) ] ?? 'Outro motivo';
+	$other  = trim( $other );
+	return 'other' === sanitize_key( $reason ) && '' !== $other ? $label . ' — ' . $other : $label;
+}
 
 class WP_Error {}
 class WP_REST_Request {}
 class WP_REST_Response {}
 
-class Papelito_Return_Support_Test_Item {
-	public function __construct( private string $name, private int $quantity, private string $total ) {}
-	public function get_name() { return $this->name; }
-	public function get_quantity() { return $this->quantity; }
-	public function get_total() { return $this->total; }
-}
-
-class Papelito_Return_Support_Test_Date {
-	public function date_i18n( $format ) { return '06/09/2026 10:30'; }
-}
-
-class Papelito_Return_Support_Test_Order {
-	public function get_items( $type ) { return array( 42 => new Papelito_Return_Support_Test_Item( 'Caderno Pautado', 2, '30.00' ) ); }
-	public function get_date_created() { return new Papelito_Return_Support_Test_Date(); }
-	public function get_order_number() { return '14094'; }
-	public function get_meta( $key, $single ) { return 29; }
-}
-
 require_once __DIR__ . '/../includes/vendor_messaging.php';
 
-$body = papelito_messaging_return_support_body(
-	new Papelito_Return_Support_Test_Order(),
-	array( 'items' => array( array( 'order_item_id' => 42, 'returnable_qty' => 1 ) ) )
-);
+$message = papelito_messaging_return_support_message( 'defective' );
+$body    = $message['body'];
+$content = $message['content'];
+
+$other = papelito_messaging_return_support_message( 'other', 'A caixa chegou aberta' );
+
+$every_reason_has_label = true;
+foreach ( papelito_return_reasons() as $reason ) {
+	$label = papelito_messaging_return_support_message( $reason )['body'];
+	if ( '' === trim( str_replace( "Olá! Gostaria de solicitar a devolução deste pedido.\nMotivo: ", '', $label ) ) ) {
+		$every_reason_has_label = false;
+	}
+}
+
 $assertions = array(
-	'usa um marcador canônico e idempotente' => str_contains( $body, papelito_messaging_return_support_marker() ),
-	'inclui o pedido' => str_contains( $body, 'Pedido: #14094' ),
-	'inclui a loja do vendor' => str_contains( $body, 'Loja: Loja Exemplo' ),
-	'inclui datas da compra e entrega' => str_contains( $body, '06/09/2026 10:30' ) && str_contains( $body, '2026-09-08 13:00:00' ),
-	'inclui item quantidade e valor líquido elegível' => str_contains( $body, 'Caderno Pautado' ) && str_contains( $body, '1 de 2 unidade(s)' ) && str_contains( $body, 'R$ 15,00' ),
+	'a mensagem é curta e traz o motivo escolhido' =>
+		"Olá! Gostaria de solicitar a devolução deste pedido.\nMotivo: Produto com defeito" === $body,
+	'não repete o número do pedido' => ! str_contains( $body, 'Pedido: #' ),
+	'não repete a loja' => ! str_contains( $body, 'Loja: ' ),
+	'não repete as datas da compra e da entrega' =>
+		! str_contains( $body, 'Compra realizada em' ) && ! str_contains( $body, 'Entrega confirmada em' ),
+	'não repete itens nem valores' => ! str_contains( $body, 'unidade(s)' ) && ! str_contains( $body, 'R$' ),
+	'não expõe o marcador técnico na conversa' =>
+		! str_contains( $body, papelito_messaging_return_support_marker() ),
+	'o motivo nunca fica vazio' => ! preg_match( '/Motivo:\s*$/', $body ),
+	'o rótulo "Motivo:" vem em negrito e o motivo em texto normal' =>
+		4 === count( $content )
+		&& 'Motivo: ' === $content[2]['text']
+		&& true === ( $content[2]['bold'] ?? false )
+		&& ! array_key_exists( 'bold', $content[3] ),
+	'a projeção plana não pode divergir do conteúdo' =>
+		papelito_messaging_content_to_plain( $content ) === $body,
+	'"outro motivo" carrega o texto do comprador' =>
+		str_contains( $other['body'], 'Outro motivo — A caixa chegou aberta' ),
+	'todo motivo de devolução produz rótulo' => $every_reason_has_label,
+	'o marcador legado continua existindo para a migração e o fallback' =>
+		'[Papelito: solicitacao-devolucao]' === papelito_messaging_return_support_marker(),
 );
+
 $failures = 0;
 foreach ( $assertions as $label => $condition ) {
 	echo ( $condition ? 'PASS: ' : 'FALHOU: ' ) . $label . "\n";

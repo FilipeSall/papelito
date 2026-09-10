@@ -7,6 +7,10 @@
 
 defined( 'ABSPATH' ) || exit;
 
+if ( ! defined( 'PAPELITO_NON_DIGITS_PATTERN' ) ) {
+	define( 'PAPELITO_NON_DIGITS_PATTERN', '/\D+/' );
+}
+
 /**
  * Lista de estados brasileiros usada nos fluxos de cadastro e perfil.
  *
@@ -183,8 +187,8 @@ function papelito_user_has_vendor_coverage( int $user_id ): bool {
 	$count    = min( count( $min_ceps ), count( $max_ceps ) );
 
 	for ( $index = 0; $index < $count; $index++ ) {
-		$min_cep = preg_replace( '/\D+/', '', (string) $min_ceps[ $index ] );
-		$max_cep = preg_replace( '/\D+/', '', (string) $max_ceps[ $index ] );
+		$min_cep = preg_replace( PAPELITO_NON_DIGITS_PATTERN, '', (string) $min_ceps[ $index ] );
+		$max_cep = preg_replace( PAPELITO_NON_DIGITS_PATTERN, '', (string) $max_ceps[ $index ] );
 
 		if ( is_string( $min_cep ) && is_string( $max_cep ) && '' !== $min_cep && '' !== $max_cep ) {
 			return true;
@@ -257,7 +261,8 @@ const PAPELITO_PERSON_NAME_WORD_PATTERN = "/^\\p{L}+(?:['\\x{2019}\\-]\\p{L}+)*$
  * @return string
  */
 function papelito_normalize_unicode_spaces( string $value ): string {
-	$normalized = preg_replace( '/[\s\x{00A0}\x{1680}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}\x{FEFF}]+/u', ' ', $value );
+	// `\s` já cobre \x{00A0} sob /u; os demais são espaços Unicode que ele não pega.
+	$normalized = preg_replace( '/[\s\x{1680}\x{2000}-\x{200A}\x{202F}\x{205F}\x{3000}\x{FEFF}]+/u', ' ', $value );
 
 	return trim( $normalized ?? $value );
 }
@@ -354,13 +359,62 @@ function papelito_name_part_validation_error( string $value, string $empty_messa
  * @return string
  */
 function papelito_normalize_phone_digits( string $phone ): string {
-	$digits = preg_replace( '/\D+/', '', $phone ) ?? '';
+	$digits = preg_replace( PAPELITO_NON_DIGITS_PATTERN, '', $phone ) ?? '';
 
 	if ( ( 12 === strlen( $digits ) || 13 === strlen( $digits ) ) && 0 === strpos( $digits, '55' ) ) {
 		return substr( $digits, 2 );
 	}
 
 	return $digits;
+}
+
+/**
+ * Numero E.164 sem o '+', pronto para wa.me, ou null quando nao ha telefone usavel.
+ *
+ * Passa por papelito_normalize_phone_digits() em vez de testar prefixo '55': DDD 55 e Santa
+ * Maria/RS, entao um fixo dali precisa virar 555532211234 e nao 5532211234.
+ *
+ * @param string $phone Telefone como esta gravado, mascarado ou nao.
+ */
+function papelito_whatsapp_number( string $phone ): ?string {
+	$local = papelito_normalize_phone_digits( $phone );
+
+	return strlen( $local ) >= 10 ? '55' . $local : null;
+}
+
+/**
+ * Link de conversa no WhatsApp, ou null quando nao ha telefone.
+ *
+ * Devolver null e deliberado: um wa.me sem numero abre o WhatsApp em branco, e quem clicou
+ * concluiria que a conversa foi iniciada.
+ *
+ * @param string $phone   Telefone como esta gravado.
+ * @param string $message Texto pre-preenchido.
+ */
+function papelito_whatsapp_url( string $phone, string $message = '' ): ?string {
+	$number = papelito_whatsapp_number( $phone );
+
+	if ( null === $number ) {
+		return null;
+	}
+
+	return '' === $message
+		? 'https://wa.me/' . $number
+		: 'https://wa.me/' . $number . '?text=' . rawurlencode( $message );
+}
+
+/**
+ * Link de WhatsApp do telefone cadastrado de um usuario.
+ *
+ * @param int    $user_id Usuario.
+ * @param string $message Texto pre-preenchido.
+ */
+function papelito_user_whatsapp_url( int $user_id, string $message = '' ): ?string {
+	if ( $user_id <= 0 ) {
+		return null;
+	}
+
+	return papelito_whatsapp_url( (string) get_user_meta( $user_id, 'phone_number', true ), $message );
 }
 
 /**

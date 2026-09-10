@@ -103,7 +103,7 @@ require_once __DIR__ . '/includes/account_status.php';
 require_once __DIR__ . '/includes/account_admin_endpoints.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.45.0' );
+	define( 'PAPELITO_DB_VERSION', '1.46.0' );
 }
 
 /**
@@ -148,6 +148,7 @@ function papelito_maybe_migrate_db() {
 				'papelito_tracking_install_tables',
 				'papelito_returns_install_tables',
 				'papelito_messaging_install_tables',
+				'papelito_messaging_backfill_chamado_reason',
 				'papelito_vendor_interests_install_table',
 				'papelito_vendor_interests_backfill_legacy',
 				'papelito_company_install_tables',
