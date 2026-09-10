@@ -487,9 +487,16 @@ function papelito_messaging_attach_return_to_chamado( int $thread_id, int $retur
 		)
 	);
 
-	return 1 === $updated
-		? true
-		: new WP_Error( 'papelito_return_thread_link_failed', 'Não foi possível vincular a devolução ao chamado.', array( 'status' => 409 ) );
+	if ( 1 !== $updated ) {
+		return new WP_Error( 'papelito_return_thread_link_failed', 'Não foi possível vincular a devolução ao chamado.', array( 'status' => 409 ) );
+	}
+
+	$linked = papelito_messaging_get_thread( $thread_id );
+	if ( absint( $linked['return_request_id'] ?? 0 ) !== $return_request_id ) {
+		return new WP_Error( 'papelito_return_thread_link_failed', 'Não foi possível vincular a devolução ao chamado.', array( 'status' => 409 ) );
+	}
+
+	return true;
 }
 
 /**

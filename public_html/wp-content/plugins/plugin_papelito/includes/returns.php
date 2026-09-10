@@ -219,6 +219,37 @@ function papelito_return_items( int $return_id ): array {
 	return is_array( $rows ) ? $rows : array();
 }
 
+/**
+ * Retorna o resumo das devoluções visível para o comprador em cada pedido.
+ *
+ * @param array<int,int> $order_ids Pedidos do comprador.
+ * @param int            $customer_id Comprador autenticado.
+ * @return array<int,array<int,array{id:int,status:string}>>
+ */
+function papelito_return_requests_for_orders( array $order_ids, int $customer_id ): array {
+	global $wpdb;
+
+	$order_ids = array_values( array_filter( array_map( 'absint', $order_ids ) ) );
+	if ( empty( $order_ids ) || $customer_id <= 0 ) {
+		return array();
+	}
+
+	$placeholders = implode( ',', array_fill( 0, count( $order_ids ), '%d' ) );
+	$args = array_merge( array( $customer_id ), $order_ids );
+	$table = papelito_return_tables()['requests'];
+	$rows = $wpdb->get_results( $wpdb->prepare( "SELECT id, order_id, status FROM {$table} WHERE customer_id = %d AND order_id IN ({$placeholders}) ORDER BY requested_at DESC, id DESC", $args ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$grouped = array();
+
+	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		$order_id = absint( $row['order_id'] ?? 0 );
+		if ( $order_id > 0 ) {
+			$grouped[ $order_id ][] = array( 'id' => absint( $row['id'] ?? 0 ), 'status' => (string) ( $row['status'] ?? '' ) );
+		}
+	}
+
+	return $grouped;
+}
+
 function papelito_return_event( int $return_id, string $event, ?string $from, ?string $to, int $actor, array $payload = array() ): void {
 	global $wpdb;
 	$wpdb->insert( papelito_return_tables()['events'], array(

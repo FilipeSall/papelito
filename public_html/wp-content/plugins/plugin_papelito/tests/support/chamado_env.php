@@ -200,6 +200,10 @@ class Papelito_Test_Wpdb {
 		$this->queries[] = $sql;
 		if ( str_starts_with( $sql, 'UPDATE' ) ) {
 			$this->updates[] = $sql;
+			if ( str_contains( $sql, 'SET return_request_id = %d' ) && is_array( $this->thread ) ) {
+				$parts = explode( '|', $sql );
+				$this->thread['return_request_id'] = absint( $parts[1] ?? 0 );
+			}
 		}
 		return 1;
 	}

@@ -418,6 +418,10 @@ function papelito_vendor_dashboard_map_order_detail( $order, ?int $vendor_id, bo
 		$result['returns'] = papelito_return_order_eligibility( $order, (int) $order->get_customer_id() );
 	}
 
+	if ( null === $vendor_id && function_exists( 'papelito_return_requests_for_orders' ) ) {
+		$result['return_requests'] = papelito_return_requests_for_orders( array( (int) $order->get_id() ), (int) $order->get_customer_id() )[ (int) $order->get_id() ] ?? array();
+	}
+
 	if ( $include_receipt && null === $vendor_id && function_exists( 'papelito_receipt_public_summary' ) ) {
 		$result['receipt'] = papelito_receipt_public_summary( $order );
 
@@ -1602,12 +1606,19 @@ function papelito_vendor_dashboard_handle_customer_orders( WP_REST_Request $requ
 	$total       = isset( $query_data['total'] ) ? (int) $query_data['total'] : 0;
 	$total_pages = isset( $query_data['max_num_pages'] ) ? (int) $query_data['max_num_pages'] : 1;
 
+	$mapped_orders = array_map( static fn( $order ): array => papelito_vendor_dashboard_map_order( $order, null ), $orders );
+	if ( function_exists( 'papelito_return_requests_for_orders' ) ) {
+		$return_requests = papelito_return_requests_for_orders( array_map( static fn( $order ): int => (int) $order->get_id(), $orders ), get_current_user_id() );
+		foreach ( $mapped_orders as &$mapped_order ) {
+			$order_id = absint( $mapped_order['id'] ?? 0 );
+			$mapped_order['return_requests'] = $return_requests[ $order_id ] ?? array();
+		}
+		unset( $mapped_order );
+	}
+
 	return new WP_REST_Response(
 		array(
-			'items'       => array_map(
-				static fn( $order ): array => papelito_vendor_dashboard_map_order( $order, null, true ),
-				$orders
-			),
+			'items'       => $mapped_orders,
 			'total'       => $total,
 			'page'        => $page,
 			'per_page'    => $per_page,
