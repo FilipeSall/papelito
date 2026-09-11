@@ -14,7 +14,36 @@ if ( ! defined( 'PAPELITO_PAGARME_RECIPIENT_ID_META' ) ) {
 	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META', 'papelito_pagarme_recipient_last_error' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META', 'papelito_pagarme_recipient_last_error_detail' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META', 'papelito_pagarme_recipient_last_error_code' );
-	define( 'PAPELITO_PAGARME_RECIPIENT_KYC_URL_META', 'papelito_pagarme_recipient_kyc_url' );
+	define( 'PAPELITO_PAGARME_RECIPIENT_KYC_STATUS_META', 'papelito_pagarme_recipient_kyc_status' );
+	define( 'PAPELITO_PAGARME_RECIPIENT_KYC_STATUS_REASON_META', 'papelito_pagarme_recipient_kyc_status_reason' );
+	define( 'PAPELITO_PAGARME_KYC_LINK_LIMITS_TABLE', 'papelito_pagarme_kyc_link_limits' );
+	define( 'PAPELITO_PAGARME_DIGITS_PATTERN', '/\\D+/' );
+	define( 'PAPELITO_PAGARME_RECIPIENTS_PATH', 'recipients/' );
+}
+
+/** Retorna a tabela de quota atomica para links KYC. */
+function papelito_pagarme_kyc_link_limits_table(): string {
+	global $wpdb;
+
+	return $wpdb->prefix . PAPELITO_PAGARME_KYC_LINK_LIMITS_TABLE;
+}
+
+/** Cria a tabela de quota atomica para links KYC. */
+function papelito_pagarme_install_kyc_link_limits_table(): void {
+	global $wpdb;
+
+	$table   = papelito_pagarme_kyc_link_limits_table();
+	$charset = $wpdb->get_charset_collate();
+
+	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+	$sql = "CREATE TABLE {$table} (
+		vendor_id BIGINT UNSIGNED NOT NULL,
+		attempts SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+		window_started_at DATETIME NOT NULL,
+		expires_at DATETIME NOT NULL,
+		PRIMARY KEY  (vendor_id)
+	) {$charset};";
+	dbDelta( $sql );
 }
 
 /**
@@ -46,21 +75,23 @@ function papelito_pagarme_vendor_recipient_is_active( int $user_id ): bool {
 function papelito_pagarme_save_vendor_recipient_state( int $user_id, array $recipient ): array {
 	$recipient_id = sanitize_text_field( (string) ( $recipient['id'] ?? '' ) );
 	$status       = sanitize_key( (string) ( $recipient['status'] ?? '' ) );
-	$kyc_url      = sanitize_url( (string) ( $recipient['kyc_details']['url'] ?? $recipient['kyc_url'] ?? '' ) );
+	$kyc_details  = isset( $recipient['kyc_details'] ) && is_array( $recipient['kyc_details'] ) ? $recipient['kyc_details'] : array();
+	$kyc_status   = sanitize_key( (string) ( $kyc_details['status'] ?? '' ) );
+	$kyc_reason   = sanitize_key( (string) ( $kyc_details['status_reason'] ?? '' ) );
 
 	if ( '' !== $recipient_id ) {
 		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_ID_META, $recipient_id );
 	}
 
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_STATUS_META, $status );
+	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_STATUS_META, $kyc_status );
+	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_STATUS_REASON_META, $kyc_reason );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, papelito_current_utc_mysql() );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, '' );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, '' );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META, '' );
 
-	if ( '' !== $kyc_url ) {
-		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_URL_META, $kyc_url );
-	}
+	delete_user_meta( $user_id, 'papelito_pagarme_recipient_kyc_url' );
 
 	return papelito_pagarme_get_vendor_recipient_state( $user_id );
 }
@@ -128,12 +159,35 @@ function papelito_pagarme_recipient_error_response( WP_Error $error ): WP_Error 
  */
 function papelito_pagarme_get_vendor_recipient_state( int $user_id ): array {
 	return array(
-		'recipient_id'    => papelito_pagarme_get_vendor_recipient_id( $user_id ),
-		'status'          => papelito_pagarme_get_vendor_recipient_status( $user_id ),
-		'last_sync_at'    => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, true ) ),
-		'kyc_url'         => sanitize_url( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_URL_META, true ) ),
-		'last_error'      => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, true ) ),
-		'last_error_code' => sanitize_key( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META, true ) ),
+		'recipient_id'      => papelito_pagarme_get_vendor_recipient_id( $user_id ),
+		'status'            => papelito_pagarme_get_vendor_recipient_status( $user_id ),
+		'kyc_status'        => sanitize_key( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_STATUS_META, true ) ),
+		'kyc_status_reason' => sanitize_key( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_STATUS_REASON_META, true ) ),
+		'last_sync_at'      => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, true ) ),
+		'last_error'        => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, true ) ),
+		'last_error_code'   => sanitize_key( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META, true ) ),
+	);
+}
+
+/**
+ * Indica se o estado oficial exige que o responsavel conclua o KYC na WebApp.
+ */
+function papelito_pagarme_kyc_action_required( string $recipient_status, string $kyc_status, string $kyc_status_reason ): bool {
+	return 'affiliation' === sanitize_key( $recipient_status )
+		&& 'partially_denied' === sanitize_key( $kyc_status )
+		&& 'additional_documents_required' === sanitize_key( $kyc_status_reason );
+}
+
+/**
+ * Indica se o vendor tem uma pendencia que pode ser resolvida pela WebApp.
+ */
+function papelito_pagarme_vendor_kyc_action_required( int $user_id ): bool {
+	$state = papelito_pagarme_get_vendor_recipient_state( $user_id );
+
+	return papelito_pagarme_kyc_action_required(
+		$state['status'],
+		$state['kyc_status'],
+		$state['kyc_status_reason']
 	);
 }
 
@@ -145,7 +199,7 @@ function papelito_pagarme_get_vendor_recipient_state( int $user_id ): array {
 function papelito_pagarme_phone_payload( string $value ): array {
 	$normalized = function_exists( 'papelito_auth_normalize_phone' )
 		? papelito_auth_normalize_phone( $value )
-		: preg_replace( '/\D+/', '', $value );
+		: preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', $value );
 
 	$digits = is_string( $normalized ) ? $normalized : '';
 
@@ -182,7 +236,7 @@ function papelito_pagarme_address_payload( array $input ): array {
 	return array(
 		'line_1'     => $line_1,
 		'line_2'     => $line_2,
-		'zip_code'   => function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['zipCode'] ?? $input['zip_code'] ?? '' ) ) : preg_replace( '/\D+/', '', (string) ( $input['zipCode'] ?? $input['zip_code'] ?? '' ) ),
+		'zip_code'   => function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( (string) ( $input['zipCode'] ?? $input['zip_code'] ?? '' ) ) : preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', (string) ( $input['zipCode'] ?? $input['zip_code'] ?? '' ) ),
 		'city'       => sanitize_text_field( (string) ( $input['city'] ?? '' ) ),
 		'state'      => strtoupper( sanitize_text_field( (string) ( $input['state'] ?? '' ) ) ),
 		'country'    => 'BR',
@@ -210,7 +264,7 @@ function papelito_pagarme_recipient_address_payload( array $input ): array {
 		'complementary'   => '' !== $complementary ? $complementary : 'N/A',
 		'neighborhood'    => sanitize_text_field( (string) ( $input['neighborhood'] ?? '' ) ),
 		'reference_point' => '' !== $reference ? $reference : 'N/A',
-		'zip_code'        => function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( $zip_raw ) : preg_replace( '/\D+/', '', $zip_raw ),
+		'zip_code'        => function_exists( 'papelito_normalize_cep' ) ? papelito_normalize_cep( $zip_raw ) : preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', $zip_raw ),
 		'city'            => sanitize_text_field( (string) ( $input['city'] ?? '' ) ),
 		'state'           => strtoupper( sanitize_text_field( (string) ( $input['state'] ?? '' ) ) ),
 	);
@@ -228,7 +282,7 @@ function papelito_pagarme_recipient_address_payload( array $input ): array {
 function papelito_pagarme_recipient_phone_payload( string $value ): array {
 	$normalized = function_exists( 'papelito_auth_normalize_phone' )
 		? papelito_auth_normalize_phone( $value )
-		: preg_replace( '/\D+/', '', $value );
+		: preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', $value );
 
 	$digits = is_string( $normalized ) ? $normalized : '';
 
@@ -255,7 +309,7 @@ function papelito_pagarme_recipient_phone_payload( string $value ): array {
  * @return array<string,mixed>
  */
 function papelito_pagarme_partner_payload( array $partner, string $fallback_phone = '' ): array {
-	$document = preg_replace( '/\D+/', '', (string) ( $partner['document'] ?? '' ) );
+	$document = preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', (string) ( $partner['document'] ?? '' ) );
 	$phone    = (string) ( $partner['phone'] ?? $partner['phoneNumber'] ?? '' );
 
 	if ( '' === trim( $phone ) ) {
@@ -289,11 +343,6 @@ function papelito_pagarme_partner_payload( array $partner, string $fallback_phon
 }
 
 /**
- * Monta o payload completo de criacao/edicao do recebedor.
- *
- * @return array<string,mixed>|WP_Error
- */
-/**
  * Normaliza a conta bancaria do vendor para o contrato `default_bank_account`.
  *
  * Os digitos verificadores (`branch_check_digit`/`account_check_digit`) sao
@@ -309,12 +358,12 @@ function papelito_pagarme_partner_payload( array $partner, string $fallback_phon
 function papelito_pagarme_bank_account_payload( array $bank_account, string $fallback_holder_name, string $fallback_document ): array {
 	// A agencia (branch_number) da Pagar.me aceita no maximo 4 digitos; valores
 	// mais longos disparam "invalid_parameter | agencia | Value too long".
-	$branch_number = substr( preg_replace( '/\D+/', '', (string) ( $bank_account['branchNumber'] ?? '' ) ), 0, 4 );
+	$branch_number = substr( preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', (string) ( $bank_account['branchNumber'] ?? '' ) ), 0, 4 );
 
 	$payload = array(
 		'holder_name'     => sanitize_text_field( (string) ( $bank_account['holderName'] ?? $fallback_holder_name ) ),
 		'holder_type'     => sanitize_text_field( (string) ( $bank_account['holderType'] ?? 'company' ) ),
-		'holder_document' => preg_replace( '/\D+/', '', (string) ( $bank_account['holderDocument'] ?? $fallback_document ) ),
+		'holder_document' => preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', (string) ( $bank_account['holderDocument'] ?? $fallback_document ) ),
 		'bank'            => sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ),
 		'branch_number'   => $branch_number,
 		'account_number'  => sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ),
@@ -335,8 +384,14 @@ function papelito_pagarme_bank_account_payload( array $bank_account, string $fal
 	return $payload;
 }
 
-function papelito_pagarme_build_recipient_payload( int $user_id ) {
+/**
+ * Carrega os dados necessarios para montar o payload do recebedor.
+ *
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_pagarme_get_recipient_context( int $user_id ) {
 	$user = get_userdata( $user_id );
+
 	if ( ! $user instanceof WP_User ) {
 		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
 	}
@@ -353,22 +408,37 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 		);
 	}
 
-	$store_name = sanitize_text_field( (string) get_user_meta( $user_id, 'store_name', true ) );
-	$phone      = sanitize_text_field( (string) get_user_meta( $user_id, 'phone_number', true ) );
-	$cnpj       = preg_replace( '/\D+/', '', (string) get_user_meta( $user_id, 'cnpj', true ) );
-	$address    = array(
-		'street'       => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STREET_META, true ),
-		'number'       => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NUMBER_META, true ),
-		'complement'   => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META, true ),
-		'neighborhood' => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, true ),
-		'city'         => (string) get_user_meta( $user_id, 'city', true ),
-		'state'        => (string) get_user_meta( $user_id, 'state', true ),
-		'zip_code'     => (string) get_user_meta( $user_id, 'cep', true ),
+	return array(
+		'user'         => $user,
+		'draft'        => $draft,
+		'store_name'   => sanitize_text_field( (string) get_user_meta( $user_id, 'store_name', true ) ),
+		'phone'        => sanitize_text_field( (string) get_user_meta( $user_id, 'phone_number', true ) ),
+		'cnpj'         => preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', (string) get_user_meta( $user_id, 'cnpj', true ) ),
+		'address'      => array(
+			'street'       => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_STREET_META, true ),
+			'number'       => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NUMBER_META, true ),
+			'complement'   => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_COMPLEMENT_META, true ),
+			'neighborhood' => (string) get_user_meta( $user_id, PAPELITO_VENDOR_APPLICATION_NEIGHBORHOOD_META, true ),
+			'city'         => (string) get_user_meta( $user_id, 'city', true ),
+			'state'        => (string) get_user_meta( $user_id, 'state', true ),
+			'zip_code'     => (string) get_user_meta( $user_id, 'cep', true ),
+		),
+		'partners'     => isset( $draft['managingPartners'] ) && is_array( $draft['managingPartners'] ) ? $draft['managingPartners'] : array(),
+		'bank_account' => isset( $draft['bankAccount'] ) && is_array( $draft['bankAccount'] ) ? $draft['bankAccount'] : array(),
+		'transfer'     => isset( $draft['transfer'] ) && is_array( $draft['transfer'] ) ? $draft['transfer'] : array(),
 	);
+}
 
-	$partners     = isset( $draft['managingPartners'] ) && is_array( $draft['managingPartners'] ) ? $draft['managingPartners'] : array();
-	$bank_account = isset( $draft['bankAccount'] ) && is_array( $draft['bankAccount'] ) ? $draft['bankAccount'] : array();
-	$transfer     = isset( $draft['transfer'] ) && is_array( $draft['transfer'] ) ? $draft['transfer'] : array();
+/**
+ * Valida os campos obrigatorios do recebedor antes de chamar a Pagar.me.
+ *
+ * @param array<string,mixed> $context Dados carregados do vendor.
+ * @return WP_Error|null
+ */
+function papelito_pagarme_validate_recipient_context( array $context ) {
+	$cnpj     = (string) $context['cnpj'];
+	$phone    = (string) $context['phone'];
+	$partners = $context['partners'];
 
 	if ( '' === $cnpj ) {
 		return new WP_Error(
@@ -394,10 +464,21 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 		);
 	}
 
-	$main_address = papelito_pagarme_recipient_address_payload( $address );
-	$partner      = papelito_pagarme_partner_payload( $partners[0], $phone );
+	$main_address = papelito_pagarme_recipient_address_payload( $context['address'] );
+	$missing_address_field = array_filter(
+		array(
+			$main_address['street'],
+			$main_address['street_number'],
+			$main_address['zip_code'],
+			$main_address['city'],
+			$main_address['state'],
+		),
+		static function ( string $value ): bool {
+			return '' === $value;
+		}
+	);
 
-	if ( '' === $main_address['street'] || '' === $main_address['street_number'] || '' === $main_address['zip_code'] || '' === $main_address['city'] || '' === $main_address['state'] ) {
+	if ( ! empty( $missing_address_field ) ) {
 		return new WP_Error(
 			'papelito_pagarme_missing_address',
 			'O vendor precisa ter endereço comercial completo para criar o recebedor.',
@@ -405,7 +486,7 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 		);
 	}
 
-	$company_name = sanitize_text_field( (string) ( $draft['companyName'] ?? $store_name ) );
+	$company_name = sanitize_text_field( (string) ( $context['draft']['companyName'] ?? $context['store_name'] ) );
 
 	// A Pagar.me exige razao social com pelo menos alguns caracteres; nomes muito
 	// curtos disparam "invalid_parameter | legal_name | Value too short".
@@ -416,6 +497,26 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 			array( 'status' => 422 )
 		);
 	}
+
+	return null;
+}
+
+/**
+ * Monta o bloco `register_information` para o payload do recebedor.
+ *
+ * @param array<string,mixed> $context Dados validados do vendor.
+ * @return array<string,mixed>
+ */
+function papelito_pagarme_build_register_information( array $context ): array {
+	$user         = $context['user'];
+	$draft        = $context['draft'];
+	$store_name   = (string) $context['store_name'];
+	$phone        = (string) $context['phone'];
+	$cnpj         = (string) $context['cnpj'];
+	$partners     = $context['partners'];
+	$company_name = sanitize_text_field( (string) ( $draft['companyName'] ?? $store_name ) );
+	$main_address = papelito_pagarme_recipient_address_payload( $context['address'] );
+	$partner      = papelito_pagarme_partner_payload( $partners[0], $phone );
 
 	$register_information = array(
 		'type'              => 'corporation',
@@ -445,6 +546,33 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 		$register_information['founding_date'] = $founding_date;
 	}
 
+	return $register_information;
+}
+
+/**
+ * Monta o payload completo de criacao/edicao do recebedor.
+ *
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_pagarme_build_recipient_payload( int $user_id ) {
+	$context = papelito_pagarme_get_recipient_context( $user_id );
+
+	if ( is_wp_error( $context ) ) {
+		return $context;
+	}
+
+	$validation_error = papelito_pagarme_validate_recipient_context( $context );
+
+	if ( $validation_error instanceof WP_Error ) {
+		return $validation_error;
+	}
+
+	$draft        = $context['draft'];
+	$store_name   = (string) $context['store_name'];
+	$cnpj         = (string) $context['cnpj'];
+	$bank_account = $context['bank_account'];
+	$transfer     = $context['transfer'];
+
 	return array(
 		'code'                 => sprintf( 'vendor-%d', $user_id ),
 		'payment_mode'         => 'bank_transfer',
@@ -454,7 +582,7 @@ function papelito_pagarme_build_recipient_payload( int $user_id ) {
 			'transfer_day'      => (int) ( $transfer['day'] ?? 0 ),
 		),
 		'default_bank_account' => papelito_pagarme_bank_account_payload( $bank_account, $store_name, $cnpj ),
-		'register_information' => $register_information,
+		'register_information' => papelito_pagarme_build_register_information( $context ),
 		'metadata'             => array(
 			'user_id'    => (string) $user_id,
 			'store_name' => $store_name,
@@ -498,7 +626,7 @@ function papelito_pagarme_build_recipient_bank_account_payload( int $user_id ) {
 	}
 
 	$store_name   = sanitize_text_field( (string) get_user_meta( $user_id, 'store_name', true ) );
-	$cnpj         = preg_replace( '/\D+/', '', (string) get_user_meta( $user_id, 'cnpj', true ) );
+	$cnpj         = preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', (string) get_user_meta( $user_id, 'cnpj', true ) );
 	$bank_account = isset( $draft['bankAccount'] ) && is_array( $draft['bankAccount'] ) ? $draft['bankAccount'] : array();
 
 	return papelito_pagarme_bank_account_payload( $bank_account, $store_name, $cnpj );
@@ -518,7 +646,7 @@ function papelito_pagarme_update_vendor_recipient_bank_account( int $user_id, st
 
 	return papelito_pagarme_request(
 		'PATCH',
-		'recipients/' . rawurlencode( $recipient_id ) . '/default-bank-account',
+		PAPELITO_PAGARME_RECIPIENTS_PATH . rawurlencode( $recipient_id ) . '/default-bank-account',
 		array(
 			'bank_account' => $bank_account,
 			'payment_mode' => 'bank_transfer',
@@ -542,7 +670,7 @@ function papelito_pagarme_sync_vendor_recipient( int $user_id ) {
 		);
 	}
 
-	$result = papelito_pagarme_request( 'GET', 'recipients/' . rawurlencode( $recipient_id ) );
+	$result = papelito_pagarme_request( 'GET', PAPELITO_PAGARME_RECIPIENTS_PATH . rawurlencode( $recipient_id ) );
 
 	if ( is_wp_error( $result ) ) {
 		papelito_pagarme_save_vendor_recipient_error( $user_id, $result );
@@ -554,36 +682,145 @@ function papelito_pagarme_sync_vendor_recipient( int $user_id ) {
 }
 
 /**
- * Gera ou atualiza o link de KYC.
- *
- * @return array<string,string>|WP_Error
+ * Envia ao e-mail da conta o link temporario da WebApp de KYC.
  */
-function papelito_pagarme_refresh_vendor_kyc_link( int $user_id ) {
-	$recipient_id = papelito_pagarme_get_vendor_recipient_id( $user_id );
+function papelito_pagarme_send_vendor_kyc_link_email( int $user_id, string $url ): bool {
+	$user = get_userdata( $user_id );
 
-	if ( '' === $recipient_id ) {
+	if ( ! $user instanceof WP_User || ! is_email( $user->user_email ) || '' === $url ) {
+		return false;
+	}
+
+	$name      = sanitize_text_field( $user->display_name );
+	$greeting  = '' !== $name ? 'Olá, ' . $name . '.' : 'Olá.';
+	$body_html = sprintf(
+		'<h1 class="papelito-headline" style="margin:0 0 16px;font-family:%1$s;font-size:30px;font-weight:900;line-height:34px;letter-spacing:-0.04em;color:%2$s;">Conclua sua verificação</h1><p style="margin:0 0 16px;font-family:%1$s;font-size:15px;font-weight:500;line-height:24px;color:%3$s;">%4$s A Pagar.me solicitou uma etapa de identificação para liberar os recebimentos da sua loja.</p><p style="margin:0 0 24px;font-family:%1$s;font-size:15px;font-weight:500;line-height:24px;color:%3$s;">Este link é individual e fica disponível por 20 minutos.</p>%5$s',
+		PAPELITO_EMAIL_FONT_STACK,
+		esc_attr( PAPELITO_EMAIL_INK ),
+		esc_attr( PAPELITO_EMAIL_TEXT_SOFT ),
+		esc_html( $greeting ),
+		papelito_email_button( $url, 'Concluir verificação' )
+	);
+	$html      = papelito_email_shell(
+		array(
+			'kicker'       => 'PAGAMENTOS',
+			'preheader'    => 'Conclua sua verificação na Pagar.me.',
+			'body_html'    => $body_html,
+			'footer_lines' => array( 'Se você não solicitou esta ação, ignore este e-mail.' ),
+		)
+	);
+	$text      = implode(
+		"\n",
+		array(
+			$greeting,
+			'',
+			'A Pagar.me solicitou uma etapa de identificação para liberar os recebimentos da sua loja.',
+			'O link é individual e fica disponível por 20 minutos.',
+			'',
+			'Concluir verificação: ' . $url,
+			'',
+			'Se você não solicitou esta ação, ignore este e-mail.',
+		)
+	);
+
+	return papelito_email_send( sanitize_email( $user->user_email ), 'Conclua sua verificação na Pagar.me', $html, $text );
+}
+
+/**
+ * Reserva uma das cotas de KYC do vendor em uma unica escrita atomica.
+ *
+ * `INSERT ... ON DUPLICATE KEY UPDATE` bloqueia a chave primaria do vendor
+ * durante a decisao. Em MySQL, a escrita aceita retorna 1 (insert) ou 2
+ * (update); quando a cota ja acabou, nenhuma coluna muda e retorna 0.
+ *
+ * @param int $user_id        Vendor autenticado.
+ * @param int $max_attempts   Limite da janela.
+ * @param int $window_seconds Duracao da janela.
+ * @return bool Se a cota foi reservada.
+ */
+function papelito_pagarme_reserve_kyc_link_quota( int $user_id, int $max_attempts, int $window_seconds ): bool {
+	global $wpdb;
+
+	if ( $user_id <= 0 || $max_attempts <= 0 || $window_seconds <= 0 ) {
+		return false;
+	}
+
+	$table  = papelito_pagarme_kyc_link_limits_table();
+	$query  = $wpdb->prepare(
+		'INSERT INTO %i (vendor_id, attempts, window_started_at, expires_at)
+		VALUES (%d, 1, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL %d SECOND))
+		ON DUPLICATE KEY UPDATE
+			attempts = IF(expires_at <= UTC_TIMESTAMP(), 1, IF(attempts < %d, attempts + 1, attempts)),
+			window_started_at = IF(expires_at <= UTC_TIMESTAMP(), UTC_TIMESTAMP(), window_started_at),
+			expires_at = IF(expires_at <= UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL %d SECOND), expires_at)',
+		$table,
+		$user_id,
+		$window_seconds,
+		$max_attempts,
+		$window_seconds
+	);
+	$result = $wpdb->query( $query ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.PreparedSQL.NotPrepared -- Prepared with placeholders above.
+
+	return 1 === $result || 2 === $result;
+}
+
+/**
+ * Gera um link temporario somente quando a Pagar.me informou uma pendencia elegivel.
+ *
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_pagarme_create_vendor_kyc_link( int $user_id ) {
+	$state = papelito_pagarme_sync_vendor_recipient( $user_id );
+
+	if ( is_wp_error( $state ) ) {
+		return $state;
+	}
+
+	if ( ! papelito_pagarme_vendor_kyc_action_required( $user_id ) ) {
 		return new WP_Error(
-			'papelito_pagarme_missing_recipient',
-			'O vendor ainda não possui recebedor criado.',
-			array( 'status' => 404 )
+			'papelito_pagarme_kyc_not_required',
+			'A Pagar.me ainda não solicitou uma ação de verificação para este recebedor.',
+			array( 'status' => 409 )
 		);
 	}
 
-	$result = papelito_pagarme_request( 'POST', 'recipients/' . rawurlencode( $recipient_id ) . '/kyc_link', array() );
+	if ( ! papelito_pagarme_reserve_kyc_link_quota( $user_id, 5, 20 * MINUTE_IN_SECONDS ) ) {
+		return new WP_Error(
+			'papelito_pagarme_kyc_link_rate_limited',
+			'Aguarde alguns minutos antes de gerar outro link de verificação.',
+			array( 'status' => 429 )
+		);
+	}
+
+	$recipient_id = papelito_pagarme_get_vendor_recipient_id( $user_id );
+	$result       = papelito_pagarme_request( 'POST', PAPELITO_PAGARME_RECIPIENTS_PATH . rawurlencode( $recipient_id ) . '/kyc_link', array() );
 
 	if ( is_wp_error( $result ) ) {
 		papelito_pagarme_save_vendor_recipient_error( $user_id, $result );
 		return $result;
 	}
 
-	$url = sanitize_url( (string) ( $result['url'] ?? '' ) );
-	if ( '' !== $url ) {
-		update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_URL_META, $url );
+	$url  = esc_url_raw( (string) ( $result['url'] ?? '' ) );
+	$host = strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
+	if (
+		'' === $url
+		|| 'https' !== strtolower( (string) wp_parse_url( $url, PHP_URL_SCHEME ) )
+		|| ( 'pagar.me' !== $host && ! str_ends_with( $host, '.pagar.me' ) )
+	) {
+		return new WP_Error(
+			'papelito_pagarme_kyc_link_invalid_response',
+			'A Pagar.me não retornou um link de verificação válido.',
+			array( 'status' => 502 )
+		);
 	}
 
-	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, papelito_current_utc_mysql() );
-
-	return papelito_pagarme_get_vendor_recipient_state( $user_id );
+	return array_merge(
+		papelito_pagarme_get_vendor_recipient_state( $user_id ),
+		array(
+			'url'        => $url,
+			'email_sent' => papelito_pagarme_send_vendor_kyc_link_email( $user_id, $url ),
+		)
+	);
 }
 
 /**
@@ -591,7 +828,7 @@ function papelito_pagarme_refresh_vendor_kyc_link( int $user_id ) {
  *
  * @return array<string,string>|WP_Error
  */
-function papelito_pagarme_upsert_vendor_recipient( int $user_id, bool $refresh_kyc = false ) {
+function papelito_pagarme_upsert_vendor_recipient( int $user_id ) {
 	$payload = papelito_pagarme_build_recipient_payload( $user_id );
 
 	if ( is_wp_error( $payload ) ) {
@@ -601,7 +838,7 @@ function papelito_pagarme_upsert_vendor_recipient( int $user_id, bool $refresh_k
 	}
 
 	$recipient_id = papelito_pagarme_get_vendor_recipient_id( $user_id );
-	$path         = '' === $recipient_id ? 'recipients' : 'recipients/' . rawurlencode( $recipient_id );
+	$path         = '' === $recipient_id ? rtrim( PAPELITO_PAGARME_RECIPIENTS_PATH, '/' ) : PAPELITO_PAGARME_RECIPIENTS_PATH . rawurlencode( $recipient_id );
 	$method       = '' === $recipient_id ? 'POST' : 'PUT';
 	$body         = $payload;
 
@@ -638,14 +875,6 @@ function papelito_pagarme_upsert_vendor_recipient( int $user_id, bool $refresh_k
 		papelito_pagarme_signal_vendor_sync_pending( $user_id );
 	}
 
-	if ( $refresh_kyc && '' !== papelito_pagarme_get_vendor_recipient_id( $user_id ) ) {
-		$kyc_state = papelito_pagarme_refresh_vendor_kyc_link( $user_id );
-
-		if ( ! is_wp_error( $kyc_state ) ) {
-			$state = $kyc_state;
-		}
-	}
-
 	return $state;
 }
 
@@ -657,64 +886,109 @@ function papelito_pagarme_handle_vendor_approved( int $user_id ): void {
 		return;
 	}
 
-	papelito_pagarme_upsert_vendor_recipient( $user_id, true );
+	papelito_pagarme_upsert_vendor_recipient( $user_id );
 }
 add_action( 'papelito_vendor_approved', 'papelito_pagarme_handle_vendor_approved', 20, 1 );
 
-add_action(
-	'rest_api_init',
-	static function (): void {
-		register_rest_route(
-			'papelito/v1',
-			'/vendor/recipient',
-			array(
-				array(
-					'methods'             => WP_REST_Server::READABLE,
-					'permission_callback' => static function () {
-						$check = function_exists( 'papelito_vendor_dashboard_require_seller' )
-							? papelito_vendor_dashboard_require_seller()
-							: false;
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function () {
-						$state = papelito_pagarme_get_vendor_recipient_state( get_current_user_id() );
+/**
+ * Restringe os endpoints de recebedor ao vendedor autenticado.
+ *
+ * @return bool|WP_Error
+ */
+function papelito_pagarme_vendor_recipient_permission() {
+	$check = function_exists( 'papelito_vendor_dashboard_require_seller' )
+		? papelito_vendor_dashboard_require_seller()
+		: false;
 
-						if ( '' !== $state['recipient_id'] ) {
-							$synced = papelito_pagarme_sync_vendor_recipient( get_current_user_id() );
-							if ( ! is_wp_error( $synced ) ) {
-								$state = $synced;
-							}
-						} else {
-							papelito_pagarme_signal_vendor_sync_pending( get_current_user_id() );
-						}
+	return is_wp_error( $check ) ? $check : true;
+}
 
-						return new WP_REST_Response( $state, 200 );
-					},
-				),
-				array(
-					'methods'             => WP_REST_Server::CREATABLE,
-					'permission_callback' => static function () {
-						$check = function_exists( 'papelito_vendor_dashboard_require_seller' )
-							? papelito_vendor_dashboard_require_seller()
-							: false;
-						return is_wp_error( $check ) ? $check : true;
-					},
-					'callback'            => static function ( WP_REST_Request $request ) {
-						$body        = $request->get_json_params();
-						$refresh_kyc = is_array( $body ) && ! empty( $body['refresh_kyc'] );
-						$result      = papelito_pagarme_upsert_vendor_recipient( get_current_user_id(), $refresh_kyc );
+/**
+ * Consulta e atualiza o estado local do recebedor autenticado.
+ */
+function papelito_pagarme_rest_get_vendor_recipient(): WP_REST_Response {
+	$user_id = get_current_user_id();
+	$state   = papelito_pagarme_get_vendor_recipient_state( $user_id );
 
-						if ( is_wp_error( $result ) ) {
-							return papelito_pagarme_recipient_error_response( $result );
-						}
-
-						return new WP_REST_Response( $result, 200 );
-					},
-				),
-			)
-		);
+	if ( '' === $state['recipient_id'] ) {
+		papelito_pagarme_signal_vendor_sync_pending( $user_id );
+		return new WP_REST_Response( $state, 200 );
 	}
-);
+
+	$synced = papelito_pagarme_sync_vendor_recipient( $user_id );
+
+	if ( ! is_wp_error( $synced ) ) {
+		$state = $synced;
+	}
+
+	return new WP_REST_Response( $state, 200 );
+}
+
+/**
+ * Cria ou atualiza o recebedor do vendedor autenticado.
+ *
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_pagarme_rest_upsert_vendor_recipient() {
+	$result = papelito_pagarme_upsert_vendor_recipient( get_current_user_id() );
+
+	if ( is_wp_error( $result ) ) {
+		return papelito_pagarme_recipient_error_response( $result );
+	}
+
+	return new WP_REST_Response( $result, 200 );
+}
+
+/**
+ * Cria o link temporario de KYC para o vendedor autenticado.
+ *
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_pagarme_rest_create_vendor_kyc_link() {
+	$result = papelito_pagarme_create_vendor_kyc_link( get_current_user_id() );
+
+	if ( is_wp_error( $result ) ) {
+		return papelito_pagarme_recipient_error_response( $result );
+	}
+
+	$response = new WP_REST_Response( $result, 200 );
+	$response->header( 'Cache-Control', 'no-store, private' );
+
+	return $response;
+}
+
+/**
+ * Registra os endpoints REST de recebedor.
+ */
+function papelito_pagarme_register_recipient_routes(): void {
+	register_rest_route(
+		'papelito/v1',
+		'/vendor/recipient',
+		array(
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'permission_callback' => 'papelito_pagarme_vendor_recipient_permission',
+				'callback'            => 'papelito_pagarme_rest_get_vendor_recipient',
+			),
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'permission_callback' => 'papelito_pagarme_vendor_recipient_permission',
+				'callback'            => 'papelito_pagarme_rest_upsert_vendor_recipient',
+			),
+		)
+	);
+
+	register_rest_route(
+		'papelito/v1',
+		'/vendor/recipient/kyc-link',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'permission_callback' => 'papelito_pagarme_vendor_recipient_permission',
+			'callback'            => 'papelito_pagarme_rest_create_vendor_kyc_link',
+		)
+	);
+}
+add_action( 'rest_api_init', 'papelito_pagarme_register_recipient_routes' );
 
 /**
  * Metade financeira da dupla aprovacao do vendor.

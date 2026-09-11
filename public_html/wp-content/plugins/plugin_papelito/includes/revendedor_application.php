@@ -130,7 +130,7 @@ function papelito_sync_vendor_recipient_after_registration_update( int $user_id,
 		return;
 	}
 
-	papelito_pagarme_upsert_vendor_recipient( $user_id, false );
+	papelito_pagarme_upsert_vendor_recipient( $user_id );
 }
 
 /**

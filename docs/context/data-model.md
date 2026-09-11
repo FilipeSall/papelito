@@ -455,7 +455,11 @@ Ao aprovar, confira em qual fila a candidatura está: os IDs não são intercamb
 
 **Customer (legado / conta)**: `store_name`, `phone_number`, `cnpj`, `instagram`, `state`, `city`, `cep`, `papelito_profile_complete`, `google_sub`, `papelito_auth_session_version`, `papelito_email_verification_status`, `papelito_email_verification_token_hash`, `papelito_email_verification_token_expires_at`, `papelito_email_verification_sent_at`, `papelito_email_verified_at`, `papelito_email_verification_method`, `papelito_email_verified_by`, `papelito_favorites_v1`, `papelito_active_vendor_id`.
 
-**Vendor**: `min_cep[]`, `max_cep[]` (arrays **serializados**), `cep`, `cep_lat`, `cep_lng`, `shipping_lead_time_days`, `application_status` / `seller_application_status`, `application_rejection_reason`, `application_reviewed_by`, `application_reviewed_at`, `papelito_pagarme_recipient_id`, `papelito_pagarme_recipient_status`.
+**Vendor**: `min_cep[]`, `max_cep[]` (arrays **serializados**), `cep`, `cep_lat`, `cep_lng`, `shipping_lead_time_days`, `application_status` / `seller_application_status`, `application_rejection_reason`, `application_reviewed_by`, `application_reviewed_at`, `papelito_pagarme_recipient_id`, `papelito_pagarme_recipient_status`, `papelito_pagarme_recipient_kyc_status`, `papelito_pagarme_recipient_kyc_status_reason`. A URL de KYC nunca é persistida: a Pagar.me a emite por clique e ela expira em 20 minutos.
+
+### Quota de link KYC
+
+`papelito_pagarme_kyc_link_limits` reserva a quota de geração de link por `vendor_id`. A chave primária é o próprio vendor; `attempts`, `window_started_at` e `expires_at` formam a janela de 20 minutos. A reserva usa um único `INSERT ... ON DUPLICATE KEY UPDATE`, portanto requisições concorrentes não conseguem ultrapassar o teto antes de chamar a Pagar.me. Não guarda URL, documento ou outro dado de KYC.
 
 **B2B**: `papelito_b2b_required`, `papelito_b2b_active_company_id`, `papelito_b2b_onboarding_address_{cep,state,city,street,number,complement,neighborhood}`, e as sete metas de coorte legada listadas em [`../../../docs/flows/legacy-migration.md`](../../../docs/flows/legacy-migration.md#dados).
 

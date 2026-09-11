@@ -8,7 +8,7 @@ Para o *porquê* de cada decisão de modelagem, veja [context/data-model.md](con
 
 ## Resumo executivo
 
-O banco tem **193 tabelas**. Dessas, **40 são criadas pelo plugin próprio**, 12 são do core do WordPress e 40 do WooCommerce (incluindo o Action Scheduler). As outras **101 são plugins de terceiros** herdados da fase pré-headless, quase todas vazias.
+Após aplicar a migração de quota de KYC desta versão, o banco terá **194 tabelas**. Dessas, **41 são criadas pelo plugin próprio**, 12 são do core do WordPress e 40 do WooCommerce (incluindo o Action Scheduler). As outras **101 são plugins de terceiros** herdados da fase pré-headless, quase todas vazias.
 
 Cinco constatações mudam como você deve ler qualquer coisa neste schema:
 
@@ -19,7 +19,7 @@ SELECT * FROM information_schema.key_column_usage
 WHERE table_schema = 'papelito_local' AND referenced_table_name IS NOT NULL;
 ```
 
-Todas as 40 tabelas do plugin são InnoDB — o motor suporta FK — e nenhuma declara uma. Isso é herança do `dbDelta()` do WordPress, que não emite `FOREIGN KEY`. Consequência prática: **toda relação deste mapa é lógica**, sustentada por código PHP. Um `DELETE` direto no banco não cascateia, não é bloqueado e não avisa. O plugin compensa com *checadores de integridade* em PHP (veja `papelito_product_taxonomy_integrity_report()` em `product_taxonomy.php`), que varrem órfãos periodicamente em vez de impedi-los.
+Todas as 41 tabelas do plugin são InnoDB — o motor suporta FK — e nenhuma declara uma. Isso é herança do `dbDelta()` do WordPress, que não emite `FOREIGN KEY`. Consequência prática: **toda relação deste mapa é lógica**, sustentada por código PHP. Um `DELETE` direto no banco não cascateia, não é bloqueado e não avisa. O plugin compensa com *checadores de integridade* em PHP (veja `papelito_product_taxonomy_integrity_report()` em `product_taxonomy.php`), que varrem órfãos periodicamente em vez de impedi-los.
 
 **2. Os pedidos vivem em `wp_posts`, não em HPOS.** As tabelas `wp_wc_orders`, `wp_wc_orders_meta`, `wp_wc_order_addresses` e `wp_wc_order_operational_data` existem e estão **vazias**. O site opera no armazenamento legado: um pedido é um `wp_posts` com `post_type = 'shop_order'`, e todo o seu estado está em `wp_postmeta`. Qualquer query, relatório ou migração que assuma HPOS lê tabela vazia.
 
@@ -37,11 +37,11 @@ O que foi feito, na ordem, para que o resultado seja reproduzível:
 
 1. **Descoberta do acesso.** `docker-compose.yml` define o serviço `db` (MariaDB 10.5), banco `papelito_local`, exposto em `localhost:3307`. Container `papelito-db`, ativo durante o levantamento.
 2. **Inventário bruto.** `information_schema.tables` — nome, motor, contagem de linhas e tamanho de cada uma das 193 tabelas.
-3. **DDL real.** `SHOW CREATE TABLE` de todas as 40 tabelas `wp_papelito_*`, para ler tipos, colações, chaves primárias e **todos os índices**, que aqui fazem o papel que as FKs não fazem.
+3. **DDL real.** `SHOW CREATE TABLE` de todas as 41 tabelas `wp_papelito_*`, para ler tipos, colações, chaves primárias e **todos os índices**, que aqui fazem o papel que as FKs não fazem.
 4. **Busca por FKs físicas.** `information_schema.key_column_usage` filtrando `referenced_table_name IS NOT NULL` → conjunto vazio, confirmado.
 5. **Ground truth dos metadados.** Em vez de confiar no código, as chaves de `wp_usermeta` e `wp_postmeta` foram enumeradas com `GROUP BY meta_key` **no banco**, e cruzadas com o `post_type` do post dono. É por isso que a lista de chaves de pedido neste documento é exata, e não uma amostra.
 6. **Semântica no código.** Para cada coluna que parece uma FK, a origem foi confirmada no plugin: `active_vendor.php` (o que é `vendor_id`), `order_routing.php` (como o vendor entra no pedido), `product_taxonomy.php` (os JOINs reais da taxonomia), `product_benefits.php` (o polimorfismo dos alvos), `receipts.php`, `merchandise.php`, `company_schema.php`.
-7. **Sítios de criação de schema.** `grep -n "CREATE TABLE" includes/*.php` localizou os 43 blocos `dbDelta` que criam as 40 tabelas, confirmando que o plugin é o dono de todas elas.
+7. **Sítios de criação de schema.** `grep -n "CREATE TABLE" includes/*.php` localizou os 44 blocos `dbDelta` que criam as 41 tabelas, confirmando que o plugin é o dono de todas elas.
 8. **Colações.** `information_schema.columns` para achar as colunas com colação divergente — que é onde moram as armadilhas de JOIN.
 
 Fonte da verdade da modelagem: **o banco em execução**, com o código do plugin como fonte da *semântica*. Não há Prisma, ORM, migrations versionadas nem arquivo de schema — o schema é produzido em runtime por `dbDelta()` a partir de strings SQL nos módulos PHP.
@@ -54,7 +54,7 @@ Fonte da verdade da modelagem: **o banco em execução**, com o código do plugi
 |---|---:|---|
 | **WordPress (core)** | 12 | Substrato. `wp_posts` e `wp_users` carregam quase todo o domínio; `wp_postmeta` e `wp_usermeta` carregam o resto |
 | **WooCommerce** | 40 | Motor de pedido, carrinho, lookups de leitura e Action Scheduler. Boa parte é analytics não usado pelo painel próprio |
-| **Papelito (plugin)** | **40** | Todo o domínio B2B, catálogo, estoque, recibo, logística e comunicação |
+| **Papelito (plugin)** | **41** | Todo o domínio B2B, catálogo, estoque, recibo, logística, comunicação e quotas operacionais |
 | **Auxiliar / terceiros** | 101 | Wordfence, Elementor, RevSlider, SellKit, Jet*, Yoast, LiteSpeed, loyalty, redirection. Ruído |
 
 ---
@@ -81,7 +81,7 @@ Metadados da conta — e onde mora metade do estado do vendor, porque o plugin n
 | `cep_lat`, `cep_lng` | Geocodificação usada pelo cálculo de cobertura |
 | `store_name`, `shipping_lead_time_days`, `instagram` | Perfil público do vendor |
 | `papelito_b2b_active_company_id` | Empresa ativa → `wp_papelito_companies.id` |
-| `papelito_pagarme_recipient_id`, `_status`, `_last_error*`, `_last_sync_at` | Estado do recebedor Pagar.me do vendor |
+| `papelito_pagarme_recipient_id`, `_status`, `_kyc_status`, `_kyc_status_reason`, `_last_error*`, `_last_sync_at` | Estado do recebedor e da análise KYC Pagar.me do vendor; URL temporária de KYC não é persistida |
 | `papelito_profile_complete`, `papelito_account_state`, `papelito_b2b_required` | Estado da conta |
 | `papelito_email_verification_status`, `_token_hash`, `_expires_at`, `_sent_at`, `papelito_email_verified_at` | Verificação de e-mail |
 | `papelito_favorites_v1`, `papelito_favorite_promo_email_enabled` | Favoritos |
@@ -156,7 +156,7 @@ Metadados da linha — e onde o **vendor é gravado por item**:
 
 ---
 
-## Camada Papelito — as 40 tabelas
+## Camada Papelito — as 41 tabelas
 
 ### Identidade, empresa e acesso (12)
 
@@ -228,6 +228,12 @@ Metadados da linha — e onde o **vendor é gravado por item**:
 | `wp_papelito_message_reads` | Marcador de leitura por participante | PK `(thread_id, user_id)`; `last_read_message_id` — ponteiro, não registro por mensagem |
 | `wp_papelito_notifications` | Notificação in-app | PK `id`; UNIQUE `(user_id, type, dedupe_key)` → o dedupe do barramento de eventos; `payload`, `read_at` |
 | `wp_papelito_notification_email_log` | Espelho do dedupe no canal e-mail | PK `id`; UNIQUE `(user_id, type, dedupe_key)`. Tabela separada de propósito: apagar a notificação in-app não pode liberar o reenvio do e-mail |
+
+### Quotas operacionais (1)
+
+| Tabela | Papel | Chaves e colunas que importam |
+|---|---|---|
+| `wp_papelito_pagarme_kyc_link_limits` | Reserva atômica de links KYC por vendor | PK `vendor_id` → `wp_users.ID`; `attempts`, `window_started_at`, `expires_at`. Não contém URL ou PII de KYC |
 
 ---
 
