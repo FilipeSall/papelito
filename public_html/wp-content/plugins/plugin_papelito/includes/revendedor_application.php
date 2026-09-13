@@ -36,6 +36,7 @@ const PAPELITO_VENDOR_CNPJ_PATTERN                        = '/^\d{2}(\.\d{3}){2}
 const PAPELITO_VENDOR_BANK_CODE_PATTERN                   = '/^\d{3}$/';
 const PAPELITO_VENDOR_DIGITS_PATTERN                      = '/^\d+$/';
 const PAPELITO_VENDOR_ACCOUNT_CHECK_DIGIT_PATTERN         = '/^[0-9A-Za-z]+$/';
+const PAPELITO_VENDOR_BANK_HOLDER_MISMATCH_MESSAGE       = 'A conta bancária precisa estar no CNPJ da empresa (conta PJ).';
 const PAPELITO_VENDOR_MISSING_STORE_NAME_MESSAGE         = 'Informe o nome da loja.';
 const PAPELITO_VENDOR_UNAUTHENTICATED_MESSAGE            = 'Usuario nao autenticado.';
 const PAPELITO_VENDOR_INVALID_PAYLOAD_MESSAGE            = 'Payload invalido.';
@@ -472,14 +473,15 @@ function papelito_collect_vendor_pending_account_fields( string $phone ): array 
  *
  * @param array<string, mixed> $step3 Draft normalizado.
  * @param string               $phone Telefone do vendor (usermeta `phone_number`).
+ * @param string               $cnpj  CNPJ do vendor (usermeta `cnpj`), documento do recebedor.
  * @return array<int, string>
  */
-function papelito_collect_vendor_pending_registration_fields( array $step3, string $phone = '' ): array {
+function papelito_collect_vendor_pending_registration_fields( array $step3, string $phone, string $cnpj ): array {
 	$pending = array_merge(
 		papelito_collect_vendor_pending_account_fields( $phone ),
 		papelito_collect_vendor_pending_company_fields( $step3 ),
 		papelito_collect_vendor_pending_partner_fields( $step3 ),
-		papelito_collect_vendor_pending_bank_fields( $step3 )
+		papelito_collect_vendor_pending_bank_fields( $step3, $cnpj )
 	);
 
 	return array_values( array_intersect( papelito_vendor_pending_registration_allowed_fields(), array_unique( $pending ) ) );
@@ -587,24 +589,37 @@ function papelito_collect_vendor_pending_partner_fields( array $step3 ): array {
 }
 
 /**
+ * Indica se a conta bancaria esta no CNPJ do recebedor, a unica titularidade aceita pela Pagar.me.
+ *
+ * @param array  $bank_account Conta bancaria do draft.
+ * @param string $cnpj         CNPJ do vendor, com ou sem mascara.
+ * @return bool
+ */
+function papelito_vendor_bank_holder_matches_recipient( array $bank_account, string $cnpj ): bool {
+	$recipient_document = (string) preg_replace( '/\D+/', '', $cnpj );
+	$holder_document    = (string) preg_replace( '/\D+/', '', (string) ( $bank_account['holderDocument'] ?? '' ) );
+
+	return '' !== $recipient_document
+		&& 'individual' !== sanitize_text_field( (string) ( $bank_account['holderType'] ?? '' ) )
+		&& $holder_document === $recipient_document;
+}
+
+/**
  * Coleta campos bancarios pendentes do step 3.
  *
- * @param array $step3 Dados do step 3.
+ * @param array  $step3 Dados do step 3.
+ * @param string $cnpj  CNPJ do vendor, documento do recebedor.
  * @return array<int, string>
  */
-function papelito_collect_vendor_pending_bank_fields( array $step3 ): array {
+function papelito_collect_vendor_pending_bank_fields( array $step3, string $cnpj ): array {
 	$pending         = array();
 	$bank_account    = isset( $step3['bankAccount'] ) && is_array( $step3['bankAccount'] ) ? $step3['bankAccount'] : array();
-	$holder_type     = sanitize_text_field( (string) ( $bank_account['holderType'] ?? '' ) );
 	$holder_document = (string) ( $bank_account['holderDocument'] ?? '' );
 
 	if ( '' === sanitize_text_field( (string) ( $bank_account['holderName'] ?? '' ) ) ) {
 		$pending[] = 'bankAccount.holderName';
 	}
-	$document_valid = 'individual' === $holder_type
-		? papelito_revendedor_validate_cpf( $holder_document )
-		: papelito_revendedor_validate_cnpj( $holder_document );
-	if ( ! $document_valid ) {
+	if ( ! papelito_revendedor_validate_cnpj( $holder_document ) || ! papelito_vendor_bank_holder_matches_recipient( $bank_account, $cnpj ) ) {
 		$pending[] = 'bankAccount.holderDocument';
 	}
 	if ( 1 !== preg_match( PAPELITO_VENDOR_BANK_CODE_PATTERN, sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ) ) ) {
@@ -725,7 +740,8 @@ function papelito_resolve_vendor_pending_registration_fields( int $user_id ): ar
 	);
 	$fields     = papelito_collect_vendor_pending_registration_fields(
 		$normalized,
-		(string) get_user_meta( $user_id, 'phone_number', true )
+		(string) get_user_meta( $user_id, 'phone_number', true ),
+		(string) get_user_meta( $user_id, 'cnpj', true )
 	);
 
 	if ( ! empty( $fields ) ) {
@@ -745,7 +761,8 @@ function papelito_resolve_vendor_pending_registration_fields( int $user_id ): ar
 function papelito_refresh_vendor_pending_registration_state( int $user_id, array $step3 ): array {
 	$fields = papelito_collect_vendor_pending_registration_fields(
 		$step3,
-		(string) get_user_meta( $user_id, 'phone_number', true )
+		(string) get_user_meta( $user_id, 'phone_number', true ),
+		(string) get_user_meta( $user_id, 'cnpj', true )
 	);
 	papelito_save_vendor_pending_registration_fields( $user_id, $fields );
 	return $fields;
@@ -1336,9 +1353,7 @@ function papelito_validate_vendor_pagarme_bank_fields( array $step3, WP_Error $e
 
 	$holder_document = (string) ( $bank_account['holderDocument'] ?? '' );
 	if ( 'individual' === $holder_type ) {
-		if ( ! papelito_revendedor_validate_cpf( $holder_document ) ) {
-			$errors->add( 'bankHolderDocument', 'Informe um CPF válido para o titular.' );
-		}
+		$errors->add( 'bankHolderDocument', PAPELITO_VENDOR_BANK_HOLDER_MISMATCH_MESSAGE );
 	} elseif ( ! papelito_revendedor_validate_cnpj( $holder_document ) ) {
 		$errors->add( 'bankHolderDocument', 'Informe um CNPJ válido para o titular.' );
 	}
@@ -2302,15 +2317,9 @@ function papelito_admin_vendors_normalize_bank_account( $bank_account ) {
 		$errors->add( 'bankHolderName', 'Informe o titular da conta.' );
 	}
 
-	if ( ! in_array( $holder_type, array( 'company', 'individual' ), true ) ) {
-		$errors->add( 'bankHolderType', 'Informe o tipo do titular da conta.' );
-	}
-
-	if ( 'individual' === $holder_type ) {
-		if ( ! papelito_revendedor_validate_cpf( $normalized['holderDocument'] ) ) {
-			$errors->add( 'bankHolderDocument', 'Informe um CPF válido para o titular.' );
-		}
-	} elseif ( 'company' === $holder_type && ! papelito_revendedor_validate_cnpj( $normalized['holderDocument'] ) ) {
+	if ( 'company' !== $holder_type ) {
+		$errors->add( 'bankHolderType', PAPELITO_VENDOR_BANK_HOLDER_MISMATCH_MESSAGE );
+	} elseif ( ! papelito_revendedor_validate_cnpj( $normalized['holderDocument'] ) ) {
 		$errors->add( 'bankHolderDocument', 'Informe um CNPJ válido para o titular.' );
 	}
 

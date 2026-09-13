@@ -1,6 +1,6 @@
 # Runbook — Ambiente e credenciais da Pagar.me
 
-Mecânica de configuração por ambiente e simulação local. O modelo de negócio, o payload do recebedor e as regras do webhook estão em [`../../../docs/flows/payments.md`](../../../docs/flows/payments.md).
+Mecânica de configuração por ambiente e simulação local. O recebedor do vendor (payload, titularidade da conta bancária, sincronização e erros) está em [`../../../docs/pagarme-integration.md`](../../../docs/pagarme-integration.md); checkout, split e webhook, em [`../../../docs/flows/payments.md`](../../../docs/flows/payments.md).
 
 > Nenhum valor real de credencial vive neste documento nem em qualquer outro do repositório. Segredos ficam no `.env` (gitignorado), no cofre e no servidor.
 

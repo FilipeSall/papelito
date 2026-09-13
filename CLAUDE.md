@@ -38,6 +38,7 @@ A versão de schema corrente é `PAPELITO_DB_VERSION`, em `plugin_papelito.php` 
 - **A taxonomia Papelito é a única classificação do fluxo headless.** Produto publicado precisa de categoria principal para a vitrine; subcategoria é opcional e os filtros usam OR por faceta e AND entre facetas.
 - **`papelito_stock_zeroed` só dispara na transição `qty > 0 → 0`** e apenas com `notified_zero_at IS NULL`.
 - **Pagamento direto ao vendor, sem split de receita**: `split` do PSP com recebedor único a 100%, `liable: true`, taxas no vendor. Vender exige **dupla aprovação** — cobertura regional **e** recebedor Pagar.me `active`.
+- **A conta bancária do recebedor é sempre do CNPJ do vendor** (`holder_type: company`, `holder_document` = documento do recebedor), exigência da Pagar.me. A regra única é `papelito_vendor_bank_holder_matches_recipient()`; não reabra conta pessoa física nem converta draft antigo em silêncio. Detalhe em [`../docs/pagarme-integration.md`](../docs/pagarme-integration.md).
 - **Nenhum pedido B2B lê documento fiscal de `wp_usermeta`** nem chama `papelito_pagarme_resolve_customer_document()`. O snapshot do pedido é a única fonte.
 - **Webhook `charge.*` pode chegar sem `order_id`** — a busca precisa cair para o postmeta `_papelito_pagarme_charge_id`. Sempre reconcilie com `GET /orders/{id}` antes de liberar.
 - **`pagarme-payments-for-woocommerce` fica desativado** — a integração é pelo `plugin_papelito`.

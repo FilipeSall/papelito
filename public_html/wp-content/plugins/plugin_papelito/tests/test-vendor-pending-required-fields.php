@@ -278,10 +278,12 @@ $draft['corporationType']                   = '';
 $draft['foundingDate']                      = '';
 $draft['managingPartners'][0]['motherName'] = '';
 
+$vendor_cnpj = '11.444.777/0001-61';
+
 papelito_assert(
 	'sem natureza juridica, data de fundacao e nome da mae o cadastro fica completo',
 	array(),
-	papelito_collect_vendor_pending_registration_fields( $draft, $valid_phone )
+	papelito_collect_vendor_pending_registration_fields( $draft, $valid_phone, $vendor_cnpj )
 );
 
 papelito_assert(
@@ -310,6 +312,81 @@ papelito_assert(
 	$date_errors instanceof WP_Error && in_array( 'foundingDate', $date_errors->codes, true )
 );
 
+echo "\nConta bancaria precisa estar no CNPJ do recebedor\n";
+
+$pf_do_socio                                  = papelito_test_complete_draft();
+$pf_do_socio['bankAccount']['holderType']     = 'individual';
+$pf_do_socio['bankAccount']['holderDocument'] = '191.000.000-00';
+
+papelito_assert(
+	'conta pessoa fisica do socio deixa a conta bancaria pendente',
+	array( 'bankAccount.holderDocument' ),
+	papelito_collect_vendor_pending_registration_fields( $pf_do_socio, $valid_phone, $vendor_cnpj )
+);
+
+$pj_de_outro_cnpj                                  = papelito_test_complete_draft();
+$pj_de_outro_cnpj['bankAccount']['holderDocument'] = '65.326.368/0001-90';
+
+papelito_assert(
+	'conta pessoa juridica de outro CNPJ deixa a conta bancaria pendente',
+	array( 'bankAccount.holderDocument' ),
+	papelito_collect_vendor_pending_registration_fields( $pj_de_outro_cnpj, $valid_phone, $vendor_cnpj )
+);
+
+papelito_assert(
+	'conta no CNPJ do vendor vale com ou sem mascara',
+	array(),
+	papelito_collect_vendor_pending_registration_fields( papelito_test_complete_draft(), $valid_phone, '11444777000161' )
+);
+
+$pf_errors = papelito_validate_vendor_pagarme_step3( $pf_do_socio );
+papelito_assert(
+	'o validador estrito recusa conta pessoa fisica',
+	true,
+	$pf_errors instanceof WP_Error && in_array( 'bankHolderDocument', $pf_errors->codes, true )
+);
+
+$admin_bank = papelito_admin_vendors_normalize_bank_account( $pf_do_socio['bankAccount'] );
+papelito_assert(
+	'o admin nao cria vendor com conta pessoa fisica',
+	true,
+	$admin_bank instanceof WP_Error && in_array( 'bankHolderType', $admin_bank->codes, true )
+);
+
+require_once __DIR__ . '/../includes/pagarme_recipients.php';
+
+$recipient_context = array(
+	'cnpj'         => '11444777000161',
+	'phone'        => $valid_phone,
+	'store_name'   => 'Cifal',
+	'draft'        => papelito_test_complete_draft(),
+	'partners'     => papelito_test_complete_draft()['managingPartners'],
+	'bank_account' => $pf_do_socio['bankAccount'],
+	'address'      => array(
+		'street'       => 'SIA Trecho 4',
+		'number'       => '375',
+		'complement'   => '',
+		'neighborhood' => 'SIA',
+		'city'         => 'Brasilia',
+		'state'        => 'DF',
+		'zip_code'     => '70000000',
+	),
+);
+
+$mismatch = papelito_pagarme_validate_recipient_context( $recipient_context );
+papelito_assert(
+	'a Pagar.me nao e chamada com conta fora do CNPJ do recebedor',
+	'papelito_pagarme_bank_holder_mismatch',
+	$mismatch instanceof WP_Error ? $mismatch->get_error_code() : 'sem erro'
+);
+
+$recipient_context['bank_account'] = papelito_test_complete_draft()['bankAccount'];
+papelito_assert(
+	'conta no CNPJ do recebedor segue para a Pagar.me',
+	null,
+	papelito_pagarme_validate_recipient_context( $recipient_context )
+);
+
 echo "\nTelefone passou a ser obrigatorio\n";
 
 $complete = papelito_test_complete_draft();
@@ -317,19 +394,19 @@ $complete = papelito_test_complete_draft();
 papelito_assert(
 	'telefone vazio deixa o cadastro incompleto',
 	array( 'phoneNumber' ),
-	papelito_collect_vendor_pending_registration_fields( $complete, '' )
+	papelito_collect_vendor_pending_registration_fields( $complete, '', $vendor_cnpj )
 );
 
 papelito_assert(
 	'telefone sem DDD nao satisfaz a regra',
 	array( 'phoneNumber' ),
-	papelito_collect_vendor_pending_registration_fields( $complete, '99999999' )
+	papelito_collect_vendor_pending_registration_fields( $complete, '99999999', $vendor_cnpj )
 );
 
 papelito_assert(
 	'telefone com DDD conclui o cadastro',
 	array(),
-	papelito_collect_vendor_pending_registration_fields( $complete, $valid_phone )
+	papelito_collect_vendor_pending_registration_fields( $complete, $valid_phone, $vendor_cnpj )
 );
 
 papelito_assert( 'fixo com 10 digitos e aceito', true, papelito_vendor_phone_is_valid( '(61) 3333-4444' ) );

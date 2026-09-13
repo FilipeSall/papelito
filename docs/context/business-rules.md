@@ -131,6 +131,7 @@ Além disso: a query parte de `FROM wp_posts p LEFT JOIN papelito_vendor_stock v
 50. O webhook trata `order.*` e `charge.*`. **`charge.*` pode chegar sem `order_id`** — a busca precisa cair para o postmeta `_papelito_pagarme_charge_id`.
 51. A reconciliação por WP-Cron libera reserva de pagamentos terminais não pagos e expirados, **sem restocar pedidos pagos ou processados**.
 52. Nenhum pedido B2B chama `papelito_pagarme_resolve_customer_document()` nem lê documento fiscal de usermeta.
+52a. A conta bancária do recebedor tem titular `company` com o CNPJ do vendor. `papelito_vendor_bank_holder_matches_recipient()` é a regra única e alimenta três pontos: `papelito_collect_vendor_pending_bank_fields()` (pendência `bankAccount.holderDocument`), `papelito_pagarme_validate_recipient_context()` e `papelito_pagarme_build_recipient_bank_account_payload()` (`422 papelito_pagarme_bank_holder_mismatch`, **antes** de chamar a Pagar.me). `papelito_pagarme_bank_account_payload()` envia sempre `holder_type: company` com o CNPJ do recebedor. `papelito_validate_vendor_pagarme_bank_fields()` e `papelito_admin_vendors_normalize_bank_account()` recusam titular pessoa física. Draft antigo em pessoa física **não é convertido**: fica pendente até alguém informar uma conta PJ.
 
 ## Rastreamento
 

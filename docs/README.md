@@ -26,7 +26,7 @@ Contexto **específico do backend**. Tudo que é compartilhado com o frontend (m
 | [operations/deploy.md](operations/deploy.md) | subir código, fazer rollback, hotfix urgente, inventário de secrets do CI |
 | [operations/sync-from-prod.md](operations/sync-from-prod.md) | alguém editou arquivo direto no servidor e é preciso reconciliar com o repositório |
 | [operations/incident.md](operations/incident.md) | suspeita de comprometimento |
-| [operations/pagarme-environment.md](operations/pagarme-environment.md) | configurar credenciais da Pagar.me por ambiente e simular webhook localmente |
+| [operations/pagarme-environment.md](operations/pagarme-environment.md) | configurar credenciais da Pagar.me por ambiente e simular webhook localmente; o recebedor do vendor e a regra da conta bancária estão em [`../../docs/pagarme-integration.md`](../../docs/pagarme-integration.md) |
 | [operations/correios-diagnostics.md](operations/correios-diagnostics.md) | verificar uma chave CWS com segurança, e o estado da investigação de pré-postagem |
 | [operations/cnpj-dev-fixtures.md](operations/cnpj-dev-fixtures.md) | percorrer o cadastro B2B local com CNPJ fictício — credenciais dos cenários, por que o QSA dá mismatch, liberar um CNPJ, criar um cenário novo |
 | [operations/receipts-backfill.md](operations/receipts-backfill.md) | emitir recibo para pedidos pagos antes de `receipts.php` — lotes, checkpoint e por que não há rollback |

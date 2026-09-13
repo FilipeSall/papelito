@@ -47,7 +47,7 @@ $nubank = array(
 );
 
 echo "Scenario 1: Nubank (no branch check digit) omits branch_check_digit\n";
-$payload = papelito_pagarme_bank_account_payload( $nubank, 'Loja Fallback', '11222333000181' );
+$payload = papelito_pagarme_bank_account_payload( $nubank, 'Loja Fallback', '65.326.368/0001-90' );
 papelito_assert( 'branch_check_digit absent when empty', false, array_key_exists( 'branch_check_digit', $payload ) );
 papelito_assert( 'branch_number preserved', '0001', $payload['branch_number'] );
 papelito_assert( 'account_check_digit kept when present', '5', $payload['account_check_digit'] );
@@ -84,7 +84,7 @@ papelito_assert( 'holder_name falls back to store name', 'Loja Fallback', $paylo
 papelito_assert( 'holder_type default company', 'company', $payload['holder_type'] );
 papelito_assert( 'type default checking', 'checking', $payload['type'] );
 
-echo "Scenario 5: PJ recipient accepts a CPF bank account holder\n";
+echo "Scenario 5: corporation recipient always sends its own CNPJ as the bank account holder\n";
 $payload = papelito_pagarme_bank_account_payload(
 	array(
 		'holderType'     => 'individual',
@@ -93,8 +93,8 @@ $payload = papelito_pagarme_bank_account_payload(
 	'Loja',
 	'65.326.368/0001-90'
 );
-papelito_assert( 'individual holder type is preserved', 'individual', $payload['holder_type'] );
-papelito_assert( 'CPF holder document is preserved', '12345678909', $payload['holder_document'] );
+papelito_assert( 'holder type is company for a corporation recipient', 'company', $payload['holder_type'] );
+papelito_assert( 'holder document is the recipient CNPJ', '65326368000190', $payload['holder_document'] );
 
 echo "\n";
 if ( $failures > 0 ) {

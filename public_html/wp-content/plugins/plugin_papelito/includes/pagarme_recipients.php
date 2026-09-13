@@ -350,20 +350,23 @@ function papelito_pagarme_partner_payload( array $partner, string $fallback_phon
  * agencia, e a Pagar.me rejeita a string vazia com
  * "invalid_parameter | agencia_dv | Invalid format".
  *
+ * O titular sai sempre como `company` com o CNPJ do recebedor: a Pagar.me exige
+ * `holder_document` igual ao documento do recebedor, e o recebedor e sempre `corporation`.
+ *
  * @param array<string,mixed> $bank_account Dados crus do draft (`bankAccount`).
  * @param string              $fallback_holder_name Nome usado quando holderName vazio.
- * @param string              $fallback_document   CNPJ usado quando holderDocument vazio.
+ * @param string              $recipient_document  CNPJ do recebedor.
  * @return array<string,string>
  */
-function papelito_pagarme_bank_account_payload( array $bank_account, string $fallback_holder_name, string $fallback_document ): array {
+function papelito_pagarme_bank_account_payload( array $bank_account, string $fallback_holder_name, string $recipient_document ): array {
 	// A agencia (branch_number) da Pagar.me aceita no maximo 4 digitos; valores
 	// mais longos disparam "invalid_parameter | agencia | Value too long".
 	$branch_number = substr( preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', (string) ( $bank_account['branchNumber'] ?? '' ) ), 0, 4 );
 
 	$payload = array(
 		'holder_name'     => sanitize_text_field( (string) ( $bank_account['holderName'] ?? $fallback_holder_name ) ),
-		'holder_type'     => sanitize_text_field( (string) ( $bank_account['holderType'] ?? 'company' ) ),
-		'holder_document' => preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', (string) ( $bank_account['holderDocument'] ?? $fallback_document ) ),
+		'holder_type'     => 'company',
+		'holder_document' => preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', $recipient_document ),
 		'bank'            => sanitize_text_field( (string) ( $bank_account['bankCode'] ?? '' ) ),
 		'branch_number'   => $branch_number,
 		'account_number'  => sanitize_text_field( (string) ( $bank_account['accountNumber'] ?? '' ) ),
@@ -498,6 +501,14 @@ function papelito_pagarme_validate_recipient_context( array $context ) {
 		);
 	}
 
+	if ( ! papelito_vendor_bank_holder_matches_recipient( $context['bank_account'], $cnpj ) ) {
+		return new WP_Error(
+			'papelito_pagarme_bank_holder_mismatch',
+			'A conta bancária do recebedor precisa estar no CNPJ da empresa (conta PJ).',
+			array( 'status' => 422 )
+		);
+	}
+
 	return null;
 }
 
@@ -628,6 +639,14 @@ function papelito_pagarme_build_recipient_bank_account_payload( int $user_id ) {
 	$store_name   = sanitize_text_field( (string) get_user_meta( $user_id, 'store_name', true ) );
 	$cnpj         = preg_replace( PAPELITO_PAGARME_DIGITS_PATTERN, '', (string) get_user_meta( $user_id, 'cnpj', true ) );
 	$bank_account = isset( $draft['bankAccount'] ) && is_array( $draft['bankAccount'] ) ? $draft['bankAccount'] : array();
+
+	if ( ! papelito_vendor_bank_holder_matches_recipient( $bank_account, $cnpj ) ) {
+		return new WP_Error(
+			'papelito_pagarme_bank_holder_mismatch',
+			'A conta bancária do recebedor precisa estar no CNPJ da empresa (conta PJ).',
+			array( 'status' => 422 )
+		);
+	}
 
 	return papelito_pagarme_bank_account_payload( $bank_account, $store_name, $cnpj );
 }

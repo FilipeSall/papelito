@@ -30,7 +30,8 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Arquivo privado | `test-private-files.php` (mecanismo genérico), `test-company-owner-document-validation.php` (spec da candidatura) |
 | Empresa / B2B | `test-company-authz-matrix.php`, `test-company-active-context.php`, `test-company-invitations.php`, `test-company-idempotency.php`, `test-company-ownership-transfer.php`, `test-company-onboarding.php`, `tests/test-company-purchase-gate.php` (raiz) |
 | Legados | `test-legacy-migration.php` |
-| Pagamento | `test-pagarme-*.php`, incluindo `test-pagarme-simulator.php` |
+| Pagamento | `test-pagarme-*.php`, incluindo `test-pagarme-simulator.php` e `test-pagarme-bank-account-payload.php` (titular da conta sempre `company` com o CNPJ do recebedor) |
+| Cadastro do vendor | `test-vendor-pending-required-fields.php` (pendências, conta bancária fora do CNPJ, validador estrito, criação pelo admin e bloqueio antes da Pagar.me — usa `mb_strlen`, então rode no container: `docker compose exec -T web php wp-content/plugins/plugin_papelito/tests/<arquivo>`) |
 | Correios | `test-correios-prepostage.php`, `test-correios-idempotency.php`, `test-correios-reconciliation.php`, `test-correios-tracking-map.php` |
 | Pedido | `test-order-receipt-pdf.php`, `test-receipts-snapshot.php`, `test-receipts-backfill.php`, `test-receipt-email-attachment.php` (**estrutural**: o envio do recibo roda em REST e não pode chamar função que só existe em `wp-admin/includes/file.php`) |
 | Analytics | `test-analytics-ga4.php` (validação estrita dos ids do navegador, payload do Measurement Protocol, idempotência do webhook reemitido) |
