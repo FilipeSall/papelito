@@ -804,12 +804,16 @@ function papelito_auth_map_password_reset_key_error( WP_Error $error ) {
 
 add_filter(
 	'wp_authenticate_user',
-	static function ( $user ) {
+	static function ( $user, $password = '' ) {
 		if ( is_wp_error( $user ) || ! $user instanceof WP_User ) {
 			return $user;
 		}
 
 		if ( ! papelito_auth_requires_email_verification( $user->ID ) ) {
+			return $user;
+		}
+
+		if ( ! wp_check_password( (string) $password, $user->user_pass, $user->ID ) ) {
 			return $user;
 		}
 
@@ -819,7 +823,7 @@ add_filter(
 		);
 	},
 	10,
-	1
+	2
 );
 
 /**
