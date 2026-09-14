@@ -76,12 +76,18 @@ function get_option_simulado( string $name, mixed $stored ): mixed {
 registration_assert( 'registro publico fica desligado mesmo com a opcao ligada no banco', false, (bool) get_option_simulado( 'users_can_register', '1' ) );
 registration_assert( 'outras opcoes continuam vindo do banco', 'subscriber', get_option_simulado( 'default_role', 'subscriber' ) );
 
+$checkout_registration = true;
+foreach ( $GLOBALS['pap_hooks']['woocommerce_checkout_registration_enabled'] ?? array() as $callback ) {
+	$checkout_registration = $callback( $checkout_registration );
+}
+registration_assert( 'checkout do Woo e Store API nao criam conta mesmo com a opcao ligada', false, (bool) $checkout_registration );
+
 foreach ( $GLOBALS['pap_hooks']['plugins_loaded'] ?? array() as $callback ) {
 	$callback();
 }
 $deregistered = $GLOBALS['pap_deregistered'];
 sort( $deregistered );
-registration_assert( 'mutations de cadastro publico saem do schema GraphQL', array( 'registerCustomer', 'registerUser' ), $deregistered );
+registration_assert( 'mutations que criam conta saem do schema GraphQL', array( 'checkout', 'registerCustomer', 'registerUser' ), $deregistered );
 
 echo 0 === $failures ? "\nOK\n" : "\n{$failures} FALHA(S)\n";
 exit( 0 === $failures ? 0 : 1 );

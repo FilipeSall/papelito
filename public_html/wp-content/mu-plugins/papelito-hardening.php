@@ -104,6 +104,7 @@ add_filter( 'the_generator', '__return_empty_string' );
 add_filter( 'xmlrpc_enabled', '__return_false' );
 
 add_filter( 'pre_option_users_can_register', '__return_zero' );
+add_filter( 'woocommerce_checkout_registration_enabled', '__return_false' );
 
 add_action(
 	'plugins_loaded',
@@ -114,6 +115,7 @@ add_action(
 
 		deregister_graphql_mutation( 'registerUser' );
 		deregister_graphql_mutation( 'registerCustomer' );
+		deregister_graphql_mutation( 'checkout' );
 	}
 );
 add_filter(
