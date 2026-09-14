@@ -102,6 +102,20 @@ remove_action( 'wp_head', 'wp_generator' );
 add_filter( 'the_generator', '__return_empty_string' );
 
 add_filter( 'xmlrpc_enabled', '__return_false' );
+
+add_filter( 'pre_option_users_can_register', '__return_zero' );
+
+add_action(
+	'plugins_loaded',
+	static function (): void {
+		if ( ! function_exists( 'deregister_graphql_mutation' ) ) {
+			return;
+		}
+
+		deregister_graphql_mutation( 'registerUser' );
+		deregister_graphql_mutation( 'registerCustomer' );
+	}
+);
 add_filter(
 	'wp_headers',
 	static function ( array $headers ): array {
