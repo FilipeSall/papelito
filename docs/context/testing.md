@@ -145,6 +145,7 @@ O SonarLint usa regras genéricas de PHP que colidem de frente com o WordPress c
 - `php:S105` (tabs) — o WP padroniza indentação com tab, e o PHPCS reprova espaços;
 - `php:S100` (nome de função em camelCase) — o plugin usa `snake_case` com prefixo `papelito_`, e os nomes são contrato de hooks/testes;
 - `php:S101` (nome de classe em PascalCase) — os testes standalone stubam classes do core (`WP_Error`, `WP_REST_Response`, `WP_REST_Request`, `WP_REST_Server`) e o nome é contrato de `new`/`instanceof` do código sob teste: renomear quebra o teste;
+- `php:S116` (propriedade em camelCase) — o WPCS exige `snake_case` em propriedades, e os stubs de `$wpdb` precisam dos nomes do core (`last_error`, `insert_id`) que o código sob teste lê;
 - `php:S1172` (parâmetro não usado) — callback de filtro recebe argumentos por posição (`rest_pre_dispatch`, `wp_check_filetype_and_ext`), então parâmetros no meio da assinatura não podem ser removidos;
 - `php:S1142` (mais de 3 `return`) — desligada no editor, mas a preferência do código segue sendo consolidar o retorno ou extrair helper.
 

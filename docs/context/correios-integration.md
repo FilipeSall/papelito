@@ -45,7 +45,7 @@ Produto sem peso ou dimensões cadastrados gera erro claro de cadastro incomplet
 
 Staging e produção **bloqueiam todas as flags `DEV_*`**: staging é tratado como produção.
 
-`is_test=1` é marca **imutável**. O polling real ignora toda remessa com `is_test=1`; o PDF simulado exige `provider=mock` **e** `is_test=1`; fixtures de rastreamento aceitam `provider IN (mock, manual)` apenas com `is_test=1`. Nenhum campo isolado promove um registro ao fluxo mock.
+`is_test=1` só volta a `0` nunca: é gravado na criação da remessa ou, localmente, pelo `simulate` (abaixo). O polling real ignora toda remessa com `is_test=1`; o PDF simulado exige `provider=mock` **e** `is_test=1`; fixtures de rastreamento aceitam `provider IN (mock, manual)` apenas com `is_test=1`. Nenhum campo isolado promove um registro ao fluxo mock.
 
 ### Cenários locais determinísticos
 
@@ -61,32 +61,19 @@ Localmente, como **nenhum POST de criação real é executado**, até `unknown` 
 
 ### Simular rastreamento pelo WP-CLI
 
-Para avançar uma remessa mock já criada, use o mesmo processador de eventos usado pelo polling. O comando só é registrado no WP-CLI e recusa qualquer ambiente diferente de `local` ou `development`.
+Avança o rastreamento de um pedido local sem chamar os Correios, pelo mesmo processador de eventos do polling. Só existe no WP-CLI e recusa qualquer ambiente diferente de `local` ou `development`.
 
 ```bash
-docker compose exec web wp --allow-root papelito tracking simulate 123
-docker compose exec web wp --allow-root papelito tracking simulate 123 --apply
+bash scripts/simulate-delivery.sh 123                  # até entregue
+bash scripts/simulate-delivery.sh 123 in_transit       # até em trânsito
+bash scripts/simulate-delivery.sh 123 --dry-run        # só mostra, não grava
 ```
 
-O primeiro comando é um dry-run: mostra os eventos que seriam aplicados. O segundo grava, nesta ordem, `PO/01`, `RO/01`, `OEC/03` e `BDE/01`. Cada evento tem origem `local_simulation` em `wp_papelito_tracking_events`; nunca é apresentado como consulta aos Correios e não há chamada HTTP externa.
+O script é atalho para `docker compose exec -T web wp --allow-root papelito tracking simulate <pedido> [estado]`. O estado final é `posted`, `in_transit`, `out_for_delivery` ou `delivered` (padrão), e o comando grava todos os eventos até ele, nesta ordem: `PO/01`, `RO/01`, `OEC/03`, `BDE/01`. Cada evento tem origem `local_simulation` em `wp_papelito_tracking_events`; não há chamada HTTP externa.
 
-O comando exige uma remessa ativa de saída com `is_test=1`, criada pelo modo `mock`; ele não cria remessa nem aceita S10 manual real. Para avançar um estado por vez:
+Serve para qualquer remessa de saída ativa do pedido, gerada em modo `mock` ou registrada com rastreio manual. Remessa com `is_test=0` é marcada como teste (`is_test=1`, `next_poll_at` nulo) antes de gravar, para o polling real nunca consultá-la. O comando não cria remessa: sem etiqueta gerada ou rastreio registrado no painel do vendor, ele recusa. Com mais de uma remessa, aplica a todas; `--shipment=<id>` limita a uma. `--at=<ISO-8601>` fixa a data-base dos eventos; sem ela, vale a criação da remessa. Repetir o comando é idempotente.
 
-```bash
-docker compose exec web wp --allow-root papelito tracking simulate 123 --sequence=posted --apply
-docker compose exec web wp --allow-root papelito tracking simulate 123 --sequence=in_transit --apply
-docker compose exec web wp --allow-root papelito tracking simulate 123 --sequence=out_for_delivery --apply
-docker compose exec web wp --allow-root papelito tracking simulate 123 --sequence=delivered --apply
-```
-
-Pedidos com mais de uma remessa de teste exigem `--shipment=<id>` ou `--all`. Use `--at=<ISO-8601>` para escolher uma data-base determinística; sem essa opção, a criação da remessa define os horários. Repetir o mesmo evento com a mesma data-base é idempotente.
-
-```bash
-docker compose exec web wp --allow-root papelito tracking simulate 123 --shipment=45 --sequence=delivered --apply
-docker compose exec web wp --allow-root papelito tracking simulate 123 --all --sequence=delivered --apply
-```
-
-O status operacional só chega a `entregue` quando todas as remessas ativas do pedido foram entregues. O comando chama `papelito_tracking_ingest_event()`, portanto mantém evento bruto, projeção, nota do pedido e notificações como no fluxo normal.
+O status operacional só chega a `entregue` quando todas as remessas ativas do pedido foram entregues. Como o comando chama `papelito_tracking_ingest_event()`, mantém evento bruto, projeção, nota do pedido e notificações como no fluxo normal. O status WooCommerce do pedido não muda.
 
 ## Contrato do adapter
 

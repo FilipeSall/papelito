@@ -5,25 +5,26 @@ define( 'MINUTE_IN_SECONDS', 60 );
 define( 'HOUR_IN_SECONDS', 3600 );
 define( 'DAY_IN_SECONDS', 86400 );
 define( 'ARRAY_A', 'ARRAY_A' );
+define( 'PAPELITO_TEST_SHIPMENT_CREATED_AT', '2026-09-01 10:00:00' );
 
-function add_action( ...$args ) {}
-function add_filter( ...$args ) {}
-function register_rest_route( ...$args ) {}
-function apply_filters( $hook, $value ) { return $value; }
-function sanitize_text_field( $value ) { return trim( (string) $value ); }
-function sanitize_textarea_field( $value ) { return trim( (string) $value ); }
-function sanitize_key( $value ) { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $value ) ); }
-function absint( $value ) { return abs( (int) $value ); }
-function current_time( $type, $gmt = false ) { return '2026-09-01 10:10:00'; }
-function wp_json_encode( $value, $flags = 0 ) { return json_encode( $value, $flags ); }
-function wp_timezone() { return new DateTimeZone( 'UTC' ); }
+function add_action( string $hook, mixed ...$args ): bool { return true; }
+function add_filter( string $hook, mixed ...$args ): bool { return true; }
+function register_rest_route( string $route_namespace, string $route, array $args = array() ): bool { return true; }
+function apply_filters( string $hook, mixed $value ): mixed { return $value; }
+function sanitize_text_field( mixed $value ): string { return trim( (string) $value ); }
+function sanitize_textarea_field( mixed $value ): string { return trim( (string) $value ); }
+function sanitize_key( mixed $value ): string { return preg_replace( '/[^a-z\d_\-]/', '', strtolower( (string) $value ) ); }
+function absint( mixed $value ): int { return abs( (int) $value ); }
+function current_time( string $type, bool $gmt = false ): string { return '2026-09-01 10:10:00'; }
+function wp_json_encode( mixed $value, int $flags = 0 ): string|false { return json_encode( $value, $flags ); }
+function wp_timezone(): DateTimeZone { return new DateTimeZone( 'UTC' ); }
 
 class WP_Error {}
 
-require __DIR__ . '/../includes/correios_tracking.php';
+require_once __DIR__ . '/../includes/correios_tracking.php';
 
 $failures = 0;
-function papelito_tracking_simulation_assert( string $label, $expected, $actual ): void {
+function papelito_tracking_simulation_assert( string $label, mixed $expected, mixed $actual ): void {
 	global $failures;
 	if ( $expected === $actual ) {
 		echo "  PASS: {$label}\n";
@@ -52,7 +53,7 @@ class Papelito_Tracking_Simulation_Test_Wpdb {
 				'active' => 1,
 				'status' => 'preposted',
 				'status_rank' => 10,
-				'created_at' => '2026-09-01 10:00:00',
+				'created_at' => PAPELITO_TEST_SHIPMENT_CREATED_AT,
 			),
 			array(
 				'id' => 11,
@@ -63,7 +64,7 @@ class Papelito_Tracking_Simulation_Test_Wpdb {
 				'active' => 1,
 				'status' => 'preposted',
 				'status_rank' => 10,
-				'created_at' => '2026-09-01 10:00:00',
+				'created_at' => PAPELITO_TEST_SHIPMENT_CREATED_AT,
 			),
 			array(
 				'id' => 12,
@@ -74,21 +75,24 @@ class Papelito_Tracking_Simulation_Test_Wpdb {
 				'active' => 1,
 				'status' => 'preposted',
 				'status_rank' => 10,
-				'created_at' => '2026-09-01 10:00:00',
+				'created_at' => PAPELITO_TEST_SHIPMENT_CREATED_AT,
 			),
 		);
 	}
 
-	public function prepare( $query, ...$args ) {
+	public function prepare( string $query, mixed ...$args ): string {
+		if ( 1 === count( $args ) && is_array( $args[0] ) ) {
+			$args = $args[0];
+		}
 		foreach ( $args as $arg ) {
 			$query = preg_replace( '/%[ds]/', is_numeric( $arg ) ? (string) $arg : "'" . addslashes( (string) $arg ) . "'", $query, 1 );
 		}
 		return $query;
 	}
 
-	public function query( $query ) { return true; }
+	public function query( string $query ): bool { return true; }
 
-	public function get_row( $query, $format ) {
+	public function get_row( string $query, string $format = 'OBJECT' ): ?array {
 		if ( preg_match( '/WHERE id = (\d+)/', $query, $matches ) ) {
 			foreach ( $this->shipments as $shipment ) {
 				if ( (int) $shipment['id'] === (int) $matches[1] ) {
@@ -99,9 +103,9 @@ class Papelito_Tracking_Simulation_Test_Wpdb {
 		return null;
 	}
 
-	public function get_results( $query, $format ) { return $this->shipments; }
+	public function get_results( string $query, string $format = 'OBJECT' ): array { return $this->shipments; }
 
-	public function insert( $table, $data, $format = null ) {
+	public function insert( string $table, array $data, ?array $format = null ): int|false {
 		if ( false !== strpos( $table, 'tracking_events' ) ) {
 			if ( isset( $this->event_keys[ $data['event_key'] ] ) ) {
 				$this->last_error = 'Duplicate entry';
@@ -114,7 +118,7 @@ class Papelito_Tracking_Simulation_Test_Wpdb {
 		return 1;
 	}
 
-	public function update( $table, $data, $where ) {
+	public function update( string $table, array $data, array $where ): int {
 		foreach ( $this->shipments as $index => $shipment ) {
 			if ( false !== strpos( $table, 'shipments' ) && (int) $shipment['id'] === (int) $where['id'] ) {
 				$this->shipments[ $index ] = array_merge( $shipment, $data );
@@ -127,15 +131,14 @@ class Papelito_Tracking_Simulation_Test_Wpdb {
 $GLOBALS['wpdb'] = new Papelito_Tracking_Simulation_Test_Wpdb();
 
 echo "Scenario 1: local fixtures use the documented Rastro event sequence\n";
-$fixture = papelito_tracking_simulation_fixture_event( 'delivered', new DateTimeImmutable( '2026-09-01 10:00:00', new DateTimeZone( 'UTC' ) ) );
+$fixture = papelito_tracking_simulation_fixture_event( 'delivered', new DateTimeImmutable( PAPELITO_TEST_SHIPMENT_CREATED_AT, new DateTimeZone( 'UTC' ) ) );
 papelito_tracking_simulation_assert( 'delivered fixture uses BDE/01', 'BDE', $fixture['codigo'] ?? null );
 papelito_tracking_simulation_assert( 'delivered fixture keeps a deterministic offset', '2026-09-01T10:03:00+00:00', $fixture['dtHrCriado'] ?? null );
 papelito_tracking_simulation_assert( 'unsupported fixture is rejected', null, papelito_tracking_simulation_fixture_event( 'cancelled', new DateTimeImmutable() ) );
 
-echo "Scenario 2: only outbound test shipments can be selected\n";
-$shipments = papelito_tracking_simulation_test_shipments( 20 );
-papelito_tracking_simulation_assert( 'one eligible shipment is returned', 1, count( $shipments ) );
-papelito_tracking_simulation_assert( 'eligible shipment is the outbound test row', 10, $shipments[0]['id'] ?? null );
+echo "Scenario 2: every active outbound shipment can be selected, test or not\n";
+$shipments = papelito_tracking_simulation_shipments( 20 );
+papelito_tracking_simulation_assert( 'inbound shipment is left out', array( 10, 11 ), array_column( $shipments, 'id' ) );
 
 echo "Scenario 3: fixtures use the production event processor with an explicit local origin\n";
 $started_at = papelito_tracking_simulation_started_at( $shipments[0] );
@@ -147,5 +150,16 @@ papelito_tracking_simulation_assert( 'events retain local simulation origin', ar
 echo "Scenario 4: a replay remains idempotent\n";
 $replay = papelito_tracking_simulation_apply_sequence( $shipments[0], array( 'delivered' ), $started_at );
 papelito_tracking_simulation_assert( 'duplicate event is not ingested again', false, $replay[0]['ingested'] ?? null );
+
+echo "Scenario 5: a target state expands to every state up to it\n";
+papelito_tracking_simulation_assert( 'delivered expands to the full sequence', array( 'posted', 'in_transit', 'out_for_delivery', 'delivered' ), papelito_tracking_simulation_sequence_until( 'delivered' ) );
+papelito_tracking_simulation_assert( 'in_transit stops before out_for_delivery', array( 'posted', 'in_transit' ), papelito_tracking_simulation_sequence_until( 'in_transit' ) );
+papelito_tracking_simulation_assert( 'unknown state yields no sequence', array(), papelito_tracking_simulation_sequence_until( 'cancelled' ) );
+
+echo "Scenario 6: a non-test shipment is marked as test before simulating\n";
+$marked = papelito_tracking_simulation_mark_as_test( $GLOBALS['wpdb']->shipments[1] );
+papelito_tracking_simulation_assert( 'returned shipment is flagged as test', 1, $marked['is_test'] );
+papelito_tracking_simulation_assert( 'stored shipment is flagged as test', 1, $GLOBALS['wpdb']->shipments[1]['is_test'] );
+papelito_tracking_simulation_assert( 'stored shipment leaves the real polling queue', null, $GLOBALS['wpdb']->shipments[1]['next_poll_at'] );
 
 exit( $failures > 0 ? 1 : 0 );
