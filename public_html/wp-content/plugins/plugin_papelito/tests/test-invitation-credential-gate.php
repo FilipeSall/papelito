@@ -20,6 +20,10 @@ defined( 'MINUTE_IN_SECONDS' ) || define( 'MINUTE_IN_SECONDS', 60 );
 defined( 'HOUR_IN_SECONDS' ) || define( 'HOUR_IN_SECONDS', 3600 );
 defined( 'DAY_IN_SECONDS' ) || define( 'DAY_IN_SECONDS', 86400 );
 
+const INVITATION_TEST_VALID_CPF     = '52998224725';
+const INVITATION_TEST_INVITED_EMAIL = 'convidado@test.com';
+const INVITATION_TEST_GOOGLE_EMAIL  = 'google@test.com';
+
 $GLOBALS['pap_meta']             = array();
 $GLOBALS['pap_users']            = array();
 $GLOBALS['pap_emails']           = array();
@@ -31,7 +35,7 @@ $GLOBALS['pap_next_user_id']     = 500;
 
 function add_action( mixed ...$args ): void { $GLOBALS['pap_hooks'][] = $args; }
 function add_filter( mixed ...$args ): void { $GLOBALS['pap_hooks'][] = $args; }
-function do_action( mixed ...$args ): void {}
+function do_action( mixed ...$args ): void { $GLOBALS['pap_actions'][] = $args; }
 function register_rest_route( mixed ...$args ): void { $GLOBALS['pap_routes'][] = $args; }
 function sanitize_key( mixed $v ): string { return strtolower( (string) $v ); }
 function sanitize_text_field( mixed $v ): string { return trim( (string) $v ); }
@@ -79,12 +83,12 @@ function wp_remote_get( mixed ...$a ): WP_Error { return new WP_Error( 'unused' 
 function wp_remote_retrieve_response_code( mixed ...$a ): int { return 500; }
 function wp_remote_retrieve_body( mixed ...$a ): string { return ''; }
 function check_password_reset_key( mixed ...$a ): WP_Error { return new WP_Error( 'unused' ); }
-function reset_password( mixed ...$a ): void {}
+function reset_password( mixed ...$a ): void { $GLOBALS['pap_password_resets'][] = $a; }
 function papelito_company_onboarding_get( int $id ): ?array { return null; }
 function papelito_company_onboarding_mark_google( int $id ): void { $GLOBALS['pap_meta'][ $id ]['papelito_onboarding_google'] = '1'; }
 function papelito_emails_match( string $a, string $b ): bool { return strtolower( trim( $a ) ) === strtolower( trim( $b ) ); }
 function papelito_name_part_validation_error( string $value, string $message ): ?string { return '' === trim( $value ) ? $message : null; }
-function papelito_validate_cpf( string $cpf ): bool { return '52998224725' === preg_replace( '/\D+/', '', $cpf ); }
+function papelito_validate_cpf( string $cpf ): bool { return INVITATION_TEST_VALID_CPF === preg_replace( '/\D+/', '', $cpf ); }
 $GLOBALS['pap_cpf_owner'] = null;
 function papelito_customer_profile_upsert( int $user_id, string $cpf, array $fields = array() ): true { return true; }
 function papelito_customer_profile_find_user_by_cpf( string $cpf ) { return $GLOBALS['pap_cpf_owner']; }
@@ -114,7 +118,7 @@ class PapelitoTestError {
 class PapelitoTestRestRequest {
 	public function __construct( private array $params = array() ) {}
 	public function get_json_params(): array { return $this->params; }
-	public function get_params(): array { return $this->params; }
+	public function get_params(): array { return $this->get_json_params(); }
 	public function get_param( string $key ): mixed { return $this->params[ $key ] ?? null; }
 }
 class PapelitoTestRestResponse {
@@ -122,7 +126,7 @@ class PapelitoTestRestResponse {
 }
 class PapelitoTestSessionTokens {
 	public static function get_instance( int $id ): self { return new self(); }
-	public function destroy_all(): void {}
+	public function destroy_all(): void { $GLOBALS['pap_sessions_destroyed'] = ( $GLOBALS['pap_sessions_destroyed'] ?? 0 ) + 1; }
 }
 class_alias( PapelitoTestUser::class, 'WP_User' );
 class_alias( PapelitoTestError::class, 'WP_Error' );
@@ -162,16 +166,16 @@ papelito_assert( 'definir senha depois habilita o login por senha', array( 'pass
 /* ---------- 2. retomada nunca sobrescreve credencial ---------- */
 echo "Cenario 2: cadastro por convite para e-mail existente retoma, nao sobrescreve\n";
 
-$GLOBALS['pap_invitation'] = array( 'token' => 'token-valido', 'invited_email' => 'convidado@test.com' );
-$GLOBALS['pap_emails']['convidado@test.com'] = 20;
+$GLOBALS['pap_invitation'] = array( 'token' => 'token-valido', 'invited_email' => INVITATION_TEST_INVITED_EMAIL );
+$GLOBALS['pap_emails'][ INVITATION_TEST_INVITED_EMAIL ] = 20;
 $GLOBALS['pap_users'][20]                    = new WP_User( 20 );
-$GLOBALS['pap_users'][20]->user_email        = 'convidado@test.com';
+$GLOBALS['pap_users'][20]->user_email        = INVITATION_TEST_INVITED_EMAIL;
 $GLOBALS['pap_meta'][20]['papelito_email_verification_status']  = 'pending';
 $GLOBALS['pap_meta'][20]['papelito_email_verification_sent_at'] = gmdate( 'Y-m-d H:i:s' );
 
 $pending = papelito_auth_handle_invitation_register(
 	new WP_REST_Request(
-		array( 'token' => 'token-valido', 'email' => 'convidado@test.com', 'password' => 'SenhaDoAtacante1', 'first_name' => 'Ana', 'last_name' => 'Silva', 'cpf' => '52998224725' )
+		array( 'token' => 'token-valido', 'email' => INVITATION_TEST_INVITED_EMAIL, 'password' => 'SenhaDoAtacante1', 'first_name' => 'Ana', 'last_name' => 'Silva', 'cpf' => INVITATION_TEST_VALID_CPF )
 	)
 );
 papelito_assert( 'conta pendente nao vira erro 409', false, is_wp_error( $pending ) );
@@ -186,7 +190,7 @@ papelito_assert( 'retomada preserva o hash existente', '', $GLOBALS['pap_users']
 papelito_auth_mark_email_verified( 20 );
 $verified = papelito_auth_handle_invitation_register(
 	new WP_REST_Request(
-		array( 'token' => 'token-valido', 'email' => 'convidado@test.com', 'password' => 'SenhaDoAtacante1', 'first_name' => 'Ana', 'last_name' => 'Silva', 'cpf' => '52998224725' )
+		array( 'token' => 'token-valido', 'email' => INVITATION_TEST_INVITED_EMAIL, 'password' => 'SenhaDoAtacante1', 'first_name' => 'Ana', 'last_name' => 'Silva', 'cpf' => INVITATION_TEST_VALID_CPF )
 	)
 );
 papelito_assert( 'conta verificada e mandada ao login', true, $verified->data['requiresLogin'] );
@@ -200,7 +204,7 @@ echo "Cenario 3: e-mail sem conta cria credencial de verdade\n";
 $GLOBALS['pap_invitation'] = array( 'token' => 'token-novo', 'invited_email' => 'novo@test.com' );
 $created = papelito_auth_handle_invitation_register(
 	new WP_REST_Request(
-		array( 'token' => 'token-novo', 'email' => 'novo@test.com', 'password' => 'SenhaEscolhida1', 'first_name' => 'Bruno', 'last_name' => 'Costa', 'cpf' => '52998224725' )
+		array( 'token' => 'token-novo', 'email' => 'novo@test.com', 'password' => 'SenhaEscolhida1', 'first_name' => 'Bruno', 'last_name' => 'Costa', 'cpf' => INVITATION_TEST_VALID_CPF )
 	)
 );
 papelito_assert( 'conta nova responde 201', 201, $created->status );
@@ -218,7 +222,7 @@ $before_invalid_insert = count( $GLOBALS['pap_inserted'] );
 $GLOBALS['pap_invitation'] = array( 'token' => 'token-real', 'invited_email' => 'seguro@test.com' );
 $invalid_token = papelito_auth_handle_invitation_register(
 	new WP_REST_Request(
-		array( 'token' => 'token-falso', 'email' => 'seguro@test.com', 'password' => 'SenhaEscolhida1', 'first_name' => 'Seguro', 'last_name' => 'Teste', 'cpf' => '52998224725' )
+		array( 'token' => 'token-falso', 'email' => 'seguro@test.com', 'password' => 'SenhaEscolhida1', 'first_name' => 'Seguro', 'last_name' => 'Teste', 'cpf' => INVITATION_TEST_VALID_CPF )
 	)
 );
 papelito_assert( 'token invalido e recusado', 'papelito_invitation_registration_unavailable', $invalid_token->get_error_code() );
@@ -232,7 +236,7 @@ $GLOBALS['pap_cpf_owner']   = 4242;
 $GLOBALS['pap_invitation']  = array( 'token' => 'token-dup', 'invited_email' => 'duplicado@test.com' );
 $duplicated                 = papelito_auth_handle_invitation_register(
 	new WP_REST_Request(
-		array( 'token' => 'token-dup', 'email' => 'duplicado@test.com', 'password' => 'SenhaEscolhida1', 'first_name' => 'Duda', 'last_name' => 'Dias', 'cpf' => '52998224725' )
+		array( 'token' => 'token-dup', 'email' => 'duplicado@test.com', 'password' => 'SenhaEscolhida1', 'first_name' => 'Duda', 'last_name' => 'Dias', 'cpf' => INVITATION_TEST_VALID_CPF )
 	)
 );
 papelito_assert( 'CPF de outra conta vira erro de dominio', true, is_wp_error( $duplicated ) );
@@ -244,13 +248,13 @@ $GLOBALS['pap_cpf_owner'] = null;
 /* ---------- 4. convite autoriza o Google a criar conta ---------- */
 echo "Cenario 4: Google cria conta apenas sob convite pendente do mesmo e-mail\n";
 
-$GLOBALS['pap_invitation'] = array( 'token' => 'token-google', 'invited_email' => 'google@test.com' );
-papelito_assert( 'convite valido autoriza o e-mail convidado', true, papelito_auth_invitation_authorizes_email( 'token-google', 'google@test.com' ) );
+$GLOBALS['pap_invitation'] = array( 'token' => 'token-google', 'invited_email' => INVITATION_TEST_GOOGLE_EMAIL );
+papelito_assert( 'convite valido autoriza o e-mail convidado', true, papelito_auth_invitation_authorizes_email( 'token-google', INVITATION_TEST_GOOGLE_EMAIL ) );
 papelito_assert( 'convite nao autoriza outro e-mail', false, papelito_auth_invitation_authorizes_email( 'token-google', 'intruso@test.com' ) );
-papelito_assert( 'token invalido nao autoriza', false, papelito_auth_invitation_authorizes_email( 'token-errado', 'google@test.com' ) );
-papelito_assert( 'ausencia de token nao autoriza', false, papelito_auth_invitation_authorizes_email( '', 'google@test.com' ) );
+papelito_assert( 'token invalido nao autoriza', false, papelito_auth_invitation_authorizes_email( 'token-errado', INVITATION_TEST_GOOGLE_EMAIL ) );
+papelito_assert( 'ausencia de token nao autoriza', false, papelito_auth_invitation_authorizes_email( '', INVITATION_TEST_GOOGLE_EMAIL ) );
 
-$payload = array( 'email' => 'google@test.com', 'sub' => 'sub-google', 'given_name' => 'Carla', 'family_name' => 'Dias' );
+$payload = array( 'email' => INVITATION_TEST_GOOGLE_EMAIL, 'sub' => 'sub-google', 'given_name' => 'Carla', 'family_name' => 'Dias' );
 
 $refused = papelito_auth_find_or_create_google_user( $payload, '' );
 papelito_assert( 'sem convite o Google segue exigindo pre-conta', 'papelito_pre_account_required', $refused->get_error_code() );

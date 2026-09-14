@@ -14,12 +14,21 @@
 define( 'ABSPATH', __DIR__ );
 define( 'HOUR_IN_SECONDS', 3600 );
 
+const LOGIN_TEST_LEGACY_EMAIL = 'legado@example.test';
+const LOGIN_TEST_VICTIM_EMAIL = 'vitima@example.test';
+
 $GLOBALS['pap_transients'] = array();
 $GLOBALS['pap_hooks']      = array();
 $GLOBALS['pap_wp_login_calls'] = array();
 
 class WP_User { // NOSONAR -- o nome e o da classe do WordPress.
-	public function __construct( public string $user_email = '', public string $user_login = '', public int $ID = 0 ) {}
+	private array $attributes;
+
+	public function __construct( string $user_email = '', string $user_login = '', int $id = 0 ) {
+		$this->attributes = array( 'user_email' => $user_email, 'user_login' => $user_login, 'ID' => $id );
+	}
+
+	public function __get( string $name ): mixed { return $this->attributes[ $name ] ?? null; }
 }
 
 class WP_Error { // NOSONAR -- o nome e o da classe do WordPress.
@@ -28,6 +37,8 @@ class WP_Error { // NOSONAR -- o nome e o da classe do WordPress.
 	public function get_error_message(): string { return $this->message; }
 	public function get_error_data(): mixed { return $this->data; }
 }
+
+class PapelitoTestWpDieCalled extends RuntimeException {}
 
 function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
 
@@ -58,14 +69,17 @@ function add_action( string $hook, mixed $callback, int $priority = 10, int $arg
 function add_filter( string $hook, mixed $callback, int $priority = 10, int $args = 1 ): void {
 	$GLOBALS['pap_hooks'][ $hook ][] = $callback;
 }
-function remove_action( string $hook, mixed $callback, int $priority = 10 ): void {}
+function remove_action( string $hook, mixed $callback, int $priority = 10 ): void {
+	$GLOBALS['pap_removed_hooks'][] = $hook;
+}
 function sanitize_text_field( string $value ): string { return trim( $value ); }
 function wp_unslash( mixed $value ): mixed { return $value; }
 function wp_die( string $message = '', string $title = '', array $args = array() ): void {
-	throw new RuntimeException( 'wp_die() mata a requisicao GraphQL e o Next perde o motivo do erro.' );
+	throw new PapelitoTestWpDieCalled( 'wp_die() mata a requisicao GraphQL e o Next perde o motivo do erro.' );
 }
 function __return_empty_string(): string { return ''; }
 function __return_false(): bool { return false; }
+function __return_zero(): int { return 0; }
 function is_user_logged_in(): bool { return false; }
 function home_url(): string { return 'https://example.test'; }
 function wp_safe_redirect( string $location, int $status = 302 ): bool { return true; }
@@ -165,41 +179,41 @@ function fail_login_with_code( string $username, string $failure_code ): bool {
 }
 
 // Todas as tentativas chegam do mesmo IP: e o do servidor Next, nao o do navegador.
-$_SERVER['REMOTE_ADDR'] = '10.0.0.1';
+$_SERVER['REMOTE_ADDR'] = '192.0.2.10';
 $GLOBALS['pap_users'] = array(
-	new WP_User( 'legado@example.test', 'legado', 42 ),
+	new WP_User( LOGIN_TEST_LEGACY_EMAIL, 'legado', 42 ),
 );
 
 // Um usuario esgota a propria cota.
 $blocked = false;
 for ( $attempt = 0; $attempt < PAPELITO_LOGIN_FAILURE_MAX; $attempt++ ) {
-	$blocked = fail_login( 'vitima@example.test' ) || $blocked;
+	$blocked = fail_login( LOGIN_TEST_VICTIM_EMAIL ) || $blocked;
 }
 login_rate_limit_assert( 'as primeiras tentativas nao sao barradas', false, $blocked );
-login_rate_limit_assert( 'a tentativa seguinte e barrada', true, fail_login( 'vitima@example.test' ) );
+login_rate_limit_assert( 'a tentativa seguinte e barrada', true, fail_login( LOGIN_TEST_VICTIM_EMAIL ) );
 
 // Outra identidade, mesmo REMOTE_ADDR: nao pode herdar o bloqueio.
 login_rate_limit_assert( 'outra identidade tem cota propria', false, fail_login( 'terceiro@example.test' ) );
 
 // A recusa por cota vira WP_Error legivel, nunca wp_die: o Next precisa distinguir "muitas
 // tentativas" de "servico indisponivel".
-$refused = wp_authenticate_simulado( 'vitima@example.test', false );
+$refused = wp_authenticate_simulado( LOGIN_TEST_VICTIM_EMAIL, false );
 login_rate_limit_assert( 'a recusa e um WP_Error, nao mata a requisicao', true, $refused instanceof WP_Error );
 login_rate_limit_assert( 'a recusa carrega o codigo do contrato', PAPELITO_LOGIN_RATE_LIMIT_CODE, $refused->get_error_code() );
 login_rate_limit_assert( 'a mensagem GraphQL tambem usa o codigo estavel do contrato', PAPELITO_LOGIN_RATE_LIMIT_CODE, $refused->get_error_message() );
 login_rate_limit_assert( 'a recusa carrega status 429', 429, $refused->get_error_data()['status'] ?? null );
 
 // Recusa por cota nao pode inflar o proprio balde.
-$before = get_transient( papelito_login_failure_key( 'vitima@example.test' ) )['count'];
-fail_login( 'vitima@example.test' );
-$after = get_transient( papelito_login_failure_key( 'vitima@example.test' ) )['count'];
+$before = get_transient( papelito_login_failure_key( LOGIN_TEST_VICTIM_EMAIL ) )['count'];
+fail_login( LOGIN_TEST_VICTIM_EMAIL );
+$after = get_transient( papelito_login_failure_key( LOGIN_TEST_VICTIM_EMAIL ) )['count'];
 login_rate_limit_assert( 'tentativa ja barrada nao conta de novo', $before, $after );
 
 // Janela fixa: falhas seguidas nao empurram o vencimento para frente.
 advance_clock( PAPELITO_LOGIN_FAILURE_WINDOW - 5 );
-login_rate_limit_assert( 'segue barrado dentro da janela', true, fail_login( 'vitima@example.test' ) );
+login_rate_limit_assert( 'segue barrado dentro da janela', true, fail_login( LOGIN_TEST_VICTIM_EMAIL ) );
 advance_clock( 10 );
-login_rate_limit_assert( 'a janela nao desliza com novas falhas', false, fail_login( 'vitima@example.test' ) );
+login_rate_limit_assert( 'a janela nao desliza com novas falhas', false, fail_login( LOGIN_TEST_VICTIM_EMAIL ) );
 
 // Credencial correta nunca e barrada, mesmo com a cota esgotada, e zera o contador — pelo filtro
 // `authenticate`, que e o unico ponto que o fluxo headless atravessa.
@@ -207,23 +221,23 @@ for ( $attempt = 0; $attempt < PAPELITO_LOGIN_FAILURE_MAX; $attempt++ ) {
 	fail_login( 'legado' );
 }
 login_rate_limit_assert( 'cota da conta legada esgotada', true, fail_login( 'legado' ) );
-login_rate_limit_assert( 'senha correta passa mesmo com a cota estourada', true, succeed_login( 'legado', 'legado@example.test' ) instanceof WP_User );
+login_rate_limit_assert( 'senha correta passa mesmo com a cota estourada', true, succeed_login( 'legado', LOGIN_TEST_LEGACY_EMAIL ) instanceof WP_User );
 login_rate_limit_assert( 'acerto zera o contador sem depender de wp_login', false, fail_login( 'legado' ) );
 
 // O acerto tambem limpa a chave de e-mail, para conta legada cujo login difere do e-mail.
 for ( $attempt = 0; $attempt < PAPELITO_LOGIN_FAILURE_MAX; $attempt++ ) {
-	fail_login( 'legado@example.test' );
+	fail_login( LOGIN_TEST_LEGACY_EMAIL );
 }
-login_rate_limit_assert( 'cota da chave de e-mail esgotada', true, fail_login( 'legado@example.test' ) );
-succeed_login( 'legado', 'legado@example.test' );
-login_rate_limit_assert( 'acerto zera tambem a chave de e-mail', false, fail_login( 'legado@example.test' ) );
+login_rate_limit_assert( 'cota da chave de e-mail esgotada', true, fail_login( LOGIN_TEST_LEGACY_EMAIL ) );
+succeed_login( 'legado', LOGIN_TEST_LEGACY_EMAIL );
+login_rate_limit_assert( 'acerto zera tambem a chave de e-mail', false, fail_login( LOGIN_TEST_LEGACY_EMAIL ) );
 
 // Login e e-mail da mesma conta precisam compartilhar a cota. Alternar os dois identificadores
 // nao pode dobrar o numero de senhas que um atacante consegue tentar.
 for ( $attempt = 0; $attempt < PAPELITO_LOGIN_FAILURE_MAX; $attempt++ ) {
 	fail_login( 'legado' );
 }
-login_rate_limit_assert( 'login e e-mail usam a mesma cota da conta', true, fail_login( 'legado@example.test' ) );
+login_rate_limit_assert( 'login e e-mail usam a mesma cota da conta', true, fail_login( LOGIN_TEST_LEGACY_EMAIL ) );
 
 // Uma senha correta com e-mail ainda pendente nao e tentativa de brute force. O usuario deve
 // continuar recebendo a orientacao de confirmacao, mesmo depois de repetir o login.
