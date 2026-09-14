@@ -588,13 +588,17 @@ function papelito_auth_get_frontend_url(): string {
 /**
  * Monta o link publico de verificacao usado no e-mail.
  *
+ * E-mail e token vao no fragmento: GTM, GA4 e logs registram a query, nao o que vem depois do `#`.
+ *
  * @param string $email
  * @param string $token
+ * @param string $return_path Retorno pos-login; so `/convite` e aceito.
  * @return string
  */
-function papelito_auth_build_email_verification_link( string $email, string $token ): string {
-	$link = papelito_frontend_link(
-		sprintf( 'confirmar-email?email=%s&token=%s', rawurlencode( $email ), rawurlencode( $token ) )
+function papelito_auth_build_email_verification_link( string $email, string $token, string $return_path = '' ): string {
+	$query = '/convite' === $return_path ? '?callbackUrl=' . rawurlencode( $return_path ) : '';
+	$link  = papelito_frontend_link(
+		sprintf( 'confirmar-email%s#email=%s&token=%s', $query, rawurlencode( $email ), rawurlencode( $token ) )
 	);
 
 	return is_wp_error( $link ) ? '' : (string) $link;
@@ -615,16 +619,13 @@ function papelito_auth_send_verification_email( WP_User $user, string $token ): 
 		return false;
 	}
 
-	$link = papelito_auth_build_email_verification_link( $recipient, $token );
+	$return_path = (string) get_user_meta( $user->ID, 'papelito_post_email_verification_path', true );
+	$link        = papelito_auth_build_email_verification_link( $recipient, $token, $return_path );
 
 	if ( '' === $link ) {
 		return false;
 	}
 
-	$return_path = (string) get_user_meta( $user->ID, 'papelito_post_email_verification_path', true );
-	if ( '/convite' === $return_path ) {
-		$link .= '&callbackUrl=' . rawurlencode( $return_path );
-	}
 	$view = array(
 		'kicker'       => 'Confirmação de e-mail',
 		'headline'     => 'Confirme seu e-mail.',
