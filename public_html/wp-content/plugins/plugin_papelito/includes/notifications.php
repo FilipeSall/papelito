@@ -63,6 +63,11 @@ if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_COMPANY_OWNER_REJECTED', 'company_owner_rejected' );
 }
 
+if ( ! defined( 'PAPELITO_NOTIF_ORDER_REFUND_PENDING' ) ) {
+	define( 'PAPELITO_NOTIF_ORDER_REFUND_PENDING', 'order_refund_pending' );
+	define( 'PAPELITO_NOTIF_ORDER_REFUNDED', 'order_refunded' );
+}
+
 /**
  * Resolve o nome completo da tabela de notificações.
  */
@@ -160,6 +165,8 @@ function papelito_notification_allowed_types() {
 		PAPELITO_NOTIF_COMPANY_OWNER_REVIEW_PENDING,
 		PAPELITO_NOTIF_COMPANY_OWNER_APPROVED,
 		PAPELITO_NOTIF_COMPANY_OWNER_REJECTED,
+		PAPELITO_NOTIF_ORDER_REFUND_PENDING,
+		PAPELITO_NOTIF_ORDER_REFUNDED,
 	);
 }
 

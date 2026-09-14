@@ -671,12 +671,23 @@ function papelito_pagarme_apply_order_state( object $order, string $state, bool 
 		return;
 	}
 
+	$was_paid = function_exists( 'papelito_order_refund_order_was_paid' ) && papelito_order_refund_order_was_paid( $order );
+
 	$order->update_meta_data( PAPELITO_PAGARME_PAYMENT_STATE_META, $state );
 
 	if ( $paid ) {
 		$ready_for_fulfillment = papelito_pagarme_promote_vendor_status_on_payment( $order );
 		$order->payment_complete();
 		$order->update_status( $ready_for_fulfillment ? 'processing' : 'on-hold' );
+	} elseif ( $was_paid && in_array( $state, array( 'canceled', 'cancelled' ), true ) ) {
+		$order->save();
+		papelito_order_refund_handle_psp_reversal( $order, $state );
+		return;
+	} elseif ( $was_paid && papelito_pagarme_payment_state_releases_stock( $state ) ) {
+		if ( $state !== (string) $order->get_meta( '_papelito_pagarme_unexpected_state', true ) ) {
+			$order->update_meta_data( '_papelito_pagarme_unexpected_state', $state );
+			$order->add_order_note( sprintf( 'A Pagar.me reportou a cobrança já paga como "%s". O pedido não foi alterado; confira a cobrança no painel da Pagar.me.', $state ) );
+		}
 	} elseif ( papelito_pagarme_payment_state_releases_stock( $state ) ) {
 		$order->update_status( 'failed' );
 		papelito_pagarme_mark_vendor_status_unpaid( $order );
@@ -970,6 +981,10 @@ function papelito_pagarme_reconcile_wc_order( object $order ) {
 	$paid   = papelito_pagarme_payment_state_is_paid( $state );
 
 	papelito_pagarme_apply_order_state( $order, $state, $paid );
+
+	if ( function_exists( 'papelito_order_refund_detect_charge_anomaly' ) ) {
+		papelito_order_refund_detect_charge_anomaly( $order, $charge );
+	}
 
 	return array(
 		'payment'  => $payment,

@@ -1473,9 +1473,56 @@ function papelito_shipping_quote_endpoint( WP_REST_Request $request ) {
 	$vendor_id       = isset( $data['vendor_id'] ) ? absint( $data['vendor_id'] ) : 0;
 	$destination_cep = papelito_shipping_normalize_cep( $data['destination_cep'] ?? '' );
 	$items           = isset( $data['items'] ) && is_array( $data['items'] ) ? array_values( $data['items'] ) : array();
-	$result          = papelito_correios_quote( $vendor_id, $destination_cep, $items );
+	$coupon_code     = sanitize_text_field( (string) ( $data['coupon_code'] ?? '' ) );
+	$quote_context   = array();
+	if ( function_exists( 'papelito_pricing_normalize_items' ) && function_exists( 'papelito_pricing_resolve_items' ) && function_exists( 'papelito_shipping_provider_quote_context' ) ) {
+		$pricing_items = array_map(
+			static function ( $item ) use ( $vendor_id ): array {
+				$item              = is_array( $item ) ? $item : array();
+				$item['vendor_id'] = $vendor_id;
+				return $item;
+			},
+			$items
+		);
+		$normalized = papelito_pricing_normalize_items( $pricing_items );
+		$resolved   = is_wp_error( $normalized ) ? $normalized : papelito_pricing_resolve_items( $normalized );
+		if ( is_wp_error( $resolved ) ) {
+			return $resolved;
+		}
+		$quote_context = papelito_shipping_provider_quote_context(
+			$resolved,
+			$coupon_code,
+			get_current_user_id(),
+			function_exists( 'papelito_shipping_recipient_cnpj_for_user' ) ? papelito_shipping_recipient_cnpj_for_user( get_current_user_id() ) : ''
+		);
+		if ( is_wp_error( $quote_context ) ) {
+			return $quote_context;
+		}
+		$items = is_array( $quote_context['priced_lines'] ?? null ) ? array_map(
+			static function ( array $line ): array {
+				return array(
+					'product_id'            => (int) $line['product_id'],
+					'qty'                   => (int) $line['qty'],
+					'declared_value_cents' => max( 0, (int) ( $line['total_cents'] ?? 0 ) ),
+				);
+			},
+			$quote_context['priced_lines']
+		) : $items;
+	}
+	$result          = function_exists( 'papelito_shipping_quote_all_providers' )
+		? papelito_shipping_quote_all_providers( $vendor_id, $destination_cep, $items, $quote_context )
+		: papelito_correios_quote( $vendor_id, $destination_cep, $items );
 
 	return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+}
+
+/** Cotação usa identidade autenticada; a rota Next sempre encaminha o JWT. */
+function papelito_shipping_quote_permission() {
+	if ( get_current_user_id() > 0 ) {
+		return true;
+	}
+
+	return new WP_Error( 'papelito_checkout_auth_required', 'Faça login para cotar o frete.', array( 'status' => 401 ) );
 }
 
 /**
@@ -1516,7 +1563,7 @@ function papelito_shipping_register_routes(): void {
 		'/shipping/quote',
 		array(
 			'methods'             => 'POST',
-			'permission_callback' => '__return_true',
+			'permission_callback' => 'papelito_shipping_quote_permission',
 			'callback'            => 'papelito_shipping_quote_endpoint',
 		)
 	);

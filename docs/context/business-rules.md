@@ -134,6 +134,13 @@ Além disso: a query parte de `FROM wp_posts p LEFT JOIN papelito_vendor_stock v
 52. Nenhum pedido B2B chama `papelito_pagarme_resolve_customer_document()` nem lê documento fiscal de usermeta.
 52a. A conta bancária do recebedor tem titular `company` com o CNPJ do vendor. `papelito_vendor_bank_holder_matches_recipient()` é a regra única e alimenta três pontos: `papelito_collect_vendor_pending_bank_fields()` (pendência `bankAccount.holderDocument`), `papelito_pagarme_validate_recipient_context()` e `papelito_pagarme_build_recipient_bank_account_payload()` (`422 papelito_pagarme_bank_holder_mismatch`, **antes** de chamar a Pagar.me). `papelito_pagarme_bank_account_payload()` envia sempre `holder_type: company` com o CNPJ do recebedor. `papelito_validate_vendor_pagarme_bank_fields()` e `papelito_admin_vendors_normalize_bank_account()` recusam titular pessoa física. Draft antigo em pessoa física **não é convertido**: fica pendente até alguém informar uma conta PJ.
 
+52b. **Pedido pago nunca vai para `cancelado`.** `papelito_vendor_dashboard_update_order_status()` delega a `papelito_order_refund_request()`: o pedido fica em `cancelamento_solicitado`, e só `papelito_order_refund_complete()` grava `estornado`.
+52c. Cobrança `canceled` de pedido já pago é estorno (`papelito_order_refund_handle_psp_reversal()`), nunca `failed`. O webhook não libera estoque de pedido pago (`papelito_order_refund_order_was_paid()`), e outros estados terminais de cobrança paga só geram nota.
+52d. O caminho do estorno sai de `papelito_order_refund_resolve_mode()`, a mesma função que alimenta o cancelamento e o `refund_preview` do detalhe do vendor. A tela não recalcula a janela de 90 dias do PIX.
+52e. Três travas contra estorno duplicado: `UNIQUE KEY uq_order` com `FOR UPDATE`, claim por `version` em `papelito_order_refund_attempt_api()` e `Idempotency-Key` estável (`papelito_order_refund_idempotency_key()`).
+52f. O reembolso no WooCommerce é escritural: `wc_create_refund` com `restock_items => false` e `refund_payment => false`, com o e-mail nativo de refund suprimido. `update_status( 'cancelled' )` repõe estoque do WooCommerce e não é usado. `tests/test-order-refunds.php` verifica as três coisas no código-fonte.
+52g. A chave PIX de reembolso só é decifrada por `papelito_refund_pix_key_decrypt()`, chamada só pelo endpoint do vendor com estorno `manual_pendente`, que grava o evento `pix_key_revealed`.
+
 ## Rastreamento
 
 53. Somente `BDE/01` conclui entrega. O pedido projeta `entregue` só quando **todas** as remessas ativas estão entregues.

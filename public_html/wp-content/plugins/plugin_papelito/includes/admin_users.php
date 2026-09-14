@@ -569,7 +569,7 @@ function papelito_admin_users_order_is_cancelled( $order, ?array $mapped = null 
 		$vendor_status = sanitize_key( (string) $order->get_meta( '_papelito_vendor_status', true ) );
 	}
 
-	if ( 'cancelado' === $vendor_status ) {
+	if ( in_array( $vendor_status, array( 'cancelado', 'cancelamento_solicitado', 'estornado' ), true ) ) {
 		return true;
 	}
 
@@ -1500,7 +1500,8 @@ function papelito_admin_users_cancel_order( int $user_id, int $order_id, string 
 		$order_id,
 		$vendor_id,
 		'cancelado',
-		$reason
+		$reason,
+		true
 	);
 
 	if ( is_wp_error( $result ) ) {

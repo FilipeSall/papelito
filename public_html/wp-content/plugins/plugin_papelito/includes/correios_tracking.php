@@ -78,6 +78,7 @@ function papelito_tracking_install_tables(): void {
   is_test TINYINT(1) NOT NULL DEFAULT 0,
   idempotency_key CHAR(64) NULL DEFAULT NULL,
   tracking_code VARCHAR(32) NULL DEFAULT NULL,
+  external_reference VARCHAR(96) NULL DEFAULT NULL,
   prepost_id VARCHAR(64) NULL DEFAULT NULL,
   service_code VARCHAR(20) NULL DEFAULT NULL,
   posted_at DATE NULL DEFAULT NULL,
@@ -86,6 +87,7 @@ function papelito_tracking_install_tables(): void {
   label_created_at DATETIME NULL DEFAULT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'tracking_pending',
   status_rank SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  external_status VARCHAR(96) NULL DEFAULT NULL,
   last_event_code VARCHAR(12) NULL DEFAULT NULL,
   last_event_type VARCHAR(12) NULL DEFAULT NULL,
   last_event_at DATETIME NULL DEFAULT NULL,
@@ -101,6 +103,7 @@ function papelito_tracking_install_tables(): void {
   PRIMARY KEY  (id),
   UNIQUE KEY uq_idempotency_key (idempotency_key),
   UNIQUE KEY uq_tracking_code (tracking_code),
+  KEY idx_provider_external_reference (provider, external_reference),
   UNIQUE KEY uq_prepost_id (prepost_id),
   KEY idx_order_active (order_id, active),
   KEY idx_vendor_order (vendor_id, order_id),
@@ -431,9 +434,11 @@ function papelito_tracking_public_shipment( array $shipment ): array {
 		'next_reconciliation_at' => (string) ( $shipment['next_reconciliation_at'] ?? '' ),
 		'support_review_required' => ! empty( $shipment['support_review_required'] ),
 		'tracking_code'   => sanitize_text_field( (string) ( $shipment['tracking_code'] ?? '' ) ),
+		'external_reference' => sanitize_text_field( (string) ( $shipment['external_reference'] ?? '' ) ),
 		'service_code'    => sanitize_text_field( (string) ( $shipment['service_code'] ?? '' ) ),
 		'posted_at'       => (string) ( $shipment['posted_at'] ?? '' ),
 		'status'          => sanitize_key( (string) ( $shipment['status'] ?? 'tracking_pending' ) ),
+		'external_status' => sanitize_text_field( (string) ( $shipment['external_status'] ?? '' ) ),
 		'last_event_code' => sanitize_text_field( (string) ( $shipment['last_event_code'] ?? '' ) ),
 		'last_event_type' => sanitize_text_field( (string) ( $shipment['last_event_type'] ?? '' ) ),
 		'last_event_at'   => (string) ( $shipment['last_event_at'] ?? '' ),
@@ -1688,7 +1693,7 @@ function papelito_tracking_reconcile_order_status( int $order_id ): void {
 	}
 
 	$wc_status = method_exists( $order, 'get_status' ) ? sanitize_key( (string) $order->get_status() ) : '';
-	if ( in_array( $current, array( 'cancelado', 'entregue' ), true ) || 'refunded' === $wc_status ) {
+	if ( in_array( $current, array( 'cancelado', 'cancelamento_solicitado', 'estornado', 'entregue' ), true ) || 'refunded' === $wc_status ) {
 		$order->save();
 		return;
 	}
@@ -1796,7 +1801,10 @@ function papelito_tracking_ingest_event( array $shipment, array $event, string $
 
 	$fields    = papelito_tracking_event_fields( $event );
 	$event_key = papelito_tracking_event_key( $shipment_id, $event );
-	$mapping   = papelito_tracking_map_event( $fields['code'], $fields['type'] );
+	$provider  = sanitize_key( (string) ( $shipment['provider'] ?? 'correios' ) );
+	$mapping   = in_array( $provider, array( 'correios', 'mock', 'manual' ), true )
+		? papelito_tracking_map_event( $fields['code'], $fields['type'] )
+		: apply_filters( 'papelito_tracking_provider_event_map', null, $provider, $fields, $event, $shipment );
 
 	papelito_tracking_begin_transaction();
 	$locked = $wpdb->get_row(
@@ -1871,6 +1879,15 @@ function papelito_tracking_poll_shipment( array $shipment ): void {
 	if ( ! empty( $shipment['is_test'] ) ) {
 		return;
 	}
+	$provider = sanitize_key( (string) ( $shipment['provider'] ?? 'correios' ) );
+	if ( 'braspress' === $provider && function_exists( 'papelito_braspress_tracking_poll_shipment' ) ) {
+		papelito_braspress_tracking_poll_shipment( $shipment );
+		return;
+	}
+	if ( ! in_array( $provider, array( 'correios', 'mock', 'manual' ), true ) ) {
+		papelito_tracking_schedule_next_poll( $shipment_id, true, 'tracking_provider_unsupported' );
+		return;
+	}
 	$tracking_code = papelito_tracking_normalize_code( $shipment['tracking_code'] ?? '' );
 	if ( $shipment_id <= 0 || '' === $tracking_code ) {
 		return;
@@ -1907,7 +1924,7 @@ function papelito_tracking_poll_due_shipments(): void {
 	$batch = (int) max( 1, min( 500, (int) apply_filters( 'papelito_tracking_poll_batch_size', 100 ) ) );
 	$rows  = $wpdb->get_results(
 		$wpdb->prepare(
-			"SELECT * FROM {$table} WHERE active = 1 AND is_test = 0 AND tracking_code IS NOT NULL AND next_poll_at <= %s AND created_at >= %s ORDER BY next_poll_at ASC, id ASC LIMIT %d",
+			"SELECT * FROM {$table} WHERE active = 1 AND is_test = 0 AND (tracking_code IS NOT NULL OR external_reference IS NOT NULL) AND next_poll_at <= %s AND created_at >= %s ORDER BY next_poll_at ASC, id ASC LIMIT %d",
 			current_time( 'mysql', true ),
 			gmdate( PAPELITO_TRACKING_MYSQL_DATETIME, time() - ( 90 * DAY_IN_SECONDS ) ),
 			$batch

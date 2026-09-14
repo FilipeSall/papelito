@@ -411,6 +411,23 @@ function papelito_direct_upload_return_refund_proof( array $ticket, array $file 
 	return papelito_return_refund_proof_attach_file( $return_id, $vendor_id, $file, $vendor_id );
 }
 
+/**
+ * Recebe o comprovante do estorno manual de pedido pago.
+ *
+ * @param array<string,mixed> $ticket Tíquete consumido, com vendor e pedido no contexto.
+ * @param array<string,mixed> $file   Arquivo enviado.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_direct_upload_order_refund_proof( array $ticket, array $file ) {
+	$context   = (array) ( $ticket['context'] ?? array() );
+	$vendor_id = absint( $context['vendor_id'] ?? 0 );
+	$order_id  = absint( $context['order_id'] ?? 0 );
+	if ( $vendor_id <= 0 || $order_id <= 0 || ! function_exists( 'papelito_order_refund_proof_attach_file' ) ) {
+		return papelito_direct_upload_error( 'papelito_upload_not_allowed', 'Você não tem permissão para anexar este comprovante.', 403 );
+	}
+	return papelito_order_refund_proof_attach_file( $order_id, $vendor_id, $file, $vendor_id );
+}
+
 function papelito_direct_upload_catalog( array $ticket, array $file ) {
 	$user_id = (int) ( $ticket['context']['user_id'] ?? 0 );
 	if ( $user_id <= 0 || ! user_can( $user_id, 'manage_options' ) ) {
@@ -537,6 +554,9 @@ function papelito_direct_upload_ticket_issue( WP_REST_Request $request ) {
 	if ( 'return-refund-proof' === $purpose ) {
 		return papelito_direct_upload_return_refund_proof_ticket( $request, $user_id );
 	}
+	if ( 'order-refund-proof' === $purpose && function_exists( 'papelito_order_refund_proof_ticket' ) ) {
+		return papelito_order_refund_proof_ticket( $request, $user_id );
+	}
 
 	if ( 'pre-account-document' === $purpose ) {
 		$application = papelito_pre_account_application_authorize( $application_token );
@@ -572,6 +592,7 @@ function papelito_direct_upload_receive( WP_REST_Request $request ) {
 		'pre-account-document'   => papelito_direct_upload_pre_account_document( $ticket, $file ),
 		'vendor-fiscal-document' => papelito_direct_upload_vendor_fiscal_document( $ticket, $file ),
 		'return-refund-proof'    => papelito_direct_upload_return_refund_proof( $ticket, $file ),
+		'order-refund-proof'     => papelito_direct_upload_order_refund_proof( $ticket, $file ),
 		default                  => papelito_direct_upload_error( 'papelito_upload_invalid_purpose', 'Finalidade de upload inválida.', 422 ),
 	};
 

@@ -116,9 +116,10 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `pagarme_payments.php` | montagem do `POST /orders` |
 | `pagarme_webhook.php` | webhook + reconciliação ativa |
 | `pagarme_simulator.php` | simulação de webhook fora de produção |
-| `shipping.php` | cotação nos Correios |
+| `shipping.php`, `shipping_providers.php` | cotação autenticada e orquestração isolada de providers |
+| `vendor_integrations.php`, `braspress.php` | contrato Braspress por vendor, cofre write-only e cliente HTTP de cotação |
 | `correios_prepostage.php` | pré-postagem e etiqueta |
-| `correios_tracking.php` | polling do Rastro, projeção de estado, S10 manual |
+| `correios_tracking.php`, `braspress_tracking.php` | polling por provider; Rastro/S10 e Braspress `byNumPedido` com status externo preservado |
 | `receipts.php` | recibo persistido: numeração anual, snapshot imutável em centavos, parcelas por vendor |
 | `receipts_backfill.php` | backfill em lotes dos pedidos pagos antes do recibo existir, com checkpoint e WP-CLI |
 | `fiscal_documents.php` | nota fiscal como arquivo indexado: schema, armazenamento privado, trilha |

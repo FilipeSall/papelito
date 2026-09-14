@@ -73,12 +73,17 @@ require_once __DIR__ . '/includes/fiscal_documents_rest.php';
 require_once __DIR__ . '/includes/fiscal_documents_cleanup.php';
 require_once __DIR__ . '/includes/order_receipt.php';
 require_once __DIR__ . '/includes/returns.php';
+require_once __DIR__ . '/includes/order_refunds.php';
 require_once __DIR__ . '/includes/vendor_messaging.php';
 require_once __DIR__ . '/includes/vendor_processing_alerts.php';
 require_once __DIR__ . '/includes/company_flags.php';
 require_once __DIR__ . '/includes/cnpj_validation.php';
 require_once __DIR__ . '/includes/customer_identity.php';
 require_once __DIR__ . '/includes/integration_secrets.php';
+require_once __DIR__ . '/includes/vendor_integrations.php';
+require_once __DIR__ . '/includes/braspress.php';
+require_once __DIR__ . '/includes/shipping_providers.php';
+require_once __DIR__ . '/includes/braspress_tracking.php';
 require_once __DIR__ . '/includes/company_schema.php';
 require_once __DIR__ . '/includes/company_onboarding.php';
 require_once __DIR__ . '/includes/company_repository.php';
@@ -103,7 +108,7 @@ require_once __DIR__ . '/includes/account_status.php';
 require_once __DIR__ . '/includes/account_admin_endpoints.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.46.1' );
+	define( 'PAPELITO_DB_VERSION', '1.49.0' );
 }
 
 /**
@@ -161,7 +166,9 @@ function papelito_maybe_migrate_db() {
 				'papelito_collection_cards_install_tables',
 				'papelito_collection_cards_migrate_legacy_nav',
 				'papelito_integration_secret_install_tables',
+				'papelito_vendor_integrations_install_tables',
 				'papelito_account_status_install_tables',
+				'papelito_order_refund_install_tables',
 				'papelito_pagarme_install_kyc_link_limits_table',
 			)
 		);

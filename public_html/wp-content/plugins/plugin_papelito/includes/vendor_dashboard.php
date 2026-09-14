@@ -32,6 +32,14 @@ if ( ! defined( 'PAPELITO_VENDOR_STATUS_STOCK_REVIEW' ) ) {
 	define( 'PAPELITO_VENDOR_STATUS_STOCK_REVIEW', 'aguardando_estoque' );
 }
 
+if ( ! defined( 'PAPELITO_VENDOR_STATUS_CANCEL_REQUESTED' ) ) {
+	define( 'PAPELITO_VENDOR_STATUS_CANCEL_REQUESTED', 'cancelamento_solicitado' );
+}
+
+if ( ! defined( 'PAPELITO_VENDOR_STATUS_REFUNDED' ) ) {
+	define( 'PAPELITO_VENDOR_STATUS_REFUNDED', 'estornado' );
+}
+
 /**
  * Verifica se um valor e uma instancia WooCommerce esperada.
  *
@@ -57,6 +65,8 @@ function papelito_vendor_dashboard_statuses(): array {
 		PAPELITO_VENDOR_STATUS_SHIPPED,
 		PAPELITO_VENDOR_STATUS_DELIVERED,
 		PAPELITO_VENDOR_STATUS_CANCELLED,
+		PAPELITO_VENDOR_STATUS_CANCEL_REQUESTED,
+		PAPELITO_VENDOR_STATUS_REFUNDED,
 	);
 }
 
@@ -175,7 +185,7 @@ function papelito_vendor_dashboard_order_status( $order ): string {
 		? $status
 		: PAPELITO_VENDOR_STATUS_AWAITING_PAYMENT;
 
-	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $status ) {
+	if ( in_array( $status, array( PAPELITO_VENDOR_STATUS_CANCELLED, PAPELITO_VENDOR_STATUS_CANCEL_REQUESTED, PAPELITO_VENDOR_STATUS_REFUNDED ), true ) ) {
 		return $status;
 	}
 
@@ -375,6 +385,7 @@ function papelito_vendor_dashboard_map_order_detail( $order, ?int $vendor_id, bo
 		'postcode'  => sanitize_text_field( (string) $order->get_shipping_postcode() ),
 	);
 	$result['shipping_service'] = sanitize_text_field( (string) $order->get_meta( '_papelito_shipping_service_name', true ) );
+	$result['shipping_provider'] = sanitize_key( (string) $order->get_meta( '_papelito_shipping_provider', true ) );
 	$result['delivery_time_days'] = absint( $order->get_meta( '_papelito_shipping_delivery_time', true ) );
 	$paid_at             = $order->get_date_paid();
 	$result['paid_at']   = $paid_at ? $paid_at->date_i18n( 'Y-m-d H:i:s' ) : '';
@@ -418,6 +429,10 @@ function papelito_vendor_dashboard_map_order_detail( $order, ?int $vendor_id, bo
 		$result['returns'] = papelito_return_order_eligibility( $order, (int) $order->get_customer_id() );
 	}
 
+	if ( $include_receipt && null === $vendor_id && function_exists( 'papelito_order_refund_payload' ) ) {
+		$result['refund'] = papelito_order_refund_payload( papelito_order_refund_get_by_order( (int) $order->get_id() ), 'customer' );
+	}
+
 	if ( null === $vendor_id && function_exists( 'papelito_return_requests_for_orders' ) ) {
 		$result['return_requests'] = papelito_return_requests_for_orders( array( (int) $order->get_id() ), (int) $order->get_customer_id() )[ (int) $order->get_id() ] ?? array();
 	}
@@ -439,6 +454,13 @@ function papelito_vendor_dashboard_map_order_detail( $order, ?int $vendor_id, bo
 		// A justificativa do cancelamento é obrigatória na transição; sem devolvê-la
 		// aqui, o vendor digita um motivo que nunca mais aparece em lugar nenhum.
 		$result['cancel_reason'] = sanitize_text_field( (string) $order->get_meta( '_papelito_vendor_cancel_reason', true ) );
+
+		if ( function_exists( 'papelito_order_refund_payload' ) ) {
+			$result['refund']         = papelito_order_refund_payload( papelito_order_refund_get_by_order( (int) $order->get_id() ), 'vendor' );
+			$result['refund_preview'] = null === $result['refund'] && in_array( PAPELITO_VENDOR_STATUS_CANCELLED, $result['next_statuses'], true )
+				? papelito_order_refund_preview( $order )
+				: null;
+		}
 
 		// O recibo do pagamento fica anexado ao pedido também para o vendor. É o
 		// mesmo documento do comprador, lido do mesmo registro — o resumo não
@@ -617,7 +639,7 @@ function papelito_vendor_dashboard_kpi_order_data( mixed $order, int $vendor_id,
 
 	$status = papelito_vendor_dashboard_order_status( $order );
 
-	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $status ) {
+	if ( in_array( $status, array( PAPELITO_VENDOR_STATUS_CANCELLED, PAPELITO_VENDOR_STATUS_CANCEL_REQUESTED, PAPELITO_VENDOR_STATUS_REFUNDED ), true ) ) {
 		return null;
 	}
 
@@ -901,9 +923,14 @@ function papelito_vendor_dashboard_vendor_order( int $order_id, int $vendor_id )
 /**
  * Persist a valid operational transition for a seller-owned order.
  *
+ * @param int    $order_id       Order id.
+ * @param int    $vendor_id      Seller that owns the order.
+ * @param mixed  $next_status    Requested operational status.
+ * @param string $reason         Cancellation reason.
+ * @param bool   $administrative Admin action: skips the pre-posting and suspension guards.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_vendor_dashboard_update_order_status( int $order_id, int $vendor_id, mixed $next_status, $reason = '' ) {
+function papelito_vendor_dashboard_update_order_status( int $order_id, int $vendor_id, mixed $next_status, $reason = '', bool $administrative = false ) {
 	$order = papelito_vendor_dashboard_vendor_order( $order_id, $vendor_id );
 
 	if ( is_wp_error( $order ) ) {
@@ -931,12 +958,32 @@ function papelito_vendor_dashboard_update_order_status( int $order_id, int $vend
 		return new WP_Error( 'papelito_vendor_cancel_reason_required', 'Informe o motivo do cancelamento.', array( 'status' => 422 ) );
 	}
 
-	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $next && function_exists( 'papelito_tracking_order_shipments' ) && ! empty( papelito_tracking_order_shipments( $order_id ) ) ) {
+	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $next && ! $administrative && function_exists( 'papelito_order_refund_vendor_cancel_guard' ) ) {
+		$guard = papelito_order_refund_vendor_cancel_guard( $order, $vendor_id );
+
+		if ( is_wp_error( $guard ) ) {
+			return $guard;
+		}
+	}
+
+	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $next && ! $administrative && function_exists( 'papelito_tracking_order_shipments' ) && ! empty( papelito_tracking_order_shipments( $order_id ) ) ) {
 		return new WP_Error(
 			'papelito_vendor_shipment_cancel_requires_review',
 			'Este pedido já possui uma pre-postagem. Solicite o cancelamento administrativo para cancelar também nos Correios.',
 			array( 'status' => 409 )
 		);
+	}
+
+	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $next && function_exists( 'papelito_order_refund_request' ) && papelito_vendor_dashboard_order_is_paid( $order ) ) {
+		$refund = papelito_order_refund_request( $order, $vendor_id, $reason, get_current_user_id() );
+
+		if ( is_wp_error( $refund ) ) {
+			return $refund;
+		}
+
+		$fresh = function_exists( 'wc_get_order' ) ? wc_get_order( $order_id ) : null;
+
+		return papelito_vendor_dashboard_map_order( is_object( $fresh ) ? $fresh : $order, $vendor_id, true );
 	}
 
 	$order->update_meta_data( '_papelito_vendor_status', $next );

@@ -22,7 +22,10 @@ function papelito_receipt_order_for_current_user( int $order_id ) {
 		? sanitize_key( (string) ( papelito_pagarme_order_payment_snapshot( $order )['state'] ?? '' ) )
 		: '';
 
-	if ( ! function_exists( 'papelito_pagarme_payment_state_is_paid' ) || ! papelito_pagarme_payment_state_is_paid( $payment_state ) ) {
+	$was_paid = ( function_exists( 'papelito_pagarme_payment_state_is_paid' ) && papelito_pagarme_payment_state_is_paid( $payment_state ) )
+		|| ( function_exists( 'papelito_order_refund_order_was_paid' ) && papelito_order_refund_order_was_paid( $order ) );
+
+	if ( ! $was_paid ) {
 		return new WP_Error( 'papelito_receipt_payment_not_confirmed', 'O recibo fica disponivel apos a confirmacao do pagamento.', array( 'status' => 409 ) );
 	}
 
@@ -93,12 +96,14 @@ function papelito_receipt_payment_state_label( string $state ): string {
 function papelito_receipt_order_status_label( object $order ): string {
 	$vendor_status = method_exists( $order, 'get_meta' ) ? sanitize_key( (string) $order->get_meta( '_papelito_vendor_status', true ) ) : '';
 	$vendor_labels = array(
-		'aguardando_pagamento' => 'Aguardando pagamento',
-		'aguardando_envio'     => 'Aguardando envio',
-		'em_separacao'         => 'Em separação',
-		'enviado'              => 'Enviado',
-		'entregue'             => 'Entregue',
-		'cancelado'            => 'Cancelado',
+		'aguardando_pagamento'    => 'Aguardando pagamento',
+		'aguardando_envio'        => 'Aguardando envio',
+		'em_separacao'            => 'Em separação',
+		'enviado'                 => 'Enviado',
+		'entregue'                => 'Entregue',
+		'cancelado'               => 'Cancelado',
+		'cancelamento_solicitado' => 'Cancelamento com estorno em andamento',
+		'estornado'               => 'Estornado',
 	);
 
 	if ( isset( $vendor_labels[ $vendor_status ] ) ) {
@@ -159,8 +164,8 @@ function papelito_receipt_public_summary( object $order ): array {
 		? sanitize_key( (string) ( papelito_pagarme_order_payment_snapshot( $order )['state'] ?? '' ) )
 		: '';
 
-	$available = function_exists( 'papelito_pagarme_payment_state_is_paid' )
-		&& papelito_pagarme_payment_state_is_paid( $payment_state );
+	$available = ( function_exists( 'papelito_pagarme_payment_state_is_paid' ) && papelito_pagarme_payment_state_is_paid( $payment_state ) )
+		|| ( function_exists( 'papelito_order_refund_order_was_paid' ) && papelito_order_refund_order_was_paid( $order ) );
 
 	$receipt = function_exists( 'papelito_receipt_get_by_order' )
 		? papelito_receipt_get_by_order( (int) $order->get_id() )

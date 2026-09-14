@@ -112,7 +112,7 @@ Onde o pedido de fato vive. Todas as chaves `_papelito_*` presentes em `shop_ord
 | **Membership** | `_papelito_membership_id`, `_membership_role`, `_membership_status`, `_membership_approved_at`, `_membership_expires_at` |
 | **Pagamento** | `_papelito_pagarme_order_id`, `_charge_id`, `_payment_method`, `_payment_state`, `_idempotency_key`, `_last_reconcile_at`, `_pix_qr_code`, `_pix_qr_code_url`, `_pix_copy_paste`, `_pix_expires_at` |
 | **Valor** | `_papelito_authoritative_total_cents` |
-| **Frete** | `_papelito_shipping_service_code`, `_service_name`, `_delivery_time`, `_price_cents`, `_discount_cents`, `_shipping_neighborhood` |
+| **Frete** | `_papelito_shipping_provider`, `_shipping_option_key`, `_shipping_external_quote_id`, `_shipping_fingerprint`, `_shipping_quoted_at`, `_shipping_expires_at`, `_shipping_service_code`, `_service_name`, `_delivery_time`, `_price_cents`, `_discount_cents`, `_shipping_neighborhood` |
 | **Estoque** | `_papelito_stock_reserved`, `_papelito_stock_decremented` |
 | **Logística** | `_papelito_logistics_status`, `_logistics_updated_at`, `_papelito_tracking_notification_<vendor>_<evento>` |
 | **Atribuição** | `_papelito_ga_client_id`, `_papelito_ga_session_id` |
@@ -212,11 +212,13 @@ Metadados da linha — e onde o **vendor é gravado por item**:
 | `wp_papelito_fiscal_documents` | Nota fiscal **anexada** pelo vendor | PK `id`; UNIQUE `(order_id, vendor_id)`; UNIQUE `storage_key`; `mime`, `size_bytes`, `sha256`, `uploaded_by`. É só um arquivo indexado — sem campo digitado nem validação fiscal |
 | `wp_papelito_fiscal_document_events` | Trilha do anexo: enviado, substituído, baixado, removido | PK `id`; `order_id`, `vendor_id`, `actor_user_id`, `event`. Append-only — sobrevive à substituição do documento |
 
-### Logística (2)
+### Logística e integrações por vendor (4)
 
 | Tabela | Papel | Chaves e colunas que importam |
 |---|---|---|
-| `wp_papelito_shipments` | A remessa: uma linha por (pedido, vendor, direção) | PK `id`; **três UNIQUE**: `tracking_code`, `prepost_id`, `idempotency_key` (esta impede gerar duas etiquetas no retry); `status` + `status_rank` (evita retrocesso de estado); `last_event_*` (cópia do último evento); `next_poll_at`, `poll_attempts`; `label_storage_key` + `label_sha256`; `manual_fallback_eligible`, `reconciliation_status` |
+| `wp_papelito_vendor_integrations` | Contrato de carrier de um vendor | UNIQUE `(vendor_id, provider)`; `config_json` não secreto, `secret_envelope` criptografado, `configuration_version`, `enabled`, estado `unconfigured|ready|active|invalid_credentials` e saúde sem segredo |
+| `wp_papelito_vendor_integration_audit` | Trilha append-only de alteração da integração | `vendor_id`, provider, ator, ação e data; não guarda configuração ou segredo |
+| `wp_papelito_shipments` | A remessa/referência externa: uma linha por (pedido, vendor, direção) | PK `id`; UNIQUE `tracking_code`, `prepost_id`, `idempotency_key`; `provider`; `external_reference` para `byNumPedido` separado do ID interno; `external_status` preserva vocabulário não mapeado; `status` + `status_rank` evita retrocesso |
 | `wp_papelito_tracking_events` | Cada evento de rastreio recebido | PK `id`; UNIQUE `event_key` → torna a ingestão idempotente; `shipment_id`; `raw_payload` (resposta original preservada) |
 
 ### Comunicação (5)

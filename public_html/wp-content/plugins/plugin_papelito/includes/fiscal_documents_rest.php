@@ -70,7 +70,7 @@ function papelito_fiscal_documents_require_enabled() {
 function papelito_fiscal_order_block_reason( $order ): string {
 	$status = papelito_vendor_dashboard_order_status( $order );
 
-	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $status ) {
+	if ( in_array( $status, array( PAPELITO_VENDOR_STATUS_CANCELLED, PAPELITO_VENDOR_STATUS_CANCEL_REQUESTED, PAPELITO_VENDOR_STATUS_REFUNDED ), true ) ) {
 		return 'cancelado';
 	}
 

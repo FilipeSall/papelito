@@ -520,22 +520,26 @@ function papelito_order_routing_validate_vendor_coverage( int $vendor_id, string
  *
  * @param int    $vendor_id        Vendor do pedido.
  * @param string $destination_cep  CEP destino normalizado.
- * @param string $selected_code    Codigo do servico escolhido.
+ * @param string $selected_option_key Chave da opção escolhida.
+ * @param array<string,mixed> $expected_shipping Snapshot apresentado ao comprador.
  * @param array<int,array<string,mixed>> $lines Linhas do pedido.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_order_routing_resolve_shipping( int $vendor_id, string $destination_cep, string $selected_code, array $lines ) {
+function papelito_order_routing_resolve_shipping( int $vendor_id, string $destination_cep, string $selected_option_key, array $lines, array $quote_context = array(), array $expected_shipping = array() ) {
 	$quote_items = array_map(
 		static function ( array $line ): array {
 			return array(
-				'product_id' => (int) $line['product_id'],
-				'qty'        => (int) $line['qty'],
+				'product_id'         => (int) $line['product_id'],
+				'qty'                => (int) $line['qty'],
+				'declared_value_cents' => max( 0, (int) ( $line['total_cents'] ?? 0 ) ),
 			);
 		},
 		$lines
 	);
 
-	$quote = papelito_correios_quote( $vendor_id, $destination_cep, $quote_items );
+	$quote = function_exists( 'papelito_shipping_quote_all_providers' )
+		? papelito_shipping_quote_all_providers( $vendor_id, $destination_cep, $quote_items, $quote_context )
+		: papelito_correios_quote( $vendor_id, $destination_cep, $quote_items );
 	if ( is_wp_error( $quote ) ) {
 		return $quote;
 	}
@@ -547,7 +551,7 @@ function papelito_order_routing_resolve_shipping( int $vendor_id, string $destin
 			continue;
 		}
 
-		if ( $selected_code === sanitize_text_field( (string) ( $option['code'] ?? '' ) ) ) {
+		if ( function_exists( 'papelito_shipping_option_matches_checkout_snapshot' ) && papelito_shipping_option_matches_checkout_snapshot( $option, $selected_option_key, $expected_shipping ) ) {
 			return $option;
 		}
 	}
@@ -713,10 +717,14 @@ function papelito_order_routing_add_shipping_item( object $order, array $shippin
 
 	$shipping_item_class = 'WC_Order_Item_Shipping';
 	$shipping_item       = new $shipping_item_class();
-	$shipping_item->set_method_id( 'papelito_correios_' . strtolower( sanitize_key( (string) ( $shipping['service'] ?? 'shipping' ) ) ) );
+	$provider            = sanitize_key( (string) ( $shipping['provider'] ?? PAPELITO_SHIPPING_PROVIDER_CORREIOS ) );
+	$shipping_item->set_method_id( 'papelito_' . $provider . '_' . strtolower( sanitize_key( (string) ( $shipping['service'] ?? 'shipping' ) ) ) );
 	$shipping_item->set_method_title( sanitize_text_field( (string) ( $shipping['name'] ?? $shipping['service'] ?? 'Correios' ) ) );
 	$shipping_item->set_total( papelito_pricing_from_cents( $charged_cents ) );
 	$shipping_item->add_meta_data( '_papelito_shipping_service_code', sanitize_text_field( (string) ( $shipping['code'] ?? '' ) ), true );
+	$shipping_item->add_meta_data( '_papelito_shipping_provider', $provider, true );
+	$shipping_item->add_meta_data( '_papelito_shipping_option_key', sanitize_text_field( (string) ( $shipping['option_key'] ?? '' ) ), true );
+	$shipping_item->add_meta_data( '_papelito_shipping_fingerprint', sanitize_text_field( (string) ( $shipping['fingerprint'] ?? '' ) ), true );
 	$shipping_item->add_meta_data( '_papelito_shipping_price_cents', $price_cents, true );
 	$shipping_item->add_meta_data( '_papelito_shipping_discount_cents', $discount_cents, true );
 	$order->add_item( $shipping_item );
@@ -794,6 +802,12 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 		$order->update_meta_data( '_papelito_vendor_id', $vendor_id );
 		$order->update_meta_data( '_papelito_vendor_name', $vendor_name );
 		$order->update_meta_data( '_papelito_shipping_service_code', sanitize_text_field( (string) ( $shipping['code'] ?? '' ) ) );
+		$order->update_meta_data( '_papelito_shipping_provider', sanitize_key( (string) ( $shipping['provider'] ?? PAPELITO_SHIPPING_PROVIDER_CORREIOS ) ) );
+		$order->update_meta_data( '_papelito_shipping_option_key', sanitize_text_field( (string) ( $shipping['option_key'] ?? '' ) ) );
+		$order->update_meta_data( '_papelito_shipping_fingerprint', sanitize_text_field( (string) ( $shipping['fingerprint'] ?? '' ) ) );
+		$order->update_meta_data( '_papelito_shipping_external_quote_id', sanitize_text_field( (string) ( $shipping['external_quote_id'] ?? '' ) ) );
+		$order->update_meta_data( '_papelito_shipping_quoted_at', sanitize_text_field( (string) ( $shipping['quoted_at'] ?? '' ) ) );
+		$order->update_meta_data( '_papelito_shipping_expires_at', sanitize_text_field( (string) ( $shipping['expires_at'] ?? '' ) ) );
 		$order->update_meta_data( '_papelito_shipping_service_name', sanitize_text_field( (string) ( $shipping['name'] ?? $shipping['service'] ?? '' ) ) );
 		$order->update_meta_data( '_papelito_shipping_delivery_time', absint( $shipping['delivery_time'] ?? 0 ) );
 		$order->update_meta_data( '_papelito_shipping_price_cents', $shipping_price_cents );
@@ -1178,12 +1192,18 @@ function papelito_order_routing_replay_checkout_attempt( int $user_id, string $c
  * @param array<int,array<string,mixed>> $lines   Linhas resolvidas do vendor.
  * @return array{shipping:array<string,mixed>, destination_cep:string}|WP_Error
  */
-function papelito_order_routing_resolve_checkout_shipping( array $payload, array $address, int $vendor_id, array $lines ) {
+function papelito_order_routing_resolve_checkout_shipping( array $payload, array $address, int $vendor_id, array $lines, array $quote_context = array() ) {
 	$shipping_payload = isset( $payload['shipping'] ) && is_array( $payload['shipping'] ) ? $payload['shipping'] : array();
 	$destination_cep  = papelito_shipping_normalize_cep( $shipping_payload['destination_cep'] ?? $address['zip_code'] );
-	$selected_code    = sanitize_text_field( (string) ( $shipping_payload['selected_code'] ?? '' ) );
+	$selected_option_key = sanitize_text_field( (string) ( $shipping_payload['selected_option_key'] ?? $shipping_payload['selectedOptionKey'] ?? $shipping_payload['selected_code'] ?? '' ) );
+	$expected_shipping = array(
+		'fingerprint'          => sanitize_text_field( (string) ( $shipping_payload['expected_fingerprint'] ?? $shipping_payload['expectedFingerprint'] ?? '' ) ),
+		'customer_price_cents' => $shipping_payload['expected_customer_price_cents'] ?? $shipping_payload['expectedCustomerPriceCents'] ?? null,
+		'delivery_time'        => array_key_exists( 'expected_delivery_time', $shipping_payload ) ? $shipping_payload['expected_delivery_time'] : ( $shipping_payload['expectedDeliveryTime'] ?? null ),
+		'expires_at'           => array_key_exists( 'expected_expires_at', $shipping_payload ) ? $shipping_payload['expected_expires_at'] : ( $shipping_payload['expectedExpiresAt'] ?? null ),
+	);
 
-	if ( '' === $destination_cep || '' === $selected_code ) {
+	if ( '' === $destination_cep || '' === $selected_option_key ) {
 		return new WP_Error(
 			'papelito_checkout_invalid_shipping',
 			'Selecione uma opção de frete válida.',
@@ -1197,7 +1217,7 @@ function papelito_order_routing_resolve_checkout_shipping( array $payload, array
 		return $coverage;
 	}
 
-	$shipping = papelito_order_routing_resolve_shipping( $vendor_id, $destination_cep, $selected_code, $lines );
+	$shipping = papelito_order_routing_resolve_shipping( $vendor_id, $destination_cep, $selected_option_key, $lines, $quote_context, $expected_shipping );
 
 	if ( is_wp_error( $shipping ) ) {
 		return $shipping;
@@ -1364,11 +1384,24 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		return $resolved_items;
 	}
 
+	$quote_context = function_exists( 'papelito_shipping_provider_quote_context' )
+		? papelito_shipping_provider_quote_context(
+			$resolved_items,
+			sanitize_text_field( (string) ( $payload['coupon_code'] ?? '' ) ),
+			$user_id,
+			(string) ( $b2b_snapshot['company']['cnpj'] ?? '' )
+		)
+		: array();
+	if ( is_wp_error( $quote_context ) ) {
+		return $quote_context;
+	}
+
 	$resolved_shipping = papelito_order_routing_resolve_checkout_shipping(
 		$payload,
 		$address,
 		(int) $resolved_items['vendor_id'],
-		$resolved_items['lines']
+		is_array( $quote_context['priced_lines'] ?? null ) ? $quote_context['priced_lines'] : $resolved_items['lines'],
+		is_array( $quote_context ) ? $quote_context : array()
 	);
 	if ( is_wp_error( $resolved_shipping ) ) {
 		return $resolved_shipping;

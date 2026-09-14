@@ -287,6 +287,16 @@ Os arquivos vivem em `PAPELITO_PRIVATE_FISCAL_DOCUMENTS_DIR`, fora do webroot, 0
 
 > **A ordem da substituição é o que impede órfão.** O arquivo novo é gravado **antes** da transação e o antigo apagado **depois do commit**. Apagar antes perderia a nota válida num rollback; falhar depois deixa só um arquivo solto. Exclusão de pedido ou de vendor remove linha e arquivo por gancho (`woocommerce_before_delete_order`, `before_delete_post`, `deleted_user`), e `wp papelito fiscal sweep [--dry-run]` recolhe o que escapou — ignorando arquivo com menos de `PAPELITO_FISCAL_SWEEP_MIN_AGE`, que pode ser upload ainda em voo, e nunca apagando arquivo fora do padrão de storage key.
 
+### Estorno de pedido pago
+
+Cinco tabelas, instaladas por `papelito_order_refund_install_tables()`. Fluxo em [`../../../docs/flows/order-refunds.md`](../../../docs/flows/order-refunds.md).
+
+- **`wp_papelito_order_refunds`** — um estorno por pedido (`UNIQUE order_id`). Guarda `mode` (`api|manual`), `status` (`processando|falhou|manual_pendente|reembolsado`), valor em centavos, ids da Pagar.me, `idempotency_key` (`UNIQUE`), `attempts`/`last_error`/`next_attempt_at` do caminho API, `refund_due_at` e comprovante do caminho manual, `source` (`vendor_cancel|external`), quem pediu e quem registrou, e o recibo (`receipt_number` `UNIQUE`, `PPE-AAAA-NNNNNN`). `version` é trava otimista.
+- **`wp_papelito_order_refund_events`** — trilha append-only por estorno, com ator e payload JSON: `refund_requested`, `refund_api_accepted`, `refund_api_failed`, `refund_api_exhausted`, `external_refund_detected`, `pix_key_revealed`, `refund_proof_uploaded`, `refund_completed`.
+- **`wp_papelito_order_refund_proofs`** — comprovantes em `PAPELITO_PRIVATE_ORDER_REFUND_PROOFS_DIR`, no mesmo esquema de arquivo privado das devoluções. `attached_at` marca o uso único, e `uq_proof` no estorno impede reaproveitar.
+- **`wp_papelito_order_refund_sequences`** — sequência anual do recibo de estorno, separada da `PPL`, alocada com `FOR UPDATE` dentro da transação de conclusão.
+- **`wp_papelito_refund_pix_keys`** — chave PIX de reembolso por usuário (`PRIMARY KEY user_id`): `key_type`, `key_ciphertext` (envelope de `papelito_pii_encrypt()`), `key_hint` e `holder_name`. Fica fora de `papelito_customer_profiles` porque aquela tabela exige CPF.
+
 ### Nunca criada
 
 `wp_papelito_invoices` foi projetada para armazenar NF-e por pedido/vendor e **nunca foi criada** — a fundação acima a substituiu, com nome e modelo diferentes.
@@ -483,6 +493,9 @@ O snapshot fiscal B2B (22 chaves canônicas) está em [`../../../docs/flows/cart
 | `_papelito_pagarme_order_id` / `_papelito_pagarme_charge_id` | ids do PSP — o `charge_id` é o fallback de busca no webhook |
 | `_papelito_stock_decremented` | idempotência do decremento |
 | `_papelito_logistics_status` | projeção logística, separada do estado comercial |
+| `_papelito_vendor_status` | inclui `cancelamento_solicitado` e `estornado`; `_papelito_vendor_status_source = refund_completed` marca a conclusão do estorno |
+| `_papelito_pagarme_anomaly_chargeback` / `_papelito_pagarme_anomaly_partial_refund` | dedupe da nota de chargeback e de estorno parcial reportados pela Pagar.me |
+| `_papelito_pagarme_unexpected_state` | dedupe da nota de estado terminal em cobrança já paga |
 | `_papelito_shipping_neighborhood` | bairro de destino, **só em pedidos novos** — antes era validado na cotação e nunca gravado |
 | `_papelito_import_todo` | pendências por produto deixadas pela importação de catálogo |
 | `_correios_tracking_code` | **legado**, do plugin Correios for WooCommerce 4.2.5 |

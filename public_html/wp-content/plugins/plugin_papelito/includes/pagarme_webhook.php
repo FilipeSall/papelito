@@ -187,7 +187,9 @@ function papelito_pagarme_process_webhook_payload( array $payload, ?callable $re
 
 	$state = sanitize_key( (string) ( $reconciled['payment']['state'] ?? '' ) );
 
-	if ( function_exists( 'papelito_pagarme_payment_state_releases_stock' ) && papelito_pagarme_payment_state_releases_stock( $state ) ) {
+	$was_paid = function_exists( 'papelito_order_refund_order_was_paid' ) && papelito_order_refund_order_was_paid( $order );
+
+	if ( ! $was_paid && function_exists( 'papelito_pagarme_payment_state_releases_stock' ) && papelito_pagarme_payment_state_releases_stock( $state ) ) {
 		papelito_pagarme_release_order_stock_for_terminal_state( $order, 'webhook_release' );
 	}
 

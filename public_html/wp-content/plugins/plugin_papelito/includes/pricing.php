@@ -724,17 +724,30 @@ function papelito_pricing_quote( mixed $items, string $coupon_code, int $user_id
 			return new WP_Error( 'papelito_checkout_shipping_unavailable', 'Não foi possível recalcular o frete.', array( 'status' => 503 ) );
 		}
 
-		$destination_cep = papelito_shipping_normalize_cep( $shipping_selection['destination_cep'] ?? $shipping_selection['destinationCep'] ?? '' );
-		$selected_code   = sanitize_text_field( (string) ( $shipping_selection['selected_code'] ?? $shipping_selection['selectedCode'] ?? '' ) );
-		if ( '' === $destination_cep || '' === $selected_code ) {
+		$destination_cep       = papelito_shipping_normalize_cep( $shipping_selection['destination_cep'] ?? $shipping_selection['destinationCep'] ?? '' );
+		$selected_option_key   = sanitize_text_field( (string) ( $shipping_selection['selected_option_key'] ?? $shipping_selection['selectedOptionKey'] ?? $shipping_selection['selected_code'] ?? $shipping_selection['selectedCode'] ?? '' ) );
+		if ( '' === $destination_cep || '' === $selected_option_key ) {
 			return new WP_Error( 'papelito_checkout_invalid_shipping', 'Selecione uma opção de frete válida.', array( 'status' => 422 ) );
+		}
+
+		$quote_context = function_exists( 'papelito_shipping_provider_quote_context' )
+			? papelito_shipping_provider_quote_context(
+				$resolved,
+				$coupon_code,
+				$user_id,
+				function_exists( 'papelito_shipping_recipient_cnpj_for_user' ) ? papelito_shipping_recipient_cnpj_for_user( $user_id ) : ''
+			)
+			: array();
+		if ( is_wp_error( $quote_context ) ) {
+			return $quote_context;
 		}
 
 		$shipping = papelito_order_routing_resolve_shipping(
 			(int) $resolved['vendor_id'],
 			$destination_cep,
-			$selected_code,
-			(array) $resolved['lines']
+			$selected_option_key,
+			is_array( $quote_context['priced_lines'] ?? null ) ? $quote_context['priced_lines'] : (array) $resolved['lines'],
+			is_array( $quote_context ) ? $quote_context : array()
 		);
 		if ( is_wp_error( $shipping ) ) {
 			return $shipping;
