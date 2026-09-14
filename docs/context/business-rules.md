@@ -50,7 +50,8 @@ Todos os arquivos em `public_html/wp-content/plugins/plugin_papelito/includes/`.
 10. `papelito_auth_validate_register_payload` exige e-mail válido, senha ≥ 8, nome e sobrenome, telefone de 10–11 dígitos, CEP e estado; **CNPJ opcional**. Seller exige adicionalmente `store_name`, CNPJ, cidade/estado, instagram, `min_cep`/`max_cep` e `has_sold`.
 11. O e-mail nasce `pending`. O token é **sha256 do valor em claro**, de **uso único**, e expira em **24 h**.
 12. Cadastro por convite e reenvio usam rate limit por identidade opaca (token ou e-mail), para não compartilhar o IP do proxy Next; reenvio tem cooldown de 1 min.
-13. Login por senha é **bloqueado** até `papelito_email_verification_status = 'verified'`, pelo hook `wp_authenticate_user`. O gate recusa **qualquer valor que não seja exatamente `'verified'`**. Status vazio (`''`) é usuário legado e não exige verificação.
+13. Login por senha é **bloqueado** até `papelito_email_verification_status = 'verified'`, pelo hook `wp_authenticate_user`. O gate recusa **qualquer valor que não seja exatamente `'verified'`**. Status vazio (`''`) é usuário legado e não exige verificação. O aviso `papelito_email_not_verified` só sai **depois de a senha conferir**: o filtro recebe `$password` (`accepted_args = 2`) e, com senha errada, devolve o usuário para o core responder `incorrect_password` — senão o aviso revelaria que o endereço tem conta pendente.
+13a. Como status vazio vale como legado verificado, **nenhuma porta de cadastro fora do plugin pode ficar aberta**: `mu-plugins/papelito-hardening.php` força `users_can_register = 0` e remove `registerUser`/`registerCustomer` do schema GraphQL.
 
 ## Google OAuth
 
