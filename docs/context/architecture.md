@@ -183,7 +183,7 @@ Filtros de extensão:
 | Arquivo | O que faz | Versionado |
 |---|---|---|
 | `papelito-cors.php` | allowlist de `PAPELITO_ALLOWED_ORIGINS`; headers em `rest_pre_serve_request` e `graphql_init`; trata OPTIONS; permite `Authorization`, `Content-Type`, `X-WP-Nonce`; default `http://localhost:3000` | sim |
-| `papelito-hardening.php` | bloqueia enumeração de usuários, desativa XML-RPC, remove o generator, rate limit no login, fecha o cadastro público (`users_can_register` forçado a `0`; `registerUser`/`registerCustomer` fora do schema GraphQL) | sim |
+| `papelito-hardening.php` | bloqueia enumeração de usuários, desativa XML-RPC, remove o generator, rate limit no login, fecha o cadastro público (`users_can_register` forçado a `0`; registro no checkout do Woo desligado; `registerUser`, `registerCustomer` e `checkout` fora do schema GraphQL) | sim |
 | `elementor-safe-mode.php` | terceiros | **não** |
 | `hostinger-auto-updates.php` | terceiros | **não** |
 

@@ -9,7 +9,7 @@ Todos os arquivos em `public_html/wp-content/plugins/plugin_papelito/includes/`.
 | Fluxo | Funções reais | Camada |
 |---|---|---|
 | Cadastro BR | `auth_endpoints.php` — `papelito_auth_validate_register_payload`, `_seller_register_payload`, `papelito_auth_create_registered_user`/`_seller` | WP |
-| Verificação de e-mail | `auth_endpoints.php` — token sha256, expiração de 24 h, rate limit, bloqueio de login por `wp_authenticate_user` | WP |
+| Verificação de e-mail | `auth_endpoints.php` — token sha256, expiração de 24 h, rate limit, bloqueio de login no filtro `authenticate` (prioridade 30, depois da senha) | WP |
 | Google OAuth | `auth_endpoints.php` — `papelito_auth_verify_google_id_token`, `papelito_auth_find_or_create_google_user` | mock HTTP + WP |
 | Validações puras | `papelito_auth_is_valid_cep`, `papelito_auth_normalize_phone`, `papelito_auth_format_phone`; `papelito_validate_cpf` / `papelito_calculate_cpf_digit` / `papelito_revendedor_validate_cnpj` (`revendedor_application.php`); `cnpj_validation.php` | puro |
 | Cobertura por CEP | `rest_api.php` — `papelito_sellers_by_cep`, `papelito_coverage_vendors`, `papelito_coverage_products`; `products_filter.php` — `papelito_matching_vendor_ids` | puro (regra de faixa) + WP |
@@ -50,8 +50,8 @@ Todos os arquivos em `public_html/wp-content/plugins/plugin_papelito/includes/`.
 10. `papelito_auth_validate_register_payload` exige e-mail válido, senha ≥ 8, nome e sobrenome, telefone de 10–11 dígitos, CEP e estado; **CNPJ opcional**. Seller exige adicionalmente `store_name`, CNPJ, cidade/estado, instagram, `min_cep`/`max_cep` e `has_sold`.
 11. O e-mail nasce `pending`. O token é **sha256 do valor em claro**, de **uso único**, e expira em **24 h**.
 12. Cadastro por convite e reenvio usam rate limit por identidade opaca (token ou e-mail), para não compartilhar o IP do proxy Next; reenvio tem cooldown de 1 min.
-13. Login por senha é **bloqueado** até `papelito_email_verification_status = 'verified'`, pelo hook `wp_authenticate_user`. O gate recusa **qualquer valor que não seja exatamente `'verified'`**. Status vazio (`''`) é usuário legado e não exige verificação. O aviso `papelito_email_not_verified` só sai **depois de a senha conferir**: o filtro recebe `$password` (`accepted_args = 2`) e, com senha errada, devolve o usuário para o core responder `incorrect_password` — senão o aviso revelaria que o endereço tem conta pendente.
-13a. Como status vazio vale como legado verificado, **nenhuma porta de cadastro fora do plugin pode ficar aberta**: `mu-plugins/papelito-hardening.php` força `users_can_register = 0` e remove `registerUser`/`registerCustomer` do schema GraphQL.
+13. Login por senha é **bloqueado** até `papelito_email_verification_status = 'verified'`, por `papelito_auth_block_unverified_email_login()` no filtro `authenticate`, **prioridade 30**. O gate recusa **qualquer valor que não seja exatamente `'verified'`**. Status vazio (`''`) é usuário legado e não exige verificação. A prioridade é a regra: roda **depois** de `wp_authenticate_*_password` (20), só sobre um `WP_User` cuja senha o core já validou, e **antes** do rate limit (100). Senha errada numa conta pendente sai do core idêntica à de conta verificada — mesmo código, mesma mensagem, mesmo número de hashes. Em `wp_authenticate_user`, que o core aplica antes da senha, o aviso vazava pela mensagem e, conferindo a senha lá dentro, pelo tempo: 4 hashes bcrypt contra 2.
+13a. Como status vazio vale como legado verificado, **nenhuma porta de cadastro fora do plugin pode ficar aberta**: `mu-plugins/papelito-hardening.php` força `users_can_register = 0`, força `woocommerce_checkout_registration_enabled` a `false` (checkout clássico e Store API) e remove `registerUser`, `registerCustomer` e `checkout` do schema GraphQL.
 
 ## Google OAuth
 
