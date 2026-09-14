@@ -802,29 +802,25 @@ function papelito_auth_map_password_reset_key_error( WP_Error $error ) {
 	);
 }
 
-add_filter(
-	'wp_authenticate_user',
-	static function ( $user, $password = '' ) {
-		if ( is_wp_error( $user ) || ! $user instanceof WP_User ) {
-			return $user;
-		}
+/**
+ * Barra login de conta com e-mail pendente depois de o core validar a senha (prioridade 20).
+ * Senha errada segue idêntica à de conta verificada; o rate limit (100) roda depois.
+ *
+ * @param null|WP_User|WP_Error $user Resultado da cadeia de autenticação.
+ * @return null|WP_User|WP_Error
+ */
+function papelito_auth_block_unverified_email_login( $user ) {
+	if ( ! $user instanceof WP_User || ! papelito_auth_requires_email_verification( $user->ID ) ) {
+		return $user;
+	}
 
-		if ( ! papelito_auth_requires_email_verification( $user->ID ) ) {
-			return $user;
-		}
+	return new WP_Error(
+		'papelito_email_not_verified',
+		'Confirme seu e-mail antes de entrar.'
+	);
+}
 
-		if ( ! wp_check_password( (string) $password, $user->user_pass, $user->ID ) ) {
-			return $user;
-		}
-
-		return new WP_Error(
-			'papelito_email_not_verified',
-			'Confirme seu e-mail antes de entrar.'
-		);
-	},
-	10,
-	2
-);
+add_filter( 'authenticate', 'papelito_auth_block_unverified_email_login', 30 );
 
 /**
  * Rate limit por identidade opaca do pedido. O WordPress recebe chamadas publicas pelo proxy
