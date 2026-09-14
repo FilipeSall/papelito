@@ -1091,6 +1091,12 @@ function papelito_pagarme_reconcile_pending_stock_reservations(): void {
 			continue;
 		}
 
+		// Pedido pago e depois estornado tem cobranca `canceled`, que aqui pareceria pagamento
+		// terminal nao pago. Devolver o estoque dele contraria a regra do estorno.
+		if ( function_exists( 'papelito_order_refund_order_was_paid' ) && papelito_order_refund_order_was_paid( $order ) ) {
+			continue;
+		}
+
 		$state = sanitize_key( (string) $order->get_meta( PAPELITO_PAGARME_PAYMENT_STATE_META, true ) );
 
 		if ( papelito_pagarme_payment_state_is_paid( $state ) ) {

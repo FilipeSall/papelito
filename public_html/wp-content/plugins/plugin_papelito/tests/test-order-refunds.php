@@ -158,6 +158,14 @@ assert_refund( 'cartão sem id de cobrança cai para o manual', 'manual', papeli
 assert_refund( 'PIX recente com cobrança resolve para API', 'api', papelito_order_refund_resolve_mode( new Papelito_Test_Order( array( '_papelito_pagarme_payment_method' => 'pix', '_papelito_pagarme_charge_id' => 'ch_2' ), $recent ) ) );
 assert_refund( 'boleto com cobrança continua manual', 'manual', papelito_order_refund_resolve_mode( new Papelito_Test_Order( array( '_papelito_pagarme_payment_method' => 'boleto', '_papelito_pagarme_charge_id' => 'ch_3' ), $recent ) ) );
 
+$payments_source = (string) file_get_contents( __DIR__ . '/../includes/pagarme_payments.php' );
+$reservation_reconciler = (string) strstr( $payments_source, 'function papelito_pagarme_reconcile_pending_stock_reservations' );
+assert_refund(
+	'reconciliação de reserva não devolve estoque de pedido pago e estornado',
+	true,
+	str_contains( (string) strstr( $reservation_reconciler, 'papelito_pagarme_payment_state_releases_stock', true ), 'papelito_order_refund_order_was_paid' )
+);
+
 $source = (string) file_get_contents( __DIR__ . '/../includes/order_refunds.php' );
 assert_refund( 'reembolso WooCommerce nunca repõe estoque', true, 1 === preg_match( "/'restock_items'\s*=>\s*false/", $source ) );
 assert_refund( 'nenhuma chamada repõe estoque', 0, preg_match_all( "/'restock_items'\s*=>\s*true|wc_restock_refunded_items|wc_maybe_increase_stock_levels/", $source ) );
