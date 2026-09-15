@@ -15,6 +15,18 @@ const PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED = 'unconfigured';
 const PAPELITO_VENDOR_INTEGRATION_READY        = 'ready';
 const PAPELITO_VENDOR_INTEGRATION_ACTIVE       = 'active';
 const PAPELITO_VENDOR_INTEGRATION_INVALID      = 'invalid_credentials';
+const PAPELITO_VENDOR_INTEGRATION_BLOCKED      = 'provider_blocked';
+
+/**
+ * Parâmetros contratuais fixos do marketplace, deliberadamente não editáveis.
+ *
+ * Rodoviário é o único modal com preço viável para papelaria, e CIF é o único
+ * tipo compatível com o modelo em que o vendor recebe produtos e frete e paga
+ * a transportadora. FOB transferiria a cobrança para o destinatário e
+ * consignado exigiria um terceiro pagante, quebrando o repasse integral.
+ */
+const PAPELITO_BRASPRESS_CONTRACT_MODAL        = 'R';
+const PAPELITO_BRASPRESS_CONTRACT_FREIGHT_TYPE = '1';
 
 /**
  * Retorna o nome da tabela principal de integrações por vendor.
@@ -102,9 +114,6 @@ function papelito_vendor_integration_empty_config(): array {
 		'origin_cep'            => '',
 		'modal'                 => '',
 		'freight_type'          => '',
-		'consignee_cnpj'        => '',
-		'weight_unit'           => '',
-		'quote_timezone'        => '',
 		'tracking_tomador_cnpj' => '',
 	);
 }
@@ -134,66 +143,59 @@ function papelito_vendor_integration_normalize_cep( $value ): string {
 }
 
 /**
- * Confirma que a timezone existe no catálogo IANA.
+ * Normaliza o CEP de origem declarado pelo vendor para o contrato Braspress.
  *
- * @param string $timezone Timezone informada pelo contrato.
- * @return bool Se a timezone é válida.
+ * O contrato é de cada vendor e fica amarrado a uma origem específica, que
+ * pode ser um centro de distribuição diferente do endereço cadastrado. Por
+ * isso a origem é declarável, e não derivada à força.
+ *
+ * @param mixed $value CEP informado no formulário.
+ * @return string|null CEP com oito dígitos, vazio quando não informado ou nulo quando inválido.
  */
-function papelito_vendor_integration_timezone_is_valid( string $timezone ): bool {
-	return in_array( $timezone, DateTimeZone::listIdentifiers(), true );
+function papelito_vendor_integration_normalize_origin_cep( $value ): ?string {
+	$cep = papelito_vendor_integration_normalize_cep( $value );
+	if ( '' === $cep ) {
+		return '';
+	}
+
+	return 8 === strlen( $cep ) && '00000000' !== $cep ? $cep : null;
 }
 
 /**
- * Normaliza e valida os parâmetros contratuais não secretos.
+ * Monta os parâmetros contratuais do vendor sem pedir o que já está cadastrado.
  *
- * @param array<string,mixed> $raw Dados recebidos da API do vendor.
- * @return array<string,string>|WP_Error Configuração segura ou erro de validação.
+ * Só a origem é declarável. O CNPJ remetente vem do cadastro porque precisa ser
+ * o mesmo que emite a nota, e a API aceita qualquer CNPJ enviado — digitá-lo de
+ * novo permitiria cotar no contrato de outra empresa. Modal e tipo de frete são
+ * fixos por decisão de marketplace, e em CIF o tomador do frete é o remetente.
+ *
+ * @param int   $vendor_id ID do vendor.
+ * @param mixed $stored_json Configuração persistida da integração.
+ * @return array<string,string> Configuração efetiva, com campos vazios quando o cadastro não permite cotar.
  */
-function papelito_vendor_integration_normalize_config( array $raw ) {
-	$config = array(
-		'sender_cnpj'           => papelito_vendor_integration_normalize_document( $raw['sender_cnpj'] ?? $raw['senderCnpj'] ?? '' ),
-		'origin_cep'            => papelito_vendor_integration_normalize_cep( $raw['origin_cep'] ?? $raw['originCep'] ?? '' ),
-		'modal'                 => strtoupper( sanitize_text_field( (string) ( $raw['modal'] ?? '' ) ) ),
-		'freight_type'          => sanitize_text_field( (string) ( $raw['freight_type'] ?? $raw['freightType'] ?? '' ) ),
-		'consignee_cnpj'        => papelito_vendor_integration_normalize_document( $raw['consignee_cnpj'] ?? $raw['consigneeCnpj'] ?? '' ),
-		'weight_unit'           => strtolower( sanitize_text_field( (string) ( $raw['weight_unit'] ?? $raw['weightUnit'] ?? '' ) ) ),
-		'quote_timezone'        => sanitize_text_field( (string) ( $raw['quote_timezone'] ?? $raw['quoteTimezone'] ?? '' ) ),
-		'tracking_tomador_cnpj' => papelito_vendor_integration_normalize_document( $raw['tracking_tomador_cnpj'] ?? $raw['trackingTomadorCnpj'] ?? '' ),
-	);
-
-	foreach ( array( 'sender_cnpj', 'consignee_cnpj', 'tracking_tomador_cnpj' ) as $field ) {
-		if ( '' === $config[ $field ] ) {
-			continue;
-		}
-
-		if ( 14 !== strlen( $config[ $field ] ) || ( function_exists( 'papelito_validate_cnpj' ) && ! papelito_validate_cnpj( $config[ $field ] ) ) ) {
-			return new WP_Error( 'papelito_vendor_integration_invalid_document', 'Informe um CNPJ válido.', array( 'status' => 422 ) );
-		}
+function papelito_vendor_integration_braspress_config( int $vendor_id, $stored_json = '' ): array {
+	$config = papelito_vendor_integration_empty_config();
+	if ( $vendor_id <= 0 ) {
+		return $config;
 	}
 
-	if ( '' !== $config['origin_cep'] && 8 !== strlen( $config['origin_cep'] ) ) {
-		return new WP_Error( 'papelito_vendor_integration_invalid_origin_cep', 'Informe um CEP de origem com 8 dígitos.', array( 'status' => 422 ) );
+	$cnpj = papelito_vendor_integration_normalize_document( get_user_meta( $vendor_id, 'cnpj', true ) );
+	if ( 14 === strlen( $cnpj ) && ( ! function_exists( 'papelito_validate_cnpj' ) || papelito_validate_cnpj( $cnpj ) ) ) {
+		$config['sender_cnpj']           = $cnpj;
+		$config['tracking_tomador_cnpj'] = $cnpj;
 	}
 
-	if ( '' !== $config['modal'] && ! in_array( $config['modal'], array( 'R', 'A' ), true ) ) {
-		return new WP_Error( 'papelito_vendor_integration_invalid_modal', 'Informe o modal rodoviário ou aéreo.', array( 'status' => 422 ) );
+	$stored    = is_string( $stored_json ) ? json_decode( $stored_json, true ) : null;
+	$declared  = is_array( $stored ) ? papelito_vendor_integration_normalize_origin_cep( $stored['origin_cep'] ?? '' ) : '';
+	$fallback  = papelito_vendor_integration_normalize_origin_cep( get_user_meta( $vendor_id, 'cep', true ) );
+	$origin    = ! empty( $declared ) ? $declared : $fallback;
+
+	if ( ! empty( $origin ) ) {
+		$config['origin_cep'] = $origin;
 	}
 
-	if ( '' !== $config['freight_type'] && ! in_array( $config['freight_type'], array( '1', '2', '3' ), true ) ) {
-		return new WP_Error( 'papelito_vendor_integration_invalid_freight_type', 'Informe um tipo de frete válido.', array( 'status' => 422 ) );
-	}
-
-	if ( '3' === $config['freight_type'] && '' === $config['consignee_cnpj'] ) {
-		return new WP_Error( 'papelito_vendor_integration_consignee_required', 'Informe o CNPJ do consignatário.', array( 'status' => 422 ) );
-	}
-
-	if ( '' !== $config['weight_unit'] && ! in_array( $config['weight_unit'], array( 'kg', 'g' ), true ) ) {
-		return new WP_Error( 'papelito_vendor_integration_invalid_weight_unit', 'Informe uma unidade de peso válida.', array( 'status' => 422 ) );
-	}
-
-	if ( '' !== $config['quote_timezone'] && ! papelito_vendor_integration_timezone_is_valid( $config['quote_timezone'] ) ) {
-		return new WP_Error( 'papelito_vendor_integration_invalid_timezone', 'Informe um fuso horário válido.', array( 'status' => 422 ) );
-	}
+	$config['modal']        = PAPELITO_BRASPRESS_CONTRACT_MODAL;
+	$config['freight_type'] = PAPELITO_BRASPRESS_CONTRACT_FREIGHT_TYPE;
 
 	return $config;
 }
@@ -201,56 +203,29 @@ function papelito_vendor_integration_normalize_config( array $raw ) {
 /**
  * Verifica se todos os parâmetros necessários à cotação estão presentes.
  *
- * @param array<string,mixed> $config Configuração normalizada.
+ * @param array<string,mixed> $config Configuração derivada.
  * @return bool Se a configuração é suficiente.
  */
 function papelito_vendor_integration_config_complete( array $config ): bool {
-	$required = array( 'sender_cnpj', 'origin_cep', 'modal', 'freight_type', 'weight_unit', 'quote_timezone', 'tracking_tomador_cnpj' );
-
-	foreach ( $required as $field ) {
+	foreach ( papelito_vendor_integration_empty_config() as $field => $unused ) {
 		if ( empty( $config[ $field ] ) ) {
 			return false;
 		}
 	}
 
-	return '3' !== $config['freight_type'] || ! empty( $config['consignee_cnpj'] );
-}
-
-/**
- * Decodifica configuração persistida e aplica os valores vazios conhecidos.
- *
- * @param mixed $json JSON persistido.
- * @return array<string,string> Configuração pública.
- */
-function papelito_vendor_integration_decode_config( $json ): array {
-	$decoded = is_string( $json ) ? json_decode( $json, true ) : null;
-
-	return array_merge( papelito_vendor_integration_empty_config(), is_array( $decoded ) ? $decoded : array() );
-}
-
-/**
- * Detecta uma alteração efetiva nos parâmetros contratuais não secretos.
- *
- * @param array<string,mixed> $existing Integração persistida.
- * @param array<string,string> $config Configuração normalizada recebida.
- * @return bool Se o contrato mudou e precisa ser validado de novo.
- */
-function papelito_vendor_integration_config_changed( array $existing, array $config ): bool {
-	$keys            = papelito_vendor_integration_empty_config();
-	$existing_config = array_intersect_key( papelito_vendor_integration_decode_config( $existing['config_json'] ?? '' ), $keys );
-
-	return $existing_config !== $config;
+	return true;
 }
 
 /**
  * Monta a representação pública, omitindo envelope e credenciais.
  *
  * @param array<string,mixed>|null $row Linha persistida.
+ * @param int                      $vendor_id Vendor consultado, quando ainda não há linha.
  * @return array<string,mixed> Estado seguro para REST.
  */
-function papelito_vendor_integration_public_record( ?array $row = null ): array {
+function papelito_vendor_integration_public_record( ?array $row = null, int $vendor_id = 0 ): array {
 	$row    = is_array( $row ) ? $row : array();
-	$config = papelito_vendor_integration_decode_config( $row['config_json'] ?? '' );
+	$config = papelito_vendor_integration_braspress_config( (int) ( $row['vendor_id'] ?? $vendor_id ), $row['config_json'] ?? '' );
 
 	return array(
 		'provider'                 => PAPELITO_VENDOR_INTEGRATION_PROVIDER,
@@ -356,7 +331,7 @@ function papelito_vendor_integration_security_event( int $vendor_id, string $act
 function papelito_vendor_integration_set_braspress_operational_state( int $vendor_id, string $status, string $error_category = '' ): void {
 	global $wpdb;
 
-	if ( ! in_array( $status, array( PAPELITO_VENDOR_INTEGRATION_ACTIVE, PAPELITO_VENDOR_INTEGRATION_INVALID ), true ) ) {
+	if ( ! in_array( $status, array( PAPELITO_VENDOR_INTEGRATION_ACTIVE, PAPELITO_VENDOR_INTEGRATION_INVALID, PAPELITO_VENDOR_INTEGRATION_BLOCKED ), true ) ) {
 		return;
 	}
 
@@ -424,17 +399,27 @@ function papelito_vendor_integration_save_braspress( int $vendor_id, array $payl
 		return $password_check;
 	}
 
-	$config = papelito_vendor_integration_normalize_config( $payload );
-	if ( is_wp_error( $config ) ) {
-		return $config;
+	$origin_cep = papelito_vendor_integration_normalize_origin_cep( $payload['origin_cep'] ?? $payload['originCep'] ?? '' );
+	if ( null === $origin_cep ) {
+		return new WP_Error( 'papelito_vendor_integration_invalid_origin_cep', 'Informe um CEP de origem com 8 dígitos.', array( 'status' => 422 ) );
 	}
 
+	$config   = papelito_vendor_integration_braspress_config( $vendor_id, wp_json_encode( array( 'origin_cep' => $origin_cep ) ) );
+	$complete = papelito_vendor_integration_config_complete( $config );
 	$enabled  = isset( $payload['enabled'] ) && true === filter_var( $payload['enabled'], FILTER_VALIDATE_BOOLEAN );
+
+	if ( $enabled && ! $complete ) {
+		return new WP_Error(
+			'papelito_vendor_integration_profile_incomplete',
+			'Informe o CEP de origem e confirme o CNPJ do cadastro da sua loja antes de habilitar a Braspress.',
+			array( 'status' => 422 )
+		);
+	}
+
 	$username = sanitize_text_field( (string) ( $payload['username'] ?? '' ) );
 	$secret   = (string) ( $payload['password'] ?? '' );
 	$row      = papelito_vendor_integration_find_row( $vendor_id );
 	$existing = is_array( $row ) ? $row : array();
-	$config_changed = papelito_vendor_integration_config_changed( $existing, $config );
 
 	if ( ( '' === $username ) !== ( '' === $secret ) ) {
 		return new WP_Error( 'papelito_vendor_integration_credentials_incomplete', 'Informe usuário e senha juntos.', array( 'status' => 422 ) );
@@ -461,18 +446,19 @@ function papelito_vendor_integration_save_braspress( int $vendor_id, array $payl
 		$credentials_changed = true;
 	}
 
-	$complete = papelito_vendor_integration_config_complete( $config );
-	$status   = sanitize_key( (string) ( $existing['status'] ?? PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED ) );
+	$stored_origin  = papelito_vendor_integration_braspress_config( $vendor_id, $existing['config_json'] ?? '' );
+	$origin_changed = ( $stored_origin['origin_cep'] ?? '' ) !== ( $config['origin_cep'] ?? '' );
+	$status         = sanitize_key( (string) ( $existing['status'] ?? PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED ) );
 	if ( ! $complete || empty( $secret_envelope ) ) {
 		$status = PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED;
-	} elseif ( $credentials_changed || ( $config_changed && PAPELITO_VENDOR_INTEGRATION_INVALID !== $status ) ) {
+	} elseif ( $credentials_changed || ( $origin_changed && PAPELITO_VENDOR_INTEGRATION_INVALID !== $status ) ) {
 		$status = PAPELITO_VENDOR_INTEGRATION_READY;
 	}
 
 	$now     = current_time( 'mysql', true );
 	$version = max( 0, (int) ( $existing['configuration_version'] ?? 0 ) ) + 1;
 	$data    = array(
-		'config_json'           => wp_json_encode( $config ),
+		'config_json'           => wp_json_encode( array( 'origin_cep' => $origin_cep ) ),
 		'secret_envelope'       => $secret_envelope,
 		'configuration_version' => $version,
 		'enabled'               => $enabled ? 1 : 0,
@@ -548,7 +534,7 @@ function papelito_vendor_integration_delete_braspress( int $vendor_id, array $pa
 	papelito_vendor_integration_audit( $vendor_id, PAPELITO_VENDOR_INTEGRATION_PROVIDER, $actor_user_id, 'removed' );
 	papelito_vendor_integration_security_event( $vendor_id, 'removed' );
 
-	return papelito_vendor_integration_public_record();
+	return papelito_vendor_integration_public_record( null, $vendor_id );
 }
 
 /**
@@ -563,7 +549,7 @@ function papelito_vendor_integration_resolve_braspress( int $vendor_id ) {
 		return null;
 	}
 
-	$config = papelito_vendor_integration_decode_config( $row['config_json'] ?? '' );
+	$config = papelito_vendor_integration_braspress_config( $vendor_id, $row['config_json'] ?? '' );
 	if ( ! papelito_vendor_integration_config_complete( $config ) || empty( $row['secret_envelope'] ) ) {
 		return null;
 	}
@@ -597,7 +583,9 @@ function papelito_vendor_integration_resolve_braspress( int $vendor_id ) {
  * @return WP_REST_Response Resposta REST segura.
  */
 function papelito_vendor_integration_handle_get_braspress() {
-	return new WP_REST_Response( papelito_vendor_integration_public_record( papelito_vendor_integration_find_row( get_current_user_id() ) ), 200 );
+	$vendor_id = get_current_user_id();
+
+	return new WP_REST_Response( papelito_vendor_integration_public_record( papelito_vendor_integration_find_row( $vendor_id ), $vendor_id ), 200 );
 }
 
 /**

@@ -109,6 +109,26 @@ wp --allow-root eval-file $T report 50
 6. `min_cep[]` / `max_cep[]` são **serializados** em usermeta — a fixture precisa passar por `update_user_meta`.
 7. Se a mudança altera contrato consumido pelo frontend, o teste correspondente do lado do Next também é parte da entrega. O catálogo de erros dos Correios, por exemplo, tem **teste de contrato que compara PHP e TypeScript**.
 
+### Stub que nasce limpo no editor
+
+O SonarLint e o intelephense analisam os testes junto com o resto do plugin, e três hints aparecem sempre que o stub é escrito no modo preguiçoso. **Nenhum deles se resolve escrevendo comentário** — o projeto não comenta código para calar linter.
+
+- **Tipe os parâmetros do stub** (`mixed` onde o core aceita qualquer coisa) e declare o retorno. Sem isso o intelephense acusa `P1132 Parameter $x has no type information available` em cada assinatura.
+- **Stub não pode ter corpo vazio** (`php:S1186`). `function add_action() {}` vira hint; devolva o que a função real devolve (`return true;`) ou faça o stub registrar a chamada em `$GLOBALS` quando o teste for conferir isso. Variádico tipado (`mixed ...$args`) evita copiar a assinatura inteira do core.
+- **Literal de fixture repetido vira constante** (`php:S1192`), com o escopo no nome: `BRASPRESS_TEST_DESTINATION_CEP`, `INVITATION_TEST_VALID_CPF`, `GATE_TEST_WRONG_PASSWORD`. Na prática a regra não acusa literal usado como **chave de array** (`'origin_cep' => ...`, `$payload['category']`) — trocar chave por constante só piora a leitura, então extraia CNPJ, CEP, CPF, e-mail e senha de fixture, não o nome do campo.
+
+Forma canônica do bloco de stubs:
+
+```php
+function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
+function sanitize_text_field( mixed $value ): string { return trim( strip_tags( (string) $value ) ); }
+function wp_json_encode( mixed $value ): string { return json_encode( $value ); }
+function add_action( mixed ...$args ): bool { return true; }
+function register_rest_route( mixed ...$args ): bool { return true; }
+```
+
+`test-braspress-payload.php` e `test-vendor-integrations.php` são a referência. Os testes antigos ainda têm stub sem tipo e com corpo vazio: com `sonarlint.focusOnNewCode` ligado o editor só cobra o que você tocar, então arrume o arquivo que você mexeu — não saia varrendo o diretório.
+
 ## PHPCS
 
 ```bash
@@ -149,7 +169,7 @@ O SonarLint usa regras genéricas de PHP que colidem de frente com o WordPress c
 - `php:S1172` (parâmetro não usado) — callback de filtro recebe argumentos por posição (`rest_pre_dispatch`, `wp_check_filetype_and_ext`), então parâmetros no meio da assinatura não podem ser removidos;
 - `php:S1142` (mais de 3 `return`) — desligada no editor, mas a preferência do código segue sendo consolidar o retorno ou extrair helper.
 
-As demais regras ficam ligadas e devem ser corrigidas no código — inclusive `php:S1192` (literal repetido → constante `PAPELITO_*`), `php:S1784` (visibilidade explícita em método) e `php:S2003` (`require` → `require_once`). Em stub de teste, tipar os parâmetros (`mixed` onde a função do core aceita qualquer coisa) também mata os hints `P1132` do intelephense.
+As demais regras ficam ligadas e devem ser corrigidas no código — inclusive `php:S1192` (literal repetido → constante), `php:S1186` (função de corpo vazio), `php:S1784` (visibilidade explícita em método) e `php:S2003` (`require` → `require_once`). A correção oficial que o `S1186` sugere é um comentário explicando o corpo vazio, e o projeto **não** faz isso: em stub de teste, a saída é tipar e dar corpo à função, como descrito em [Stub que nasce limpo no editor](#stub-que-nasce-limpo-no-editor).
 
 ## Verificação de uma mudança
 

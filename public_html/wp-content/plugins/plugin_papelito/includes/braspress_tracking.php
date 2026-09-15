@@ -181,15 +181,50 @@ function papelito_braspress_tracking_by_order( array $integration, string $exter
 }
 
 /**
- * Preserva a semântica externa sem criar transição interna.
+ * Informa se a Braspress ainda não conhece a remessa consultada.
+ *
+ * Uma consulta sem resultado volta HTTP 200 com a lista vazia, e não 404.
+ * Tratar isso como sucesso inventaria um rastreio que não existe.
  *
  * @param array<string,mixed> $response Corpo devolvido pela Braspress.
- * @return string Status externo exibível.
+ * @return bool Se nenhum conhecimento foi encontrado.
+ */
+function papelito_braspress_tracking_is_empty( array $response ): bool {
+	$conhecimentos = $response['conhecimentos'] ?? null;
+
+	return ! is_array( $conhecimentos ) || empty( $conhecimentos );
+}
+
+/**
+ * Preserva a semântica externa sem criar transição interna.
+ *
+ * O status real vive dentro de `conhecimentos[]`, nunca na raiz da resposta.
+ * Nenhum campo é obrigatório no contrato publicado, então cada um é opcional.
+ *
+ * @param array<string,mixed> $response Corpo devolvido pela Braspress.
+ * @return string Status externo exibível ou vazio quando não há conhecimento.
  */
 function papelito_braspress_tracking_external_status( array $response ): string {
-	foreach ( array( 'status', 'situacao', 'descricao', 'message' ) as $field ) {
-		if ( isset( $response[ $field ] ) && is_scalar( $response[ $field ] ) ) {
-			$value = sanitize_text_field( (string) $response[ $field ] );
+	if ( papelito_braspress_tracking_is_empty( $response ) ) {
+		return '';
+	}
+
+	$conhecimento = null;
+	foreach ( $response['conhecimentos'] as $entry ) {
+		if ( is_array( $entry ) ) {
+			$conhecimento = $entry;
+			break;
+		}
+	}
+
+	if ( null === $conhecimento ) {
+		return '';
+	}
+
+	$fields = array( 'descricaoUltimaOcorrencia', 'statusTransporte', 'status', 'situacao', 'descricao' );
+	foreach ( $fields as $field ) {
+		if ( isset( $conhecimento[ $field ] ) && is_scalar( $conhecimento[ $field ] ) ) {
+			$value = sanitize_text_field( (string) $conhecimento[ $field ] );
 			if ( '' !== $value ) {
 				return substr( $value, 0, 96 );
 			}
@@ -224,6 +259,11 @@ function papelito_braspress_tracking_poll_shipment( array $shipment ): void {
 	$response = papelito_braspress_tracking_by_order( $integration, $reference );
 	if ( is_wp_error( $response ) ) {
 		papelito_tracking_schedule_next_poll( $shipment_id, true, $response->get_error_code() );
+		return;
+	}
+
+	if ( papelito_braspress_tracking_is_empty( $response ) ) {
+		papelito_tracking_schedule_next_poll( $shipment_id, true, 'braspress_tracking_not_found' );
 		return;
 	}
 

@@ -50,6 +50,7 @@ A versão de schema corrente é `PAPELITO_DB_VERSION`, em `plugin_papelito.php` 
 ## Convenções
 
 - **PHPCS com WordPress coding standards** (`phpcs.xml.dist`). Baseline aceito em [docs/context/testing.md](docs/context/testing.md#baseline-de-phpcs) — não amplie.
+- **O lint do editor é parte da entrega, e stub de teste não é exceção**: parâmetro tipado (`mixed` onde o core aceita qualquer coisa), corpo nunca vazio e literal de fixture repetido em constante `<ESCOPO>_TEST_*`. Nenhum hint de SonarLint se cala com comentário — nem o `php:S1186`, que pede exatamente isso. Regras e forma canônica em [docs/context/testing.md](docs/context/testing.md#stub-que-nasce-limpo-no-editor).
 - **Sanitizar sempre** (`sanitize_text_field`, `sanitize_email`, `wp_kses_post`), escapar na saída (`esc_*`). Nunca confiar em `$_POST`/`$_GET` direto.
 - `$wpdb->prepare` sempre.
 - Rotas REST públicas que executem trabalho caro, chamem provedores externos, sejam abusáveis ou mutem estado exigem rate limit via transient. Leituras pequenas, somente leitura e cacheáveis — como configurações públicas da Home e o mínimo de frete grátis — podem ficar sem rate limit no plugin. Quando houver proxy Next, não use um balde por IP compartilhado pelo proxy: derive a identidade de usuário/cliente ou aplique a proteção na borda (CDN/WAF).
@@ -58,6 +59,19 @@ A versão de schema corrente é `PAPELITO_DB_VERSION`, em `plugin_papelito.php` 
 - **Não editar core nem plugins de terceiros.** Estender por hooks/filters no `plugin_papelito` ou em mu-plugin novo.
 - Mudança em superfície REST exige atualizar [`../docs/integration-contracts.md`](../docs/integration-contracts.md).
 - **Nunca logar** CPF completo, data de nascimento, QSA completo, resposta completa de provedor, token, documento em revisão, payload da Pagar.me com PII ou credencial dos Correios.
+- **Comentário solto dentro da função não entra** — a documentação vive no docblock acima da declaração (abaixo). `//` no meio do corpo só para justificar workaround ou invariante não óbvia.
+
+## Documentação no código (PHPDoc)
+
+O plugin já é documentado assim e a forma não é negociável: **arquivo e função exportada nascem com docblock `/** */`**, em português, escrito para humano.
+
+- **Docblock de arquivo**, no topo, depois do `<?php`: o que o módulo governa, qual é a regra de ouro e o que ele deliberadamente **não** faz. [`account_status.php`](public_html/wp-content/plugins/plugin_papelito/includes/account_status.php) é a referência — ele explica os três níveis de "suspensa" e diz que suspensão não bloqueia login.
+- **Docblock de função**: o que devolve e a armadilha de quem chamar — se relê do banco, se é a autoridade da decisão, se dispara hook, se é fail-closed. Uma linha resolve a maioria (`Nome completo (com prefixo) da tabela de histórico de estado de conta.`).
+- **Docblock de classe de exceção**: por que ela existe em vez de uma `RuntimeException` genérica.
+- `@param`/`@return` só quando o tipo não conta a história — com PHP 8.3 tipado, repetir a assinatura em prosa é ruído. `@package Papelito` no docblock de arquivo.
+- Não documente o trivial só para preencher: constante autoexplicativa e wrapper de uma linha dispensam bloco.
+
+Isso não substitui as invariantes: regra que vale para várias funções vive em [docs/context/business-rules.md](docs/context/business-rules.md) com o nome da função, e o docblock aponta para ela em vez de reescrevê-la.
 
 ## Variáveis críticas
 
