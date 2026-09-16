@@ -16,6 +16,17 @@ const PAPELITO_SHIPPING_FREE_SHIPPING_ZIP_RANGES_MAX        = 50;
 const PAPELITO_CORREIOS_JSON_CONTENT_TYPE                   = 'application/json';
 const PAPELITO_REST_NAMESPACE                               = 'papelito/v1';
 
+/*
+ * Limites físicos de um volume único dos Correios. São os mesmos que o Kit já
+ * exigia; a confirmação oficial por serviço continua pendente e está registrada
+ * em docs/braspress/13-correios-physical-packaging-research.md.
+ */
+const PAPELITO_SHIPPING_MAX_DIMENSION_CM     = 100.0;
+const PAPELITO_SHIPPING_MAX_DIMENSION_SUM_CM = 200.0;
+const PAPELITO_SHIPPING_MAX_WEIGHT_G         = 30000.0;
+const PAPELITO_SHIPPING_MEASUREMENT_LEGACY   = 'legacy_synthetic';
+const PAPELITO_SHIPPING_MEASUREMENT_KIT      = 'kit_declared';
+
 /**
  * Normaliza o mínimo de frete grátis vindo de origem não confiável.
  *
@@ -925,12 +936,15 @@ function papelito_shipping_build_kit_package( array $items ) {
 
 	$kit_product = wc_get_product( absint( $kit_item['product_id'] ) );
 
-	return array(
-		'weight' => $logistics['weight'],
-		'length' => $logistics['length'],
-		'width'  => $logistics['width'],
-		'height' => $logistics['height'],
-		'value'  => $kit_product ? (float) $kit_product->get_price() : 0.0,
+	return papelito_shipping_guard_package_limits(
+		array(
+			'weight'             => (float) $logistics['weight'],
+			'length'             => (float) $logistics['length'],
+			'width'              => (float) $logistics['width'],
+			'height'             => (float) $logistics['height'],
+			'value'              => $kit_product ? (float) $kit_product->get_price() : 0.0,
+			'measurement_source' => PAPELITO_SHIPPING_MEASUREMENT_KIT,
+		)
 	);
 }
 
@@ -1025,18 +1039,80 @@ function papelito_shipping_add_item_to_package( array $totals, array $item ) {
 }
 
 /**
- * Aplica os mínimos dos Correios aos totais válidos do pacote.
+ * Recusa o pacote que ultrapassa os limites físicos de um volume único.
+ *
+ * O construtor legado empilha alturas e nunca conferia teto, então um carrinho
+ * grande produzia um objeto que os Correios não aceitam como um volume e que
+ * reaparece como cobrança complementar na fatura. Recusar aqui troca a cobrança
+ * silenciosa por um erro de carrinho.
+ *
+ * @param array<string, float|string> $package Pacote já normalizado.
+ * @return array<string, float|string>|WP_Error
+ */
+function papelito_shipping_guard_package_limits( array $package ) {
+	$dimensions = array( (float) $package['length'], (float) $package['width'], (float) $package['height'] );
+	$limit      = null;
+
+	if ( max( $dimensions ) > PAPELITO_SHIPPING_MAX_DIMENSION_CM ) {
+		$limit = 'dimension';
+	} elseif ( array_sum( $dimensions ) > PAPELITO_SHIPPING_MAX_DIMENSION_SUM_CM ) {
+		$limit = 'dimension_sum';
+	} elseif ( (float) $package['weight'] > PAPELITO_SHIPPING_MAX_WEIGHT_G ) {
+		$limit = 'weight';
+	}
+
+	if ( null === $limit ) {
+		return $package;
+	}
+
+	return new WP_Error(
+		'papelito_shipping_package_exceeds_limits',
+		'Este carrinho ultrapassa o tamanho ou o peso de um único volume. Reduza a quantidade ou divida o pedido.',
+		array(
+			'status'             => 422,
+			'limit'              => $limit,
+			'measurement_source' => (string) ( $package['measurement_source'] ?? '' ),
+		)
+	);
+}
+
+/**
+ * Publica a origem da medida do pacote para observabilidade, sem alterá-lo.
+ *
+ * A métrica de resíduo — quantas cotações ainda saem de medida legada em vez de
+ * embalagem cadastrada — se conecta aqui, e não dentro do cálculo.
+ *
+ * @param array<string, float|string>|WP_Error $package Pacote resolvido ou erro.
+ * @return array<string, float|string>|WP_Error
+ */
+function papelito_shipping_notify_package_built( $package ) {
+	if ( is_wp_error( $package ) ) {
+		do_action( 'papelito_shipping_package_rejected', $package );
+
+		return $package;
+	}
+
+	do_action( 'papelito_shipping_package_built', (string) ( $package['measurement_source'] ?? '' ) );
+
+	return $package;
+}
+
+/**
+ * Aplica os mínimos dos Correios e confere os máximos do volume único.
  *
  * @param array<string, float> $totals Acumuladores finais.
- * @return array<string, float>
+ * @return array<string, float|string>|WP_Error
  */
-function papelito_shipping_finalize_package( array $totals ): array {
-	return array(
-		'weight' => max( 1, round( $totals['weight'], 2 ) ),
-		'length' => max( 16, round( $totals['length'], 2 ) ),
-		'width'  => max( 11, round( $totals['width'], 2 ) ),
-		'height' => max( 2, round( $totals['height'], 2 ) ),
-		'value'  => round( $totals['value'], 2 ),
+function papelito_shipping_finalize_package( array $totals ) {
+	return papelito_shipping_guard_package_limits(
+		array(
+			'weight'             => (float) max( 1, round( $totals['weight'], 2 ) ),
+			'length'             => (float) max( 16, round( $totals['length'], 2 ) ),
+			'width'              => (float) max( 11, round( $totals['width'], 2 ) ),
+			'height'             => (float) max( 2, round( $totals['height'], 2 ) ),
+			'value'              => (float) round( $totals['value'], 2 ),
+			'measurement_source' => PAPELITO_SHIPPING_MEASUREMENT_LEGACY,
+		)
 	);
 }
 
@@ -1044,7 +1120,7 @@ function papelito_shipping_finalize_package( array $totals ): array {
  * Monta pacote de produtos para cotação.
  *
  * @param array<int, array<string, mixed>> $items Itens do carrinho.
- * @return array<string, float>|WP_Error
+ * @return array<string, float|string>|WP_Error
  */
 function papelito_shipping_build_package( array $items ) {
 	if ( ! function_exists( 'wc_get_product' ) ) {
@@ -1053,7 +1129,7 @@ function papelito_shipping_build_package( array $items ) {
 
 	$kit_package = papelito_shipping_build_kit_package( $items );
 	if ( null !== $kit_package ) {
-		return $kit_package;
+		return papelito_shipping_notify_package_built( $kit_package );
 	}
 
 	if ( function_exists( 'papelito_kit_shipping_items' ) ) {
@@ -1072,7 +1148,7 @@ function papelito_shipping_build_package( array $items ) {
 		}
 	}
 
-	return papelito_shipping_finalize_package( $totals );
+	return papelito_shipping_notify_package_built( papelito_shipping_finalize_package( $totals ) );
 }
 
 /**
@@ -1343,6 +1419,8 @@ function papelito_correios_quote( int $vendor_id, string $destination_cep, array
 		'vendor_id'       => $vendor_id,
 		'options'         => $options,
 	);
+	$result['quoted_at']  = gmdate( 'c' );
+	$result['expires_at'] = null;
 
 	set_transient( $cache_key, wp_json_encode( $result ), 10 * MINUTE_IN_SECONDS );
 
@@ -1455,6 +1533,100 @@ function papelito_shipping_update_free_shipping_threshold_endpoint( WP_REST_Requ
 }
 
 /**
+ * Lê vendor, CEP, itens e cupom do corpo da cotação, aceitando JSON ou parâmetros da query.
+ *
+ * @param WP_REST_Request $request Requisição REST.
+ * @return array{vendor_id:int,destination_cep:string,items:array,coupon_code:string}
+ */
+function papelito_shipping_quote_request_input( WP_REST_Request $request ): array {
+	$data = $request->get_json_params();
+	if ( ! is_array( $data ) ) {
+		$data = $request->get_params();
+	}
+
+	$items = $data['items'] ?? null;
+
+	return array(
+		'vendor_id'       => absint( $data['vendor_id'] ?? 0 ),
+		'destination_cep' => papelito_shipping_normalize_cep( $data['destination_cep'] ?? '' ),
+		'items'           => is_array( $items ) ? array_values( $items ) : array(),
+		'coupon_code'     => sanitize_text_field( (string) ( $data['coupon_code'] ?? '' ) ),
+	);
+}
+
+/**
+ * Anexa o vendor da cotação a cada linha antes de normalizar os preços.
+ *
+ * @param int   $vendor_id Vendor que responderá a cotação.
+ * @param array $items     Linhas cruas recebidas na requisição.
+ * @return array
+ */
+function papelito_shipping_quote_pricing_items( int $vendor_id, array $items ): array {
+	$pricing_items = array();
+	foreach ( $items as $item ) {
+		$item              = is_array( $item ) ? $item : array();
+		$item['vendor_id'] = $vendor_id;
+		$pricing_items[]   = $item;
+	}
+
+	return $pricing_items;
+}
+
+/**
+ * Reduz uma linha já precificada ao mínimo que a cotação de frete precisa declarar.
+ *
+ * @param array $line Linha resolvida pelo pricing.
+ * @return array
+ */
+function papelito_shipping_quote_declared_line( array $line ): array {
+	return array(
+		'product_id'           => (int) $line['product_id'],
+		'qty'                  => (int) $line['qty'],
+		'declared_value_cents' => max( 0, (int) ( $line['total_cents'] ?? 0 ) ),
+	);
+}
+
+/**
+ * Resolve preços e contexto de provider da cotação.
+ *
+ * Sem o módulo de pricing carregado devolve contexto vazio e os itens como vieram — é o
+ * caminho dos testes standalone, que não podem depender do carrinho inteiro.
+ *
+ * @param int    $vendor_id   Vendor que responderá a cotação.
+ * @param array  $items       Linhas cruas recebidas na requisição.
+ * @param string $coupon_code Cupom informado pelo comprador.
+ * @return array{context:array,items:array}|WP_Error
+ */
+function papelito_shipping_quote_pricing_context( int $vendor_id, array $items, string $coupon_code ) {
+	if ( ! function_exists( 'papelito_pricing_normalize_items' ) || ! function_exists( 'papelito_pricing_resolve_items' ) || ! function_exists( 'papelito_shipping_provider_quote_context' ) ) {
+		return array(
+			'context' => array(),
+			'items'   => $items,
+		);
+	}
+
+	$normalized = papelito_pricing_normalize_items( papelito_shipping_quote_pricing_items( $vendor_id, $items ) );
+	$resolved   = is_wp_error( $normalized ) ? $normalized : papelito_pricing_resolve_items( $normalized );
+	if ( is_wp_error( $resolved ) ) {
+		return $resolved;
+	}
+
+	$user_id        = get_current_user_id();
+	$recipient_cnpj = function_exists( 'papelito_shipping_recipient_cnpj_for_user' ) ? papelito_shipping_recipient_cnpj_for_user( $user_id ) : '';
+	$quote_context  = papelito_shipping_provider_quote_context( $resolved, $coupon_code, $user_id, $recipient_cnpj );
+	if ( is_wp_error( $quote_context ) ) {
+		return $quote_context;
+	}
+
+	$priced_lines = $quote_context['priced_lines'] ?? null;
+
+	return array(
+		'context' => $quote_context,
+		'items'   => is_array( $priced_lines ) ? array_map( 'papelito_shipping_quote_declared_line', $priced_lines ) : $items,
+	);
+}
+
+/**
  * Recebe e responde uma cotação de frete.
  *
  * @param WP_REST_Request $request Requisição REST.
@@ -1465,55 +1637,23 @@ function papelito_shipping_quote_endpoint( WP_REST_Request $request ) {
 		return new WP_Error( 'papelito_rate_limited', 'Muitas tentativas. Tente novamente em alguns instantes.', array( 'status' => 429 ) );
 	}
 
-	$data = $request->get_json_params();
-	if ( ! is_array( $data ) ) {
-		$data = $request->get_params();
+	$input   = papelito_shipping_quote_request_input( $request );
+	$pricing = papelito_shipping_quote_pricing_context( $input['vendor_id'], $input['items'], $input['coupon_code'] );
+	if ( is_wp_error( $pricing ) ) {
+		return $pricing;
 	}
 
-	$vendor_id       = isset( $data['vendor_id'] ) ? absint( $data['vendor_id'] ) : 0;
-	$destination_cep = papelito_shipping_normalize_cep( $data['destination_cep'] ?? '' );
-	$items           = isset( $data['items'] ) && is_array( $data['items'] ) ? array_values( $data['items'] ) : array();
-	$coupon_code     = sanitize_text_field( (string) ( $data['coupon_code'] ?? '' ) );
-	$quote_context   = array();
-	if ( function_exists( 'papelito_pricing_normalize_items' ) && function_exists( 'papelito_pricing_resolve_items' ) && function_exists( 'papelito_shipping_provider_quote_context' ) ) {
-		$pricing_items = array_map(
-			static function ( $item ) use ( $vendor_id ): array {
-				$item              = is_array( $item ) ? $item : array();
-				$item['vendor_id'] = $vendor_id;
-				return $item;
-			},
-			$items
-		);
-		$normalized = papelito_pricing_normalize_items( $pricing_items );
-		$resolved   = is_wp_error( $normalized ) ? $normalized : papelito_pricing_resolve_items( $normalized );
-		if ( is_wp_error( $resolved ) ) {
-			return $resolved;
-		}
-		$quote_context = papelito_shipping_provider_quote_context(
-			$resolved,
-			$coupon_code,
-			get_current_user_id(),
-			function_exists( 'papelito_shipping_recipient_cnpj_for_user' ) ? papelito_shipping_recipient_cnpj_for_user( get_current_user_id() ) : ''
-		);
-		if ( is_wp_error( $quote_context ) ) {
-			return $quote_context;
-		}
-		$items = is_array( $quote_context['priced_lines'] ?? null ) ? array_map(
-			static function ( array $line ): array {
-				return array(
-					'product_id'            => (int) $line['product_id'],
-					'qty'                   => (int) $line['qty'],
-					'declared_value_cents' => max( 0, (int) ( $line['total_cents'] ?? 0 ) ),
-				);
-			},
-			$quote_context['priced_lines']
-		) : $items;
-	}
-	$result          = function_exists( 'papelito_shipping_quote_all_providers' )
-		? papelito_shipping_quote_all_providers( $vendor_id, $destination_cep, $items, $quote_context )
-		: papelito_correios_quote( $vendor_id, $destination_cep, $items );
+	$result = papelito_shipping_quote_all_providers( $input['vendor_id'], $input['destination_cep'], $pricing['items'], $pricing['context'] );
 
-	return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+	if ( is_wp_error( $result ) ) {
+		return new WP_Error(
+			$result->get_error_code(),
+			'Não foi possível cotar o frete.',
+			papelito_shipping_public_error_data( $result->get_error_code(), $result->get_error_data() )
+		);
+	}
+
+	return new WP_REST_Response( $result, 200 );
 }
 
 /** Cotação usa identidade autenticada; a rota Next sempre encaminha o JWT. */

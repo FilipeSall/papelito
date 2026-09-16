@@ -730,24 +730,27 @@ function papelito_pricing_quote( mixed $items, string $coupon_code, int $user_id
 			return new WP_Error( 'papelito_checkout_invalid_shipping', 'Selecione uma opção de frete válida.', array( 'status' => 422 ) );
 		}
 
-		$quote_context = function_exists( 'papelito_shipping_provider_quote_context' )
-			? papelito_shipping_provider_quote_context(
-				$resolved,
-				$coupon_code,
-				$user_id,
-				function_exists( 'papelito_shipping_recipient_cnpj_for_user' ) ? papelito_shipping_recipient_cnpj_for_user( $user_id ) : ''
-			)
+		$recipient_cnpj = function_exists( 'papelito_shipping_recipient_cnpj_for_user' ) ? papelito_shipping_recipient_cnpj_for_user( $user_id ) : '';
+		$quote_context  = function_exists( 'papelito_shipping_provider_quote_context' )
+			? papelito_shipping_provider_quote_context( $resolved, $coupon_code, $user_id, $recipient_cnpj )
 			: array();
 		if ( is_wp_error( $quote_context ) ) {
 			return $quote_context;
 		}
 
+		/*
+		 * O recálculo do carrinho não recebe o snapshot do checkout e não deve
+		 * exigi-lo: ele só exibe preço. Quem valida fingerprint, preço, prazo e
+		 * validade antes de criar pedido é `place-order`.
+		 */
 		$shipping = papelito_order_routing_resolve_shipping(
 			(int) $resolved['vendor_id'],
 			$destination_cep,
 			$selected_option_key,
 			is_array( $quote_context['priced_lines'] ?? null ) ? $quote_context['priced_lines'] : (array) $resolved['lines'],
-			is_array( $quote_context ) ? $quote_context : array()
+			is_array( $quote_context ) ? $quote_context : array(),
+			array(),
+			false
 		);
 		if ( is_wp_error( $shipping ) ) {
 			return $shipping;

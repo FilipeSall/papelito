@@ -525,7 +525,7 @@ function papelito_order_routing_validate_vendor_coverage( int $vendor_id, string
  * @param array<int,array<string,mixed>> $lines Linhas do pedido.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_order_routing_resolve_shipping( int $vendor_id, string $destination_cep, string $selected_option_key, array $lines, array $quote_context = array(), array $expected_shipping = array() ) {
+function papelito_order_routing_resolve_shipping( int $vendor_id, string $destination_cep, string $selected_option_key, array $lines, array $quote_context = array(), array $expected_shipping = array(), bool $require_snapshot = true ) {
 	$quote_items = array_map(
 		static function ( array $line ): array {
 			return array(
@@ -551,7 +551,7 @@ function papelito_order_routing_resolve_shipping( int $vendor_id, string $destin
 			continue;
 		}
 
-		if ( function_exists( 'papelito_shipping_option_matches_checkout_snapshot' ) && papelito_shipping_option_matches_checkout_snapshot( $option, $selected_option_key, $expected_shipping ) ) {
+		if ( papelito_order_routing_shipping_option_matches( $option, $selected_option_key, $expected_shipping, $require_snapshot ) ) {
 			return $option;
 		}
 	}
@@ -561,6 +561,31 @@ function papelito_order_routing_resolve_shipping( int $vendor_id, string $destin
 		'A cotação de frete mudou. Selecione novamente a opção de entrega.',
 		array( 'status' => 409 )
 	);
+}
+
+/**
+ * Decide se a opção recotada atende à escolha do cliente.
+ *
+ * O checkout exige o snapshot inteiro — fingerprint, preço, prazo e validade —
+ * porque ali a cotação vira pedido e cobrança. O recálculo do carrinho só
+ * precisa saber qual modalidade está selecionada: ele exibe preço, não cria
+ * pedido, e o `place-order` revalida tudo antes de cobrar. Relaxar aqui nunca
+ * vira passe-livre: a seleção continua tendo de existir entre as opções.
+ *
+ * @param array<string,mixed> $option Opção recém-cotada.
+ * @param string              $selection Chave escolhida pelo cliente.
+ * @param array<string,mixed> $expected Snapshot apresentado no checkout.
+ * @param bool                $require_snapshot Se o snapshot completo é obrigatório.
+ * @return bool Se a opção pode ser usada para esta chamada.
+ */
+function papelito_order_routing_shipping_option_matches( array $option, string $selection, array $expected, bool $require_snapshot ): bool {
+	if ( $require_snapshot ) {
+		return function_exists( 'papelito_shipping_option_matches_checkout_snapshot' )
+			&& papelito_shipping_option_matches_checkout_snapshot( $option, $selection, $expected );
+	}
+
+	return function_exists( 'papelito_shipping_option_matches_selection' )
+		&& papelito_shipping_option_matches_selection( $option, $selection );
 }
 
 /**

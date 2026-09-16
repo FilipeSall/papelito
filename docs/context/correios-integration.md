@@ -100,9 +100,11 @@ O `prepost_id` fica deliberadamente **fora do read model público**. O PDF é ex
 
 ### Idempotência
 
-Chave estável de `pedido|vendor|pacote|versão|provider`, **reservada antes** de chamar o provider. Timeout vira `uncertain` e precisa de reconciliação — **timeout não provoca retry cego**.
+Hoje a chave de geração é `hash( 'sha256', 'shipment-v1|order|vendor|provider|service' )`, **reservada antes** de chamar o provider. Ela não tem componente de pacote/volume e, por isso, colide se o mesmo pedido/vendor/provider/serviço tiver vários volumes. Timeout vira `uncertain` e precisa de reconciliação — **timeout não provoca retry cego**.
 
 O snapshot resolve a tentativa canônica por essa chave, **não por "último ID"**. Duplicatas e replays nunca substituem a tentativa canônica.
+
+As rotas de escrita do vendor recusam uma segunda remessa ativa com `409 papelito_tracking_shipment_exists`. Somente a rota administrativa de migração cria múltiplas linhas e não usa idempotência. A inclusão de identidade por volume e o relaxamento controlado desse bloqueio são pré-requisitos de trabalho futuro para multi-volume; multi-volume não está implementado.
 
 ## Polling do rastreamento
 

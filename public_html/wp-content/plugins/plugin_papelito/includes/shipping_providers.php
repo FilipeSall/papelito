@@ -10,6 +10,9 @@ defined( 'ABSPATH' ) || exit;
 
 const PAPELITO_SHIPPING_PROVIDER_CORREIOS  = 'correios';
 const PAPELITO_SHIPPING_PROVIDER_BRASPRESS = 'braspress';
+const PAPELITO_SHIPPING_PROVIDERS           = array( PAPELITO_SHIPPING_PROVIDER_CORREIOS, PAPELITO_SHIPPING_PROVIDER_BRASPRESS );
+const PAPELITO_SHIPPING_FAILURE_CATEGORIES  = array( 'configuration_error', 'validation_error', 'timeout', 'network_error', 'rate_limited', 'provider_4xx', 'provider_5xx', 'invalid_response', 'unknown_error' );
+const PAPELITO_SHIPPING_LOCAL_VALIDATION_CODES = array( 'papelito_shipping_package_exceeds_limits', 'papelito_shipping_product_dimensions_missing', 'papelito_shipping_kit_package_not_supported', 'papelito_kit_package_dimensions_missing' );
 
 /**
  * Cria a chave estável e namespaced de uma opção de frete.
@@ -25,64 +28,332 @@ function papelito_shipping_provider_option_key( string $provider, string $code )
 	return '' === $provider || '' === $code ? '' : $provider . ':' . $code;
 }
 
-/**
- * Adiciona os campos comuns e assinatura de integridade a uma opção.
- *
- * @param string                 $provider Identificador do provider.
- * @param array<string,mixed>    $option Resposta de cotação do provider.
- * @param string|null            $quoted_at Data UTC em que a opção foi gerada.
- * @return array<string,mixed> Opção pública normalizada.
- */
-function papelito_shipping_normalize_provider_option( string $provider, array $option, ?string $quoted_at = null ): array {
-	$provider  = sanitize_key( $provider );
-	$code      = sanitize_text_field( (string) ( $option['code'] ?? '' ) );
-	$price     = (float) ( $option['price'] ?? 0 );
-	$quoted_at = null !== $quoted_at ? $quoted_at : current_time( 'mysql', true );
-
-	$option['provider']             = $provider;
-	$option['option_key']           = papelito_shipping_provider_option_key( $provider, $code );
-	$option['carrier_cost_cents']   = (int) round( $price * 100 );
-	$option['customer_price_cents'] = (int) round( $price * 100 );
-	$option['external_quote_id']    = isset( $option['external_quote_id'] ) ? (string) $option['external_quote_id'] : null;
-	$option['quoted_at']            = $quoted_at;
-	$option['expires_at']           = isset( $option['expires_at'] ) ? (string) $option['expires_at'] : null;
-	$option['fingerprint']          = hash_hmac(
-		'sha256',
-		wp_json_encode(
-			array(
-				'provider'           => $provider,
-				'option_key'         => $option['option_key'],
-				'carrier_cost_cents' => $option['carrier_cost_cents'],
-				'customer_price_cents' => $option['customer_price_cents'],
-				'delivery_time'      => isset( $option['delivery_time'] ) && null !== $option['delivery_time'] ? absint( $option['delivery_time'] ) : null,
-				'external_quote_id'  => $option['external_quote_id'],
-				'expires_at'         => $option['expires_at'],
-			),
-		),
-		wp_salt( 'auth' )
-	);
-
-	return $option;
+/** Exige um único código canônico, sem corrigir silenciosamente aliases ou chaves divergentes. */
+function papelito_shipping_provider_service_code( string $provider, array $raw ): ?string {
+	$code = $raw['service_code'] ?? $raw['code'] ?? null;
+	if ( ! is_string( $code ) || '' === $code || sanitize_key( $code ) !== $code ) {
+		return null;
+	}
+	foreach ( array( 'code', 'service_code' ) as $alias ) {
+		if ( array_key_exists( $alias, $raw ) && $raw[ $alias ] !== $code ) {
+			return null;
+		}
+	}
+	$option_key = papelito_shipping_provider_option_key( $provider, $code );
+	if ( '' === $option_key || ( array_key_exists( 'option_key', $raw ) && $raw['option_key'] !== $option_key ) ) {
+		return null;
+	}
+	return $code;
 }
 
 /**
- * Normaliza todas as opções de um provider preservando os dados de origem.
+ * Adiciona os campos comuns e assinatura de integridade a uma opção.
  *
  * @param string              $provider Identificador do provider.
- * @param array<string,mixed> $quote Resultado de cotação.
- * @return array<string,mixed> Resultado com opções normalizadas.
+ * @param array<string,mixed> $raw Resposta bruta de cotação do provider.
+ * @param string              $quoted_at Data UTC obrigatória em que a opção foi gerada.
+ * @param string|null         $expires_at Validade padrão; uma validade individual válida tem precedência.
+ * @return array<string,mixed>|null Opção pública normalizada ou nula quando inválida.
  */
-function papelito_shipping_normalize_provider_result( string $provider, array $quote ): array {
-	$options = isset( $quote['options'] ) && is_array( $quote['options'] ) ? $quote['options'] : array();
+function papelito_shipping_normalize_provider_option( string $provider, array $raw, string $quoted_at, ?string $expires_at ): ?array {
+	$provider      = sanitize_key( $provider );
+	$code          = papelito_shipping_provider_service_code( $provider, $raw );
+	$service       = papelito_shipping_provider_string( $raw['service'] ?? null );
+	$name          = papelito_shipping_provider_string( $raw['name'] ?? null );
+	$price_cents   = papelito_shipping_provider_price_cents( $raw );
+	$delivery_time = papelito_shipping_provider_delivery_time( $raw );
+	$carrier_cost  = papelito_shipping_provider_carrier_cost( $raw, $price_cents );
+	$external_id   = array_key_exists( 'external_quote_id', $raw ) ? papelito_shipping_provider_nullable_string( $raw['external_quote_id'] ) : null;
+	$option_expiry = papelito_shipping_provider_string( $raw['expires_at'] ?? null );
+	if ( null !== $option_expiry && '' !== $option_expiry && false !== strtotime( $option_expiry ) ) {
+		$expires_at = $option_expiry;
+	}
 
-	$quote['options'] = array_map(
-		static function ( $option ) use ( $provider ): array {
-			return is_array( $option ) ? papelito_shipping_normalize_provider_option( $provider, $option ) : array();
-		},
-		$options
+	if ( ! in_array( $provider, PAPELITO_SHIPPING_PROVIDERS, true ) || null === $code || '' === $code || null === $service || '' === $service || null === $name || '' === $name || null === $price_cents || false === $delivery_time || null === $carrier_cost || false === $external_id || '' === $quoted_at ) {
+		return null;
+	}
+
+	$option_key = papelito_shipping_provider_option_key( $provider, $code );
+	return array(
+		'provider'              => $provider,
+		'option_key'            => $option_key,
+		'service_code'          => $code,
+		'service'               => $service,
+		'code'                  => $code,
+		'name'                  => $name,
+		'carrier_cost_cents'    => $carrier_cost,
+		'customer_price_cents'  => $price_cents,
+		'price'                 => $price_cents / 100,
+		'delivery_time'         => $delivery_time,
+		'quoted_at'             => $quoted_at,
+		'expires_at'            => papelito_shipping_nullable_date( $expires_at ),
+		'external_quote_id'     => $external_id,
+		'fingerprint'           => hash_hmac( 'sha256', wp_json_encode( array( $provider, $option_key, $price_cents, $delivery_time, papelito_shipping_nullable_date( $expires_at ) ) ), wp_salt( 'auth' ) ),
 	);
+}
 
-	return $quote;
+/**
+ * Normaliza as opções válidas do resultado bruto de um provider.
+ *
+ * @param string              $provider Identificador do provider.
+ * @param array<string,mixed> $quote Envelope bruto com opções e contexto do provider.
+ * @param string              $quoted_at Data UTC obrigatória da cotação.
+ * @param string|null         $expires_at Data UTC opcional de expiração.
+ * @return array{origin_cep:string,destination_cep:string,vendor_id:int,options:array<int,array<string,mixed>>} Envelope seguro com opções normalizadas.
+ */
+function papelito_shipping_normalize_provider_result( string $provider, array $quote, string $quoted_at, ?string $expires_at ): array {
+	$quote_quoted_at = papelito_shipping_provider_string( $quote['quoted_at'] ?? null );
+	$quote_expires_at = array_key_exists( 'expires_at', $quote )
+		? papelito_shipping_provider_nullable_string( $quote['expires_at'] )
+		: $expires_at;
+	$quoted_at = null === $quote_quoted_at || '' === $quote_quoted_at ? $quoted_at : $quote_quoted_at;
+	$expires_at = false === $quote_expires_at ? null : $quote_expires_at;
+	$options = array();
+	foreach ( is_array( $quote['options'] ?? null ) ? $quote['options'] : array() as $raw ) {
+		$option = is_array( $raw ) ? papelito_shipping_normalize_provider_option( $provider, $raw, $quoted_at, $expires_at ) : null;
+		if ( null !== $option ) {
+			$options[] = $option;
+		}
+	}
+
+	return array(
+		'origin_cep'      => papelito_shipping_safe_string( $quote['origin_cep'] ?? '' ),
+		'destination_cep' => papelito_shipping_safe_string( $quote['destination_cep'] ?? '' ),
+		'vendor_id'       => isset( $quote['vendor_id'] ) ? (int) $quote['vendor_id'] : 0,
+		'options'         => $options,
+	);
+}
+
+/** Retorna uma string segura sem transportar valores brutos de providers. */
+function papelito_shipping_safe_string( mixed $value ): string {
+	return is_string( $value ) ? sanitize_text_field( $value ) : '';
+}
+
+/** Aceita somente strings textuais da resposta de um provider. */
+function papelito_shipping_provider_string( mixed $value ): ?string {
+	return is_string( $value ) ? papelito_shipping_safe_string( $value ) : null;
+}
+
+/** Aceita ID externo nulo ou string segura e converte string vazia em nulo. */
+function papelito_shipping_provider_nullable_string( mixed $value ) {
+	if ( null === $value ) {
+		return null;
+	}
+	$string = papelito_shipping_provider_string( $value );
+	if ( null === $string ) {
+		return false;
+	}
+
+	return '' === $string ? null : $string;
+}
+
+/** Recusa preço não finito ou fora do intervalo inteiro antes de converter centavos. */
+function papelito_shipping_provider_decimal_cents( mixed $price ): ?int {
+	if ( ( ! is_int( $price ) && ! is_float( $price ) ) || ! is_finite( (float) $price ) || $price < 0 ) {
+		return null;
+	}
+	$cents = round( $price * 100 );
+	if ( ! is_finite( $cents ) || $cents >= PHP_INT_MAX ) {
+		return null;
+	}
+	return (int) $cents;
+}
+
+/** Valida cada representação monetária fornecida antes de escolher os centavos canônicos. */
+function papelito_shipping_provider_price_cents( array $raw ): ?int {
+	$has_customer_cents = array_key_exists( 'customer_price_cents', $raw );
+	$has_decimal_price  = array_key_exists( 'price', $raw );
+	$decimal_cents      = papelito_shipping_provider_decimal_cents( $raw['price'] ?? null );
+	if ( $has_customer_cents && ( ! is_int( $raw['customer_price_cents'] ) || $raw['customer_price_cents'] < 0 ) ) {
+		return null;
+	}
+	if ( $has_decimal_price && null === $decimal_cents ) {
+		return null;
+	}
+	if ( $has_customer_cents ) {
+		return $raw['customer_price_cents'];
+	}
+	return $decimal_cents;
+}
+
+/** Aceita custo transportador inteiro ou reutiliza o preço canônico. */
+function papelito_shipping_provider_carrier_cost( array $raw, ?int $price_cents ): ?int {
+	if ( ! array_key_exists( 'carrier_cost_cents', $raw ) ) {
+		return $price_cents;
+	}
+	return is_int( $raw['carrier_cost_cents'] ) && $raw['carrier_cost_cents'] >= 0 ? $raw['carrier_cost_cents'] : null;
+}
+
+/** Aceita prazo inteiro positivo ou nulo, sem permitir coerção de arrays. */
+function papelito_shipping_provider_delivery_time( array $raw ) {
+	if ( ! array_key_exists( 'delivery_time', $raw ) || null === $raw['delivery_time'] ) {
+		return null;
+	}
+	return is_int( $raw['delivery_time'] ) && $raw['delivery_time'] >= 0 ? $raw['delivery_time'] : false;
+}
+
+/** Converte uma data opcional em valor seguro para o envelope público. */
+function papelito_shipping_nullable_date( ?string $value ): ?string {
+	return null === $value || '' === $value ? null : papelito_shipping_safe_string( $value );
+}
+
+/** Classifica o resultado bruto de um provider como sucesso, pulo ou falha segura. */
+function papelito_shipping_provider_outcome( string $provider, mixed $result ): array {
+	$provider = sanitize_key( $provider );
+	if ( null === $result ) {
+		return array( 'provider' => $provider, 'status' => 'skipped' );
+	}
+	if ( is_array( $result ) ) {
+		return array( 'provider' => $provider, 'status' => 'success', 'result' => $result );
+	}
+	if ( is_wp_error( $result ) ) {
+		$category = papelito_shipping_failure_category( $provider, $result->get_error_code() );
+		$code     = in_array( $result->get_error_code(), PAPELITO_SHIPPING_LOCAL_VALIDATION_CODES, true ) ? $result->get_error_code() : $category;
+		$data     = papelito_shipping_public_error_data( $code, $result->get_error_data() );
+		return array( 'provider' => $provider, 'status' => 'failure', 'code' => $category, 'public_code' => $code, 'http_status' => $data['status'], 'public_data' => $data );
+	}
+	return array( 'provider' => $provider, 'status' => 'failure', 'code' => 'invalid_response', 'http_status' => 502 );
+}
+
+/** Expõe status e somente os valores físicos documentados de uma validação local reconhecida. */
+function papelito_shipping_public_error_data( string $code, mixed $data ): array {
+	$data = is_array( $data ) ? $data : array();
+	$safe = array( 'status' => isset( $data['status'] ) ? absint( $data['status'] ) : 503 );
+	if ( 'papelito_shipping_package_exceeds_limits' !== $code ) {
+		return $safe;
+	}
+	$allowed = array(
+		'limit'              => array( 'dimension', 'dimension_sum', 'weight' ),
+		'measurement_source' => array( 'legacy_synthetic', 'kit_declared' ),
+	);
+	foreach ( $allowed as $key => $values ) {
+		if ( in_array( $data[ $key ] ?? null, $values, true ) ) {
+			$safe[ $key ] = $data[ $key ];
+		}
+	}
+	return $safe;
+}
+
+/** Traduz códigos externos de erro para a taxonomia interna fechada. */
+function papelito_shipping_failure_category( string $provider, string $code ): string {
+	if ( in_array( $code, PAPELITO_SHIPPING_LOCAL_VALIDATION_CODES, true ) ) {
+		return 'validation_error';
+	}
+	$code = sanitize_key( $code );
+	$braspress_prefix = strpos( $code, 'braspress_' );
+	if ( PAPELITO_SHIPPING_PROVIDER_BRASPRESS === $provider && false !== $braspress_prefix ) {
+		$code = substr( $code, $braspress_prefix + strlen( 'braspress_' ) );
+	}
+	if ( in_array( $code, PAPELITO_SHIPPING_FAILURE_CATEGORIES, true ) ) {
+		return $code;
+	}
+	foreach ( array( 'configuration' => 'configuration_error', 'validation' => 'validation_error', 'timeout' => 'timeout', 'network' => 'network_error', 'rate' => 'rate_limited', '4xx' => 'provider_4xx', '5xx' => 'provider_5xx', 'invalid' => 'invalid_response' ) as $needle => $category ) {
+		if ( str_contains( $code, $needle ) ) {
+			return $category;
+		}
+	}
+	return 'unknown_error';
+}
+
+/**
+ * Classifica o resultado de um provider para o agregador.
+ *
+ * Só `failure` e `success` com envelope de array têm efeito; `skipped`, status
+ * desconhecido e sucesso sem corpo caem em `ignore` e somem da agregação.
+ *
+ * @param mixed $outcome Resultado bruto devolvido por um provider.
+ * @return string `failure`, `success` ou `ignore`.
+ */
+function papelito_shipping_provider_outcome_kind( mixed $outcome ): string {
+	if ( ! is_array( $outcome ) ) {
+		return 'ignore';
+	}
+
+	$status = $outcome['status'] ?? '';
+	if ( 'failure' === $status ) {
+		return 'failure';
+	}
+
+	if ( 'success' === $status && is_array( $outcome['result'] ?? null ) ) {
+		return 'success';
+	}
+
+	return 'ignore';
+}
+
+/**
+ * Funde um resultado normalizado no agregado.
+ *
+ * Origem, destino e vendor só são sobrescritos por valor preenchido — provider
+ * que responde sem esses campos não pode apagar o que outro já informou.
+ *
+ * @param array<string,mixed> $result     Agregado corrente.
+ * @param array<string,mixed> $normalized Resultado normalizado de um provider.
+ * @return array<string,mixed>
+ */
+function papelito_shipping_merge_provider_result( array $result, array $normalized ): array {
+	if ( '' !== $normalized['origin_cep'] ) {
+		$result['origin_cep'] = $normalized['origin_cep'];
+	}
+	if ( '' !== $normalized['destination_cep'] ) {
+		$result['destination_cep'] = $normalized['destination_cep'];
+	}
+	if ( 0 !== $normalized['vendor_id'] ) {
+		$result['vendor_id'] = $normalized['vendor_id'];
+	}
+	$result['options'] = array_merge( $result['options'], $normalized['options'] );
+
+	return $result;
+}
+
+/**
+ * Converte a primeira falha registrada no erro que o cliente vê.
+ *
+ * Mantém a identidade pública de validações locais conhecidas, separada da
+ * categoria interna. Mensagem e dados técnicos do provider nunca atravessam.
+ *
+ * @param mixed $first_failure Primeiro resultado de falha, se houve algum.
+ * @return WP_Error
+ */
+function papelito_shipping_provider_aggregate_failure( mixed $first_failure ): WP_Error {
+	$failure = is_array( $first_failure ) ? $first_failure : array();
+	$code = $failure['public_code'] ?? $failure['code'] ?? 'unknown_error';
+	if ( ! in_array( $code, array_merge( PAPELITO_SHIPPING_LOCAL_VALIDATION_CODES, PAPELITO_SHIPPING_FAILURE_CATEGORIES ), true ) ) {
+		$code = 'unknown_error';
+	}
+	$data = is_array( $failure['public_data'] ?? null ) ? $failure['public_data'] : array();
+	$data['status'] = (int) ( $failure['http_status'] ?? 503 );
+
+	return new WP_Error(
+		$code,
+		'Não foi possível cotar o frete.',
+		papelito_shipping_public_error_data( $code, $data )
+	);
+}
+
+/** Agrega somente opções canônicas e esconde detalhes de falha dos providers. */
+function papelito_shipping_aggregate_provider_results( array $outcomes, string $quoted_at, ?string $expires_at ) {
+	$result        = array( 'origin_cep' => '', 'destination_cep' => '', 'vendor_id' => 0, 'options' => array() );
+	$first_failure = null;
+
+	foreach ( $outcomes as $outcome ) {
+		$kind = papelito_shipping_provider_outcome_kind( $outcome );
+		if ( 'failure' === $kind ) {
+			$first_failure = $first_failure ?? $outcome;
+			continue;
+		}
+		if ( 'success' !== $kind ) {
+			continue;
+		}
+		$normalized = papelito_shipping_normalize_provider_result( (string) ( $outcome['provider'] ?? '' ), $outcome['result'], $quoted_at, $expires_at );
+		$result     = papelito_shipping_merge_provider_result( $result, $normalized );
+	}
+
+	if ( ! empty( $result['options'] ) ) {
+		return $result;
+	}
+
+	return papelito_shipping_provider_aggregate_failure( $first_failure );
 }
 
 /**
@@ -105,6 +376,67 @@ function papelito_shipping_option_matches_selection( array $option, string $sele
 	return false === strpos( $selection, ':' )
 		&& PAPELITO_SHIPPING_PROVIDER_CORREIOS === sanitize_key( (string) ( $option['provider'] ?? '' ) )
 		&& hash_equals( sanitize_text_field( (string) ( $option['code'] ?? '' ) ), $selection );
+}
+
+/**
+ * Lê o prazo declarado numa opção cotada, em dias inteiros.
+ *
+ * @param array<string,mixed> $option Opção cotada.
+ * @return int|null Prazo em dias ou nulo quando a opção não declara prazo.
+ */
+function papelito_shipping_option_delivery_time( array $option ): ?int {
+	if ( ! isset( $option['delivery_time'] ) || null === $option['delivery_time'] ) {
+		return null;
+	}
+
+	return absint( $option['delivery_time'] );
+}
+
+/**
+ * Compara o prazo do snapshot com o da opção recotada.
+ *
+ * Ausência dos dois lados combina. Prazo não numérico no snapshot nunca combina:
+ * é sinal de snapshot adulterado, não de cotação sem prazo.
+ *
+ * @param mixed    $expected Prazo como veio no snapshot do checkout.
+ * @param int|null $actual   Prazo da opção recotada.
+ * @return bool
+ */
+function papelito_shipping_snapshot_delivery_matches( mixed $expected, ?int $actual ): bool {
+	if ( null === $expected ) {
+		return null === $actual;
+	}
+
+	return is_numeric( $expected ) && absint( $expected ) === $actual;
+}
+
+/**
+ * Lê a marca de validade de uma opção ou de um snapshot.
+ *
+ * @param array<string,mixed> $source Opção cotada ou snapshot do checkout.
+ * @return string|null Marca saneada ou nulo quando a cotação não expira.
+ */
+function papelito_shipping_snapshot_expiry( array $source ): ?string {
+	if ( ! isset( $source['expires_at'] ) || null === $source['expires_at'] ) {
+		return null;
+	}
+
+	return sanitize_text_field( (string) $source['expires_at'] );
+}
+
+/**
+ * Diz se uma marca de validade já venceu.
+ *
+ * Texto que o PHP não consegue interpretar não vence — o desencontro entre
+ * snapshot e recotação é quem recusa o pedido nesse caso.
+ *
+ * @param string $expiry Marca de validade saneada.
+ * @return bool
+ */
+function papelito_shipping_expiry_is_past( string $expiry ): bool {
+	$timestamp = strtotime( $expiry );
+
+	return false !== $timestamp && $timestamp <= time();
 }
 
 /**
@@ -133,20 +465,16 @@ function papelito_shipping_option_matches_checkout_snapshot( array $option, stri
 		return false;
 	}
 
-	$expected_delivery = $expected['delivery_time'] ?? null;
-	$actual_delivery   = isset( $option['delivery_time'] ) && null !== $option['delivery_time'] ? absint( $option['delivery_time'] ) : null;
-	if ( null === $expected_delivery ? null !== $actual_delivery : ( ! is_numeric( $expected_delivery ) || absint( $expected_delivery ) !== $actual_delivery ) ) {
+	if ( ! papelito_shipping_snapshot_delivery_matches( $expected['delivery_time'] ?? null, papelito_shipping_option_delivery_time( $option ) ) ) {
 		return false;
 	}
 
-	$expected_expiry = isset( $expected['expires_at'] ) && null !== $expected['expires_at'] ? sanitize_text_field( (string) $expected['expires_at'] ) : null;
-	$actual_expiry   = isset( $option['expires_at'] ) && null !== $option['expires_at'] ? sanitize_text_field( (string) $option['expires_at'] ) : null;
-	$expiry_timestamp = null !== $actual_expiry ? strtotime( $actual_expiry ) : false;
-	if ( false !== $expiry_timestamp && $expiry_timestamp <= time() ) {
+	$actual_expiry = papelito_shipping_snapshot_expiry( $option );
+	if ( null !== $actual_expiry && papelito_shipping_expiry_is_past( $actual_expiry ) ) {
 		return false;
 	}
 
-	return $expected_expiry === $actual_expiry;
+	return papelito_shipping_snapshot_expiry( $expected ) === $actual_expiry;
 }
 
 /**
@@ -197,6 +525,29 @@ function papelito_shipping_recipient_cnpj_for_user( int $user_id ): string {
 }
 
 /**
+ * Lê configuração de provider na ordem constante, `papelito_env()` e ambiente.
+ *
+ * A constante vence porque é o que os testes standalone e o `wp-config.php` de
+ * produção definem; `getenv()` é o último recurso, para quando o bootstrap do
+ * plugin ainda não subiu.
+ *
+ * @param string $name     Nome da constante, que é também o da variável de ambiente.
+ * @param string $fallback Valor devolvido por `papelito_env()` quando nada está definido.
+ * @return mixed Valor cru da primeira fonte que responder.
+ */
+function papelito_shipping_provider_config( string $name, string $fallback ) {
+	if ( defined( $name ) ) {
+		return constant( $name );
+	}
+
+	if ( function_exists( 'papelito_env' ) ) {
+		return papelito_env( $name, $fallback );
+	}
+
+	return getenv( $name );
+}
+
+/**
  * Verifica o feature flag global de um provider.
  *
  * @param string $provider Identificador do provider.
@@ -207,7 +558,7 @@ function papelito_shipping_feature_enabled( string $provider ): bool {
 		return true;
 	}
 
-	$value = defined( 'PAPELITO_BRASPRESS_ENABLED' ) ? PAPELITO_BRASPRESS_ENABLED : ( function_exists( 'papelito_env' ) ? papelito_env( 'PAPELITO_BRASPRESS_ENABLED', 'false' ) : getenv( 'PAPELITO_BRASPRESS_ENABLED' ) );
+	$value = papelito_shipping_provider_config( 'PAPELITO_BRASPRESS_ENABLED', 'false' );
 
 	return true === filter_var( $value, FILTER_VALIDATE_BOOLEAN );
 }
@@ -224,7 +575,7 @@ function papelito_shipping_provider_vendor_allowed( string $provider, int $vendo
 		return true;
 	}
 
-	$raw = defined( 'PAPELITO_BRASPRESS_VENDOR_ALLOWLIST' ) ? (string) PAPELITO_BRASPRESS_VENDOR_ALLOWLIST : ( function_exists( 'papelito_env' ) ? (string) papelito_env( 'PAPELITO_BRASPRESS_VENDOR_ALLOWLIST', '' ) : (string) getenv( 'PAPELITO_BRASPRESS_VENDOR_ALLOWLIST' ) );
+	$raw = (string) papelito_shipping_provider_config( 'PAPELITO_BRASPRESS_VENDOR_ALLOWLIST', '' );
 	$ids = array_filter( array_map( 'absint', explode( ',', $raw ) ) );
 
 	return ! empty( $ids ) && in_array( $vendor_id, $ids, true );
@@ -265,13 +616,13 @@ function papelito_shipping_braspress_package_is_approved( int $vendor_id, array 
 /**
  * Cota Braspress somente quando todos os gates independentes passam.
  *
- * Falhas deste provider retornam nulo para não remover alternativas válidas.
+ * Erros reais da Braspress propagam para a agregação; nulo é somente pulo de elegibilidade.
  *
  * @param int                      $vendor_id ID do vendor.
  * @param string                   $destination_cep CEP de destino.
  * @param array<int,array<string,mixed>> $items Itens resolvidos.
  * @param array<string,mixed>      $context Dados autoritativos de precificação e destinatário.
- * @return array<string,mixed>|null Cotação Braspress ou nulo quando inelegível.
+ * @return array<string,mixed>|WP_Error|null Cotação, erro real propagado ou nulo no pulo de elegibilidade.
  */
 function papelito_shipping_quote_braspress( int $vendor_id, string $destination_cep, array $items, array $context = array() ) {
 	if ( ! papelito_shipping_feature_enabled( PAPELITO_SHIPPING_PROVIDER_BRASPRESS ) || ! papelito_shipping_provider_vendor_allowed( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $vendor_id ) ) {
@@ -279,8 +630,11 @@ function papelito_shipping_quote_braspress( int $vendor_id, string $destination_
 	}
 
 	$integration = papelito_vendor_integration_resolve_braspress( $vendor_id );
-	if ( null === $integration || is_wp_error( $integration ) ) {
+	if ( null === $integration ) {
 		return null;
+	}
+	if ( is_wp_error( $integration ) ) {
+		return $integration;
 	}
 
 	$package = papelito_shipping_braspress_physical_package( $vendor_id, $items );
@@ -295,7 +649,11 @@ function papelito_shipping_quote_braspress( int $vendor_id, string $destination_
 	}
 
 	$result = papelito_braspress_quote( $integration, $recipient_cnpj, $destination_cep, $package, $merchandise_value_cents );
-	return is_wp_error( $result ) ? null : array(
+	if ( is_wp_error( $result ) ) {
+		return $result;
+	}
+
+	return array(
 		'origin_cep'      => $integration['config']['origin_cep'],
 		'destination_cep' => $destination_cep,
 		'vendor_id'       => $vendor_id,
@@ -315,26 +673,14 @@ function papelito_shipping_quote_braspress( int $vendor_id, string $destination_
 function papelito_shipping_quote_all_providers( int $vendor_id, string $destination_cep, array $items, array $context = array() ) {
 	$correios  = papelito_correios_quote( $vendor_id, $destination_cep, $items );
 	$braspress = papelito_shipping_quote_braspress( $vendor_id, $destination_cep, $items, $context );
+	$quoted_at = current_time( 'mysql', true );
 
-	if ( is_wp_error( $correios ) && ( null === $braspress || is_wp_error( $braspress ) ) ) {
-		return $correios;
-	}
-
-	$result = is_array( $correios ) ? papelito_shipping_normalize_provider_result( PAPELITO_SHIPPING_PROVIDER_CORREIOS, $correios ) : array(
-		'origin_cep'      => '',
-		'destination_cep' => $destination_cep,
-		'vendor_id'       => $vendor_id,
-		'options'         => array(),
+	return papelito_shipping_aggregate_provider_results(
+		array(
+			papelito_shipping_provider_outcome( PAPELITO_SHIPPING_PROVIDER_CORREIOS, $correios ),
+			papelito_shipping_provider_outcome( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $braspress ),
+		),
+		$quoted_at,
+		null
 	);
-
-	if ( is_array( $braspress ) ) {
-		$normalized        = papelito_shipping_normalize_provider_result( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $braspress );
-		$result['options'] = array_merge( $result['options'], $normalized['options'] ?? array() );
-	}
-
-	if ( empty( $result['options'] ) ) {
-		return new WP_Error( 'papelito_checkout_shipping_unavailable', 'Não foi possível cotar o frete.', array( 'status' => 503 ) );
-	}
-
-	return $result;
 }

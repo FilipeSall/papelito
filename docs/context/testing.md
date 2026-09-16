@@ -111,11 +111,13 @@ wp --allow-root eval-file $T report 50
 
 ### Stub que nasce limpo no editor
 
-O SonarLint e o intelephense analisam os testes junto com o resto do plugin, e três hints aparecem sempre que o stub é escrito no modo preguiçoso. **Nenhum deles se resolve escrevendo comentário** — o projeto não comenta código para calar linter.
+O SonarLint e o intelephense analisam os testes junto com o resto do plugin, e quatro hints aparecem sempre que o stub é escrito no modo preguiçoso. **Nenhum deles se resolve escrevendo comentário** — o projeto não comenta código para calar linter.
 
 - **Tipe os parâmetros do stub** (`mixed` onde o core aceita qualquer coisa) e declare o retorno. Sem isso o intelephense acusa `P1132 Parameter $x has no type information available` em cada assinatura.
 - **Stub não pode ter corpo vazio** (`php:S1186`). `function add_action() {}` vira hint; devolva o que a função real devolve (`return true;`) ou faça o stub registrar a chamada em `$GLOBALS` quando o teste for conferir isso. Variádico tipado (`mixed ...$args`) evita copiar a assinatura inteira do core.
 - **Literal de fixture repetido vira constante** (`php:S1192`), com o escopo no nome: `BRASPRESS_TEST_DESTINATION_CEP`, `INVITATION_TEST_VALID_CPF`, `GATE_TEST_WRONG_PASSWORD`. Na prática a regra não acusa literal usado como **chave de array** (`'origin_cep' => ...`, `$payload['category']`) — trocar chave por constante só piora a leitura, então extraia CNPJ, CEP, CPF, e-mail e senha de fixture, não o nome do campo.
+
+- **O include do módulo sob teste é `require_once`** (`php:S2003`). `require` cru redeclara função assim que o arquivo entra por dois caminhos, e o hint aparece em todo teste standalone que usa a forma crua. Vale também para os `require_once dirname( __DIR__ ) . '/includes/<módulo>.php'` encadeados.
 
 Forma canônica do bloco de stubs:
 
@@ -169,7 +171,7 @@ O SonarLint usa regras genéricas de PHP que colidem de frente com o WordPress c
 - `php:S1172` (parâmetro não usado) — callback de filtro recebe argumentos por posição (`rest_pre_dispatch`, `wp_check_filetype_and_ext`), então parâmetros no meio da assinatura não podem ser removidos;
 - `php:S1142` (mais de 3 `return`) — desligada no editor, mas a preferência do código segue sendo consolidar o retorno ou extrair helper.
 
-As demais regras ficam ligadas e devem ser corrigidas no código — inclusive `php:S1192` (literal repetido → constante), `php:S1186` (função de corpo vazio), `php:S1784` (visibilidade explícita em método) e `php:S2003` (`require` → `require_once`). A correção oficial que o `S1186` sugere é um comentário explicando o corpo vazio, e o projeto **não** faz isso: em stub de teste, a saída é tipar e dar corpo à função, como descrito em [Stub que nasce limpo no editor](#stub-que-nasce-limpo-no-editor).
+As demais regras ficam ligadas e devem ser corrigidas no código — inclusive `php:S1192` (literal repetido → constante), `php:S1186` (função de corpo vazio), `php:S1784` (visibilidade explícita em método), `php:S2003` (`require` → `require_once`), `php:S3358` (ternário aninhado → variável ou função) e `php:S3776` (complexidade cognitiva acima de 15 → decompor). A correção oficial que o `S1186` sugere é um comentário explicando o corpo vazio, e o projeto **não** faz isso: em stub de teste, a saída é tipar e dar corpo à função, como descrito em [Stub que nasce limpo no editor](#stub-que-nasce-limpo-no-editor).
 
 ## Verificação de uma mudança
 
