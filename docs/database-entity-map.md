@@ -156,7 +156,7 @@ Metadados da linha — e onde o **vendor é gravado por item**:
 
 ---
 
-## Camada Papelito — as 41 tabelas
+## Camada Papelito — as 43 tabelas
 
 ### Identidade, empresa e acesso (12)
 
@@ -212,7 +212,7 @@ Metadados da linha — e onde o **vendor é gravado por item**:
 | `wp_papelito_fiscal_documents` | Nota fiscal **anexada** pelo vendor | PK `id`; UNIQUE `(order_id, vendor_id)`; UNIQUE `storage_key`; `mime`, `size_bytes`, `sha256`, `uploaded_by`. É só um arquivo indexado — sem campo digitado nem validação fiscal |
 | `wp_papelito_fiscal_document_events` | Trilha do anexo: enviado, substituído, baixado, removido | PK `id`; `order_id`, `vendor_id`, `actor_user_id`, `event`. Append-only — sobrevive à substituição do documento |
 
-### Logística e integrações por vendor (4)
+### Logística e integrações por vendor (6)
 
 | Tabela | Papel | Chaves e colunas que importam |
 |---|---|---|
@@ -220,6 +220,8 @@ Metadados da linha — e onde o **vendor é gravado por item**:
 | `wp_papelito_vendor_integration_audit` | Trilha append-only de alteração da integração | `vendor_id`, provider, ator, ação e data; não guarda configuração ou segredo |
 | `wp_papelito_shipments` | A remessa/referência externa: uma linha por (pedido, vendor, direção) | PK `id`; UNIQUE `tracking_code`, `prepost_id`, `idempotency_key`; `provider`; `external_reference` para `byNumPedido` separado do ID interno; `external_status` preserva vocabulário não mapeado; `status` + `status_rank` evita retrocesso |
 | `wp_papelito_tracking_events` | Cada evento de rastreio recebido | PK `id`; UNIQUE `event_key` → torna a ingestão idempotente; `shipment_id`; `raw_payload` (resposta original preservada) |
+| `wp_papelito_packaging_profiles` | A caixa real do vendor — BRASPRESS-003 | PK `id`; UNIQUE `(vendor_id, code)`; `length_mm`/`width_mm`/`height_mm` são medidas **internas**; `tare_weight_g` entra no peso cotado; `max_payload_g` NULL = sem limite próprio; `source` `rpc`\|`custom` registra só a origem, sem vínculo vivo com o modelo; `active` desativa sem apagar histórico; `version` alimenta o `physical_hash` |
+| `wp_papelito_packing_rules` | Override opcional de embalagem do vendor — BRASPRESS-003 | PK `id`; UNIQUE `(vendor_id, target_type, target_id, min_qty)`; faixa `min_qty..max_qty` → `profile_id`. **Não** há invariante de contiguidade: buraco entre faixas é legítimo e significa "aqui quem decide é o cálculo" |
 
 ### Comunicação (5)
 

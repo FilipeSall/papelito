@@ -1258,6 +1258,31 @@ function papelito_correios_quote_service( array $credentials, array $token, arra
 }
 
 /**
+ * Monta a chave do transient que guarda uma cotação dos Correios.
+ *
+ * Tudo que muda o preço precisa mudar a chave. A origem entra explicitamente
+ * porque é derivada do cadastro do vendor: com só o `vendor_id` no hash, mudar
+ * o CEP do vendor continuava servindo a cotação calculada da origem anterior.
+ * O pacote entra inteiro, então o `physical_hash` do perfil viaja junto assim
+ * que a embalagem deixar de ser sintética.
+ *
+ * O HMAC deixa o nome do transient opaco em `wp_options` e impede que alguém de
+ * fora fabrique a chave de um carrinho alheio.
+ *
+ * @param int                             $vendor_id Vendor que responde a cotação.
+ * @param string                          $origin_cep CEP de origem já normalizado.
+ * @param string                          $destination_cep CEP de destino já normalizado.
+ * @param array<int, array<string,mixed>> $items Itens cotados.
+ * @param array<string, mixed>            $package Pacote físico resolvido.
+ * @return string Chave versionada do transient.
+ */
+function papelito_shipping_quote_cache_key( int $vendor_id, string $origin_cep, string $destination_cep, array $items, array $package ): string {
+	return 'papelito_shipping_quote_v4_' . papelito_shipping_cache_fingerprint(
+		(string) wp_json_encode( array( $vendor_id, $origin_cep, $destination_cep, $items, $package ) )
+	);
+}
+
+/**
  * Retorna uma cotação válida já persistida em cache.
  *
  * @param string $cache_key Chave do transient.
@@ -1390,7 +1415,7 @@ function papelito_correios_quote( int $vendor_id, string $destination_cep, array
 		return $package;
 	}
 
-	$cache_key = 'papelito_shipping_quote_v3_' . papelito_shipping_cache_fingerprint( (string) wp_json_encode( array( $vendor_id, $destination_cep, $items, $package ) ) );
+	$cache_key = papelito_shipping_quote_cache_key( $vendor_id, $origin_cep, $destination_cep, $items, $package );
 	$cached    = papelito_correios_quote_cached_result( $cache_key );
 	if ( is_array( $cached ) ) {
 		return $cached;

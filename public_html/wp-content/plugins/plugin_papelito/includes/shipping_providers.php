@@ -54,6 +54,10 @@ function papelito_shipping_provider_service_code( string $provider, array $raw )
  * @param string              $quoted_at Data UTC obrigatória em que a opção foi gerada.
  * @param string|null         $expires_at Validade padrão; uma validade individual válida tem precedência.
  * @return array<string,mixed>|null Opção pública normalizada ou nula quando inválida.
+ *
+ * O `physical_hash` do snapshot logístico entra na assinatura mas não no
+ * envelope público: é ele que faz uma troca de embalagem invalidar a seleção do
+ * checkout mesmo quando preço, prazo e validade não mudam.
  */
 function papelito_shipping_normalize_provider_option( string $provider, array $raw, string $quoted_at, ?string $expires_at ): ?array {
 	$provider      = sanitize_key( $provider );
@@ -65,6 +69,7 @@ function papelito_shipping_normalize_provider_option( string $provider, array $r
 	$carrier_cost  = papelito_shipping_provider_carrier_cost( $raw, $price_cents );
 	$external_id   = array_key_exists( 'external_quote_id', $raw ) ? papelito_shipping_provider_nullable_string( $raw['external_quote_id'] ) : null;
 	$option_expiry = papelito_shipping_provider_string( $raw['expires_at'] ?? null );
+	$physical_hash = papelito_shipping_safe_string( $raw['physical_hash'] ?? '' );
 	if ( null !== $option_expiry && '' !== $option_expiry && false !== strtotime( $option_expiry ) ) {
 		$expires_at = $option_expiry;
 	}
@@ -88,7 +93,7 @@ function papelito_shipping_normalize_provider_option( string $provider, array $r
 		'quoted_at'             => $quoted_at,
 		'expires_at'            => papelito_shipping_nullable_date( $expires_at ),
 		'external_quote_id'     => $external_id,
-		'fingerprint'           => hash_hmac( 'sha256', wp_json_encode( array( $provider, $option_key, $price_cents, $delivery_time, papelito_shipping_nullable_date( $expires_at ) ) ), wp_salt( 'auth' ) ),
+		'fingerprint'           => hash_hmac( 'sha256', wp_json_encode( array( $provider, $option_key, $price_cents, $delivery_time, papelito_shipping_nullable_date( $expires_at ), $physical_hash ) ), wp_salt( 'auth' ) ),
 	);
 }
 

@@ -16,6 +16,20 @@ Contrato do adapter, modos de operação, polling e credenciais. O fluxo funcion
 
 O token Bearer é obtido em `token/v1/autentica/cartaopostagem` e cacheado em transient até perto da expiração. A lista de serviços do contrato também é cacheada.
 
+A cotação em si também é cacheada, por **10 minutos**, em transient nomeado por
+`papelito_shipping_quote_cache_key()`. A chave é `papelito_shipping_quote_v4_` mais um HMAC de
+`(vendor_id, origin_cep, destination_cep, items, package)`. A origem entra **explicitamente**: ela é
+derivada de `usermeta.cep` do vendor e, com só o `vendor_id` no hash, mudar o endereço do vendor
+continuava servindo a cotação calculada da origem anterior até o transient expirar. O pacote entra
+inteiro, então `measurement_source` e — quando a embalagem deixar de ser sintética — o
+`physical_hash` do perfil viajam junto sem mudança de chave. O HMAC deixa o nome do transient opaco
+em `wp_options` e impede fabricar a chave de um carrinho alheio. O prefixo é versionado: bumpá-lo
+invalida todo o cache sem varrer a tabela.
+
+O `quoted_at` gravado no resultado é o instante da chamada real ao provider e **não** é reescrito
+num acerto de cache — uma cotação servida do transient é honestamente declarada como de até 10
+minutos atrás.
+
 Erros dos Correios podem propagar `correios_status` e `correios_message` em `data`, mas **nunca** token, Basic Auth ou access code.
 
 ## Cotação — `POST /papelito/v1/shipping/quote`

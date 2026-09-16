@@ -106,9 +106,10 @@ require_once __DIR__ . '/includes/billing_email_sync.php';
 require_once __DIR__ . '/includes/company_final_check.php';
 require_once __DIR__ . '/includes/account_status.php';
 require_once __DIR__ . '/includes/account_admin_endpoints.php';
+require_once __DIR__ . '/includes/packaging.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.49.0' );
+	define( 'PAPELITO_DB_VERSION', '1.50.0' );
 }
 
 /**
@@ -163,6 +164,7 @@ function papelito_maybe_migrate_db() {
 				'papelito_fiscal_documents_drop_legacy',
 				'papelito_fiscal_documents_install_tables',
 				'papelito_product_taxonomy_install_tables',
+				'papelito_packaging_install_tables',
 				'papelito_collection_cards_install_tables',
 				'papelito_collection_cards_migrate_legacy_nav',
 				'papelito_integration_secret_install_tables',
