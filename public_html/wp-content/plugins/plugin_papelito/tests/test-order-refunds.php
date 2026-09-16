@@ -166,6 +166,47 @@ assert_refund(
 	str_contains( (string) strstr( $reservation_reconciler, 'papelito_pagarme_payment_state_releases_stock', true ), 'papelito_order_refund_order_was_paid' )
 );
 
+/** Pedido com estado operacional e status do WooCommerce, para a superfície de documentos. */
+class Papelito_Documents_Surface_Order {
+	public function __construct( private string $vendor_status, private string $wc_status ) {}
+	public function get_meta( string $key, bool $single = true ) { return '_papelito_vendor_status' === $key ? $this->vendor_status : ''; }
+	public function get_status(): string { return $this->wc_status; }
+}
+
+const REFUND_TEST_SURFACE_ORDER  = 'pedido';
+const REFUND_TEST_SURFACE_REFUND = 'estorno';
+
+$surface_paid     = new Papelito_Documents_Surface_Order( 'aguardando_envio', 'processing' );
+$surface_refunded = new Papelito_Documents_Surface_Order( 'estornado', 'refunded' );
+
+assert_refund( 'pedido em andamento mantém os documentos do pedido', REFUND_TEST_SURFACE_ORDER, papelito_order_documents_surface( $surface_paid ) );
+assert_refund( 'pedido estornado troca para os documentos do estorno', REFUND_TEST_SURFACE_REFUND, papelito_order_documents_surface( $surface_refunded ) );
+assert_refund(
+	'cancelamento pedido ainda não fecha os documentos: o dinheiro não voltou',
+	REFUND_TEST_SURFACE_ORDER,
+	papelito_order_documents_surface( new Papelito_Documents_Surface_Order( 'cancelamento_solicitado', 'processing' ), array( 'status' => 'manual_pendente' ) )
+);
+assert_refund(
+	'estorno concluído fecha os documentos mesmo antes de o pedido projetar',
+	REFUND_TEST_SURFACE_REFUND,
+	papelito_order_documents_surface( $surface_paid, array( 'status' => 'reembolsado' ) )
+);
+assert_refund(
+	'pedido estornado antes desta regra, sem linha de estorno, também fecha',
+	REFUND_TEST_SURFACE_REFUND,
+	papelito_order_documents_surface( new Papelito_Documents_Surface_Order( '', 'refunded' ) )
+);
+assert_refund(
+	'pedido cancelado sem pagamento continua no fluxo normal',
+	REFUND_TEST_SURFACE_ORDER,
+	papelito_order_documents_surface( new Papelito_Documents_Surface_Order( 'cancelado', 'cancelled' ) )
+);
+assert_refund(
+	'decisão é estável em chamadas repetidas',
+	papelito_order_documents_surface( $surface_refunded ),
+	papelito_order_documents_surface( $surface_refunded )
+);
+
 $source = (string) file_get_contents( __DIR__ . '/../includes/order_refunds.php' );
 assert_refund( 'reembolso WooCommerce nunca repõe estoque', true, 1 === preg_match( "/'restock_items'\s*=>\s*false/", $source ) );
 assert_refund( 'nenhuma chamada repõe estoque', 0, preg_match_all( "/'restock_items'\s*=>\s*true|wc_restock_refunded_items|wc_maybe_increase_stock_levels/", $source ) );
@@ -174,6 +215,11 @@ assert_refund( 'status cancelled do WooCommerce não é usado (ele repõe estoqu
 assert_refund( 'e-mail nativo de refund do WooCommerce é suprimido', true, str_contains( $source, 'woocommerce_email_enabled_customer_refunded_order' ) );
 assert_refund( 'chave PIX só é decifrada por um caminho', 1, substr_count( $source, 'papelito_refund_pix_key_decrypt( (int)' ) );
 assert_refund( 'revelar chave PIX gera evento', true, str_contains( $source, "'pix_key_revealed'" ) );
+assert_refund( 'fechar a superfície de documentos não apaga recibo nem nota', 0, preg_match_all( '/papelito_receipt_delete|papelito_fiscal_document_remove_row|papelito_fiscal_document_purge_file/', $source ) );
+assert_refund( 'recibo de estorno distingue ver de baixar', true, str_contains( $source, 'function papelito_order_refund_receipt_response( object $order, ?array $row, bool $download = false )' ) );
+
+$dashboard_source = (string) file_get_contents( __DIR__ . '/../includes/vendor_dashboard.php' );
+assert_refund( 'o payload do pedido carrega a superfície de documentos', true, str_contains( $dashboard_source, "'surface' => papelito_order_documents_surface(" ) );
 
 echo "\n" . ( 0 === $failures ? 'OK' : "{$failures} falha(s)" ) . "\n";
 exit( 0 === $failures ? 0 : 1 );

@@ -474,6 +474,16 @@ function papelito_vendor_dashboard_map_order_detail( $order, ?int $vendor_id, bo
 		}
 	}
 
+	// Vale para as duas telas e é a mesma decisão nas duas: pedido estornado
+	// troca os documentos do pedido pela documentação do estorno. Sem este
+	// campo, vendor e comprador deduziriam a troca do status por conta própria e
+	// divergiriam. Fica depois dos dois ramos porque lê o estorno já montado.
+	if ( function_exists( 'papelito_order_documents_surface' ) ) {
+		$result['documents'] = array(
+			'surface' => papelito_order_documents_surface( $order, $result['refund'] ?? null ),
+		);
+	}
+
 	return $result;
 }
 

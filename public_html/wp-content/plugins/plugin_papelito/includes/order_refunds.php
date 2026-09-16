@@ -35,6 +35,8 @@ const PAPELITO_ORDER_REFUND_RECEIPT_PREFIX        = 'PPE';
 const PAPELITO_ORDER_REFUND_MYSQL_FORMAT          = 'Y-m-d H:i:s';
 const PAPELITO_ORDER_REFUND_PIX_KEY_TYPES         = array( 'cpf', 'cnpj', 'email', 'telefone', 'aleatoria' );
 const PAPELITO_ORDER_REFUND_MSG_NOT_FOUND         = 'Estorno não encontrado.';
+const PAPELITO_ORDER_DOCUMENTS_SURFACE_ORDER      = 'pedido';
+const PAPELITO_ORDER_DOCUMENTS_SURFACE_REFUND     = 'estorno';
 
 /**
  * Nomes das tabelas do estorno, com o prefixo do $wpdb.
@@ -504,6 +506,44 @@ function papelito_order_refund_event( int $refund_id, int $order_id, string $eve
 			'created_at'    => papelito_order_refund_now(),
 		)
 	);
+}
+
+/**
+ * Qual conjunto de documentos as telas de pedido apresentam.
+ *
+ * Pedido estornado fecha a área de documentos do fluxo normal — recibo do
+ * pedido e nota fiscal saem de cena — e no lugar dela fica a documentação do
+ * estorno. A decisão é do WordPress e não do navegador: vendor e comprador
+ * leem o mesmo campo, e nenhuma das duas telas deduz isso de `status`.
+ *
+ * Fecha pelo estado do pedido, não pela existência do estorno: pedido
+ * estornado antes desta regra, ou devolvido direto no painel da Pagar.me, não
+ * tem linha em `papelito_order_refunds` e mesmo assim não pode voltar a
+ * mostrar o recibo do pedido como se nada tivesse acontecido.
+ *
+ * Fechar a superfície **não apaga nem bloqueia nada**: recibo, nota fiscal e
+ * arquivos continuam onde estavam, alcançáveis por rota autenticada, porque o
+ * recibo é registro contábil imutável e a nota é documento fiscal do vendor.
+ *
+ * @param object                   $order  Pedido WooCommerce.
+ * @param array<string,mixed>|null $refund Estorno do pedido, quando já lido.
+ */
+function papelito_order_documents_surface( object $order, ?array $refund = null ): string {
+	if ( is_array( $refund ) && PAPELITO_ORDER_REFUND_STATUS_REFUNDED === (string) ( $refund['status'] ?? '' ) ) {
+		return PAPELITO_ORDER_DOCUMENTS_SURFACE_REFUND;
+	}
+
+	$status = function_exists( 'papelito_vendor_dashboard_order_status' )
+		? papelito_vendor_dashboard_order_status( $order )
+		: sanitize_key( (string) $order->get_meta( '_papelito_vendor_status', true ) );
+
+	if ( PAPELITO_VENDOR_STATUS_REFUNDED === $status ) {
+		return PAPELITO_ORDER_DOCUMENTS_SURFACE_REFUND;
+	}
+
+	return method_exists( $order, 'get_status' ) && 'refunded' === sanitize_key( (string) $order->get_status() )
+		? PAPELITO_ORDER_DOCUMENTS_SURFACE_REFUND
+		: PAPELITO_ORDER_DOCUMENTS_SURFACE_ORDER;
 }
 
 /**
@@ -1874,13 +1914,18 @@ function papelito_order_refund_receipt_pdf( object $order, array $row ): string 
 }
 
 /**
- * Download do recibo de estorno, com os mesmos headers de arquivo privado do recibo do pedido.
+ * Recibo de estorno em PDF, com os mesmos headers de arquivo privado do recibo do pedido.
  *
- * @param object                   $order Pedido WooCommerce.
- * @param array<string,mixed>|null $row   Estorno.
+ * `$download` separa ver de baixar: o visualizador da tela embute o PDF num
+ * frame, e `attachment` ali faz o navegador baixar o arquivo em vez de
+ * mostrá-lo. É a mesma distinção que o recibo do pedido já faz.
+ *
+ * @param object                   $order    Pedido WooCommerce.
+ * @param array<string,mixed>|null $row      Estorno.
+ * @param bool                     $download Força o anexo em vez da exibição.
  * @return WP_REST_Response|WP_Error
  */
-function papelito_order_refund_receipt_response( object $order, ?array $row ) {
+function papelito_order_refund_receipt_response( object $order, ?array $row, bool $download = false ) {
 	if ( ! is_array( $row ) || PAPELITO_ORDER_REFUND_STATUS_REFUNDED !== (string) $row['status'] || '' === (string) ( $row['receipt_number'] ?? '' ) ) {
 		return papelito_order_refund_error( 'papelito_order_refund_receipt_unavailable', 'O recibo de estorno fica disponível quando o estorno for concluído.', 409 );
 	}
@@ -1889,9 +1934,10 @@ function papelito_order_refund_receipt_response( object $order, ?array $row ) {
 		return papelito_order_refund_error( 'papelito_order_refund_receipt_unavailable', 'O recibo de estorno está indisponível no momento.', 500 );
 	}
 
-	$response = new WP_REST_Response( papelito_order_refund_receipt_pdf( $order, $row ), 200 );
+	$disposition = $download ? 'attachment' : 'inline';
+	$response    = new WP_REST_Response( papelito_order_refund_receipt_pdf( $order, $row ), 200 );
 	$response->header( 'Content-Type', 'application/pdf' );
-	$response->header( 'Content-Disposition', 'attachment; filename="recibo-estorno-pedido-' . absint( $order->get_id() ) . '.pdf"' );
+	$response->header( 'Content-Disposition', $disposition . '; filename="recibo-estorno-pedido-' . absint( $order->get_id() ) . '.pdf"' );
 	$response->header( 'Cache-Control', 'private, no-store, max-age=0' );
 	$response->header( 'X-Content-Type-Options', 'nosniff' );
 	$response->header( 'X-Papelito-Receipt', '1' );
@@ -2156,7 +2202,9 @@ function papelito_order_refund_register_routes(): void {
 			'callback'            => static function ( WP_REST_Request $request ) {
 				$order = papelito_vendor_dashboard_vendor_order( absint( $request->get_param( 'id' ) ), get_current_user_id() );
 
-				return is_wp_error( $order ) ? $order : papelito_order_refund_receipt_response( $order, papelito_order_refund_get_by_order( (int) $order->get_id() ) );
+				return is_wp_error( $order )
+					? $order
+					: papelito_order_refund_receipt_response( $order, papelito_order_refund_get_by_order( (int) $order->get_id() ), '1' === (string) $request->get_param( 'download' ) );
 			},
 		)
 	);
@@ -2170,7 +2218,9 @@ function papelito_order_refund_register_routes(): void {
 			'callback'            => static function ( WP_REST_Request $request ) {
 				$order = papelito_vendor_dashboard_customer_order( absint( $request->get_param( 'id' ) ), get_current_user_id() );
 
-				return is_wp_error( $order ) ? $order : papelito_order_refund_receipt_response( $order, papelito_order_refund_get_by_order( (int) $order->get_id() ) );
+				return is_wp_error( $order )
+					? $order
+					: papelito_order_refund_receipt_response( $order, papelito_order_refund_get_by_order( (int) $order->get_id() ), '1' === (string) $request->get_param( 'download' ) );
 			},
 		)
 	);
