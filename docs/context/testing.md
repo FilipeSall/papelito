@@ -160,6 +160,14 @@ Elas são aceitas porque são **as mesmas categorias já presentes nos arquivos 
 
 Se o seu PR introduzir violação de outra categoria, corrija — não amplie o baseline.
 
+**`// phpcs:ignoreFile <sniff>` ignora o arquivo inteiro, não só o sniff.** O PHPCS não aceita
+lista de sniffs no `ignoreFile`; o texto depois dele é descartado e todas as regras deixam de rodar
+naquele arquivo. Na saída de progresso o arquivo aparece como `S`. Hoje isso acontece em
+`includes/packaging.php`, `includes/shipping_providers.php` e `includes/braspress_tracking.php`: o
+PHPCS "limpo" nesses arquivos não verificou nada. Para medir de verdade, rode com
+`--ignore-annotations`. Para calar só a regra de nome de arquivo, use
+`// phpcs:disable WordPress.Files.FileName.NotHyphenatedLowercase`.
+
 ### SonarLint no editor
 
 O SonarLint usa regras genéricas de PHP que colidem de frente com o WordPress coding standard exigido pelo `phpcs.xml.dist`. Essas regras ficam desligadas na chave `sonarlint.rules`, que tem scope *application*: o VS Code a ignora em settings de workspace, então o bloco vive em `~/.config/Code/User/settings.json` — os `.vscode/settings.json` do repo e do workspace pai só registram esse fato. As desligadas são:

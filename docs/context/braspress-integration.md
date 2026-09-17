@@ -16,7 +16,7 @@ A barra final é normalizada antes de acrescentar o path da cotação ou do trac
 
 Variável ausente significa produção; variável presente com valor vazio também é inválida e não é tratada como ausente.
 
-Em desenvolvimento local, omita o override ou mantenha o placeholder de produção. `localhost`, loopback e qualquer URL local não são destinos Braspress aceitos. Os testes continuam usando executor falso e não fazem chamadas externas.
+A variável não é declarada no `.env.example`: a base é fixa em produção e não há homologação a configurar, inclusive no desenvolvimento local. `localhost`, loopback e qualquer URL local não são destinos Braspress aceitos. Os testes continuam usando executor falso e não fazem chamadas externas.
 
 O transporte usa HTTPS com verificação TLS, timeout de 15 segundos, redirecionamento desativado e limite de resposta. Suítes standalone, CI e desenvolvimento normal usam executor falso; este runbook não autoriza chamadas reais.
 
