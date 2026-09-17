@@ -249,6 +249,16 @@ function papelito_shipping_failure_category( string $provider, string $code ): s
 	if ( PAPELITO_SHIPPING_PROVIDER_BRASPRESS === $provider && false !== $braspress_prefix ) {
 		$code = substr( $code, $braspress_prefix + strlen( 'braspress_' ) );
 	}
+	if ( PAPELITO_SHIPPING_PROVIDER_BRASPRESS === $provider ) {
+		$domain_categories = array(
+			'credentials_invalid' => 'provider_4xx',
+			'account_blocked'     => 'provider_4xx',
+			'route_not_available' => 'validation_error',
+		);
+		if ( isset( $domain_categories[ $code ] ) ) {
+			return $domain_categories[ $code ];
+		}
+	}
 	if ( in_array( $code, PAPELITO_SHIPPING_FAILURE_CATEGORIES, true ) ) {
 		return $code;
 	}

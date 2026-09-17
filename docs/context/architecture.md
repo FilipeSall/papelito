@@ -214,6 +214,30 @@ mu-plugins carregam automaticamente e **não podem ser desativados pela interfac
 | `PAPELITO_PRIVATE_FISCAL_DOCUMENTS_DIR` | notas anexadas pelo vendor | default fora do webroot; **sem fallback público** |
 | `PAPELITO_B2B_*`, `PAPELITO_COMPANY_*`, `PAPELITO_QSA_*`, `PAPELITO_ALPHANUMERIC_CNPJ_*` | flags | ver [`../../../docs/architecture.md`](../../../docs/architecture.md#feature-flags) |
 
+### CORS — o que o mu-plugin realmente garante
+
+Auditado em 16/09/2026. `mu-plugins/papelito-cors.php` é a única autoridade de CORS e vale para REST
+e WPGraphQL.
+
+- A allowlist é **comparação exata** (`in_array` estrito) contra `PAPELITO_ALLOWED_ORIGINS`. Não há
+  curinga, prefixo nem regex, então `papelito.com.attacker.test` não passa.
+- O plugin **remove** `rest_send_cors_headers()` do core (prioridade 11 em `rest_api_init`), que
+  reflete qualquer `Origin`, e apaga o `Access-Control-Allow-Origin: *` do WPGraphQL.
+- `Access-Control-Allow-Credentials: true` só acompanha uma origem específica, nunca `*`.
+- `Vary: Origin` é enviado sem sobrescrever outros `Vary`, o que mantém o cache correto.
+- Sem a constante `PAPELITO_ALLOWED_ORIGINS` definida no `wp-config.php`, a allowlist fica vazia e
+  **nenhum** cabeçalho CORS é emitido — o sintoma é `fetch` do navegador falhando, não erro do REST.
+
+Duas armadilhas conhecidas:
+
+- **`PATCH` não está em `Access-Control-Allow-Methods`** (só `GET, POST, PUT, DELETE, OPTIONS`).
+  Hoje isso não quebra nada porque as rotas `PATCH` são chamadas pelo proxy do Next, servidor a
+  servidor, sem CORS. No dia em que o navegador chamar uma delas direto, o preflight falha.
+- **`http://localhost:3000` fica na allowlist de produção de propósito**, para desenvolvimento
+  contra o backend real. É uma decisão consciente, registrada em
+  [`../../../docs/integration-contracts.md`](../../../docs/integration-contracts.md), mas significa
+  que uma página servida em `localhost:3000` pode fazer requisição com credencial ao WP de produção.
+
 > **Em produção o `wp-config.php` é mantido à mão no servidor** — o deploy faz rsync de `themes/` e `plugins/` e **não** toca nele. Uma variável nova exige edição manual lá, e o `wp-config.example.php` do repositório precisa ser atualizado no mesmo movimento (ver [operations/sync-from-prod.md](../operations/sync-from-prod.md)).
 
 ## Convenções PHP

@@ -516,3 +516,550 @@ function papelito_packaging_build_snapshot( array $input ): ?array {
 
 	return $snapshot;
 }
+
+/**
+ * Lê os perfis ativos de embalagem de um vendor.
+ *
+ * O filtro `active` é aplicado no SQL e novamente na normalização para que uma
+ * linha inconsistente nunca se torne uma caixa elegível por acidente.
+ *
+ * @param int $vendor_id ID do vendor.
+ * @return array<int,array<string,mixed>> Perfis ativos e válidos.
+ */
+function papelito_packaging_profiles_for_vendor( int $vendor_id ): array {
+	if ( $vendor_id <= 0 ) {
+		return array();
+	}
+
+	global $wpdb;
+	$tables = papelito_packaging_table_names();
+	$rows   = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT id, vendor_id, code, label, length_mm, width_mm, height_mm, tare_weight_g, max_payload_g, source, active, version FROM {$tables['profiles']} WHERE vendor_id = %d AND active = %d ORDER BY id ASC",
+			$vendor_id,
+			1
+		),
+		ARRAY_A
+	);
+
+	$profiles = array();
+	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		$profile = papelito_packaging_profile_row( is_array( $row ) ? $row : (array) $row );
+		if ( null !== $profile ) {
+			$profiles[] = $profile;
+		}
+	}
+
+	return $profiles;
+}
+
+/**
+ * Lê as regras de override de embalagem de um vendor.
+ *
+ * Regras para perfis inativos ou inexistentes permanecem no formato do
+ * resolvedor, que então recua para a escolha física determinística.
+ *
+ * @param int $vendor_id ID do vendor.
+ * @return array<int,array<string,mixed>> Regras de faixa válidas.
+ */
+function papelito_packaging_rules_for_vendor( int $vendor_id ): array {
+	if ( $vendor_id <= 0 ) {
+		return array();
+	}
+
+	global $wpdb;
+	$tables = papelito_packaging_table_names();
+	$rows   = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT id, vendor_id, target_type, target_id, min_qty, max_qty, profile_id, version FROM {$tables['rules']} WHERE vendor_id = %d ORDER BY id ASC",
+			$vendor_id
+		),
+		ARRAY_A
+	);
+
+	$rules = array();
+	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
+		$rule = papelito_packaging_rule_row( is_array( $row ) ? $row : (array) $row );
+		if ( null !== $rule ) {
+			$rules[] = $rule;
+		}
+	}
+
+	return $rules;
+}
+
+/**
+ * Normaliza uma linha de perfil lida do banco.
+ *
+ * @param array<string,mixed> $row Linha crua.
+ * @return array<string,mixed>|null Perfil válido ou nulo.
+ */
+function papelito_packaging_profile_row( array $row ): ?array {
+	if ( 1 !== (int) ( $row['active'] ?? 0 ) || (int) ( $row['vendor_id'] ?? 0 ) <= 0 || '' === (string) ( $row['code'] ?? '' ) ) {
+		return null;
+	}
+
+	$profile = array(
+		'id'            => (int) ( $row['id'] ?? 0 ),
+		'vendor_id'     => (int) ( $row['vendor_id'] ?? 0 ),
+		'code'          => (string) $row['code'],
+		'label'         => (string) ( $row['label'] ?? '' ),
+		'length_mm'     => (int) ( $row['length_mm'] ?? 0 ),
+		'width_mm'      => (int) ( $row['width_mm'] ?? 0 ),
+		'height_mm'     => (int) ( $row['height_mm'] ?? 0 ),
+		'tare_weight_g' => max( 0, (int) ( $row['tare_weight_g'] ?? 0 ) ),
+		'max_payload_g' => null === ( $row['max_payload_g'] ?? null ) ? null : max( 0, (int) $row['max_payload_g'] ),
+		'source'        => (string) ( $row['source'] ?? 'custom' ),
+		'active'        => 1,
+		'version'       => (int) ( $row['version'] ?? 0 ),
+	);
+
+	return $profile['id'] > 0 && $profile['version'] > 0 && papelito_packaging_profile_volume_mm3( $profile ) > 0 ? $profile : null;
+}
+
+/**
+ * Normaliza uma linha de regra lida do banco.
+ *
+ * @param array<string,mixed> $row Linha crua.
+ * @return array<string,mixed>|null Regra válida ou nulo.
+ */
+function papelito_packaging_rule_row( array $row ): ?array {
+	$rule = array(
+		'id'          => (int) ( $row['id'] ?? 0 ),
+		'vendor_id'   => (int) ( $row['vendor_id'] ?? 0 ),
+		'target_type' => (string) ( $row['target_type'] ?? '' ),
+		'target_id'   => (int) ( $row['target_id'] ?? 0 ),
+		'min_qty'     => (int) ( $row['min_qty'] ?? 0 ),
+		'max_qty'     => (int) ( $row['max_qty'] ?? 0 ),
+		'profile_id'  => (int) ( $row['profile_id'] ?? 0 ),
+		'version'     => (int) ( $row['version'] ?? 0 ),
+	);
+
+	return $rule['id'] > 0 && $rule['vendor_id'] > 0 && '' !== $rule['target_type'] && $rule['target_id'] > 0 && $rule['min_qty'] > 0 && $rule['max_qty'] >= $rule['min_qty'] && $rule['profile_id'] > 0 ? $rule : null;
+}
+
+/**
+ * Converte todos os itens do carrinho em linhas físicas canônicas.
+ *
+ * A conversão é fail-closed: uma única linha sem peso ou dimensão positiva
+ * invalida a lista inteira e impede um pacote parcial.
+ *
+ * @param array<int,array<string,mixed>> $items Itens do filtro Braspress.
+ * @return array<int,array<string,mixed>>|null Linhas físicas ou nulo.
+ */
+function papelito_packaging_items_to_lines( array $items ): ?array {
+	if ( empty( $items ) || ! function_exists( 'wc_get_product' ) ) {
+		return null;
+	}
+
+	$lines = array();
+	foreach ( $items as $item ) {
+		$line = is_array( $item ) ? papelito_packaging_item_to_line( $item ) : null;
+		if ( null === $line ) {
+			return null;
+		}
+		$lines[] = $line;
+	}
+
+	return $lines;
+}
+
+/**
+ * Converte um item do carrinho em uma linha física.
+ *
+ * Kits usam o ID da entidade Kit e as dimensões declaradas da embalagem;
+ * produtos comuns usam o ID e os atributos físicos do WooCommerce.
+ *
+ * @param array<string,mixed> $item Item cru.
+ * @return array<string,mixed>|null Linha física ou nulo.
+ */
+function papelito_packaging_item_to_line( array $item ): ?array {
+	$product_id = (int) ( $item['product_id'] ?? 0 );
+	$qty        = (int) ( $item['qty'] ?? 0 );
+	if ( $product_id <= 0 || $qty <= 0 ) {
+		return null;
+	}
+
+	$product = wc_get_product( $product_id );
+	if ( ! is_object( $product ) || ! method_exists( $product, 'get_weight' ) ) {
+		return null;
+	}
+
+	$kit = function_exists( 'papelito_kit_get_by_product' ) ? papelito_kit_get_by_product( $product_id ) : null;
+	if ( is_array( $kit ) ) {
+		return papelito_packaging_kit_line( $kit, $qty );
+	}
+
+	return papelito_packaging_product_line( $product, $product_id, $qty );
+}
+
+/**
+ * Monta a linha física de um produto WooCommerce.
+ *
+ * @param object $product Produto WooCommerce.
+ * @param int    $product_id ID do produto.
+ * @param int    $qty Quantidade.
+ * @return array<string,mixed>|null Linha ou nulo quando incompleta.
+ */
+function papelito_packaging_product_line( object $product, int $product_id, int $qty ): ?array {
+	if ( ! method_exists( $product, 'get_length' ) || ! method_exists( $product, 'get_width' ) || ! method_exists( $product, 'get_height' ) ) {
+		return null;
+	}
+
+	$dimensions = papelito_packaging_product_dimensions_mm( $product );
+	$weight_g   = papelito_packaging_weight_g( $product->get_weight() );
+	if ( null === $dimensions || null === $weight_g ) {
+		return null;
+	}
+
+	return array_merge(
+		array(
+			'target_type' => 'product',
+			'target_id'   => $product_id,
+			'qty'         => $qty,
+			'weight_g'    => $weight_g,
+		),
+		$dimensions
+	);
+}
+
+/**
+ * Monta a linha física de um Kit.
+ *
+ * A dimensão vem de `package_*` em centímetros; o peso é recalculado dos
+ * componentes e brindes sem reaplicar limites exclusivos dos Correios.
+ *
+ * @param array<string,mixed> $kit Linha da entidade Kit.
+ * @param int                 $qty Quantidade de Kits.
+ * @return array<string,mixed>|null Linha ou nulo quando incompleta.
+ */
+function papelito_packaging_kit_line( array $kit, int $qty ): ?array {
+	$kit_id = (int) ( $kit['id'] ?? 0 );
+	$dimensions = papelito_packaging_kit_dimensions_mm( $kit );
+	$weight_g   = papelito_packaging_kit_weight_g( $kit_id );
+	if ( $kit_id <= 0 || null === $dimensions || null === $weight_g ) {
+		return null;
+	}
+
+	return array_merge(
+		array(
+			'target_type' => 'kit',
+			'target_id'   => $kit_id,
+			'qty'         => $qty,
+			'weight_g'    => $weight_g,
+		),
+		$dimensions
+	);
+}
+
+/**
+ * Lê e converte dimensões de um produto WooCommerce para milímetros inteiros.
+ *
+ * @param object $product Produto físico.
+ * @return array{length_mm:int,width_mm:int,height_mm:int}|null Dimensões ou nulo.
+ */
+function papelito_packaging_product_dimensions_mm( object $product ): ?array {
+	$dimensions = array(
+		'length_mm' => papelito_packaging_dimension_mm( $product->get_length() ),
+		'width_mm'  => papelito_packaging_dimension_mm( $product->get_width() ),
+		'height_mm' => papelito_packaging_dimension_mm( $product->get_height() ),
+	);
+
+	return in_array( null, $dimensions, true ) ? null : $dimensions;
+}
+
+/**
+ * Converte dimensões declaradas do Kit, armazenadas em centímetros.
+ *
+ * @param array<string,mixed> $kit Linha do Kit.
+ * @return array{length_mm:int,width_mm:int,height_mm:int}|null Dimensões ou nulo.
+ */
+function papelito_packaging_kit_dimensions_mm( array $kit ): ?array {
+	$dimensions = array(
+		'length_mm' => papelito_packaging_centimeters_to_mm( $kit['package_length'] ?? null ),
+		'width_mm'  => papelito_packaging_centimeters_to_mm( $kit['package_width'] ?? null ),
+		'height_mm' => papelito_packaging_centimeters_to_mm( $kit['package_height'] ?? null ),
+	);
+
+	return in_array( null, $dimensions, true ) ? null : $dimensions;
+}
+
+/**
+ * Converte uma medida WooCommerce para milímetros sem aceitar zero ou inválido.
+ *
+ * @param mixed $value Medida na unidade configurada pelo WooCommerce.
+ * @return int|null Milímetros inteiros ou nulo.
+ */
+function papelito_packaging_dimension_mm( mixed $value ): ?int {
+	if ( ! is_numeric( $value ) || ! is_finite( (float) $value ) || (float) $value <= 0 || ! function_exists( 'wc_get_dimension' ) ) {
+		return null;
+	}
+
+	$converted = wc_get_dimension( $value, 'mm' );
+	$millimeters = is_numeric( $converted ) && is_finite( (float) $converted ) ? (int) round( (float) $converted, 0, PHP_ROUND_HALF_UP ) : 0;
+
+	return $millimeters > 0 ? $millimeters : null;
+}
+
+/**
+ * Converte centímetros declarados do Kit para milímetros inteiros.
+ *
+ * @param mixed $value Medida em centímetros.
+ * @return int|null Milímetros inteiros ou nulo.
+ */
+function papelito_packaging_centimeters_to_mm( mixed $value ): ?int {
+	if ( ! is_numeric( $value ) || ! is_finite( (float) $value ) || (float) $value <= 0 ) {
+		return null;
+	}
+
+	$millimeters = (int) round( (float) $value * 10, 0, PHP_ROUND_HALF_UP );
+
+	return $millimeters > 0 ? $millimeters : null;
+}
+
+/**
+ * Converte um peso WooCommerce para gramas inteiros.
+ *
+ * @param mixed $value Peso na unidade configurada pelo WooCommerce.
+ * @return int|null Gramas inteiros ou nulo.
+ */
+function papelito_packaging_weight_g( mixed $value ): ?int {
+	if ( ! is_numeric( $value ) || ! is_finite( (float) $value ) || (float) $value <= 0 || ! function_exists( 'wc_get_weight' ) ) {
+		return null;
+	}
+
+	$converted = wc_get_weight( $value, 'g' );
+	$grams = is_numeric( $converted ) && is_finite( (float) $converted ) ? (int) round( (float) $converted, 0, PHP_ROUND_HALF_UP ) : 0;
+
+	return $grams > 0 ? $grams : null;
+}
+
+/**
+ * Calcula o peso de um Kit a partir de seus componentes físicos.
+ *
+ * A rotina não chama o validador legado de Kit, pois o limite de 30 kg dos
+ * Correios não pertence à cotação Braspress.
+ *
+ * @param int $kit_id ID da entidade Kit.
+ * @return int|null Peso de uma unidade em gramas ou nulo.
+ */
+function papelito_packaging_kit_weight_g( int $kit_id ): ?int {
+	if ( $kit_id <= 0 || ! function_exists( 'papelito_kit_items' ) || ! function_exists( 'papelito_kit_merchandise' ) ) {
+		return null;
+	}
+
+	$weight_g = papelito_packaging_kit_component_weight_g( papelito_kit_items( $kit_id ) );
+	if ( null === $weight_g ) {
+		return null;
+	}
+
+	$merchandise_weight_g = papelito_packaging_kit_merchandise_weight_g( papelito_kit_merchandise( $kit_id ) );
+	if ( null === $merchandise_weight_g ) {
+		return null;
+	}
+
+	$total = $weight_g + $merchandise_weight_g;
+
+	return $total > 0 ? $total : null;
+}
+
+/**
+ * Soma o peso dos produtos componentes de um Kit.
+ *
+ * @param array<int,array<string,mixed>> $items Componentes.
+ * @return int|null Peso em gramas ou nulo.
+ */
+function papelito_packaging_kit_component_weight_g( array $items ): ?int {
+	if ( empty( $items ) ) {
+		return null;
+	}
+
+	$total = 0;
+	foreach ( $items as $item ) {
+		$product_id = (int) ( $item['product_id'] ?? 0 );
+		$quantity   = (int) ( $item['quantity'] ?? 0 );
+		$product    = $product_id > 0 && function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null;
+		$weight_g   = is_object( $product ) && method_exists( $product, 'get_weight' ) ? papelito_packaging_weight_g( $product->get_weight() ) : null;
+		if ( null === $weight_g || $quantity <= 0 ) {
+			return null;
+		}
+		$total += $weight_g * $quantity;
+	}
+
+	return $total > 0 ? $total : null;
+}
+
+/**
+ * Soma o peso dos brindes físicos de um Kit.
+ *
+ * @param array<int,array<string,mixed>> $items Brindes.
+ * @return int|null Peso em gramas ou nulo.
+ */
+function papelito_packaging_kit_merchandise_weight_g( array $items ): ?int {
+	$total = 0;
+	foreach ( $items as $item ) {
+		$quantity = (int) ( $item['quantity'] ?? 0 );
+		$weight_g = papelito_packaging_weight_g( $item['weight'] ?? null );
+		if ( null === $weight_g || $quantity <= 0 ) {
+			return null;
+		}
+		$total += $weight_g * $quantity;
+	}
+
+	return $total;
+}
+
+/**
+ * Soma os valores declarados dos itens sem misturá-los ao peso físico.
+ *
+ * @param array<int,array<string,mixed>> $items Itens do carrinho.
+ * @return int Valor em centavos.
+ */
+function papelito_packaging_declared_value_cents( array $items ): int {
+	$total = 0;
+	foreach ( $items as $item ) {
+		$total += max( 0, (int) ( $item['declared_value_cents'] ?? 0 ) );
+	}
+
+	return $total;
+}
+
+/**
+ * Converte o perfil resolvido em um snapshot e contrato físico Braspress.
+ *
+ * O snapshot continua sendo a fonte do hash e dos totais; a saída somente
+ * traduz mm/g canônicos para metros/kg do provider.
+ *
+ * @param int                      $vendor_id ID do vendor.
+ * @param array<string,mixed>      $profile Perfil escolhido.
+ * @param array<int,array<string,mixed>> $lines Linhas físicas.
+ * @param array<int,array<string,mixed>> $items Itens originais.
+ * @return array<string,mixed>|null Pacote Braspress ou nulo.
+ */
+function papelito_packaging_braspress_package_from_profile( int $vendor_id, array $profile, array $lines, array $items ): ?array {
+	$version = (int) ( $profile['version'] ?? 0 );
+	$weight_g = papelito_packaging_items_weight_g( $lines ) + max( 0, (int) ( $profile['tare_weight_g'] ?? 0 ) );
+	$snapshot = papelito_packaging_build_snapshot(
+		array(
+			'vendor_id'               => $vendor_id,
+			'merchandise_value_cents' => papelito_packaging_declared_value_cents( $items ),
+			'measurement_source'      => PAPELITO_PACKAGING_MEASUREMENT_PROFILE,
+			'approval_version'        => $version,
+			'packages'                => array(
+				array(
+					'length_mm' => (int) ( $profile['length_mm'] ?? 0 ),
+					'width_mm'  => (int) ( $profile['width_mm'] ?? 0 ),
+					'height_mm' => (int) ( $profile['height_mm'] ?? 0 ),
+					'weight_g'  => $weight_g,
+					'count'     => 1,
+				),
+			),
+		)
+	);
+
+	return null === $snapshot || $version <= 0 ? null : papelito_packaging_braspress_package_from_snapshot( $snapshot );
+}
+
+/**
+ * Traduz o snapshot canônico para peso, volumes e cubagem Braspress.
+ *
+ * @param array<string,mixed> $snapshot Snapshot físico válido.
+ * @return array<string,mixed>|null Pacote Braspress ou nulo.
+ */
+function papelito_packaging_braspress_package_from_snapshot( array $snapshot ): ?array {
+	$total_weight_g = (int) ( $snapshot['total_weight_g'] ?? 0 );
+	$volumes        = (int) ( $snapshot['total_volumes'] ?? 0 );
+	$cubagem        = papelito_packaging_snapshot_cubagem( $snapshot['packages'] ?? array() );
+	if ( $total_weight_g <= 0 || $volumes <= 0 || empty( $cubagem ) ) {
+		return null;
+	}
+
+	return array(
+		'weight_kg'         => round( $total_weight_g / 1000, 2, PHP_ROUND_HALF_UP ),
+		'volumes'           => $volumes,
+		'cubagem'           => $cubagem,
+		'approval_version'  => (int) ( $snapshot['approval_version'] ?? 0 ),
+		'physical_hash'     => (string) ( $snapshot['physical_hash'] ?? '' ),
+		'measurement_source' => (string) ( $snapshot['measurement_source'] ?? '' ),
+	);
+}
+
+/**
+ * Agrupa pacotes canônicos iguais na cubagem em metros.
+ *
+ * @param mixed $packages Pacotes do snapshot.
+ * @return array<int,array{length_m:float,width_m:float,height_m:float,volumes:int}> Grupos.
+ */
+function papelito_packaging_snapshot_cubagem( mixed $packages ): array {
+	if ( ! is_array( $packages ) ) {
+		return array();
+	}
+
+	$groups = array();
+	foreach ( $packages as $package ) {
+		if ( ! is_array( $package ) ) {
+			return array();
+		}
+
+		$key = implode( ':', array( (int) ( $package['length_mm'] ?? 0 ), (int) ( $package['width_mm'] ?? 0 ), (int) ( $package['height_mm'] ?? 0 ) ) );
+		if ( ! isset( $groups[ $key ] ) ) {
+			$groups[ $key ] = array(
+				'length_m' => round( (int) ( $package['length_mm'] ?? 0 ) / 1000, 3, PHP_ROUND_HALF_UP ),
+				'width_m'  => round( (int) ( $package['width_mm'] ?? 0 ) / 1000, 3, PHP_ROUND_HALF_UP ),
+				'height_m' => round( (int) ( $package['height_mm'] ?? 0 ) / 1000, 3, PHP_ROUND_HALF_UP ),
+				'volumes'  => 0,
+			);
+		}
+		$groups[ $key ]['volumes'] += (int) ( $package['count'] ?? 0 );
+	}
+
+	return array_values( $groups );
+}
+
+/**
+ * Monta o pacote físico Braspress para o filtro de cotação.
+ *
+ * Qualquer ausência de perfil, regra resolvida, medida ou capacidade deixa o
+ * provider inelegível e nunca produz um WP_Error ou medida de fallback.
+ *
+ * @param int                      $vendor_id ID do vendor.
+ * @param array<int,array<string,mixed>> $items Itens do carrinho.
+ * @return array<string,mixed>|null Pacote físico ou nulo.
+ */
+function papelito_packaging_braspress_package( int $vendor_id, array $items ): ?array {
+	$profiles = papelito_packaging_profiles_for_vendor( $vendor_id );
+	if ( empty( $profiles ) ) {
+		return null;
+	}
+
+	$lines = papelito_packaging_items_to_lines( $items );
+	if ( null === $lines ) {
+		return null;
+	}
+
+	$profile = papelito_packaging_resolve_profile( $profiles, papelito_packaging_rules_for_vendor( $vendor_id ), $lines, PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR );
+	if ( null === $profile ) {
+		return null;
+	}
+
+	return papelito_packaging_braspress_package_from_profile( $vendor_id, $profile, $lines, $items );
+}
+
+/**
+ * Callback do filtro de pacote físico da Braspress.
+ *
+ * O primeiro argumento é o valor inicial do filtro; a decisão usa somente o
+ * vendor e os itens e retorna nulo em toda falha de elegibilidade.
+ *
+ * @param mixed                    $ignored Valor inicial do filtro.
+ * @param int                      $vendor_id ID do vendor.
+ * @param array<int,array<string,mixed>> $items Itens do carrinho.
+ * @return array<string,mixed>|null Pacote aprovado ou nulo.
+ */
+function papelito_packaging_braspress_package_filter( mixed $ignored, int $vendor_id, array $items ): ?array {
+	return papelito_packaging_braspress_package( $vendor_id, $items );
+}
+
+if ( function_exists( 'add_filter' ) ) {
+	add_filter( 'papelito_braspress_physical_package', 'papelito_packaging_braspress_package_filter', 10, 3 );
+}

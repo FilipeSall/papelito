@@ -12,7 +12,9 @@
 
 defined( 'ABSPATH' ) || exit;
 
-const PAPELITO_BRASPRESS_TRACKING_URL    = 'https://api.braspress.com/v3/tracking/byNumPedido';
+require_once __DIR__ . '/braspress.php';
+
+const PAPELITO_BRASPRESS_TRACKING_PATH   = 'v3/tracking/byNumPedido';
 const PAPELITO_BRASPRESS_TRACKING_SOURCE = 'braspress_poll';
 
 /**
@@ -146,38 +148,19 @@ function papelito_braspress_tracking_by_order( array $integration, string $exter
 	$reference = papelito_braspress_tracking_normalize_reference( $external_reference );
 	$config    = is_array( $integration['config'] ?? null ) ? $integration['config'] : array();
 	$tomador   = papelito_vendor_integration_normalize_document( $config['tracking_tomador_cnpj'] ?? '' );
-	$auth      = is_array( $integration['credentials'] ?? null ) ? $integration['credentials'] : array();
-	$username  = (string) ( $auth['username'] ?? '' );
-	$password  = (string) ( $auth['password'] ?? '' );
-	if ( '' === $reference || 14 !== strlen( $tomador ) || '' === $username || '' === $password ) {
+	if ( '' === $reference || 14 !== strlen( $tomador ) ) {
 		return new WP_Error( 'papelito_braspress_tracking_invalid_context', 'A consulta de tracking Braspress não está disponível.', array( 'status' => 503 ) );
 	}
 
-	$response = wp_remote_get(
-		PAPELITO_BRASPRESS_TRACKING_URL . '/' . rawurlencode( $tomador ) . '/' . rawurlencode( $reference ) . '/json',
-		array(
-			'timeout' => 15,
-			'headers' => array(
-				'Accept'        => 'application/json',
-				'Authorization' => 'Basic ' . base64_encode( $username . ':' . $password ), // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode
-			),
-		)
-	);
+	$path    = PAPELITO_BRASPRESS_TRACKING_PATH . '/' . rawurlencode( $tomador ) . '/' . rawurlencode( $reference ) . '/json';
+	$started = microtime( true );
+	$response = papelito_braspress_http_request( $integration, 'GET', $path );
+	$duration = (int) round( ( microtime( true ) - $started ) * 1000 );
 	if ( is_wp_error( $response ) ) {
-		return new WP_Error( 'papelito_braspress_tracking_unavailable', 'A Braspress está temporariamente indisponível.', array( 'status' => 502 ) );
+		return papelito_braspress_handle_transport_error( $integration, $response, 'tracking', $duration );
 	}
 
-	$status = (int) wp_remote_retrieve_response_code( $response );
-	$body   = json_decode( (string) wp_remote_retrieve_body( $response ), true );
-	if ( 401 === $status || 403 === $status ) {
-		papelito_vendor_integration_set_braspress_operational_state( (int) ( $integration['vendor_id'] ?? 0 ), PAPELITO_VENDOR_INTEGRATION_INVALID, 'credentials_invalid' );
-		return new WP_Error( 'papelito_braspress_credentials_invalid', 'As credenciais Braspress precisam ser atualizadas.', array( 'status' => 502 ) );
-	}
-	if ( $status < 200 || $status >= 300 || ! is_array( $body ) ) {
-		return new WP_Error( 'papelito_braspress_tracking_failed', 'Não foi possível consultar o tracking Braspress.', array( 'status' => 502 ) );
-	}
-
-	return $body;
+	return $response['body'];
 }
 
 /**
