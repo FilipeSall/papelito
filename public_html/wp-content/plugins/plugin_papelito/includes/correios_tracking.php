@@ -450,6 +450,38 @@ function papelito_tracking_public_shipment( array $shipment ): array {
 	);
 }
 
+/**
+ * Recorte da remessa que o comprador pode ver.
+ *
+ * A allowlist é explícita porque a remessa carrega chave idempotente, caminho da
+ * etiqueta privada, id de pré-postagem e código de erro interno — nada disso é
+ * assunto de quem comprou. `provider` e `external_reference` entram: sem eles a
+ * conta do comprador não sabe qual transportadora leva o pedido, e uma remessa
+ * Braspress, que não tem S10, ficaria sem nenhuma referência de acompanhamento.
+ *
+ * @param array<string,mixed> $shipment Remessa persistida ou já serializada.
+ * @return array<string,mixed> Campos liberados para o comprador.
+ */
+function papelito_tracking_customer_shipment( array $shipment ): array {
+	$allowed = array(
+		'id',
+		'provider',
+		'tracking_code',
+		'external_reference',
+		'posted_at',
+		'status',
+		'last_event_at',
+		'last_event_description',
+		'last_event_location',
+		'delivered_at',
+	);
+
+	$customer             = array_intersect_key( $shipment, array_flip( $allowed ) );
+	$customer['provider'] = sanitize_key( (string) ( $shipment['provider'] ?? 'correios' ) );
+
+	return $customer;
+}
+
 /** Ordem logistica usada para escolher o estado mais avancado ainda nao entregue. */
 function papelito_tracking_status_ranks(): array {
 	return array(

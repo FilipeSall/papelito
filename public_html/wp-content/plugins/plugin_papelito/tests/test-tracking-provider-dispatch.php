@@ -163,6 +163,43 @@ $legacy = papelito_tracking_event_fields(
 );
 papelito_assert( 'Correios keeps parsing its own ISO date', true, is_string( $legacy['event_at'] ) );
 
+echo "Scenario 7: the customer view names the carrier without leaking the rest\n";
+$customer = papelito_tracking_customer_shipment(
+	array(
+		'id'                  => 7,
+		'provider'            => 'braspress',
+		'external_reference'  => 'PED-2026-0001',
+		'tracking_code'       => null,
+		'status'              => 'in_transit',
+		'posted_at'           => '2026-09-20',
+		'last_event_at'       => '2026-09-20 11:15:00',
+		'last_event_description' => 'Mercadoria coletada',
+		'last_event_location' => 'SAO PAULO - SP',
+		'delivered_at'        => '',
+		'idempotency_key'     => 'nao-pode-vazar',
+		'label_storage_key'   => 'privado/etiqueta.pdf',
+		'last_error_code'     => 'braspress_tracking_not_found',
+		'prepost_id'          => '99',
+	)
+);
+papelito_assert( 'the customer learns which carrier is moving the order', 'braspress', $customer['provider'] ?? null );
+papelito_assert( 'the Braspress reference reaches the customer', 'PED-2026-0001', $customer['external_reference'] ?? null );
+papelito_assert( 'the internal idempotency key stays internal', false, array_key_exists( 'idempotency_key', $customer ) );
+papelito_assert( 'the private label key stays internal', false, array_key_exists( 'label_storage_key', $customer ) );
+papelito_assert( 'the internal error code stays internal', false, array_key_exists( 'last_error_code', $customer ) );
+papelito_assert( 'the prepostage id stays internal', false, array_key_exists( 'prepost_id', $customer ) );
+papelito_assert( 'the last occurrence still reaches the customer', 'Mercadoria coletada', $customer['last_event_description'] ?? null );
+
+$legacy_customer = papelito_tracking_customer_shipment(
+	array(
+		'id'            => 9,
+		'tracking_code' => 'AA123456789BR',
+		'status'        => 'posted',
+	)
+);
+papelito_assert( 'a shipment without provider is read as Correios', 'correios', $legacy_customer['provider'] ?? null );
+papelito_assert( 'the S10 code still reaches the customer', 'AA123456789BR', $legacy_customer['tracking_code'] ?? null );
+
 echo "\n";
 if ( $failures > 0 ) {
 	echo "RESULT: {$failures} assertion(s) FAILED\n";
