@@ -114,10 +114,18 @@ Onde o pedido de fato vive. Todas as chaves `_papelito_*` presentes em `shop_ord
 | **Valor** | `_papelito_authoritative_total_cents` |
 | **Frete** | `_papelito_shipping_provider`, `_shipping_option_key`, `_shipping_external_quote_id`, `_shipping_fingerprint`, `_shipping_quoted_at`, `_shipping_expires_at`, `_shipping_service_code`, `_service_name`, `_delivery_time`, `_price_cents`, `_discount_cents`, `_shipping_neighborhood` |
 | **Estoque** | `_papelito_stock_reserved`, `_papelito_stock_decremented` |
-| **Logística** | `_papelito_logistics_status`, `_logistics_updated_at`, `_papelito_tracking_notification_<vendor>_<evento>` |
+| **Logística** | `_papelito_logistics_status`, `_logistics_updated_at`, `_papelito_tracking_notification_<vendor>_<evento>`, `_papelito_logistics_snapshot`, `_papelito_logistics_physical_hash` |
 | **Atribuição** | `_papelito_ga_client_id`, `_papelito_ga_session_id` |
 | **Checkout** | `_papelito_checkout_attempt_id`, `_attempt_company_id`, `_attempt_request_hash`, `_papelito_b2b_snapshot_version` |
 | **Fiscal do comprador** | `_papelito_fiscal_{cep,state,city,neighborhood,street,number,complement}`, `_billing_cnpj` |
+
+**`_papelito_logistics_snapshot` é a embalagem que foi cotada, em JSON.** É o `LogisticsSnapshot v1` (`schema_version`, `vendor_id`, `origin_cep`, `destination_cep`, `merchandise_value_cents`, `measurement_source`, `approval_version`, `packages[]` em milímetro e grama inteiros, `total_volumes`, `total_weight_g`, `physical_hash`), mais `verification`. Antes dele o pedido guardava provider, chave, fingerprint, preço e prazo e **zero dado físico**, então a pré-postagem re-derivaria a caixa de dado mutável. `_papelito_logistics_physical_hash` repete o hash como escalar, só para consulta barata.
+
+Três armadilhas de quem for ler ou escrever essa meta:
+
+- **Grave com `wp_slash( wp_json_encode( … ) )`.** A API de meta aplica `wp_unslash()` no valor recebido; sem o slash prévio, toda barra do JSON — inclusive o `\uXXXX` de qualquer acento — é comida na gravação e o `json_decode` devolve `null`.
+- **`measurement_source` tem três valores, não dois.** `profile` é a caixa cadastrada do vendor e traz `approval_version`; `legacy_synthetic` é o pacote sintético de volume único e `kit_declared` é a embalagem que o Kit já declara, ambos com `approval_version` nulo. O Kit preserva o próprio valor porque regravá-lo como `legacy_synthetic` registraria uma medida que não foi a usada.
+- **`verification` tem três estados porque dois mentem.** `verified` é a Braspress com o `physical_hash` reconstruído reproduzindo o `fingerprint` da opção aceita; `mismatch` é a Braspress em que não reproduz, que dispara `papelito_logistics_snapshot_mismatch`; `not_applicable` é o Correios, onde o físico não entra na assinatura e não havia o que comparar. Um booleano faria o pedido Correios normal parecer idêntico ao Braspress cuja caixa mudou, e quem monta a pré-postagem trataria todo Correios como suspeito. Nenhum dos três derruba o pedido.
 
 Em outros `post_type`: `_papelito_kit_id` e `_papelito_peso_bruto_kg` (product), `_papelito_coupon_role` / `_coupon_vendor_ids` / `_coupon_product_ids` (shop_coupon), `_papelito_source` e `_papelito_temporary_admin_media` (attachment).
 

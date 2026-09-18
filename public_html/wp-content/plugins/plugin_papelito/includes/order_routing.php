@@ -16,6 +16,12 @@ if ( ! defined( 'PAPELITO_ORDER_VENDOR_STATUS_AWAITING_SHIPMENT' ) ) {
 	define( 'PAPELITO_ORDER_VENDOR_STATUS_AWAITING_SHIPMENT', 'aguardando_envio' );
 }
 
+if ( ! defined( 'PAPELITO_LOGISTICS_VERIFICATION_VERIFIED' ) ) {
+	define( 'PAPELITO_LOGISTICS_VERIFICATION_VERIFIED', 'verified' );
+	define( 'PAPELITO_LOGISTICS_VERIFICATION_MISMATCH', 'mismatch' );
+	define( 'PAPELITO_LOGISTICS_VERIFICATION_NOT_APPLICABLE', 'not_applicable' );
+}
+
 if ( ! defined( 'PAPELITO_CHECKOUT_ATTEMPT_ID_META' ) ) {
 	define( 'PAPELITO_CHECKOUT_ATTEMPT_ID_META', '_papelito_checkout_attempt_id' );
 }
@@ -564,6 +570,107 @@ function papelito_order_routing_resolve_shipping( int $vendor_id, string $destin
 }
 
 /**
+ * Resolve a embalagem que o pedido deve registrar, pelo provider escolhido.
+ *
+ * O snapshot descreve o que foi cotado e cobrado, então a fonte é o provider da
+ * opção aceita, não a embalagem que por acaso estiver disponível: dar snapshot
+ * de perfil a um pedido Correios registraria uma caixa que ninguém cotou.
+ *
+ * @param int                            $vendor_id Vendor do pedido.
+ * @param array<int,array<string,mixed>> $items Itens já resolvidos no backend.
+ * @param array<string,mixed>            $shipping Opção de frete aceita no checkout.
+ * @param array<string,mixed>            $context Contexto autoritativo da cotação.
+ * @return array<string,mixed>|null Snapshot marcado com a verificação, ou nulo quando não há embalagem resolvível.
+ */
+function papelito_order_routing_logistics_snapshot( int $vendor_id, array $items, array $shipping, array $context = array() ): ?array {
+	$provider = sanitize_key( (string) ( $shipping['provider'] ?? '' ) );
+	$snapshot = papelito_order_routing_provider_snapshot( $provider, $vendor_id, $items, $context );
+
+	if ( null === $snapshot ) {
+		return null;
+	}
+
+	$verification = papelito_order_routing_snapshot_verification( $shipping, $snapshot );
+
+	if ( PAPELITO_LOGISTICS_VERIFICATION_MISMATCH === $verification ) {
+		do_action( 'papelito_logistics_snapshot_mismatch', $vendor_id, sanitize_text_field( (string) ( $shipping['option_key'] ?? '' ) ) );
+	}
+
+	$snapshot['verification'] = $verification;
+
+	return $snapshot;
+}
+
+/**
+ * Diz o quanto se pode confiar que o snapshot é a embalagem que precificou.
+ *
+ * São três estados porque dois não bastam: um booleano falso não separa "a
+ * embalagem mudou entre cotar e fechar" de "não havia o que comparar", e quem
+ * monta a pré-postagem trataria todo pedido Correios como suspeito. Só a
+ * Braspress leva o físico no fingerprint, então só nela existe prova.
+ *
+ * @param array<string,mixed> $shipping Opção de frete aceita no checkout.
+ * @param array<string,mixed> $snapshot Snapshot reconstruído para o pedido.
+ * @return string `verified`, `mismatch` ou `not_applicable`.
+ */
+function papelito_order_routing_snapshot_verification( array $shipping, array $snapshot ): string {
+	$provider = sanitize_key( (string) ( $shipping['provider'] ?? '' ) );
+
+	if ( PAPELITO_SHIPPING_PROVIDER_BRASPRESS !== $provider || ! function_exists( 'papelito_shipping_option_physical_hash_matches' ) ) {
+		return PAPELITO_LOGISTICS_VERIFICATION_NOT_APPLICABLE;
+	}
+
+	return papelito_shipping_option_physical_hash_matches( $shipping, (string) ( $snapshot['physical_hash'] ?? '' ) )
+		? PAPELITO_LOGISTICS_VERIFICATION_VERIFIED
+		: PAPELITO_LOGISTICS_VERIFICATION_MISMATCH;
+}
+
+/**
+ * Monta o snapshot bruto da embalagem correspondente ao provider.
+ *
+ * @param string                         $provider Provider já saneado da opção aceita.
+ * @param int                            $vendor_id Vendor do pedido.
+ * @param array<int,array<string,mixed>> $items Itens já resolvidos no backend.
+ * @param array<string,mixed>            $context Contexto autoritativo da cotação.
+ * @return array<string,mixed>|null Snapshot canônico ou nulo.
+ */
+function papelito_order_routing_provider_snapshot( string $provider, int $vendor_id, array $items, array $context ): ?array {
+	if ( PAPELITO_SHIPPING_PROVIDER_BRASPRESS === $provider ) {
+		return function_exists( 'papelito_packaging_profile_snapshot' )
+			? papelito_packaging_profile_snapshot( $vendor_id, $items, $context )
+			: null;
+	}
+
+	if ( ! function_exists( 'papelito_shipping_build_package' ) || ! function_exists( 'papelito_packaging_legacy_snapshot' ) ) {
+		return null;
+	}
+
+	$package = papelito_shipping_build_package( $items );
+
+	return is_array( $package ) ? papelito_packaging_legacy_snapshot( $vendor_id, $package, $context ) : null;
+}
+
+/**
+ * Grava no pedido a embalagem cotada e o hash físico para consulta barata.
+ *
+ * O snapshot vai como JSON com `wp_slash()` porque a API de meta aplica
+ * `wp_unslash()` no valor recebido: sem isso toda barra do JSON — inclusive o
+ * `\uXXXX` de qualquer acento — é comida na gravação e o `json_decode` volta nulo.
+ *
+ * @param object                   $order Pedido recém-criado.
+ * @param array<string,mixed>|null $snapshot Snapshot resolvido, ou nulo quando não há embalagem.
+ * @return void
+ */
+function papelito_order_routing_store_logistics_snapshot( object $order, ?array $snapshot ): void {
+	if ( null === $snapshot || empty( $snapshot['physical_hash'] ) ) {
+		return;
+	}
+
+	$order->update_meta_data( '_papelito_logistics_snapshot', wp_slash( (string) wp_json_encode( $snapshot ) ) );
+	$order->update_meta_data( '_papelito_logistics_physical_hash', sanitize_text_field( (string) $snapshot['physical_hash'] ) );
+}
+
+/**
  * Decide se a opção recotada atende à escolha do cliente.
  *
  * O checkout exige o snapshot inteiro — fingerprint, preço, prazo e validade —
@@ -765,6 +872,7 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 	$checkout_attempt_id = (string) ( $context['checkout_attempt_id'] ?? '' );
 	$b2b_snapshot        = is_array( $context['b2b_snapshot'] ?? null ) ? $context['b2b_snapshot'] : array();
 	$request_hash        = (string) ( $context['request_hash'] ?? '' );
+	$logistics_snapshot  = is_array( $context['logistics_snapshot'] ?? null ) ? $context['logistics_snapshot'] : null;
 
 	if ( ! function_exists( 'wc_create_order' ) || ! class_exists( 'WC_Order' ) || ! class_exists( 'WC_Order_Item_Shipping' ) || ! class_exists( 'WC_Order_Item_Product' ) ) {
 		return new WP_Error(
@@ -842,6 +950,7 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 		$order->update_meta_data( '_papelito_stock_decremented', '0' );
 		$order->update_meta_data( '_papelito_vendor_status', PAPELITO_ORDER_VENDOR_STATUS_AWAITING_PAYMENT );
 		papelito_order_routing_store_b2b_snapshot( $order, $b2b_snapshot );
+		papelito_order_routing_store_logistics_snapshot( $order, $logistics_snapshot );
 
 		if ( '' !== $checkout_attempt_id ) {
 			$order->update_meta_data( PAPELITO_CHECKOUT_ATTEMPT_ID_META, $checkout_attempt_id );
@@ -1248,7 +1357,16 @@ function papelito_order_routing_resolve_checkout_shipping( array $payload, array
 		return $shipping;
 	}
 
-	return array( 'shipping' => $shipping, 'destination_cep' => $destination_cep );
+	return array(
+		'shipping'           => $shipping,
+		'destination_cep'    => $destination_cep,
+		'logistics_snapshot' => papelito_order_routing_logistics_snapshot(
+			$vendor_id,
+			$lines,
+			$shipping,
+			array_merge( $quote_context, array( 'destination_cep' => $destination_cep ) )
+		),
+	);
 }
 
 /**
@@ -1432,8 +1550,9 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		return $resolved_shipping;
 	}
 
-	$shipping        = $resolved_shipping['shipping'];
-	$destination_cep = $resolved_shipping['destination_cep'];
+	$shipping           = $resolved_shipping['shipping'];
+	$destination_cep    = $resolved_shipping['destination_cep'];
+	$logistics_snapshot = is_array( $resolved_shipping['logistics_snapshot'] ?? null ) ? $resolved_shipping['logistics_snapshot'] : null;
 
 	$pricing = papelito_pricing_apply_discounts(
 		$resolved_items,
@@ -1474,6 +1593,7 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 			'checkout_attempt_id' => $checkout_attempt_id,
 			'b2b_snapshot'        => $b2b_snapshot,
 			'request_hash'        => $request_hash,
+			'logistics_snapshot'  => $logistics_snapshot,
 		)
 	);
 	if ( is_wp_error( $created ) ) {

@@ -38,10 +38,38 @@ ou divisão em várias caixas.
 `papelito_braspress_quote()` copia esse `physical_hash` para a opção bruta, permitindo que a
 normalização altere o `fingerprint` quando a caixa mudar, sem expor o hash no envelope público.
 
+## Snapshot da embalagem no pedido
+
+`papelito_packaging_profile_snapshot()` expõe o `LogisticsSnapshot` da caixa cadastrada — a mesma
+escolha que alimenta a cotação Braspress, agora com uma fonte só. `papelito_packaging_legacy_snapshot()`
+faz o equivalente para o pacote sintético de volume único dos Correios.
+
+**O pacote sintético mede dimensão em centímetro e peso em GRAMA.**
+`papelito_shipping_add_product_to_package()` acumula com `wc_get_weight( …, 'g' )` e
+`PAPELITO_SHIPPING_MAX_WEIGHT_G = 30000` confirma a unidade. Na conversão para o v1 só a dimensão
+muda (`× 10`); tratar o peso como quilo gravaria um snapshot mil vezes mais pesado.
+
+`papelito_order_routing_logistics_snapshot()` escolhe a fonte **pelo provider da opção aceita**, não
+pela embalagem que estiver disponível: o snapshot descreve o que foi cotado e cobrado, e dar snapshot
+de perfil a um pedido Correios registraria uma caixa que ninguém cotou. Na Braspress o
+`physical_hash` reconstruído é conferido contra o `fingerprint` da opção por
+`papelito_shipping_option_physical_hash_matches()`, que recalcula a assinatura pela mesma
+`papelito_shipping_option_fingerprint()` que a emitiu — a fórmula não é repetida em dois lugares.
+
+Divergência **grava assim mesmo**, com `verification: "mismatch"`, e dispara
+`papelito_logistics_snapshot_mismatch`. Não gravar perderia a evidência exatamente no caso em que
+algo estranho aconteceu, e deixaria a pré-postagem sem caixa nenhuma. O pedido nunca falha por isso:
+o `409` continua sendo só de preço, prazo e fingerprint, que já roda antes.
+
+`papelito_order_routing_store_logistics_snapshot()` grava `_papelito_logistics_snapshot` com
+`wp_slash( wp_json_encode( … ) )` e `_papelito_logistics_physical_hash` como escalar. O `wp_slash` é
+obrigatório: a API de meta aplica `wp_unslash()` no valor recebido, e sem ele toda barra do JSON some
+e o `json_decode` volta `null`.
+
 ## Código estável da opção
 
 `papelito_braspress_service_code()` traduz o modal contratado no `code` da opção bruta pelo mapa
-`PAPELITO_BRASPRESS_SERVICE_CODE_BY_MODAL` (`R` → `rodoviario`, `A` → `aereo`), e a `option_key`
+`PAPELITO_BRASPRESS_SERVICE_CODE_BY_MODAL`, que hoje só mapeia `R` → `rodoviario`, e a `option_key`
 resultante é `braspress:rodoviario`. **O código nomeia a modalidade, nunca a cotação.** Até
 17/09/2026 ele era o `id` que a Braspress devolve em cada POST: a chave mudava a cada cotação e o
 `place-order` só fechava enquanto o transient da cotação sobrevivesse — expirado o cache, a

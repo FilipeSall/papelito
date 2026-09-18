@@ -1943,27 +1943,66 @@ function papelito_packaging_declared_value_cents(array $items): int
  */
 function papelito_packaging_braspress_package_from_profile(int $vendor_id, array $profile, array $lines, array $items): ?array
 {
+	$snapshot = papelito_packaging_snapshot_from_profile($vendor_id, $profile, $lines, papelito_packaging_declared_value_cents($items));
+
+	return null === $snapshot ? null : papelito_packaging_braspress_package_from_snapshot($snapshot);
+}
+
+/**
+ * Copia para o snapshot o contexto de cotação que não entra no hash físico.
+ *
+ * Origem e destino descrevem a rota, não o objeto; ficam fora de
+ * `papelito_packaging_physical_hash()` de propósito e por isso podem ser
+ * preenchidos no pedido sem mudar o hash que a cotação produziu.
+ *
+ * @param array<string,mixed> $context Contexto autoritativo da cotação.
+ * @return array<string,string> Campos de rota do snapshot.
+ */
+function papelito_packaging_snapshot_context(array $context): array
+{
+	return array(
+		'origin_cep'      => (string) ($context['origin_cep'] ?? ''),
+		'destination_cep' => (string) ($context['destination_cep'] ?? ''),
+	);
+}
+
+/**
+ * Monta o `LogisticsSnapshot` de um perfil de caixa já resolvido.
+ *
+ * @param int                            $vendor_id Vendor dono da embalagem.
+ * @param array<string,mixed>            $profile Perfil de caixa escolhido.
+ * @param array<int,array<string,mixed>> $lines Linhas físicas do carrinho.
+ * @param int                            $merchandise_value_cents Valor mercantil declarado.
+ * @param array<string,mixed>            $context Contexto de cotação opcional.
+ * @return array<string,mixed>|null Snapshot canônico ou nulo quando o perfil não é versionado.
+ */
+function papelito_packaging_snapshot_from_profile(int $vendor_id, array $profile, array $lines, int $merchandise_value_cents, array $context = array()): ?array
+{
 	$version = (int) ($profile['version'] ?? 0);
-	$weight_g = papelito_packaging_items_weight_g($lines) + max(0, (int) ($profile['tare_weight_g'] ?? 0));
-	$snapshot = papelito_packaging_build_snapshot(
-		array(
-			'vendor_id'               => $vendor_id,
-			'merchandise_value_cents' => papelito_packaging_declared_value_cents($items),
-			'measurement_source'      => PAPELITO_PACKAGING_MEASUREMENT_PROFILE,
-			'approval_version'        => $version,
-			'packages'                => array(
-				array(
-					'length_mm' => (int) ($profile['length_mm'] ?? 0),
-					'width_mm'  => (int) ($profile['width_mm'] ?? 0),
-					'height_mm' => (int) ($profile['height_mm'] ?? 0),
-					'weight_g'  => $weight_g,
-					'count'     => 1,
+	if ($version <= 0) {
+		return null;
+	}
+
+	return papelito_packaging_build_snapshot(
+		array_merge(
+			papelito_packaging_snapshot_context($context),
+			array(
+				'vendor_id'               => $vendor_id,
+				'merchandise_value_cents' => $merchandise_value_cents,
+				'measurement_source'      => PAPELITO_PACKAGING_MEASUREMENT_PROFILE,
+				'approval_version'        => $version,
+				'packages'                => array(
+					array(
+						'length_mm' => (int) ($profile['length_mm'] ?? 0),
+						'width_mm'  => (int) ($profile['width_mm'] ?? 0),
+						'height_mm' => (int) ($profile['height_mm'] ?? 0),
+						'weight_g'  => papelito_packaging_items_weight_g($lines) + max(0, (int) ($profile['tare_weight_g'] ?? 0)),
+						'count'     => 1,
+					),
 				),
-			),
+			)
 		)
 	);
-
-	return null === $snapshot || $version <= 0 ? null : papelito_packaging_braspress_package_from_snapshot($snapshot);
 }
 
 /**
@@ -2036,6 +2075,25 @@ function papelito_packaging_snapshot_cubagem(mixed $packages): array
  */
 function papelito_packaging_braspress_package(int $vendor_id, array $items): ?array
 {
+	$snapshot = papelito_packaging_profile_snapshot($vendor_id, $items);
+
+	return null === $snapshot ? null : papelito_packaging_braspress_package_from_snapshot($snapshot);
+}
+
+/**
+ * Resolve o `LogisticsSnapshot` da embalagem cadastrada do vendor.
+ *
+ * É a mesma escolha de caixa que alimenta a cotação Braspress, exposta para que
+ * o pedido registre a embalagem que foi de fato cotada em vez de re-derivar o
+ * pacote de dado mutável na hora da pré-postagem.
+ *
+ * @param int                            $vendor_id Vendor dono da embalagem.
+ * @param array<int,array<string,mixed>> $items Itens do carrinho.
+ * @param array<string,mixed>            $context Contexto de cotação opcional.
+ * @return array<string,mixed>|null Snapshot canônico ou nulo quando o vendor não tem embalagem aplicável.
+ */
+function papelito_packaging_profile_snapshot(int $vendor_id, array $items, array $context = array()): ?array
+{
 	$profiles = papelito_packaging_profiles_for_vendor($vendor_id);
 	if (empty($profiles)) {
 		return null;
@@ -2051,7 +2109,71 @@ function papelito_packaging_braspress_package(int $vendor_id, array $items): ?ar
 		return null;
 	}
 
-	return papelito_packaging_braspress_package_from_profile($vendor_id, $profile, $lines, $items);
+	return papelito_packaging_snapshot_from_profile($vendor_id, $profile, $lines, papelito_packaging_merchandise_value_cents($context, $items), $context);
+}
+
+/**
+ * Escolhe o valor mercantil autoritativo entre o contexto e as linhas.
+ *
+ * @param array<string,mixed>            $context Contexto autoritativo da cotação.
+ * @param array<int,array<string,mixed>> $items Itens do carrinho.
+ * @return int Valor mercantil em centavos.
+ */
+function papelito_packaging_merchandise_value_cents(array $context, array $items): int
+{
+	if (isset($context['merchandise_value_cents'])) {
+		return max(0, (int) $context['merchandise_value_cents']);
+	}
+
+	return papelito_packaging_declared_value_cents($items);
+}
+
+/**
+ * Converte uma medida em centímetros para o milímetro inteiro canônico.
+ *
+ * @param mixed $value Medida em centímetros.
+ * @return int Medida em milímetros.
+ */
+function papelito_packaging_cm_to_mm(mixed $value): int
+{
+	return (int) round((float) $value * 10);
+}
+
+/**
+ * Converte o pacote sintético de volume único no `LogisticsSnapshot` canônico.
+ *
+ * O pacote sintético mede dimensão em centímetro e **peso em grama** — é o que
+ * `papelito_shipping_add_product_to_package()` acumula com `wc_get_weight(…, 'g')`.
+ * Só a dimensão é convertida; tratar o peso como quilo gravaria mil vezes mais.
+ *
+ * @param int                 $vendor_id Vendor dono da remessa.
+ * @param array<string,mixed> $package Pacote sintético já validado pelos limites físicos.
+ * @param array<string,mixed> $context Contexto de cotação opcional.
+ * @return array<string,mixed>|null Snapshot canônico ou nulo quando o pacote não é convertível.
+ */
+function papelito_packaging_legacy_snapshot(int $vendor_id, array $package, array $context = array()): ?array
+{
+	$source = (string) ($package['measurement_source'] ?? PAPELITO_PACKAGING_MEASUREMENT_LEGACY);
+
+	return papelito_packaging_build_snapshot(
+		array_merge(
+			papelito_packaging_snapshot_context($context),
+			array(
+				'vendor_id'               => $vendor_id,
+				'merchandise_value_cents' => papelito_packaging_merchandise_value_cents($context, array()),
+				'measurement_source'      => '' === $source ? PAPELITO_PACKAGING_MEASUREMENT_LEGACY : $source,
+				'packages'                => array(
+					array(
+						'length_mm' => papelito_packaging_cm_to_mm($package['length'] ?? 0),
+						'width_mm'  => papelito_packaging_cm_to_mm($package['width'] ?? 0),
+						'height_mm' => papelito_packaging_cm_to_mm($package['height'] ?? 0),
+						'weight_g'  => (int) round((float) ($package['weight'] ?? 0)),
+						'count'     => 1,
+					),
+				),
+			)
+		)
+	);
 }
 
 /**

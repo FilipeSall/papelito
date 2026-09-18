@@ -78,7 +78,8 @@ function papelito_shipping_normalize_provider_option( string $provider, array $r
 		return null;
 	}
 
-	$option_key = papelito_shipping_provider_option_key( $provider, $code );
+	$option_key        = papelito_shipping_provider_option_key( $provider, $code );
+	$normalized_expiry = papelito_shipping_nullable_date( $expires_at );
 	return array(
 		'provider'              => $provider,
 		'option_key'            => $option_key,
@@ -91,10 +92,58 @@ function papelito_shipping_normalize_provider_option( string $provider, array $r
 		'price'                 => $price_cents / 100,
 		'delivery_time'         => $delivery_time,
 		'quoted_at'             => $quoted_at,
-		'expires_at'            => papelito_shipping_nullable_date( $expires_at ),
+		'expires_at'            => $normalized_expiry,
 		'external_quote_id'     => $external_id,
-		'fingerprint'           => hash_hmac( 'sha256', wp_json_encode( array( $provider, $option_key, $price_cents, $delivery_time, papelito_shipping_nullable_date( $expires_at ), $physical_hash ) ), wp_salt( 'auth' ) ),
+		'fingerprint'           => papelito_shipping_option_fingerprint( $provider, $option_key, $price_cents, $delivery_time, $normalized_expiry, $physical_hash ),
 	);
+}
+
+/**
+ * Assina preço, prazo, validade e embalagem de uma opção cotada.
+ *
+ * É a única definição do fingerprint. Quem precisar conferir uma assinatura já
+ * emitida recalcula por aqui em vez de repetir a fórmula, senão a verificação
+ * passa a poder divergir da emissão sem ninguém perceber.
+ *
+ * @param string      $provider Provider já saneado.
+ * @param string      $option_key Chave canônica da opção.
+ * @param int         $price_cents Preço ao customer em centavos.
+ * @param mixed       $delivery_time Prazo em dias inteiros ou nulo.
+ * @param string|null $expires_at Validade já normalizada.
+ * @param string      $physical_hash Impressão física da embalagem cotada.
+ * @return string Assinatura opaca da opção.
+ */
+function papelito_shipping_option_fingerprint( string $provider, string $option_key, int $price_cents, mixed $delivery_time, ?string $expires_at, string $physical_hash ): string {
+	return hash_hmac( 'sha256', (string) wp_json_encode( array( $provider, $option_key, $price_cents, $delivery_time, $expires_at, $physical_hash ) ), wp_salt( 'auth' ) );
+}
+
+/**
+ * Confere se uma embalagem reproduz o fingerprint de uma opção já aceita.
+ *
+ * O `physical_hash` não viaja no envelope público, então é o fingerprint que
+ * prova qual caixa gerou aquele preço. Serve para o pedido dizer se a embalagem
+ * que ele vai registrar é mesmo a que foi cotada.
+ *
+ * @param array<string,mixed> $option Opção normalizada aceita no checkout.
+ * @param string              $physical_hash Impressão física candidata.
+ * @return bool Se a embalagem reproduz a assinatura da opção.
+ */
+function papelito_shipping_option_physical_hash_matches( array $option, string $physical_hash ): bool {
+	$fingerprint = sanitize_text_field( (string) ( $option['fingerprint'] ?? '' ) );
+	if ( '' === $fingerprint || '' === $physical_hash ) {
+		return false;
+	}
+
+	$expected = papelito_shipping_option_fingerprint(
+		sanitize_key( (string) ( $option['provider'] ?? '' ) ),
+		sanitize_text_field( (string) ( $option['option_key'] ?? '' ) ),
+		(int) ( $option['customer_price_cents'] ?? -1 ),
+		$option['delivery_time'] ?? null,
+		papelito_shipping_snapshot_expiry( $option ),
+		$physical_hash
+	);
+
+	return hash_equals( $expected, $fingerprint );
 }
 
 /**
