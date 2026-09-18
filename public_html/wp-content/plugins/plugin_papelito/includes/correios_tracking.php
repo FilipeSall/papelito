@@ -1874,20 +1874,74 @@ function papelito_tracking_apply_jitter( int $delay ): int {
 }
 
 /** Consulta um envio e ingere todos os eventos retornados. */
+/**
+ * Transportadoras que sabem consultar o próprio rastreio, por provider.
+ *
+ * `mock` e `manual` compartilham o caminho dos Correios porque nasceram como
+ * variações dele: código S10, mesmos eventos, mesma ingestão. Quem acrescentar
+ * transportadora registra aqui pelo filtro, sem tocar no núcleo do polling.
+ *
+ * @return array<string,string>
+ */
+function papelito_tracking_provider_pollers(): array {
+	$pollers = array(
+		'correios'  => 'papelito_tracking_poll_correios_shipment',
+		'mock'      => 'papelito_tracking_poll_correios_shipment',
+		'manual'    => 'papelito_tracking_poll_correios_shipment',
+		'braspress' => 'papelito_braspress_tracking_poll_shipment',
+	);
+
+	$filtered = apply_filters( 'papelito_tracking_providers', $pollers );
+
+	return is_array( $filtered ) ? $filtered : $pollers;
+}
+
+/**
+ * Resolve quem consulta o rastreio deste provider, ou null quando ninguém sabe.
+ *
+ * Registro que não dá para chamar é tratado como ausente: um plugin desativado
+ * deixaria o envio ser consultado pelo caminho errado, e ser consultado como
+ * Correios é pior do que não ser consultado.
+ *
+ * @param string $provider Provider persistido na remessa.
+ */
+function papelito_tracking_resolve_poller( string $provider ): ?string {
+	$provider = sanitize_key( $provider );
+
+	if ( '' === $provider ) {
+		return null;
+	}
+
+	$poller = papelito_tracking_provider_pollers()[ $provider ] ?? null;
+
+	return is_string( $poller ) && function_exists( $poller ) ? $poller : null;
+}
+
+/**
+ * Entrega a remessa a quem sabe consultar o rastreio dela.
+ *
+ * @param array<string,mixed> $shipment Linha da tabela de remessas.
+ */
 function papelito_tracking_poll_shipment( array $shipment ): void {
-	$shipment_id  = absint( $shipment['id'] ?? 0 );
+	$shipment_id = absint( $shipment['id'] ?? 0 );
 	if ( ! empty( $shipment['is_test'] ) ) {
 		return;
 	}
-	$provider = sanitize_key( (string) ( $shipment['provider'] ?? 'correios' ) );
-	if ( 'braspress' === $provider && function_exists( 'papelito_braspress_tracking_poll_shipment' ) ) {
-		papelito_braspress_tracking_poll_shipment( $shipment );
-		return;
-	}
-	if ( ! in_array( $provider, array( 'correios', 'mock', 'manual' ), true ) ) {
+	$poller = papelito_tracking_resolve_poller( (string) ( $shipment['provider'] ?? 'correios' ) );
+	if ( null === $poller ) {
 		papelito_tracking_schedule_next_poll( $shipment_id, true, 'tracking_provider_unsupported' );
 		return;
 	}
+	$poller( $shipment );
+}
+
+/**
+ * Consulta o objeto na API Rastro e ingere os eventos na ordem cronológica.
+ *
+ * @param array<string,mixed> $shipment Linha da tabela de remessas.
+ */
+function papelito_tracking_poll_correios_shipment( array $shipment ): void {
+	$shipment_id   = absint( $shipment['id'] ?? 0 );
 	$tracking_code = papelito_tracking_normalize_code( $shipment['tracking_code'] ?? '' );
 	if ( $shipment_id <= 0 || '' === $tracking_code ) {
 		return;
