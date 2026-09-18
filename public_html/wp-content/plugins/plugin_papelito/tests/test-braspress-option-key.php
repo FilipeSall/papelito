@@ -343,10 +343,9 @@ $other_vendor_option = braspress_option_normalize(
 braspress_option_assert( 'vendors diferentes publicam a mesma option_key', is_array( $other_vendor_option ) && BRASPRESS_OPTION_TEST_EXPECTED_KEY === ( $other_vendor_option['option_key'] ?? '' ) );
 braspress_option_assert( 'opção de um vendor não casa com a seleção de outro', is_array( $other_vendor_option ) && ! papelito_shipping_option_matches_checkout_snapshot( $other_vendor_option, BRASPRESS_OPTION_TEST_EXPECTED_KEY, $snapshot ) );
 
-$aereo_raw    = braspress_option_quote_with_cold_cache( braspress_option_fixture_integration( BRASPRESS_OPTION_TEST_VENDOR_ID, 'A' ), $package, braspress_option_success_response( BRASPRESS_OPTION_TEST_FIRST_QUOTE_ID ), $quoted_at );
-$aereo_option = braspress_option_normalize( $aereo_raw );
-braspress_option_assert( 'modalidade diferente publica código próprio', is_array( $aereo_option ) && 'braspress:aereo' === ( $aereo_option['option_key'] ?? '' ) );
-braspress_option_assert( 'seleção rodoviária não casa com a opção aérea', is_array( $aereo_option ) && ! papelito_shipping_option_matches_checkout_snapshot( $aereo_option, BRASPRESS_OPTION_TEST_EXPECTED_KEY, $snapshot ) );
+$aereo_payload = papelito_braspress_build_quote_payload( braspress_option_fixture_integration( BRASPRESS_OPTION_TEST_VENDOR_ID, 'A' ), BRASPRESS_OPTION_TEST_RECIPIENT_CNPJ, BRASPRESS_OPTION_TEST_DESTINATION_CEP, $package, BRASPRESS_OPTION_TEST_MERCHANDISE_CENTS );
+braspress_option_assert( 'aéreo não é contratado e não vira payload', is_wp_error( $aereo_payload ) && 'papelito_braspress_payload_invalid' === $aereo_payload->get_error_code() );
+braspress_option_assert( 'o mapa de modalidades só contém o rodoviário', array( 'R' => 'rodoviario' ) === PAPELITO_BRASPRESS_SERVICE_CODE_BY_MODAL );
 
 $unknown_modal_payload = papelito_braspress_build_quote_payload( braspress_option_fixture_integration( BRASPRESS_OPTION_TEST_VENDOR_ID, 'Z' ), BRASPRESS_OPTION_TEST_RECIPIENT_CNPJ, BRASPRESS_OPTION_TEST_DESTINATION_CEP, $package, BRASPRESS_OPTION_TEST_MERCHANDISE_CENTS );
 braspress_option_assert( 'modal sem código conhecido não chega a virar payload', is_wp_error( $unknown_modal_payload ) && 'papelito_braspress_payload_invalid' === $unknown_modal_payload->get_error_code() );

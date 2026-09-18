@@ -19,10 +19,12 @@ const PAPELITO_BRASPRESS_QUOTE_CACHE_MAX_TTL = 600;
  *
  * A Braspress não tem catálogo de serviços: o modal é a modalidade contratada e
  * é ele, não o identificador da cotação, que identifica a opção no checkout.
+ *
+ * Só o rodoviário é contratado. O aéreo foi descartado na BRASPRESS-001 por ser
+ * materialmente mais caro no teste real, e modal fora deste mapa não vira opção.
  */
 const PAPELITO_BRASPRESS_SERVICE_CODE_BY_MODAL = array(
 	'R' => 'rodoviario',
-	'A' => 'aereo',
 );
 
 /**
