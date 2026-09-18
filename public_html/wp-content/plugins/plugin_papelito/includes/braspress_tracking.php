@@ -164,6 +164,40 @@ function papelito_braspress_tracking_by_order( array $integration, string $exter
 }
 
 /**
+ * Converte uma data da Braspress para o instante UTC que a tabela guarda.
+ *
+ * A Braspress publica `dd/MM/yyyy` e `dd/MM/yyyy HH:mm` em America/Sao_Paulo.
+ * O parser genérico do PHP lê barra como formato americano, então `01/02/2026`
+ * viraria 2 de janeiro em silêncio; por isso o formato é exigido, e não inferido.
+ * O fuso é fixo no código porque descreve o dado recebido, não o servidor que o
+ * está lendo — em produção o servidor não roda em São Paulo.
+ *
+ * @param mixed $value Data publicada pela Braspress.
+ * @return string|null Datetime MySQL em UTC, ou null quando não é uma das formas do contrato.
+ */
+function papelito_braspress_tracking_parse_datetime( $value ): ?string {
+	$text = trim( sanitize_text_field( (string) $value ) );
+
+	if ( '' === $text ) {
+		return null;
+	}
+
+	$timezone = new DateTimeZone( 'America/Sao_Paulo' );
+
+	foreach ( array( 'd/m/Y H:i', 'd/m/Y' ) as $format ) {
+		$parsed = DateTimeImmutable::createFromFormat( '!' . $format, $text, $timezone );
+
+		if ( false === $parsed || $parsed->format( $format ) !== $text ) {
+			continue;
+		}
+
+		return $parsed->setTimezone( new DateTimeZone( 'UTC' ) )->format( 'Y-m-d H:i:s' );
+	}
+
+	return null;
+}
+
+/**
  * Informa se a Braspress ainda não conhece a remessa consultada.
  *
  * Uma consulta sem resultado volta HTTP 200 com a lista vazia, e não 404.
@@ -176,6 +210,126 @@ function papelito_braspress_tracking_is_empty( array $response ): bool {
 	$conhecimentos = $response['conhecimentos'] ?? null;
 
 	return ! is_array( $conhecimentos ) || empty( $conhecimentos );
+}
+
+/**
+ * Lê descrição e data de uma ocorrência, tolerando os nomes que a Braspress usa.
+ *
+ * A documentação oficial garante que cada item de `timeline[]` e `ocorrencias[]`
+ * traz descrição e data, mas não fixa o nome do campo, e nenhuma remessa real
+ * existia para conferir. Por isso os candidatos são tentados em ordem, como já
+ * acontece na leitura do status externo.
+ *
+ * @param array<string,mixed> $entry Item de timeline ou ocorrência.
+ * @return array{descricao:string,event_at:?string}|null Ocorrência legível, ou null sem descrição.
+ */
+function papelito_braspress_tracking_read_occurrence( array $entry ): ?array {
+	$description = '';
+	foreach ( array( 'descricao', 'descricaoOcorrencia', 'ocorrencia', 'status', 'situacao' ) as $field ) {
+		if ( isset( $entry[ $field ] ) && is_scalar( $entry[ $field ] ) ) {
+			$description = trim( sanitize_text_field( (string) $entry[ $field ] ) );
+			if ( '' !== $description ) {
+				break;
+			}
+		}
+	}
+
+	if ( '' === $description ) {
+		return null;
+	}
+
+	$event_at = null;
+	foreach ( array( 'data', 'dataHora', 'dataOcorrencia', 'dtOcorrencia', 'dataHoraOcorrencia' ) as $field ) {
+		if ( ! isset( $entry[ $field ] ) || ! is_scalar( $entry[ $field ] ) ) {
+			continue;
+		}
+		$event_at = papelito_braspress_tracking_parse_datetime( $entry[ $field ] );
+		if ( null !== $event_at ) {
+			break;
+		}
+	}
+
+	return array(
+		'descricao' => $description,
+		'event_at'  => $event_at,
+	);
+}
+
+/**
+ * Reduz a resposta v3 inteira a uma linha do tempo, em ordem cronológica.
+ *
+ * Um pedido pode viajar em vários conhecimentos, e ler só o primeiro perderia
+ * as caixas restantes. `timeline[]` e `ocorrencias[]` repetem a mesma ocorrência
+ * com frequência, então a mesma trinca conhecimento/data/descrição entra uma vez.
+ * Ocorrência sem data legível é preservada e vai para o fim: perder o texto seria
+ * pior do que exibi-lo sem quando.
+ *
+ * @param array<string,mixed> $response Corpo devolvido pela Braspress.
+ * @return array<int,array<string,mixed>> Eventos normalizados, do mais antigo ao mais novo.
+ */
+function papelito_braspress_tracking_events( array $response ): array {
+	$conhecimentos = $response['conhecimentos'] ?? null;
+
+	if ( ! is_array( $conhecimentos ) ) {
+		return array();
+	}
+
+	$events = array();
+
+	foreach ( $conhecimentos as $conhecimento ) {
+		if ( ! is_array( $conhecimento ) ) {
+			continue;
+		}
+
+		$numero = sanitize_text_field( (string) ( $conhecimento['numero'] ?? '' ) );
+
+		foreach ( array( 'ocorrencias', 'timeline' ) as $collection ) {
+			foreach ( (array) ( $conhecimento[ $collection ] ?? array() ) as $entry ) {
+				if ( ! is_array( $entry ) ) {
+					continue;
+				}
+
+				$occurrence = papelito_braspress_tracking_read_occurrence( $entry );
+
+				if ( null === $occurrence ) {
+					continue;
+				}
+
+				$key = $numero . '|' . (string) $occurrence['event_at'] . '|' . $occurrence['descricao'];
+
+				$events[ $key ] = array(
+					'codigo'       => 'BRASPRESS',
+					'tipo'         => 'OCOR',
+					'descricao'    => $occurrence['descricao'],
+					'event_at'     => $occurrence['event_at'],
+					'conhecimento' => $numero,
+				);
+			}
+		}
+	}
+
+	return papelito_braspress_tracking_sort_events( array_values( $events ) );
+}
+
+/**
+ * Ordena do mais antigo ao mais novo, empurrando o que não tem data para o fim.
+ *
+ * @param array<int,array<string,mixed>> $events Eventos normalizados.
+ * @return array<int,array<string,mixed>> Eventos em ordem cronológica.
+ */
+function papelito_braspress_tracking_sort_events( array $events ): array {
+	usort(
+		$events,
+		static function ( array $first, array $second ): int {
+			if ( null === $first['event_at'] || null === $second['event_at'] ) {
+				return ( null === $first['event_at'] ? 1 : 0 ) - ( null === $second['event_at'] ? 1 : 0 );
+			}
+
+			return strcmp( $first['event_at'], $second['event_at'] );
+		}
+	);
+
+	return $events;
 }
 
 /**
@@ -218,7 +372,14 @@ function papelito_braspress_tracking_external_status( array $response ): string 
 }
 
 /**
- * Salva resposta bruta e preserva `posted` sem mapa de status contratado.
+ * Reconcilia a linha do tempo da Braspress preservando `posted` sem mapa de status.
+ *
+ * Cada ocorrência vira um evento datado e idempotente. Enquanto o modelo não
+ * representa conhecimento por volume — bloqueado na BRASPRESS-008 pela
+ * cardinalidade não confirmada —, duas caixas com a mesma ocorrência no mesmo
+ * minuto colapsam num evento só, o que a chave idempotente faria de qualquer forma.
+ * Sem nenhuma ocorrência legível, o texto de status externo ainda registra que
+ * houve atualização.
  *
  * @param array<string,mixed> $shipment Remessa persistida.
  * @return void
@@ -251,17 +412,32 @@ function papelito_braspress_tracking_poll_shipment( array $shipment ): void {
 	}
 
 	$external_status = papelito_braspress_tracking_external_status( $response );
-	papelito_tracking_ingest_event(
-		$shipment,
-		array(
-			'codigo'       => 'BRASPRESS',
-			'tipo'         => 'EXTERNAL',
-			'descricao'    => 'Braspress: ' . $external_status,
-			'dtHrCriado'   => '',
-			'raw_response' => $response,
-		),
-		PAPELITO_BRASPRESS_TRACKING_SOURCE
-	);
+	$events          = papelito_braspress_tracking_events( $response );
+
+	if ( empty( $events ) ) {
+		$events = array(
+			array(
+				'codigo'    => 'BRASPRESS',
+				'tipo'      => 'EXTERNAL',
+				'descricao' => 'Braspress: ' . $external_status,
+				'event_at'  => null,
+			),
+		);
+	}
+
+	foreach ( $events as $event ) {
+		papelito_tracking_ingest_event(
+			$shipment,
+			array(
+				'codigo'     => $event['codigo'],
+				'tipo'       => $event['tipo'],
+				'descricao'  => $event['descricao'],
+				'dtHrCriado' => (string) $event['event_at'],
+				'event_at'   => $event['event_at'],
+			),
+			PAPELITO_BRASPRESS_TRACKING_SOURCE
+		);
+	}
 	$wpdb->update(
 		papelito_tracking_shipments_table_name(),
 		array(

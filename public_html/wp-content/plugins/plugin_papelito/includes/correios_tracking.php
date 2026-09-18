@@ -1720,7 +1720,9 @@ function papelito_tracking_event_fields( array $event ): array {
 	return array(
 		'code'     => strtoupper( sanitize_key( (string) ( $event['codigo'] ?? '' ) ) ),
 		'type'     => strtoupper( sanitize_key( (string) ( $event['tipo'] ?? '' ) ) ),
-		'event_at' => papelito_tracking_event_datetime( $event['dtHrCriado'] ?? '' ),
+		'event_at' => array_key_exists( 'event_at', $event )
+			? $event['event_at']
+			: papelito_tracking_event_datetime( $event['dtHrCriado'] ?? '' ),
 	);
 }
 

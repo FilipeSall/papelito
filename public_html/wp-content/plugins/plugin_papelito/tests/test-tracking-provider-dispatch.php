@@ -57,6 +57,10 @@ function get_option( $name, $default = false ) {
 	return $default;
 }
 
+function wp_timezone() {
+	return new DateTimeZone( 'America/Sao_Paulo' );
+}
+
 function add_filter( $tag, $callback, $priority = 10, $accepted_args = 1 ) {
 	$GLOBALS['papelito_test_filters'][ $tag ][] = $callback;
 }
@@ -128,6 +132,36 @@ papelito_assert( 'non-callable registration is not returned', null, papelito_tra
 papelito_assert( 'a broken registration does not poison the healthy ones', 'papelito_test_jadlog_poller', papelito_tracking_resolve_poller( 'jadlog' ) );
 
 function papelito_test_jadlog_poller( array $shipment ): void {}
+
+echo "Scenario 6: an adapter may hand over a date it already normalised\n";
+$fields = papelito_tracking_event_fields(
+	array(
+		'codigo'     => 'BRASPRESS',
+		'tipo'       => 'OCOR',
+		'dtHrCriado' => '20/09/2026 08:15',
+		'event_at'   => '2026-09-20 11:15:00',
+	)
+);
+papelito_assert( 'the normalised date wins over the raw provider text', '2026-09-20 11:15:00', $fields['event_at'] );
+
+$undated = papelito_tracking_event_fields(
+	array(
+		'codigo'     => 'BRASPRESS',
+		'tipo'       => 'OCOR',
+		'dtHrCriado' => 'ontem',
+		'event_at'   => null,
+	)
+);
+papelito_assert( 'an adapter saying there is no date is believed', null, $undated['event_at'] );
+
+$legacy = papelito_tracking_event_fields(
+	array(
+		'codigo'     => 'PO',
+		'tipo'       => '01',
+		'dtHrCriado' => '2026-09-20T08:15:00',
+	)
+);
+papelito_assert( 'Correios keeps parsing its own ISO date', true, is_string( $legacy['event_at'] ) );
 
 echo "\n";
 if ( $failures > 0 ) {
