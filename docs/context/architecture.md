@@ -117,6 +117,7 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `pagarme_webhook.php` | webhook + reconciliação ativa |
 | `pagarme_simulator.php` | simulação de webhook fora de produção |
 | `shipping.php`, `shipping_providers.php` | cotação autenticada e orquestração isolada de providers |
+| `shipping_metrics.php` | contador diário de resíduo de embalagem: origem da medida por cotação e recusa por código de erro |
 | `vendor_integrations.php`, `braspress.php` | contrato Braspress por vendor, cofre write-only e cliente HTTP de cotação |
 | `correios_prepostage.php` | pré-postagem e etiqueta |
 | `correios_tracking.php`, `braspress_tracking.php` | polling por provider; Rastro/S10 e Braspress `byNumPedido` com status externo preservado |
@@ -168,6 +169,12 @@ Eventos entre domínios usam `do_action()`. **Os listeners ficam centralizados e
 | `papelito_product_on_promo` | publicação de cupom restrito e ativação de flash sale | `$product_id, $context` |
 | `papelito_active_vendor_changed` | troca de vendor ativo | `$user_id, $prev, $new` |
 | `papelito_order_payment_confirmed` | `papelito_pagarme_apply_order_state`, **depois** de `$order->save()` persistir o estado pago | `$order, $state` |
+| `papelito_shipping_package_built` | `papelito_shipping_notify_package_built()`, nos **dois** caminhos de embalagem | `$measurement_source` (`profile` \| `legacy_synthetic` \| `kit_declared`) |
+| `papelito_shipping_package_rejected` | mesmo emissor, quando o pacote não é aprovado | `$error` (`WP_Error`) |
+
+> As duas actions de embalagem são as únicas cujo listener **não** vive em `notifications.php`: quem
+> escuta é `shipping_metrics.php`, e contador não é notificação. A centralização vale para
+> notificação e e-mail, não para observabilidade.
 
 > `papelito_order_payment_confirmed` é **reentrante por desenho**: webhook repetido reemite o evento. Todo consumidor precisa ser idempotente. É o gatilho da emissão do recibo (`receipts.php`), que é idempotente por `order_id`.
 

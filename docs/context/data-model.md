@@ -264,6 +264,15 @@ Quatro tabelas. **Brinde não é produto WooCommerce**: não tem preço, SKU, es
 
 Registros anteriores à migração recebem `manual_fallback_eligible=0` — **nenhuma falha histórica se torna elegível por inferência**.
 
+**A métrica de resíduo de embalagem não é tabela.** Ela vive em `wp_options`, uma option por dia
+civil, prefixo `papelito_shipping_measure_metrics_` e **sempre `autoload = no`**. Cada linha guarda
+o dia e dois mapas de inteiros — contagem por origem da medida e contagem de recusa por código de
+erro. Não há identificador de vendor, CEP, documento, preço nem `physical_hash`; origem e código são
+vocabulário fechado. O incremento é read-modify-write, então **perde contagem sob concorrência por
+decisão**, do mesmo jeito que `papelito_rate_limit()`. A retenção é de
+`PAPELITO_SHIPPING_METRICS_RETENTION_DAYS` dias, varrida na abertura de cada balde novo. Nada disso
+mexe em `PAPELITO_DB_VERSION`, e apagar as options só perde histórico — não quebra cotação.
+
 ### Recibo interno
 
 Três tabelas, criadas junto com a fundação do recibo numerado. **Nenhuma delas guarda nota fiscal** — o recibo é documento interno do marketplace.

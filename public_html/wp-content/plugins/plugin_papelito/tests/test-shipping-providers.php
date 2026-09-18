@@ -115,6 +115,20 @@ function papelito_vendor_integration_normalize_document(mixed $document): string
 	return preg_replace('/\D+/', '', (string) $document);
 }
 
+/**
+ * Devolve o pacote sem publicar a origem da medida.
+ *
+ * O emissor real vive em `shipping.php`, que este teste nao carrega. A emissao
+ * em si e coberta por `test-shipping-measurement-metrics.php`.
+ *
+ * @param mixed $package Pacote resolvido ou erro.
+ * @return mixed Pacote intocado.
+ */
+function papelito_shipping_notify_package_built(mixed $package): mixed
+{
+	return $package;
+}
+
 require_once dirname(__DIR__) . '/includes/shipping_providers.php';
 
 $failures = 0;

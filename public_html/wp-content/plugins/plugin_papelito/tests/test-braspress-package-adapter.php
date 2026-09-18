@@ -403,6 +403,19 @@ function do_action( mixed ...$args ): bool {
 }
 
 /**
+ * Devolve o pacote sem publicar a origem da medida.
+ *
+ * O emissor real vive em `shipping.php`, que este teste não carrega. A emissão
+ * em si é coberta por `test-shipping-measurement-metrics.php`.
+ *
+ * @param mixed $package Pacote resolvido ou erro.
+ * @return mixed Pacote intocado.
+ */
+function papelito_shipping_notify_package_built( mixed $package ): mixed {
+	return $package;
+}
+
+/**
  * Obtém transient da fixture sem persistência entre casos.
  *
  * @param string $key Chave.

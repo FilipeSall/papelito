@@ -26,6 +26,7 @@ const PAPELITO_SHIPPING_MAX_DIMENSION_SUM_CM = 200.0;
 const PAPELITO_SHIPPING_MAX_WEIGHT_G         = 30000.0;
 const PAPELITO_SHIPPING_MEASUREMENT_LEGACY   = 'legacy_synthetic';
 const PAPELITO_SHIPPING_MEASUREMENT_KIT      = 'kit_declared';
+const PAPELITO_SHIPPING_MEASUREMENT_PROFILE  = 'profile';
 
 /**
  * Normaliza o mínimo de frete grátis vindo de origem não confiável.

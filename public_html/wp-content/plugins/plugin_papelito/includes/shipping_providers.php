@@ -646,13 +646,18 @@ function papelito_shipping_provider_vendor_allowed( string $provider, int $vendo
 }
 
 /**
- * Obtém o pacote físico aprovado para a cotação Braspress.
+ * Resolve o pacote físico do caminho de perfil, sem publicar observabilidade.
+ *
+ * É a decisão pura: o filtro do perfil responde, o contrato é conferido e a
+ * recusa é fail-closed. Quem só quer saber se a embalagem existe entra por aqui,
+ * porque uma consulta de elegibilidade não é uma cotação e não pode inflar a
+ * métrica de resíduo.
  *
  * @param int                      $vendor_id ID do vendor.
  * @param array<int,array<string,mixed>> $items Itens a embalar.
  * @return array<string,mixed>|WP_Error Pacote aprovado ou bloqueio seguro.
  */
-function papelito_shipping_braspress_physical_package( int $vendor_id, array $items ) {
+function papelito_shipping_braspress_resolve_physical_package( int $vendor_id, array $items ) {
 	/**
 	 * Não existe fallback para o pacote sintético dos Correios. Logística deve
 	 * instalar explicitamente este contrato com peso em kg, volumes e grupos de
@@ -667,6 +672,23 @@ function papelito_shipping_braspress_physical_package( int $vendor_id, array $it
 }
 
 /**
+ * Obtém o pacote físico aprovado para a cotação Braspress e publica a origem da medida.
+ *
+ * Simétrico a `papelito_shipping_build_package()`: os dois caminhos de embalagem
+ * saem pelo mesmo `papelito_shipping_notify_package_built()`. Sem isso o
+ * caminho de perfil nunca emitiria `papelito_shipping_package_built` e a métrica
+ * de resíduo reportaria 100% de medida legada mesmo depois de todo vendor
+ * cadastrar caixa.
+ *
+ * @param int                      $vendor_id ID do vendor.
+ * @param array<int,array<string,mixed>> $items Itens a embalar.
+ * @return array<string,mixed>|WP_Error Pacote aprovado ou bloqueio seguro.
+ */
+function papelito_shipping_braspress_physical_package( int $vendor_id, array $items ) {
+	return papelito_shipping_notify_package_built( papelito_shipping_braspress_resolve_physical_package( $vendor_id, $items ) );
+}
+
+/**
  * Informa se existe pacote físico aprovado para os itens.
  *
  * @param int                      $vendor_id ID do vendor.
@@ -674,7 +696,7 @@ function papelito_shipping_braspress_physical_package( int $vendor_id, array $it
  * @return bool Se a Braspress pode receber o pacote.
  */
 function papelito_shipping_braspress_package_is_approved( int $vendor_id, array $items ): bool {
-	return is_array( papelito_shipping_braspress_physical_package( $vendor_id, $items ) );
+	return is_array( papelito_shipping_braspress_resolve_physical_package( $vendor_id, $items ) );
 }
 
 /**

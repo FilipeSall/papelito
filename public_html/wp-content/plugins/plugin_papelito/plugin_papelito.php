@@ -47,6 +47,7 @@ require_once __DIR__ . '/includes/admin_reports.php';
 require_once __DIR__ . '/includes/analytics_ga4.php';
 require_once __DIR__ . '/includes/admin_users.php';
 require_once __DIR__ . '/includes/shipping.php';
+require_once __DIR__ . '/includes/shipping_metrics.php';
 require_once __DIR__ . '/includes/correios_prepostage.php';
 require_once __DIR__ . '/includes/vendor_geo.php';
 require_once __DIR__ . '/includes/vendor_stock.php';
