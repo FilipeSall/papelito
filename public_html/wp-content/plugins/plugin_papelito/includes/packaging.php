@@ -1,12 +1,13 @@
 <?php
 // phpcs:ignoreFile WordPress.Files.FileName.NotHyphenatedLowercase -- Plugin modules use underscore filenames.
+
 /**
  * Perfis de caixa do vendor e escolha determinística da embalagem.
  *
  * @package Papelito
  */
 
-defined( 'ABSPATH' ) || exit;
+defined('ABSPATH') || exit;
 
 /*
  * Folga assumida por não fazermos encaixe 3D: a fração do volume interno que a
@@ -19,16 +20,72 @@ const PAPELITO_PACKAGING_SNAPSHOT_SCHEMA_VERSION = 1;
 const PAPELITO_PACKAGING_MEASUREMENT_PROFILE     = 'profile';
 const PAPELITO_PACKAGING_MEASUREMENT_LEGACY      = 'legacy_synthetic';
 
+const PAPELITO_PACKAGING_WRITE_RATE_LIMIT  = 20;
+const PAPELITO_PACKAGING_WRITE_RATE_WINDOW = 60;
+
+/**
+ * Teto de caixas ativas por vendor.
+ *
+ * Inativas não contam: desativar é justamente o caminho para abrir vaga sem perder o histórico.
+ */
+const PAPELITO_PACKAGING_MAX_ACTIVE_PROFILES = 24;
+
+/**
+ * Categoria dos modelos RPC Híper.
+ */
+const PAPELITO_PACKAGING_RPC_CATEGORY_HYPER = 'Híper';
+
+/**
+ * Mensagem pública para conflito de código de caixa.
+ */
+const PAPELITO_PACKAGING_CODE_CONFLICT_MESSAGE = 'Já existe uma caixa com este código.';
+
+/**
+ * Catálogo estático dos modelos RPC com unidades canônicas do domínio.
+ *
+ * Os modelos são referências para preenchimento e não são persistidos até o
+ * vendor salvar um perfil. Os envelopes do guia ficam fora porque não têm altura.
+ *
+ * @return array<string,array<string,mixed>>
+ */
+function papelito_packaging_rpc_catalog(): array
+{
+	return array(
+		'P04' => array('code' => 'P04', 'category' => 'Pequena', 'label' => 'Caixa RPC P04', 'length_mm' => 160, 'width_mm' => 120, 'height_mm' => 40, 'max_payload_g' => 1500),
+		'C08' => array('code' => 'C08', 'category' => 'Comprida', 'label' => 'Caixa RPC C08', 'length_mm' => 320, 'width_mm' => 120, 'height_mm' => 80, 'max_payload_g' => 3000),
+		'C12' => array('code' => 'C12', 'category' => 'Comprida', 'label' => 'Caixa RPC C12', 'length_mm' => 320, 'width_mm' => 120, 'height_mm' => 120, 'max_payload_g' => null),
+		'M08' => array('code' => 'M08', 'category' => 'Média', 'label' => 'Caixa RPC M08', 'length_mm' => 240, 'width_mm' => 160, 'height_mm' => 80, 'max_payload_g' => 3000),
+		'M12' => array('code' => 'M12', 'category' => 'Média', 'label' => 'Caixa RPC M12', 'length_mm' => 240, 'width_mm' => 160, 'height_mm' => 120, 'max_payload_g' => 4000),
+		'G08' => array('code' => 'G08', 'category' => 'Grande', 'label' => 'Caixa RPC G08', 'length_mm' => 320, 'width_mm' => 240, 'height_mm' => 80, 'max_payload_g' => 6000),
+		'G12' => array('code' => 'G12', 'category' => 'Grande', 'label' => 'Caixa RPC G12', 'length_mm' => 320, 'width_mm' => 240, 'height_mm' => 120, 'max_payload_g' => 9000),
+		'G16' => array('code' => 'G16', 'category' => 'Grande', 'label' => 'Caixa RPC G16', 'length_mm' => 320, 'width_mm' => 240, 'height_mm' => 160, 'max_payload_g' => 11000),
+		'G20' => array('code' => 'G20', 'category' => 'Grande', 'label' => 'Caixa RPC G20', 'length_mm' => 320, 'width_mm' => 240, 'height_mm' => 200, 'max_payload_g' => 14000),
+		'S04' => array('code' => 'S04', 'category' => 'Super', 'label' => 'Caixa RPC S04', 'length_mm' => 480, 'width_mm' => 320, 'height_mm' => 40, 'max_payload_g' => 6000),
+		'S08' => array('code' => 'S08', 'category' => 'Super', 'label' => 'Caixa RPC S08', 'length_mm' => 480, 'width_mm' => 320, 'height_mm' => 80, 'max_payload_g' => 11000),
+		'S12' => array('code' => 'S12', 'category' => 'Super', 'label' => 'Caixa RPC S12', 'length_mm' => 480, 'width_mm' => 320, 'height_mm' => 120, 'max_payload_g' => 17000),
+		'S16' => array('code' => 'S16', 'category' => 'Super', 'label' => 'Caixa RPC S16', 'length_mm' => 480, 'width_mm' => 320, 'height_mm' => 160, 'max_payload_g' => 22000),
+		'S20' => array('code' => 'S20', 'category' => 'Super', 'label' => 'Caixa RPC S20', 'length_mm' => 480, 'width_mm' => 320, 'height_mm' => 200, 'max_payload_g' => 28000),
+		'S24' => array('code' => 'S24', 'category' => 'Super', 'label' => 'Caixa RPC S24', 'length_mm' => 480, 'width_mm' => 320, 'height_mm' => 240, 'max_payload_g' => null),
+		'S28' => array('code' => 'S28', 'category' => 'Super', 'label' => 'Caixa RPC S28', 'length_mm' => 480, 'width_mm' => 320, 'height_mm' => 280, 'max_payload_g' => null),
+		'H12' => array('code' => 'H12', 'category' => PAPELITO_PACKAGING_RPC_CATEGORY_HYPER, 'label' => 'Caixa RPC H12', 'length_mm' => 640, 'width_mm' => 480, 'height_mm' => 120, 'max_payload_g' => null),
+		'H20' => array('code' => 'H20', 'category' => PAPELITO_PACKAGING_RPC_CATEGORY_HYPER, 'label' => 'Caixa RPC H20', 'length_mm' => 640, 'width_mm' => 480, 'height_mm' => 200, 'max_payload_g' => null),
+		'H28' => array('code' => 'H28', 'category' => PAPELITO_PACKAGING_RPC_CATEGORY_HYPER, 'label' => 'Caixa RPC H28', 'length_mm' => 640, 'width_mm' => 480, 'height_mm' => 280, 'max_payload_g' => null),
+		'H32' => array('code' => 'H32', 'category' => PAPELITO_PACKAGING_RPC_CATEGORY_HYPER, 'label' => 'Caixa RPC H32', 'length_mm' => 640, 'width_mm' => 480, 'height_mm' => 320, 'max_payload_g' => null),
+		'H48' => array('code' => 'H48', 'category' => PAPELITO_PACKAGING_RPC_CATEGORY_HYPER, 'label' => 'Caixa RPC H48', 'length_mm' => 640, 'width_mm' => 480, 'height_mm' => 480, 'max_payload_g' => null),
+	);
+}
+
 /**
  * Volume interno de um perfil, em milímetros cúbicos.
  *
  * @param array<string,mixed> $profile Perfil de caixa do vendor.
  * @return int Volume interno; zero quando alguma dimensão não é positiva.
  */
-function papelito_packaging_profile_volume_mm3( array $profile ): int {
-	$length = (int) ( $profile['length_mm'] ?? 0 );
-	$width  = (int) ( $profile['width_mm'] ?? 0 );
-	$height = (int) ( $profile['height_mm'] ?? 0 );
+function papelito_packaging_profile_volume_mm3(array $profile): int
+{
+	$length = (int) ($profile['length_mm'] ?? 0);
+	$width  = (int) ($profile['width_mm'] ?? 0);
+	$height = (int) ($profile['height_mm'] ?? 0);
 
 	return $length > 0 && $width > 0 && $height > 0 ? $length * $width * $height : 0;
 }
@@ -40,9 +97,10 @@ function papelito_packaging_profile_volume_mm3( array $profile ): int {
  * @param array<int,array<string,mixed>> $items Itens a embalar.
  * @return array<string,mixed>|null Perfil escolhido ou nulo quando nenhum serve.
  */
-function papelito_packaging_choose_profile( array $profiles, array $items, float $usable_factor = PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR ): ?array {
-	foreach ( papelito_packaging_order_profiles( $profiles ) as $profile ) {
-		if ( papelito_packaging_profile_fits( $profile, $items, $usable_factor ) ) {
+function papelito_packaging_choose_profile(array $profiles, array $items, float $usable_factor = PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR): ?array
+{
+	foreach (papelito_packaging_order_profiles($profiles) as $profile) {
+		if (papelito_packaging_profile_fits($profile, $items, $usable_factor)) {
 			return $profile;
 		}
 	}
@@ -57,10 +115,11 @@ function papelito_packaging_choose_profile( array $profiles, array $items, float
  * @param array<int,array<string,mixed>> $items Itens a embalar.
  * @return bool Se o conjunto passa em todos os testes de caber.
  */
-function papelito_packaging_profile_fits( array $profile, array $items, float $usable_factor = PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR ): bool {
-	return papelito_packaging_volume_fits( $profile, $items, $usable_factor )
-		&& papelito_packaging_largest_piece_fits( $profile, $items )
-		&& papelito_packaging_weight_fits( $profile, $items );
+function papelito_packaging_profile_fits(array $profile, array $items, float $usable_factor = PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR): bool
+{
+	return papelito_packaging_volume_fits($profile, $items, $usable_factor)
+		&& papelito_packaging_largest_piece_fits($profile, $items)
+		&& papelito_packaging_weight_fits($profile, $items);
 }
 
 /**
@@ -73,7 +132,8 @@ function papelito_packaging_profile_fits( array $profile, array $items, float $u
  * @param float $factor Fator informado pelo vendor ou pela configuração.
  * @return float Fator utilizável.
  */
-function papelito_packaging_normalize_usable_factor( float $factor ): float {
+function papelito_packaging_normalize_usable_factor(float $factor): float
+{
 	return $factor > 0.0 && $factor <= 1.0 ? $factor : PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR;
 }
 
@@ -83,12 +143,13 @@ function papelito_packaging_normalize_usable_factor( float $factor ): float {
  * @param array<int,array<string,mixed>> $items Itens a embalar.
  * @return int Soma de volume vezes quantidade.
  */
-function papelito_packaging_items_volume_mm3( array $items ): int {
+function papelito_packaging_items_volume_mm3(array $items): int
+{
 	$volume = 0;
 
-	foreach ( $items as $item ) {
-		$item    = is_array( $item ) ? $item : array();
-		$volume += papelito_packaging_profile_volume_mm3( $item ) * max( 0, (int) ( $item['qty'] ?? 0 ) );
+	foreach ($items as $item) {
+		$item    = is_array($item) ? $item : array();
+		$volume += papelito_packaging_profile_volume_mm3($item) * max(0, (int) ($item['qty'] ?? 0));
 	}
 
 	return $volume;
@@ -102,10 +163,11 @@ function papelito_packaging_items_volume_mm3( array $items ): int {
  * @param float                          $usable_factor Fração aproveitável do volume interno.
  * @return bool Se o conjunto cabe em volume.
  */
-function papelito_packaging_volume_fits( array $profile, array $items, float $usable_factor ): bool {
-	$usable = papelito_packaging_profile_volume_mm3( $profile ) * papelito_packaging_normalize_usable_factor( $usable_factor );
+function papelito_packaging_volume_fits(array $profile, array $items, float $usable_factor): bool
+{
+	$usable = papelito_packaging_profile_volume_mm3($profile) * papelito_packaging_normalize_usable_factor($usable_factor);
 
-	return $usable > 0.0 && papelito_packaging_items_volume_mm3( $items ) <= $usable;
+	return $usable > 0.0 && papelito_packaging_items_volume_mm3($items) <= $usable;
 }
 
 /**
@@ -116,13 +178,14 @@ function papelito_packaging_volume_fits( array $profile, array $items, float $us
  * @param array<string,mixed> $source Perfil ou item com dimensões em milímetros.
  * @return array<int,int> Comprimento, largura e altura, do maior para o menor.
  */
-function papelito_packaging_sorted_dimensions_mm( array $source ): array {
+function papelito_packaging_sorted_dimensions_mm(array $source): array
+{
 	$dimensions = array(
-		(int) ( $source['length_mm'] ?? 0 ),
-		(int) ( $source['width_mm'] ?? 0 ),
-		(int) ( $source['height_mm'] ?? 0 ),
+		(int) ($source['length_mm'] ?? 0),
+		(int) ($source['width_mm'] ?? 0),
+		(int) ($source['height_mm'] ?? 0),
 	);
-	rsort( $dimensions );
+	rsort($dimensions);
 
 	return $dimensions;
 }
@@ -137,13 +200,14 @@ function papelito_packaging_sorted_dimensions_mm( array $source ): array {
  * @param array<int,array<string,mixed>> $items Itens a embalar.
  * @return bool Se toda peça entra.
  */
-function papelito_packaging_largest_piece_fits( array $profile, array $items ): bool {
-	$box = papelito_packaging_sorted_dimensions_mm( $profile );
+function papelito_packaging_largest_piece_fits(array $profile, array $items): bool
+{
+	$box = papelito_packaging_sorted_dimensions_mm($profile);
 
-	foreach ( $items as $item ) {
-		$piece = papelito_packaging_sorted_dimensions_mm( is_array( $item ) ? $item : array() );
-		foreach ( $piece as $index => $side ) {
-			if ( $side <= 0 || $side > $box[ $index ] ) {
+	foreach ($items as $item) {
+		$piece = papelito_packaging_sorted_dimensions_mm(is_array($item) ? $item : array());
+		foreach ($piece as $index => $side) {
+			if ($side <= 0 || $side > $box[$index]) {
 				return false;
 			}
 		}
@@ -158,33 +222,40 @@ function papelito_packaging_largest_piece_fits( array $profile, array $items ): 
  * @param array<int,array<string,mixed>> $items Itens a embalar.
  * @return int Soma de peso vezes quantidade.
  */
-function papelito_packaging_items_weight_g( array $items ): int {
+function papelito_packaging_items_weight_g(array $items): int
+{
 	$weight = 0;
 
-	foreach ( $items as $item ) {
-		$item    = is_array( $item ) ? $item : array();
-		$weight += max( 0, (int) ( $item['weight_g'] ?? 0 ) ) * max( 0, (int) ( $item['qty'] ?? 0 ) );
+	foreach ($items as $item) {
+		$item    = is_array($item) ? $item : array();
+		$weight += max(0, (int) ($item['weight_g'] ?? 0)) * max(0, (int) ($item['qty'] ?? 0));
 	}
 
 	return $weight;
 }
 
 /**
- * Diz se o peso dos itens mais a tara cabe na carga máxima do perfil.
+ * Diz se o peso dos itens cabe na carga máxima do perfil.
+ *
+ * A tara não entra nesta conta. O número do catálogo RPC é a "Resistência (kg)" do Guia Técnico de
+ * Embalagens dos Correios (§1.4.1), estimada como o volume da caixa ocupado 100% por resmas de
+ * papel a 0,9125 g/cm³ — ou seja, já é o peso do conteúdo, não do conjunto. Somar a caixa aqui
+ * descontaria o peso dela do que ela pode levar e empurraria o pedido para uma caixa maior, e um
+ * frete mais caro, sem motivo. A tara segue somando no peso declarado à transportadora, que é
+ * outra conta.
  *
  * @param array<string,mixed>            $profile Perfil de caixa do vendor.
  * @param array<int,array<string,mixed>> $items Itens a embalar.
  * @return bool Se o peso cabe; perfil sem carga máxima declarada não limita.
  */
-function papelito_packaging_weight_fits( array $profile, array $items ): bool {
+function papelito_packaging_weight_fits(array $profile, array $items): bool
+{
 	$max_payload = $profile['max_payload_g'] ?? null;
-	if ( null === $max_payload ) {
+	if (null === $max_payload) {
 		return true;
 	}
 
-	$loaded = papelito_packaging_items_weight_g( $items ) + max( 0, (int) ( $profile['tare_weight_g'] ?? 0 ) );
-
-	return $loaded <= (int) $max_payload;
+	return papelito_packaging_items_weight_g($items) <= (int) $max_payload;
 }
 
 /**
@@ -193,14 +264,15 @@ function papelito_packaging_weight_fits( array $profile, array $items ): bool {
  * @param array<int,array<string,mixed>> $profiles Perfis ativos do vendor.
  * @return array<int,array<string,mixed>> Perfis ordenados.
  */
-function papelito_packaging_order_profiles( array $profiles ): array {
-	$ordered = array_values( $profiles );
+function papelito_packaging_order_profiles(array $profiles): array
+{
+	$ordered = array_values($profiles);
 	usort(
 		$ordered,
-		static function ( array $left, array $right ): int {
-			$volumes = papelito_packaging_profile_volume_mm3( $left ) <=> papelito_packaging_profile_volume_mm3( $right );
+		static function (array $left, array $right): int {
+			$volumes = papelito_packaging_profile_volume_mm3($left) <=> papelito_packaging_profile_volume_mm3($right);
 
-			return 0 !== $volumes ? $volumes : strcmp( (string) ( $left['code'] ?? '' ), (string) ( $right['code'] ?? '' ) );
+			return 0 !== $volumes ? $volumes : strcmp((string) ($left['code'] ?? ''), (string) ($right['code'] ?? ''));
 		}
 	);
 
@@ -216,10 +288,11 @@ function papelito_packaging_order_profiles( array $profiles ): array {
  * @param float                          $usable_factor Fração aproveitável do volume interno.
  * @return array<string,mixed>|null Perfil resolvido ou nulo quando nenhum serve.
  */
-function papelito_packaging_resolve_profile( array $profiles, array $rules, array $lines, float $usable_factor = PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR ): ?array {
-	$override = papelito_packaging_override_profile( $profiles, $rules, $lines );
+function papelito_packaging_resolve_profile(array $profiles, array $rules, array $lines, float $usable_factor = PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR): ?array
+{
+	$override = papelito_packaging_override_profile($profiles, $rules, $lines);
 
-	return null !== $override ? $override : papelito_packaging_choose_profile( $profiles, $lines, $usable_factor );
+	return null !== $override ? $override : papelito_packaging_choose_profile($profiles, $lines, $usable_factor);
 }
 
 /**
@@ -233,18 +306,19 @@ function papelito_packaging_resolve_profile( array $profiles, array $rules, arra
  * @param array<int,array<string,mixed>> $lines Linhas a embalar.
  * @return array<string,mixed>|null Perfil forçado ou nulo quando não há override aplicável.
  */
-function papelito_packaging_override_profile( array $profiles, array $rules, array $lines ): ?array {
-	$target = papelito_packaging_single_target( $lines );
-	if ( null === $target ) {
+function papelito_packaging_override_profile(array $profiles, array $rules, array $lines): ?array
+{
+	$target = papelito_packaging_single_target($lines);
+	if (null === $target) {
 		return null;
 	}
 
-	$matching_rules = papelito_packaging_matching_rules( $rules, $target );
-	if ( 1 !== count( $matching_rules ) ) {
+	$matching_rules = papelito_packaging_matching_rules($rules, $target);
+	if (1 !== count($matching_rules)) {
 		return null;
 	}
 
-	return papelito_packaging_profile_by_id( $profiles, (int) ( $matching_rules[0]['profile_id'] ?? 0 ) );
+	return papelito_packaging_profile_by_id($profiles, (int) ($matching_rules[0]['profile_id'] ?? 0));
 }
 
 /**
@@ -258,11 +332,12 @@ function papelito_packaging_override_profile( array $profiles, array $rules, arr
  * @param array{target_type:string,target_id:int,qty:int} $target Alvo único do conjunto.
  * @return array<int,array<string,mixed>> Regras que cobrem exatamente o alvo.
  */
-function papelito_packaging_matching_rules( array $rules, array $target ): array {
+function papelito_packaging_matching_rules(array $rules, array $target): array
+{
 	$matching_rules = array();
 
-	foreach ( $rules as $rule ) {
-		if ( is_array( $rule ) && papelito_packaging_rule_matches( $rule, $target ) ) {
+	foreach ($rules as $rule) {
+		if (is_array($rule) && papelito_packaging_rule_matches($rule, $target)) {
 			$matching_rules[] = $rule;
 		}
 	}
@@ -276,21 +351,22 @@ function papelito_packaging_matching_rules( array $rules, array $target ): array
  * @param array<int,array<string,mixed>> $lines Linhas a embalar.
  * @return array{target_type:string,target_id:int,qty:int}|null Alvo único ou nulo quando o conjunto é misto.
  */
-function papelito_packaging_single_target( array $lines ): ?array {
+function papelito_packaging_single_target(array $lines): ?array
+{
 	$target = null;
 
-	foreach ( $lines as $line ) {
-		$line    = is_array( $line ) ? $line : array();
-		$type    = (string) ( $line['target_type'] ?? '' );
-		$id      = (int) ( $line['target_id'] ?? 0 );
-		$qty     = max( 0, (int) ( $line['qty'] ?? 0 ) );
-		if ( '' === $type || $id <= 0 ) {
+	foreach ($lines as $line) {
+		$line    = is_array($line) ? $line : array();
+		$type    = (string) ($line['target_type'] ?? '');
+		$id      = (int) ($line['target_id'] ?? 0);
+		$qty     = max(0, (int) ($line['qty'] ?? 0));
+		if ('' === $type || $id <= 0) {
 			return null;
 		}
-		if ( null === $target ) {
-			$target = array( 'target_type' => $type, 'target_id' => $id, 'qty' => 0 );
+		if (null === $target) {
+			$target = array('target_type' => $type, 'target_id' => $id, 'qty' => 0);
 		}
-		if ( $target['target_type'] !== $type || $target['target_id'] !== $id ) {
+		if ($target['target_type'] !== $type || $target['target_id'] !== $id) {
 			return null;
 		}
 		$target['qty'] += $qty;
@@ -306,11 +382,12 @@ function papelito_packaging_single_target( array $lines ): ?array {
  * @param array{target_type:string,target_id:int,qty:int} $target Alvo único do conjunto.
  * @return bool Se a regra se aplica.
  */
-function papelito_packaging_rule_matches( array $rule, array $target ): bool {
-	return (string) ( $rule['target_type'] ?? '' ) === $target['target_type']
-		&& (int) ( $rule['target_id'] ?? 0 ) === $target['target_id']
-		&& $target['qty'] >= (int) ( $rule['min_qty'] ?? 0 )
-		&& $target['qty'] <= (int) ( $rule['max_qty'] ?? 0 );
+function papelito_packaging_rule_matches(array $rule, array $target): bool
+{
+	return (string) ($rule['target_type'] ?? '') === $target['target_type']
+		&& (int) ($rule['target_id'] ?? 0) === $target['target_id']
+		&& $target['qty'] >= (int) ($rule['min_qty'] ?? 0)
+		&& $target['qty'] <= (int) ($rule['max_qty'] ?? 0);
 }
 
 /**
@@ -320,9 +397,10 @@ function papelito_packaging_rule_matches( array $rule, array $target ): bool {
  * @param int                            $profile_id Identificador procurado.
  * @return array<string,mixed>|null Perfil encontrado ou nulo.
  */
-function papelito_packaging_profile_by_id( array $profiles, int $profile_id ): ?array {
-	foreach ( $profiles as $profile ) {
-		if ( is_array( $profile ) && $profile_id > 0 && (int) ( $profile['id'] ?? 0 ) === $profile_id ) {
+function papelito_packaging_profile_by_id(array $profiles, int $profile_id): ?array
+{
+	foreach ($profiles as $profile) {
+		if (is_array($profile) && $profile_id > 0 && (int) ($profile['id'] ?? 0) === $profile_id) {
 			return $profile;
 		}
 	}
@@ -335,7 +413,8 @@ function papelito_packaging_profile_by_id( array $profiles, int $profile_id ): ?
  *
  * @return array<string,string>
  */
-function papelito_packaging_table_names(): array {
+function papelito_packaging_table_names(): array
+{
 	global $wpdb;
 
 	return array(
@@ -352,7 +431,8 @@ function papelito_packaging_table_names(): array {
  *
  * @return void
  */
-function papelito_packaging_install_tables(): void {
+function papelito_packaging_install_tables(): void
+{
 	global $wpdb;
 
 	$tables          = papelito_packaging_table_names();
@@ -399,8 +479,8 @@ function papelito_packaging_install_tables(): void {
 
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
-	dbDelta( $profiles_sql );
-	dbDelta( $rules_sql );
+	dbDelta($profiles_sql);
+	dbDelta($rules_sql);
 }
 
 /**
@@ -409,16 +489,17 @@ function papelito_packaging_install_tables(): void {
  * @param array<string,mixed> $package Pacote cru.
  * @return array{length_mm:int,width_mm:int,height_mm:int,weight_g:int,count:int}|null Pacote canônico ou nulo quando inválido.
  */
-function papelito_packaging_normalize_package( array $package ): ?array {
+function papelito_packaging_normalize_package(array $package): ?array
+{
 	$canonical = array(
-		'length_mm' => (int) ( $package['length_mm'] ?? 0 ),
-		'width_mm'  => (int) ( $package['width_mm'] ?? 0 ),
-		'height_mm' => (int) ( $package['height_mm'] ?? 0 ),
-		'weight_g'  => (int) ( $package['weight_g'] ?? 0 ),
-		'count'     => (int) ( $package['count'] ?? 0 ),
+		'length_mm' => (int) ($package['length_mm'] ?? 0),
+		'width_mm'  => (int) ($package['width_mm'] ?? 0),
+		'height_mm' => (int) ($package['height_mm'] ?? 0),
+		'weight_g'  => (int) ($package['weight_g'] ?? 0),
+		'count'     => (int) ($package['count'] ?? 0),
 	);
 
-	if ( $canonical['length_mm'] <= 0 || $canonical['width_mm'] <= 0 || $canonical['height_mm'] <= 0 ) {
+	if ($canonical['length_mm'] <= 0 || $canonical['width_mm'] <= 0 || $canonical['height_mm'] <= 0) {
 		return null;
 	}
 
@@ -431,15 +512,16 @@ function papelito_packaging_normalize_package( array $package ): ?array {
  * @param mixed $packages Lista crua de pacotes.
  * @return array<int,array<string,int>>|null Pacotes canônicos ou nulo quando algum é inválido ou a lista é vazia.
  */
-function papelito_packaging_normalize_packages( mixed $packages ): ?array {
-	if ( ! is_array( $packages ) || array() === $packages ) {
+function papelito_packaging_normalize_packages(mixed $packages): ?array
+{
+	if (! is_array($packages) || array() === $packages) {
 		return null;
 	}
 
 	$canonical = array();
-	foreach ( $packages as $package ) {
-		$normalized = is_array( $package ) ? papelito_packaging_normalize_package( $package ) : null;
-		if ( null === $normalized ) {
+	foreach ($packages as $package) {
+		$normalized = is_array($package) ? papelito_packaging_normalize_package($package) : null;
+		if (null === $normalized) {
 			return null;
 		}
 		$canonical[] = $normalized;
@@ -459,7 +541,8 @@ function papelito_packaging_normalize_packages( mixed $packages ): ?array {
  * @param array<string,mixed> $snapshot Snapshot com os pacotes já canônicos.
  * @return string Hash hexadecimal estável.
  */
-function papelito_packaging_physical_hash( array $snapshot ): string {
+function papelito_packaging_physical_hash(array $snapshot): string
+{
 	return hash(
 		'sha256',
 		(string) wp_json_encode(
@@ -485,34 +568,35 @@ function papelito_packaging_physical_hash( array $snapshot ): string {
  * @param array<string,mixed> $input Vendor, CEPs, valor mercantil, origem da medida, versão e pacotes.
  * @return array<string,mixed>|null Snapshot completo ou nulo quando a embalagem não é válida.
  */
-function papelito_packaging_build_snapshot( array $input ): ?array {
-	$packages = papelito_packaging_normalize_packages( $input['packages'] ?? null );
-	if ( null === $packages ) {
+function papelito_packaging_build_snapshot(array $input): ?array
+{
+	$packages = papelito_packaging_normalize_packages($input['packages'] ?? null);
+	if (null === $packages) {
 		return null;
 	}
 
-	$source   = (string) ( $input['measurement_source'] ?? PAPELITO_PACKAGING_MEASUREMENT_LEGACY );
+	$source   = (string) ($input['measurement_source'] ?? PAPELITO_PACKAGING_MEASUREMENT_LEGACY);
 	$volumes  = 0;
 	$weight_g = 0;
-	foreach ( $packages as $package ) {
+	foreach ($packages as $package) {
 		$volumes  += $package['count'];
 		$weight_g += $package['weight_g'] * $package['count'];
 	}
 
 	$snapshot = array(
 		'schema_version'          => PAPELITO_PACKAGING_SNAPSHOT_SCHEMA_VERSION,
-		'vendor_id'               => (int) ( $input['vendor_id'] ?? 0 ),
-		'origin_cep'              => (string) ( $input['origin_cep'] ?? '' ),
-		'destination_cep'         => (string) ( $input['destination_cep'] ?? '' ),
-		'merchandise_value_cents' => max( 0, (int) ( $input['merchandise_value_cents'] ?? 0 ) ),
+		'vendor_id'               => (int) ($input['vendor_id'] ?? 0),
+		'origin_cep'              => (string) ($input['origin_cep'] ?? ''),
+		'destination_cep'         => (string) ($input['destination_cep'] ?? ''),
+		'merchandise_value_cents' => max(0, (int) ($input['merchandise_value_cents'] ?? 0)),
 		'measurement_source'      => $source,
-		'approval_version'        => PAPELITO_PACKAGING_MEASUREMENT_PROFILE === $source ? (int) ( $input['approval_version'] ?? 0 ) : null,
+		'approval_version'        => PAPELITO_PACKAGING_MEASUREMENT_PROFILE === $source ? (int) ($input['approval_version'] ?? 0) : null,
 		'packages'                => $packages,
 		'total_volumes'           => $volumes,
 		'total_weight_g'          => $weight_g,
 	);
 
-	$snapshot['physical_hash'] = papelito_packaging_physical_hash( $snapshot );
+	$snapshot['physical_hash'] = papelito_packaging_physical_hash($snapshot);
 
 	return $snapshot;
 }
@@ -526,8 +610,9 @@ function papelito_packaging_build_snapshot( array $input ): ?array {
  * @param int $vendor_id ID do vendor.
  * @return array<int,array<string,mixed>> Perfis ativos e válidos.
  */
-function papelito_packaging_profiles_for_vendor( int $vendor_id ): array {
-	if ( $vendor_id <= 0 ) {
+function papelito_packaging_profiles_for_vendor(int $vendor_id): array
+{
+	if ($vendor_id <= 0) {
 		return array();
 	}
 
@@ -543,9 +628,9 @@ function papelito_packaging_profiles_for_vendor( int $vendor_id ): array {
 	);
 
 	$profiles = array();
-	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
-		$profile = papelito_packaging_profile_row( is_array( $row ) ? $row : (array) $row );
-		if ( null !== $profile ) {
+	foreach (is_array($rows) ? $rows : array() as $row) {
+		$profile = papelito_packaging_profile_row(is_array($row) ? $row : (array) $row);
+		if (null !== $profile) {
 			$profiles[] = $profile;
 		}
 	}
@@ -562,8 +647,9 @@ function papelito_packaging_profiles_for_vendor( int $vendor_id ): array {
  * @param int $vendor_id ID do vendor.
  * @return array<int,array<string,mixed>> Regras de faixa válidas.
  */
-function papelito_packaging_rules_for_vendor( int $vendor_id ): array {
-	if ( $vendor_id <= 0 ) {
+function papelito_packaging_rules_for_vendor(int $vendor_id): array
+{
+	if ($vendor_id <= 0) {
 		return array();
 	}
 
@@ -578,9 +664,9 @@ function papelito_packaging_rules_for_vendor( int $vendor_id ): array {
 	);
 
 	$rules = array();
-	foreach ( is_array( $rows ) ? $rows : array() as $row ) {
-		$rule = papelito_packaging_rule_row( is_array( $row ) ? $row : (array) $row );
-		if ( null !== $rule ) {
+	foreach (is_array($rows) ? $rows : array() as $row) {
+		$rule = papelito_packaging_rule_row(is_array($row) ? $row : (array) $row);
+		if (null !== $rule) {
 			$rules[] = $rule;
 		}
 	}
@@ -594,27 +680,932 @@ function papelito_packaging_rules_for_vendor( int $vendor_id ): array {
  * @param array<string,mixed> $row Linha crua.
  * @return array<string,mixed>|null Perfil válido ou nulo.
  */
-function papelito_packaging_profile_row( array $row ): ?array {
-	if ( 1 !== (int) ( $row['active'] ?? 0 ) || (int) ( $row['vendor_id'] ?? 0 ) <= 0 || '' === (string) ( $row['code'] ?? '' ) ) {
+function papelito_packaging_profile_row(array $row): ?array
+{
+	if (1 !== (int) ($row['active'] ?? 0) || (int) ($row['vendor_id'] ?? 0) <= 0 || '' === (string) ($row['code'] ?? '')) {
 		return null;
 	}
 
 	$profile = array(
-		'id'            => (int) ( $row['id'] ?? 0 ),
-		'vendor_id'     => (int) ( $row['vendor_id'] ?? 0 ),
+		'id'            => (int) ($row['id'] ?? 0),
+		'vendor_id'     => (int) ($row['vendor_id'] ?? 0),
 		'code'          => (string) $row['code'],
-		'label'         => (string) ( $row['label'] ?? '' ),
-		'length_mm'     => (int) ( $row['length_mm'] ?? 0 ),
-		'width_mm'      => (int) ( $row['width_mm'] ?? 0 ),
-		'height_mm'     => (int) ( $row['height_mm'] ?? 0 ),
-		'tare_weight_g' => max( 0, (int) ( $row['tare_weight_g'] ?? 0 ) ),
-		'max_payload_g' => null === ( $row['max_payload_g'] ?? null ) ? null : max( 0, (int) $row['max_payload_g'] ),
-		'source'        => (string) ( $row['source'] ?? 'custom' ),
+		'label'         => (string) ($row['label'] ?? ''),
+		'length_mm'     => (int) ($row['length_mm'] ?? 0),
+		'width_mm'      => (int) ($row['width_mm'] ?? 0),
+		'height_mm'     => (int) ($row['height_mm'] ?? 0),
+		'tare_weight_g' => max(0, (int) ($row['tare_weight_g'] ?? 0)),
+		'max_payload_g' => null === ($row['max_payload_g'] ?? null) ? null : max(0, (int) $row['max_payload_g']),
+		'source'        => (string) ($row['source'] ?? 'custom'),
 		'active'        => 1,
-		'version'       => (int) ( $row['version'] ?? 0 ),
+		'version'       => (int) ($row['version'] ?? 0),
 	);
 
-	return $profile['id'] > 0 && $profile['version'] > 0 && papelito_packaging_profile_volume_mm3( $profile ) > 0 ? $profile : null;
+	return $profile['id'] > 0 && $profile['version'] > 0 && papelito_packaging_profile_volume_mm3($profile) > 0 ? $profile : null;
+}
+
+/**
+ * Normaliza uma linha de perfil para a API do painel do vendor.
+ *
+ * Diferente do resolvedor de cotação, esta leitura mantém perfis inativos.
+ *
+ * @param array<string,mixed> $row Linha crua.
+ * @return array<string,mixed>|null Perfil serializável ou nulo.
+ */
+function papelito_packaging_admin_profile_row(array $row): ?array
+{
+	$profile = array(
+		'id'            => (int) ($row['id'] ?? 0),
+		'code'          => (string) ($row['code'] ?? ''),
+		'label'         => (string) ($row['label'] ?? ''),
+		'length_mm'     => (int) ($row['length_mm'] ?? 0),
+		'width_mm'      => (int) ($row['width_mm'] ?? 0),
+		'height_mm'     => (int) ($row['height_mm'] ?? 0),
+		'tare_weight_g' => (int) ($row['tare_weight_g'] ?? 0),
+		'max_payload_g' => null === ($row['max_payload_g'] ?? null) ? null : (int) $row['max_payload_g'],
+		'source'        => (string) ($row['source'] ?? ''),
+		'active'        => 1 === (int) ($row['active'] ?? 0),
+		'version'       => (int) ($row['version'] ?? 0),
+		'created_at'    => (string) ($row['created_at'] ?? ''),
+		'updated_at'    => (string) ($row['updated_at'] ?? ''),
+	);
+
+	return $profile['id'] > 0 && '' !== $profile['code'] && '' !== $profile['label'] && $profile['length_mm'] > 0 && $profile['width_mm'] > 0 && $profile['height_mm'] > 0 && $profile['tare_weight_g'] >= 0 && (null === $profile['max_payload_g'] || $profile['max_payload_g'] > 0) && in_array($profile['source'], array('rpc', 'custom'), true) && $profile['version'] > 0 ? $profile : null;
+}
+
+/**
+ * Lê todos os perfis do vendor, incluindo os inativos.
+ *
+ * @param int $vendor_id ID do vendor autenticado.
+ * @return array<int,array<string,mixed>> Perfis válidos.
+ */
+function papelito_packaging_profiles_for_vendor_admin(int $vendor_id): array
+{
+	if ($vendor_id <= 0) {
+		return array();
+	}
+
+	global $wpdb;
+	$tables = papelito_packaging_table_names();
+	$rows   = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT id, vendor_id, code, label, length_mm, width_mm, height_mm, tare_weight_g, max_payload_g, source, active, version, created_at, updated_at FROM {$tables['profiles']} WHERE vendor_id = %d ORDER BY id ASC",
+			$vendor_id
+		),
+		ARRAY_A
+	);
+
+	$profiles = array();
+	foreach (is_array($rows) ? $rows : array() as $row) {
+		$profile = papelito_packaging_admin_profile_row(is_array($row) ? $row : (array) $row);
+		if (null !== $profile) {
+			$profiles[] = $profile;
+		}
+	}
+
+	return $profiles;
+}
+
+/**
+ * Cria um erro de validação ou autorização do perfil.
+ *
+ * @param string $code Código público.
+ * @param string $message Mensagem para o vendor.
+ * @param int $status Status HTTP.
+ * @param string $field Campo afetado.
+ * @return WP_Error
+ */
+function papelito_packaging_profile_error(string $code, string $message, int $status, string $field = '')
+{
+	$data = array('status' => $status);
+	if ('' !== $field) {
+		$data['field'] = $field;
+	}
+
+	return new WP_Error($code, $message, $data);
+}
+
+/**
+ * Converte um valor estritamente inteiro recebido no JSON.
+ *
+ * @param mixed $value Valor cru.
+ * @return int|null Inteiro ou nulo quando o formato não é inteiro.
+ */
+function papelito_packaging_parse_integer($value): ?int
+{
+	if (is_int($value)) {
+		return $value;
+	}
+
+	if (! is_string($value) || ! preg_match('/^\d+$/', trim($value))) {
+		return null;
+	}
+
+	$parsed = filter_var(trim($value), FILTER_VALIDATE_INT);
+
+	return false === $parsed ? null : (int) $parsed;
+}
+
+/**
+ * Normaliza o código de um perfil.
+ *
+ * @param array<string,mixed> $payload Corpo recebido.
+ * @return string|WP_Error Código canônico ou erro.
+ */
+function papelito_packaging_normalize_profile_code(array $payload)
+{
+	$code = strtoupper(sanitize_text_field((string) ($payload['code'] ?? '')));
+	if ('' === $code || strlen($code) > 32) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_invalid', 'Informe um código de caixa válido.', 422, 'code');
+	}
+
+	return $code;
+}
+
+/**
+ * Normaliza o nome de um perfil.
+ *
+ * @param array<string,mixed> $payload Corpo recebido.
+ * @return string|WP_Error Nome canônico ou erro.
+ */
+function papelito_packaging_normalize_profile_label(array $payload)
+{
+	$label = sanitize_text_field((string) ($payload['label'] ?? ''));
+	if ('' === $label || strlen($label) > 96) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_invalid', 'Informe um nome de caixa válido.', 422, 'label');
+	}
+
+	return $label;
+}
+
+/**
+ * Normaliza as dimensões de um perfil.
+ *
+ * @param array<string,mixed> $payload Corpo recebido.
+ * @return array<string,int>|WP_Error Dimensões canônicas ou erro.
+ */
+function papelito_packaging_normalize_profile_dimensions(array $payload)
+{
+	$dimensions = array(
+		'length_mm' => array('label' => 'comprimento', 'value' => $payload['length_mm'] ?? null),
+		'width_mm'  => array('label' => 'largura', 'value' => $payload['width_mm'] ?? null),
+		'height_mm' => array('label' => 'altura', 'value' => $payload['height_mm'] ?? null),
+	);
+	$normalized_dimensions = array();
+	foreach ($dimensions as $field => $definition) {
+		$dimension = papelito_packaging_parse_integer($definition['value']);
+		if (null === $dimension || $dimension <= 0) {
+			return papelito_packaging_profile_error('papelito_packaging_profile_invalid', 'Informe a ' . $definition['label'] . ' com um inteiro positivo.', 422, $field);
+		}
+		$normalized_dimensions[$field] = $dimension;
+	}
+
+	return $normalized_dimensions;
+}
+
+/**
+ * Normaliza a tara de um perfil.
+ *
+ * @param array<string,mixed> $payload Corpo recebido.
+ * @return int|WP_Error Tara canônica ou erro.
+ */
+function papelito_packaging_normalize_profile_tare(array $payload)
+{
+	if (! array_key_exists('tare_weight_g', $payload) || null === $payload['tare_weight_g'] || '' === $payload['tare_weight_g']) {
+		$payload['tare_weight_g'] = 0;
+	}
+
+
+	$tare_weight = papelito_packaging_parse_integer($payload['tare_weight_g']);
+	if (null === $tare_weight || $tare_weight < 0) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_invalid', 'Informe a tara com um inteiro igual ou maior que zero.', 422, 'tare_weight_g');
+	}
+
+	return $tare_weight;
+}
+
+/**
+ * Normaliza a carga máxima de um perfil.
+ *
+ * @param array<string,mixed> $payload Corpo recebido.
+ * @return int|null|WP_Error Carga canônica ou erro.
+ */
+function papelito_packaging_normalize_profile_max_payload(array $payload)
+{
+	$max_payload = $payload['max_payload_g'] ?? null;
+	if (null === $max_payload) {
+		return null;
+	}
+
+	$max_payload = papelito_packaging_parse_integer($max_payload);
+	if (null === $max_payload || $max_payload <= 0) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_invalid', 'Informe a carga máxima com um inteiro positivo ou deixe o campo vazio.', 422, 'max_payload_g');
+	}
+
+	return $max_payload;
+}
+
+/**
+ * Normaliza e valida a origem de um perfil.
+ *
+ * @param array<string,mixed> $payload Corpo recebido.
+ * @param array<string,mixed>|null $existing Perfil persistido, em edição.
+ * @param string $code Código normalizado.
+ * @return string|WP_Error Origem canônica ou erro.
+ */
+function papelito_packaging_normalize_profile_source(array $payload, ?array $existing, string $code)
+{
+	$source = $existing['source'] ?? strtolower(sanitize_text_field((string) ($payload['source'] ?? '')));
+	if (! in_array($source, array('rpc', 'custom'), true)) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_invalid', 'Selecione uma origem de caixa válida.', 422, 'source');
+	}
+
+	if ('rpc' === $source && ! isset(papelito_packaging_rpc_catalog()[$code])) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_rpc_code_invalid', 'O código RPC informado não existe no catálogo.', 422, 'code');
+	}
+
+	return $source;
+}
+
+/**
+ * Normaliza e valida o corpo de um perfil.
+ *
+ * @param array<string,mixed> $payload Corpo recebido.
+ * @param array<string,mixed>|null $existing Perfil persistido, em edição.
+ * @return array<string,mixed>|WP_Error Dados canônicos ou erro.
+ */
+function papelito_packaging_normalize_profile_payload(array $payload, ?array $existing = null)
+{
+	$code = papelito_packaging_normalize_profile_code($payload);
+	if (is_wp_error($code)) {
+		return $code;
+	}
+
+	$label = papelito_packaging_normalize_profile_label($payload);
+	if (is_wp_error($label)) {
+		return $label;
+	}
+
+	$dimensions = papelito_packaging_normalize_profile_dimensions($payload);
+	if (is_wp_error($dimensions)) {
+		return $dimensions;
+	}
+
+	$tare_weight = papelito_packaging_normalize_profile_tare($payload);
+	if (is_wp_error($tare_weight)) {
+		return $tare_weight;
+	}
+
+	$max_payload = papelito_packaging_normalize_profile_max_payload($payload);
+	if (is_wp_error($max_payload)) {
+		return $max_payload;
+	}
+
+	$source = papelito_packaging_normalize_profile_source($payload, $existing, $code);
+	if (is_wp_error($source)) {
+		return $source;
+	}
+
+	return array_merge(
+		array(
+			'code'          => $code,
+			'label'         => $label,
+			'tare_weight_g' => $tare_weight,
+			'max_payload_g' => $max_payload,
+			'source'        => $source,
+		),
+		$dimensions
+	);
+}
+
+/**
+ * Conta as caixas ativas do vendor.
+ *
+ * @param int $vendor_id Vendor.
+ * @return int Quantidade ativa.
+ */
+function papelito_packaging_active_profile_count(int $vendor_id): int
+{
+	global $wpdb;
+	$tables = papelito_packaging_table_names();
+
+	return (int) $wpdb->get_var(
+		$wpdb->prepare(
+			"SELECT COUNT(*) FROM {$tables['profiles']} WHERE vendor_id = %d AND active = 1",
+			$vendor_id
+		)
+	);
+}
+
+/**
+ * Barra a criação e a reativação quando o vendor já bateu o teto de caixas ativas.
+ *
+ * @param int $vendor_id Vendor.
+ * @return WP_Error|null Erro quando o teto foi atingido.
+ */
+function papelito_packaging_guard_active_limit(int $vendor_id): ?WP_Error
+{
+	if (papelito_packaging_active_profile_count($vendor_id) < PAPELITO_PACKAGING_MAX_ACTIVE_PROFILES) {
+		return null;
+	}
+
+	return papelito_packaging_profile_error(
+		'papelito_packaging_profile_limit_reached',
+		sprintf('Você chegou ao limite de %d caixas ativas. Desative uma caixa para abrir vaga.', PAPELITO_PACKAGING_MAX_ACTIVE_PROFILES),
+		409
+	);
+}
+
+/**
+ * Verifica se já existe código de caixa no vendor.
+ *
+ * @param int $vendor_id Vendor.
+ * @param string $code Código normalizado.
+ * @param int $ignore_id Perfil ignorado na edição.
+ * @return bool
+ */
+function papelito_packaging_profile_code_exists(int $vendor_id, string $code, int $ignore_id = 0): bool
+{
+	global $wpdb;
+	$tables = papelito_packaging_table_names();
+	$rows   = $wpdb->get_results(
+		$wpdb->prepare(
+			"SELECT id FROM {$tables['profiles']} WHERE vendor_id = %d AND code = %s",
+			$vendor_id,
+			$code
+		),
+		ARRAY_A
+	);
+
+	foreach (is_array($rows) ? $rows : array() as $row) {
+		if ((int) ($row['id'] ?? 0) !== $ignore_id) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Lê um perfil usando simultaneamente id e vendor.
+ *
+ * @param int $vendor_id Vendor autenticado.
+ * @param int $profile_id Perfil.
+ * @return array<string,mixed>|null Perfil ou nulo.
+ */
+function papelito_packaging_profile_for_vendor_admin(int $vendor_id, int $profile_id): ?array
+{
+	if ($vendor_id <= 0 || $profile_id <= 0) {
+		return null;
+	}
+
+	global $wpdb;
+	$tables = papelito_packaging_table_names();
+	$row    = $wpdb->get_row(
+		$wpdb->prepare(
+			"SELECT id, vendor_id, code, label, length_mm, width_mm, height_mm, tare_weight_g, max_payload_g, source, active, version, created_at, updated_at FROM {$tables['profiles']} WHERE id = %d AND vendor_id = %d",
+			$profile_id,
+			$vendor_id
+		),
+		ARRAY_A
+	);
+
+	return is_array($row) ? papelito_packaging_admin_profile_row($row) : null;
+}
+
+/**
+ * Aplica o rate limit comum das escritas de embalagem.
+ *
+ * @return true|WP_Error
+ */
+function papelito_packaging_check_write_rate_limit()
+{
+	if (function_exists('papelito_rate_limit') && function_exists('papelito_rate_limit_identity') && ! papelito_rate_limit('vendor_packaging_write', papelito_rate_limit_identity(), PAPELITO_PACKAGING_WRITE_RATE_LIMIT, PAPELITO_PACKAGING_WRITE_RATE_WINDOW)) {
+		return papelito_packaging_profile_error('papelito_packaging_rate_limited', 'Muitas alterações em pouco tempo. Tente novamente em instantes.', 429);
+	}
+
+	return true;
+}
+
+/**
+ * Converte erro de persistência em resposta pública sem vazar SQL.
+ *
+ * @param string $last_error Erro do wpdb.
+ * @return WP_Error
+ */
+function papelito_packaging_persistence_error(string $last_error)
+{
+	if (false !== stripos($last_error, 'duplicate')) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_code_conflict', PAPELITO_PACKAGING_CODE_CONFLICT_MESSAGE, 409, 'code');
+	}
+
+	return papelito_packaging_profile_error('papelito_packaging_profile_persistence_failed', 'Não foi possível salvar a caixa agora.', 500);
+}
+
+/**
+ * Cria um perfil de embalagem do vendor.
+ *
+ * @param int $vendor_id Vendor autenticado.
+ * @param array<string,mixed> $payload Corpo.
+ * @param int $updated_by Usuário autenticado.
+ * @return array<string,mixed>|WP_Error Perfil ou erro.
+ */
+function papelito_packaging_create_profile(int $vendor_id, array $payload, int $updated_by)
+{
+	$rate_limit = papelito_packaging_check_write_rate_limit();
+	if (is_wp_error($rate_limit)) {
+		return $rate_limit;
+	}
+
+	$profile = papelito_packaging_normalize_profile_payload($payload);
+	if (is_wp_error($profile)) {
+		return $profile;
+	}
+
+	$limit = papelito_packaging_guard_active_limit($vendor_id);
+	if (null !== $limit) {
+		return $limit;
+	}
+
+	if (papelito_packaging_profile_code_exists($vendor_id, $profile['code'])) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_code_conflict', PAPELITO_PACKAGING_CODE_CONFLICT_MESSAGE, 409, 'code');
+	}
+
+	global $wpdb;
+	$tables = papelito_packaging_table_names();
+	$fields = 'vendor_id, code, label, length_mm, width_mm, height_mm, tare_weight_g, max_payload_g, source, active, version, updated_by';
+	if (null === $profile['max_payload_g']) {
+		$query = $wpdb->prepare(
+			"INSERT INTO {$tables['profiles']} ({$fields}) VALUES (%d, %s, %s, %d, %d, %d, %d, NULL, %s, 1, 1, %d)",
+			$vendor_id,
+			$profile['code'],
+			$profile['label'],
+			$profile['length_mm'],
+			$profile['width_mm'],
+			$profile['height_mm'],
+			$profile['tare_weight_g'],
+			$profile['source'],
+			$updated_by
+		);
+	} else {
+		$query = $wpdb->prepare(
+			"INSERT INTO {$tables['profiles']} ({$fields}) VALUES (%d, %s, %s, %d, %d, %d, %d, %d, %s, 1, 1, %d)",
+			$vendor_id,
+			$profile['code'],
+			$profile['label'],
+			$profile['length_mm'],
+			$profile['width_mm'],
+			$profile['height_mm'],
+			$profile['tare_weight_g'],
+			$profile['max_payload_g'],
+			$profile['source'],
+			$updated_by
+		);
+	}
+
+	if (false === $wpdb->query($query)) {
+		return papelito_packaging_persistence_error((string) $wpdb->last_error);
+	}
+
+	return papelito_packaging_profile_for_vendor_admin($vendor_id, (int) $wpdb->insert_id);
+}
+
+/**
+ * Edita um perfil do vendor e incrementa sua versão física.
+ *
+ * @param int $vendor_id Vendor autenticado.
+ * @param int $profile_id Perfil.
+ * @param array<string,mixed> $payload Corpo.
+ * @param int $updated_by Usuário autenticado.
+ * @return array<string,mixed>|WP_Error Perfil ou erro.
+ */
+function papelito_packaging_update_profile(int $vendor_id, int $profile_id, array $payload, int $updated_by)
+{
+	$rate_limit = papelito_packaging_check_write_rate_limit();
+	if (is_wp_error($rate_limit)) {
+		return $rate_limit;
+	}
+
+	$existing = papelito_packaging_profile_for_vendor_admin($vendor_id, $profile_id);
+	if (null === $existing) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_not_found', 'Caixa não encontrada.', 404);
+	}
+
+	$profile = papelito_packaging_normalize_profile_payload($payload, $existing);
+	if (is_wp_error($profile)) {
+		return $profile;
+	}
+
+	if (papelito_packaging_profile_code_exists($vendor_id, $profile['code'], $profile_id)) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_code_conflict', PAPELITO_PACKAGING_CODE_CONFLICT_MESSAGE, 409, 'code');
+	}
+
+	global $wpdb;
+	$tables = papelito_packaging_table_names();
+	$set    = 'code = %s, label = %s, length_mm = %d, width_mm = %d, height_mm = %d, tare_weight_g = %d, source = %s, version = version + 1, updated_by = %d';
+	if (null === $profile['max_payload_g']) {
+		$query = $wpdb->prepare(
+			"UPDATE {$tables['profiles']} SET {$set}, max_payload_g = NULL WHERE id = %d AND vendor_id = %d",
+			$profile['code'],
+			$profile['label'],
+			$profile['length_mm'],
+			$profile['width_mm'],
+			$profile['height_mm'],
+			$profile['tare_weight_g'],
+			$profile['source'],
+			$updated_by,
+			$profile_id,
+			$vendor_id
+		);
+	} else {
+		$query = $wpdb->prepare(
+			"UPDATE {$tables['profiles']} SET {$set}, max_payload_g = %d WHERE id = %d AND vendor_id = %d",
+			$profile['code'],
+			$profile['label'],
+			$profile['length_mm'],
+			$profile['width_mm'],
+			$profile['height_mm'],
+			$profile['tare_weight_g'],
+			$profile['source'],
+			$updated_by,
+			$profile['max_payload_g'],
+			$profile_id,
+			$vendor_id
+		);
+	}
+
+	if (false === $wpdb->query($query)) {
+		return papelito_packaging_persistence_error((string) $wpdb->last_error);
+	}
+
+	return papelito_packaging_profile_for_vendor_admin($vendor_id, $profile_id);
+}
+
+/**
+ * Desativa um perfil sem apagar seu histórico.
+ *
+ * @param int $vendor_id Vendor autenticado.
+ * @param int $profile_id Perfil.
+ * @param int $updated_by Usuário autenticado.
+ * @return array<string,mixed>|WP_Error Perfil ou erro.
+ */
+function papelito_packaging_deactivate_profile(int $vendor_id, int $profile_id, int $updated_by)
+{
+	$rate_limit = papelito_packaging_check_write_rate_limit();
+	if (is_wp_error($rate_limit)) {
+		return $rate_limit;
+	}
+
+	$existing = papelito_packaging_profile_for_vendor_admin($vendor_id, $profile_id);
+	if (null === $existing) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_not_found', 'Caixa não encontrada.', 404);
+	}
+
+	global $wpdb;
+	$tables = papelito_packaging_table_names();
+	$updated = $wpdb->query(
+		$wpdb->prepare(
+			"UPDATE {$tables['profiles']} SET active = 0, updated_by = %d WHERE id = %d AND vendor_id = %d",
+			$updated_by,
+			$profile_id,
+			$vendor_id
+		)
+	);
+
+	if (false === $updated) {
+		return papelito_packaging_persistence_error((string) $wpdb->last_error);
+	}
+
+	return papelito_packaging_profile_for_vendor_admin($vendor_id, $profile_id);
+}
+
+/**
+ * Reativa uma caixa desativada do vendor.
+ *
+ * O código é único por vendor entre perfis ativos e inativos, então a volta nunca colide com
+ * outro cadastro. A versão não é incrementada: reativar não altera a medida aprovada.
+ *
+ * @param int $vendor_id Vendor dono da caixa.
+ * @param int $profile_id Caixa alvo.
+ * @param int $updated_by Autor da alteração.
+ * @return array<string,mixed>|WP_Error Perfil atualizado ou erro.
+ */
+function papelito_packaging_reactivate_profile(int $vendor_id, int $profile_id, int $updated_by)
+{
+	$rate_limit = papelito_packaging_check_write_rate_limit();
+	if (is_wp_error($rate_limit)) {
+		return $rate_limit;
+	}
+
+	$existing = papelito_packaging_profile_for_vendor_admin($vendor_id, $profile_id);
+	if (null === $existing) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_not_found', 'Caixa não encontrada.', 404);
+	}
+
+	$limit = papelito_packaging_guard_active_limit($vendor_id);
+	if (null !== $limit) {
+		return $limit;
+	}
+
+	global $wpdb;
+	$tables  = papelito_packaging_table_names();
+	$updated = $wpdb->query(
+		$wpdb->prepare(
+			"UPDATE {$tables['profiles']} SET active = 1, updated_by = %d WHERE id = %d AND vendor_id = %d",
+			$updated_by,
+			$profile_id,
+			$vendor_id
+		)
+	);
+
+	if (false === $updated) {
+		return papelito_packaging_persistence_error((string) $wpdb->last_error);
+	}
+
+	return papelito_packaging_profile_for_vendor_admin($vendor_id, $profile_id);
+}
+
+/**
+ * Apaga em definitivo uma caixa já desativada.
+ *
+ * Só a caixa inativa é apagável: a ativa sai de cena por desativação, que preserva a linha. O
+ * histórico de frete não depende desta tabela — o snapshot enviado à transportadora copia as
+ * medidas e guarda apenas `approval_version` —, então apagar aqui não reescreve pedido nenhum.
+ * As regras de override que apontavam para o perfil saem junto: sem o perfil elas forçariam uma
+ * caixa inexistente e a escolha cairia no automático sem aviso.
+ *
+ * @param int $vendor_id Vendor dono da caixa.
+ * @param int $profile_id Caixa alvo.
+ * @return true|WP_Error Verdadeiro ou erro.
+ */
+function papelito_packaging_delete_profile(int $vendor_id, int $profile_id)
+{
+	$rate_limit = papelito_packaging_check_write_rate_limit();
+	if (is_wp_error($rate_limit)) {
+		return $rate_limit;
+	}
+
+	$existing = papelito_packaging_profile_for_vendor_admin($vendor_id, $profile_id);
+	if (null === $existing) {
+		return papelito_packaging_profile_error('papelito_packaging_profile_not_found', 'Caixa não encontrada.', 404);
+	}
+
+	if (! empty($existing['active'])) {
+		return papelito_packaging_profile_error(
+			'papelito_packaging_profile_active',
+			'Desative a caixa antes de excluí-la.',
+			409
+		);
+	}
+
+	global $wpdb;
+	$tables = papelito_packaging_table_names();
+
+	$wpdb->query(
+		$wpdb->prepare(
+			"DELETE FROM {$tables['rules']} WHERE vendor_id = %d AND profile_id = %d",
+			$vendor_id,
+			$profile_id
+		)
+	);
+
+	$deleted = $wpdb->query(
+		$wpdb->prepare(
+			"DELETE FROM {$tables['profiles']} WHERE id = %d AND vendor_id = %d",
+			$profile_id,
+			$vendor_id
+		)
+	);
+
+	if (false === $deleted) {
+		return papelito_packaging_persistence_error((string) $wpdb->last_error);
+	}
+
+	return true;
+}
+
+/**
+ * REST callback que lista as caixas do vendor autenticado.
+ *
+ * @return WP_REST_Response
+ */
+function papelito_packaging_handle_get_profiles()
+{
+	return new WP_REST_Response(
+		array('items' => papelito_packaging_profiles_for_vendor_admin(get_current_user_id())),
+		200
+	);
+}
+
+/**
+ * REST callback que expõe o catálogo estático RPC.
+ *
+ * @return WP_REST_Response
+ */
+function papelito_packaging_handle_get_catalog()
+{
+	return new WP_REST_Response(
+		array('items' => array_values(papelito_packaging_rpc_catalog())),
+		200
+	);
+}
+
+/**
+ * REST callback de criação de caixa.
+ *
+ * @param WP_REST_Request $request Requisição.
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_packaging_handle_create_profile(WP_REST_Request $request)
+{
+	$payload = $request->get_json_params();
+	$result  = papelito_packaging_create_profile(
+		get_current_user_id(),
+		is_array($payload) ? $payload : array(),
+		get_current_user_id()
+	);
+
+	if (is_wp_error($result)) {
+		return $result;
+	}
+
+	return new WP_REST_Response(
+		array('items' => papelito_packaging_profiles_for_vendor_admin(get_current_user_id())),
+		201
+	);
+}
+
+/**
+ * REST callback de edição de caixa.
+ *
+ * @param WP_REST_Request $request Requisição.
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_packaging_handle_update_profile(WP_REST_Request $request)
+{
+	$payload = $request->get_json_params();
+	$result  = papelito_packaging_update_profile(
+		get_current_user_id(),
+		absint($request->get_param('id')),
+		is_array($payload) ? $payload : array(),
+		get_current_user_id()
+	);
+
+	if (is_wp_error($result)) {
+		return $result;
+	}
+
+	return new WP_REST_Response(
+		array('items' => papelito_packaging_profiles_for_vendor_admin(get_current_user_id())),
+		200
+	);
+}
+
+/**
+ * REST callback de desativação de caixa.
+ *
+ * @param WP_REST_Request $request Requisição.
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_packaging_handle_deactivate_profile(WP_REST_Request $request)
+{
+	$result = papelito_packaging_deactivate_profile(
+		get_current_user_id(),
+		absint($request->get_param('id')),
+		get_current_user_id()
+	);
+
+	if (is_wp_error($result)) {
+		return $result;
+	}
+
+	return new WP_REST_Response(
+		array('items' => papelito_packaging_profiles_for_vendor_admin(get_current_user_id())),
+		200
+	);
+}
+
+/**
+ * REST callback de reativação de caixa.
+ *
+ * @param WP_REST_Request $request Requisição.
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_packaging_handle_reactivate_profile(WP_REST_Request $request)
+{
+	$result = papelito_packaging_reactivate_profile(
+		get_current_user_id(),
+		absint($request->get_param('id')),
+		get_current_user_id()
+	);
+
+	if (is_wp_error($result)) {
+		return $result;
+	}
+
+	return new WP_REST_Response(
+		array('items' => papelito_packaging_profiles_for_vendor_admin(get_current_user_id())),
+		200
+	);
+}
+
+/**
+ * REST callback de exclusão definitiva de caixa.
+ *
+ * @param WP_REST_Request $request Requisição.
+ * @return WP_REST_Response|WP_Error
+ */
+function papelito_packaging_handle_delete_profile(WP_REST_Request $request)
+{
+	$result = papelito_packaging_delete_profile(
+		get_current_user_id(),
+		absint($request->get_param('id'))
+	);
+
+	if (is_wp_error($result)) {
+		return $result;
+	}
+
+	return new WP_REST_Response(
+		array('items' => papelito_packaging_profiles_for_vendor_admin(get_current_user_id())),
+		200
+	);
+}
+
+/**
+ * Registra as rotas REST de embalagem do vendor.
+ *
+ * @return void
+ */
+function papelito_packaging_register_vendor_routes(): void
+{
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/packaging-profiles',
+		array(
+			array(
+				'methods'             => 'GET',
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'callback'            => 'papelito_packaging_handle_get_profiles',
+			),
+			array(
+				'methods'             => 'POST',
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller_commercial',
+				'callback'            => 'papelito_packaging_handle_create_profile',
+			),
+		)
+	);
+
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/packaging-profiles/catalog',
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+			'callback'            => 'papelito_packaging_handle_get_catalog',
+		)
+	);
+
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/packaging-profiles/(?P<id>\d+)',
+		array(
+			array(
+				'methods'             => 'PUT',
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller_commercial',
+				'callback'            => 'papelito_packaging_handle_update_profile',
+			),
+			array(
+				'methods'             => 'DELETE',
+				'permission_callback' => 'papelito_vendor_dashboard_permission_seller_commercial',
+				'callback'            => 'papelito_packaging_handle_delete_profile',
+			),
+		)
+	);
+
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/packaging-profiles/(?P<id>\d+)/deactivate',
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => 'papelito_vendor_dashboard_permission_seller_commercial',
+			'callback'            => 'papelito_packaging_handle_deactivate_profile',
+		)
+	);
+
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/packaging-profiles/(?P<id>\d+)/reactivate',
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => 'papelito_vendor_dashboard_permission_seller_commercial',
+			'callback'            => 'papelito_packaging_handle_reactivate_profile',
+		)
+	);
+}
+
+if (function_exists('add_action')) {
+	add_action('rest_api_init', 'papelito_packaging_register_vendor_routes');
 }
 
 /**
@@ -623,16 +1614,17 @@ function papelito_packaging_profile_row( array $row ): ?array {
  * @param array<string,mixed> $row Linha crua.
  * @return array<string,mixed>|null Regra válida ou nulo.
  */
-function papelito_packaging_rule_row( array $row ): ?array {
+function papelito_packaging_rule_row(array $row): ?array
+{
 	$rule = array(
-		'id'          => (int) ( $row['id'] ?? 0 ),
-		'vendor_id'   => (int) ( $row['vendor_id'] ?? 0 ),
-		'target_type' => (string) ( $row['target_type'] ?? '' ),
-		'target_id'   => (int) ( $row['target_id'] ?? 0 ),
-		'min_qty'     => (int) ( $row['min_qty'] ?? 0 ),
-		'max_qty'     => (int) ( $row['max_qty'] ?? 0 ),
-		'profile_id'  => (int) ( $row['profile_id'] ?? 0 ),
-		'version'     => (int) ( $row['version'] ?? 0 ),
+		'id'          => (int) ($row['id'] ?? 0),
+		'vendor_id'   => (int) ($row['vendor_id'] ?? 0),
+		'target_type' => (string) ($row['target_type'] ?? ''),
+		'target_id'   => (int) ($row['target_id'] ?? 0),
+		'min_qty'     => (int) ($row['min_qty'] ?? 0),
+		'max_qty'     => (int) ($row['max_qty'] ?? 0),
+		'profile_id'  => (int) ($row['profile_id'] ?? 0),
+		'version'     => (int) ($row['version'] ?? 0),
 	);
 
 	return $rule['id'] > 0 && $rule['vendor_id'] > 0 && '' !== $rule['target_type'] && $rule['target_id'] > 0 && $rule['min_qty'] > 0 && $rule['max_qty'] >= $rule['min_qty'] && $rule['profile_id'] > 0 ? $rule : null;
@@ -647,15 +1639,16 @@ function papelito_packaging_rule_row( array $row ): ?array {
  * @param array<int,array<string,mixed>> $items Itens do filtro Braspress.
  * @return array<int,array<string,mixed>>|null Linhas físicas ou nulo.
  */
-function papelito_packaging_items_to_lines( array $items ): ?array {
-	if ( empty( $items ) || ! function_exists( 'wc_get_product' ) ) {
+function papelito_packaging_items_to_lines(array $items): ?array
+{
+	if (empty($items) || ! function_exists('wc_get_product')) {
 		return null;
 	}
 
 	$lines = array();
-	foreach ( $items as $item ) {
-		$line = is_array( $item ) ? papelito_packaging_item_to_line( $item ) : null;
-		if ( null === $line ) {
+	foreach ($items as $item) {
+		$line = is_array($item) ? papelito_packaging_item_to_line($item) : null;
+		if (null === $line) {
 			return null;
 		}
 		$lines[] = $line;
@@ -673,24 +1666,25 @@ function papelito_packaging_items_to_lines( array $items ): ?array {
  * @param array<string,mixed> $item Item cru.
  * @return array<string,mixed>|null Linha física ou nulo.
  */
-function papelito_packaging_item_to_line( array $item ): ?array {
-	$product_id = (int) ( $item['product_id'] ?? 0 );
-	$qty        = (int) ( $item['qty'] ?? 0 );
-	if ( $product_id <= 0 || $qty <= 0 ) {
+function papelito_packaging_item_to_line(array $item): ?array
+{
+	$product_id = (int) ($item['product_id'] ?? 0);
+	$qty        = (int) ($item['qty'] ?? 0);
+	if ($product_id <= 0 || $qty <= 0) {
 		return null;
 	}
 
-	$product = wc_get_product( $product_id );
-	if ( ! is_object( $product ) || ! method_exists( $product, 'get_weight' ) ) {
+	$product = wc_get_product($product_id);
+	if (! is_object($product) || ! method_exists($product, 'get_weight')) {
 		return null;
 	}
 
-	$kit = function_exists( 'papelito_kit_get_by_product' ) ? papelito_kit_get_by_product( $product_id ) : null;
-	if ( is_array( $kit ) ) {
-		return papelito_packaging_kit_line( $kit, $qty );
+	$kit = function_exists('papelito_kit_get_by_product') ? papelito_kit_get_by_product($product_id) : null;
+	if (is_array($kit)) {
+		return papelito_packaging_kit_line($kit, $qty);
 	}
 
-	return papelito_packaging_product_line( $product, $product_id, $qty );
+	return papelito_packaging_product_line($product, $product_id, $qty);
 }
 
 /**
@@ -701,14 +1695,15 @@ function papelito_packaging_item_to_line( array $item ): ?array {
  * @param int    $qty Quantidade.
  * @return array<string,mixed>|null Linha ou nulo quando incompleta.
  */
-function papelito_packaging_product_line( object $product, int $product_id, int $qty ): ?array {
-	if ( ! method_exists( $product, 'get_length' ) || ! method_exists( $product, 'get_width' ) || ! method_exists( $product, 'get_height' ) ) {
+function papelito_packaging_product_line(object $product, int $product_id, int $qty): ?array
+{
+	if (! method_exists($product, 'get_length') || ! method_exists($product, 'get_width') || ! method_exists($product, 'get_height')) {
 		return null;
 	}
 
-	$dimensions = papelito_packaging_product_dimensions_mm( $product );
-	$weight_g   = papelito_packaging_weight_g( $product->get_weight() );
-	if ( null === $dimensions || null === $weight_g ) {
+	$dimensions = papelito_packaging_product_dimensions_mm($product);
+	$weight_g   = papelito_packaging_weight_g($product->get_weight());
+	if (null === $dimensions || null === $weight_g) {
 		return null;
 	}
 
@@ -733,11 +1728,12 @@ function papelito_packaging_product_line( object $product, int $product_id, int 
  * @param int                 $qty Quantidade de Kits.
  * @return array<string,mixed>|null Linha ou nulo quando incompleta.
  */
-function papelito_packaging_kit_line( array $kit, int $qty ): ?array {
-	$kit_id = (int) ( $kit['id'] ?? 0 );
-	$dimensions = papelito_packaging_kit_dimensions_mm( $kit );
-	$weight_g   = papelito_packaging_kit_weight_g( $kit_id );
-	if ( $kit_id <= 0 || null === $dimensions || null === $weight_g ) {
+function papelito_packaging_kit_line(array $kit, int $qty): ?array
+{
+	$kit_id = (int) ($kit['id'] ?? 0);
+	$dimensions = papelito_packaging_kit_dimensions_mm($kit);
+	$weight_g   = papelito_packaging_kit_weight_g($kit_id);
+	if ($kit_id <= 0 || null === $dimensions || null === $weight_g) {
 		return null;
 	}
 
@@ -758,14 +1754,15 @@ function papelito_packaging_kit_line( array $kit, int $qty ): ?array {
  * @param object $product Produto físico.
  * @return array{length_mm:int,width_mm:int,height_mm:int}|null Dimensões ou nulo.
  */
-function papelito_packaging_product_dimensions_mm( object $product ): ?array {
+function papelito_packaging_product_dimensions_mm(object $product): ?array
+{
 	$dimensions = array(
-		'length_mm' => papelito_packaging_dimension_mm( $product->get_length() ),
-		'width_mm'  => papelito_packaging_dimension_mm( $product->get_width() ),
-		'height_mm' => papelito_packaging_dimension_mm( $product->get_height() ),
+		'length_mm' => papelito_packaging_dimension_mm($product->get_length()),
+		'width_mm'  => papelito_packaging_dimension_mm($product->get_width()),
+		'height_mm' => papelito_packaging_dimension_mm($product->get_height()),
 	);
 
-	return in_array( null, $dimensions, true ) ? null : $dimensions;
+	return in_array(null, $dimensions, true) ? null : $dimensions;
 }
 
 /**
@@ -774,14 +1771,15 @@ function papelito_packaging_product_dimensions_mm( object $product ): ?array {
  * @param array<string,mixed> $kit Linha do Kit.
  * @return array{length_mm:int,width_mm:int,height_mm:int}|null Dimensões ou nulo.
  */
-function papelito_packaging_kit_dimensions_mm( array $kit ): ?array {
+function papelito_packaging_kit_dimensions_mm(array $kit): ?array
+{
 	$dimensions = array(
-		'length_mm' => papelito_packaging_centimeters_to_mm( $kit['package_length'] ?? null ),
-		'width_mm'  => papelito_packaging_centimeters_to_mm( $kit['package_width'] ?? null ),
-		'height_mm' => papelito_packaging_centimeters_to_mm( $kit['package_height'] ?? null ),
+		'length_mm' => papelito_packaging_centimeters_to_mm($kit['package_length'] ?? null),
+		'width_mm'  => papelito_packaging_centimeters_to_mm($kit['package_width'] ?? null),
+		'height_mm' => papelito_packaging_centimeters_to_mm($kit['package_height'] ?? null),
 	);
 
-	return in_array( null, $dimensions, true ) ? null : $dimensions;
+	return in_array(null, $dimensions, true) ? null : $dimensions;
 }
 
 /**
@@ -790,13 +1788,14 @@ function papelito_packaging_kit_dimensions_mm( array $kit ): ?array {
  * @param mixed $value Medida na unidade configurada pelo WooCommerce.
  * @return int|null Milímetros inteiros ou nulo.
  */
-function papelito_packaging_dimension_mm( mixed $value ): ?int {
-	if ( ! is_numeric( $value ) || ! is_finite( (float) $value ) || (float) $value <= 0 || ! function_exists( 'wc_get_dimension' ) ) {
+function papelito_packaging_dimension_mm(mixed $value): ?int
+{
+	if (! is_numeric($value) || ! is_finite((float) $value) || (float) $value <= 0 || ! function_exists('wc_get_dimension')) {
 		return null;
 	}
 
-	$converted = wc_get_dimension( $value, 'mm' );
-	$millimeters = is_numeric( $converted ) && is_finite( (float) $converted ) ? (int) round( (float) $converted, 0, PHP_ROUND_HALF_UP ) : 0;
+	$converted = wc_get_dimension($value, 'mm');
+	$millimeters = is_numeric($converted) && is_finite((float) $converted) ? (int) round((float) $converted, 0, PHP_ROUND_HALF_UP) : 0;
 
 	return $millimeters > 0 ? $millimeters : null;
 }
@@ -807,12 +1806,13 @@ function papelito_packaging_dimension_mm( mixed $value ): ?int {
  * @param mixed $value Medida em centímetros.
  * @return int|null Milímetros inteiros ou nulo.
  */
-function papelito_packaging_centimeters_to_mm( mixed $value ): ?int {
-	if ( ! is_numeric( $value ) || ! is_finite( (float) $value ) || (float) $value <= 0 ) {
+function papelito_packaging_centimeters_to_mm(mixed $value): ?int
+{
+	if (! is_numeric($value) || ! is_finite((float) $value) || (float) $value <= 0) {
 		return null;
 	}
 
-	$millimeters = (int) round( (float) $value * 10, 0, PHP_ROUND_HALF_UP );
+	$millimeters = (int) round((float) $value * 10, 0, PHP_ROUND_HALF_UP);
 
 	return $millimeters > 0 ? $millimeters : null;
 }
@@ -823,13 +1823,14 @@ function papelito_packaging_centimeters_to_mm( mixed $value ): ?int {
  * @param mixed $value Peso na unidade configurada pelo WooCommerce.
  * @return int|null Gramas inteiros ou nulo.
  */
-function papelito_packaging_weight_g( mixed $value ): ?int {
-	if ( ! is_numeric( $value ) || ! is_finite( (float) $value ) || (float) $value <= 0 || ! function_exists( 'wc_get_weight' ) ) {
+function papelito_packaging_weight_g(mixed $value): ?int
+{
+	if (! is_numeric($value) || ! is_finite((float) $value) || (float) $value <= 0 || ! function_exists('wc_get_weight')) {
 		return null;
 	}
 
-	$converted = wc_get_weight( $value, 'g' );
-	$grams = is_numeric( $converted ) && is_finite( (float) $converted ) ? (int) round( (float) $converted, 0, PHP_ROUND_HALF_UP ) : 0;
+	$converted = wc_get_weight($value, 'g');
+	$grams = is_numeric($converted) && is_finite((float) $converted) ? (int) round((float) $converted, 0, PHP_ROUND_HALF_UP) : 0;
 
 	return $grams > 0 ? $grams : null;
 }
@@ -843,18 +1844,19 @@ function papelito_packaging_weight_g( mixed $value ): ?int {
  * @param int $kit_id ID da entidade Kit.
  * @return int|null Peso de uma unidade em gramas ou nulo.
  */
-function papelito_packaging_kit_weight_g( int $kit_id ): ?int {
-	if ( $kit_id <= 0 || ! function_exists( 'papelito_kit_items' ) || ! function_exists( 'papelito_kit_merchandise' ) ) {
+function papelito_packaging_kit_weight_g(int $kit_id): ?int
+{
+	if ($kit_id <= 0 || ! function_exists('papelito_kit_items') || ! function_exists('papelito_kit_merchandise')) {
 		return null;
 	}
 
-	$weight_g = papelito_packaging_kit_component_weight_g( papelito_kit_items( $kit_id ) );
-	if ( null === $weight_g ) {
+	$weight_g = papelito_packaging_kit_component_weight_g(papelito_kit_items($kit_id));
+	if (null === $weight_g) {
 		return null;
 	}
 
-	$merchandise_weight_g = papelito_packaging_kit_merchandise_weight_g( papelito_kit_merchandise( $kit_id ) );
-	if ( null === $merchandise_weight_g ) {
+	$merchandise_weight_g = papelito_packaging_kit_merchandise_weight_g(papelito_kit_merchandise($kit_id));
+	if (null === $merchandise_weight_g) {
 		return null;
 	}
 
@@ -869,18 +1871,19 @@ function papelito_packaging_kit_weight_g( int $kit_id ): ?int {
  * @param array<int,array<string,mixed>> $items Componentes.
  * @return int|null Peso em gramas ou nulo.
  */
-function papelito_packaging_kit_component_weight_g( array $items ): ?int {
-	if ( empty( $items ) ) {
+function papelito_packaging_kit_component_weight_g(array $items): ?int
+{
+	if (empty($items)) {
 		return null;
 	}
 
 	$total = 0;
-	foreach ( $items as $item ) {
-		$product_id = (int) ( $item['product_id'] ?? 0 );
-		$quantity   = (int) ( $item['quantity'] ?? 0 );
-		$product    = $product_id > 0 && function_exists( 'wc_get_product' ) ? wc_get_product( $product_id ) : null;
-		$weight_g   = is_object( $product ) && method_exists( $product, 'get_weight' ) ? papelito_packaging_weight_g( $product->get_weight() ) : null;
-		if ( null === $weight_g || $quantity <= 0 ) {
+	foreach ($items as $item) {
+		$product_id = (int) ($item['product_id'] ?? 0);
+		$quantity   = (int) ($item['quantity'] ?? 0);
+		$product    = $product_id > 0 && function_exists('wc_get_product') ? wc_get_product($product_id) : null;
+		$weight_g   = is_object($product) && method_exists($product, 'get_weight') ? papelito_packaging_weight_g($product->get_weight()) : null;
+		if (null === $weight_g || $quantity <= 0) {
 			return null;
 		}
 		$total += $weight_g * $quantity;
@@ -895,12 +1898,13 @@ function papelito_packaging_kit_component_weight_g( array $items ): ?int {
  * @param array<int,array<string,mixed>> $items Brindes.
  * @return int|null Peso em gramas ou nulo.
  */
-function papelito_packaging_kit_merchandise_weight_g( array $items ): ?int {
+function papelito_packaging_kit_merchandise_weight_g(array $items): ?int
+{
 	$total = 0;
-	foreach ( $items as $item ) {
-		$quantity = (int) ( $item['quantity'] ?? 0 );
-		$weight_g = papelito_packaging_weight_g( $item['weight'] ?? null );
-		if ( null === $weight_g || $quantity <= 0 ) {
+	foreach ($items as $item) {
+		$quantity = (int) ($item['quantity'] ?? 0);
+		$weight_g = papelito_packaging_weight_g($item['weight'] ?? null);
+		if (null === $weight_g || $quantity <= 0) {
 			return null;
 		}
 		$total += $weight_g * $quantity;
@@ -915,10 +1919,11 @@ function papelito_packaging_kit_merchandise_weight_g( array $items ): ?int {
  * @param array<int,array<string,mixed>> $items Itens do carrinho.
  * @return int Valor em centavos.
  */
-function papelito_packaging_declared_value_cents( array $items ): int {
+function papelito_packaging_declared_value_cents(array $items): int
+{
 	$total = 0;
-	foreach ( $items as $item ) {
-		$total += max( 0, (int) ( $item['declared_value_cents'] ?? 0 ) );
+	foreach ($items as $item) {
+		$total += max(0, (int) ($item['declared_value_cents'] ?? 0));
 	}
 
 	return $total;
@@ -936,20 +1941,21 @@ function papelito_packaging_declared_value_cents( array $items ): int {
  * @param array<int,array<string,mixed>> $items Itens originais.
  * @return array<string,mixed>|null Pacote Braspress ou nulo.
  */
-function papelito_packaging_braspress_package_from_profile( int $vendor_id, array $profile, array $lines, array $items ): ?array {
-	$version = (int) ( $profile['version'] ?? 0 );
-	$weight_g = papelito_packaging_items_weight_g( $lines ) + max( 0, (int) ( $profile['tare_weight_g'] ?? 0 ) );
+function papelito_packaging_braspress_package_from_profile(int $vendor_id, array $profile, array $lines, array $items): ?array
+{
+	$version = (int) ($profile['version'] ?? 0);
+	$weight_g = papelito_packaging_items_weight_g($lines) + max(0, (int) ($profile['tare_weight_g'] ?? 0));
 	$snapshot = papelito_packaging_build_snapshot(
 		array(
 			'vendor_id'               => $vendor_id,
-			'merchandise_value_cents' => papelito_packaging_declared_value_cents( $items ),
+			'merchandise_value_cents' => papelito_packaging_declared_value_cents($items),
 			'measurement_source'      => PAPELITO_PACKAGING_MEASUREMENT_PROFILE,
 			'approval_version'        => $version,
 			'packages'                => array(
 				array(
-					'length_mm' => (int) ( $profile['length_mm'] ?? 0 ),
-					'width_mm'  => (int) ( $profile['width_mm'] ?? 0 ),
-					'height_mm' => (int) ( $profile['height_mm'] ?? 0 ),
+					'length_mm' => (int) ($profile['length_mm'] ?? 0),
+					'width_mm'  => (int) ($profile['width_mm'] ?? 0),
+					'height_mm' => (int) ($profile['height_mm'] ?? 0),
 					'weight_g'  => $weight_g,
 					'count'     => 1,
 				),
@@ -957,7 +1963,7 @@ function papelito_packaging_braspress_package_from_profile( int $vendor_id, arra
 		)
 	);
 
-	return null === $snapshot || $version <= 0 ? null : papelito_packaging_braspress_package_from_snapshot( $snapshot );
+	return null === $snapshot || $version <= 0 ? null : papelito_packaging_braspress_package_from_snapshot($snapshot);
 }
 
 /**
@@ -966,21 +1972,22 @@ function papelito_packaging_braspress_package_from_profile( int $vendor_id, arra
  * @param array<string,mixed> $snapshot Snapshot físico válido.
  * @return array<string,mixed>|null Pacote Braspress ou nulo.
  */
-function papelito_packaging_braspress_package_from_snapshot( array $snapshot ): ?array {
-	$total_weight_g = (int) ( $snapshot['total_weight_g'] ?? 0 );
-	$volumes        = (int) ( $snapshot['total_volumes'] ?? 0 );
-	$cubagem        = papelito_packaging_snapshot_cubagem( $snapshot['packages'] ?? array() );
-	if ( $total_weight_g <= 0 || $volumes <= 0 || empty( $cubagem ) ) {
+function papelito_packaging_braspress_package_from_snapshot(array $snapshot): ?array
+{
+	$total_weight_g = (int) ($snapshot['total_weight_g'] ?? 0);
+	$volumes        = (int) ($snapshot['total_volumes'] ?? 0);
+	$cubagem        = papelito_packaging_snapshot_cubagem($snapshot['packages'] ?? array());
+	if ($total_weight_g <= 0 || $volumes <= 0 || empty($cubagem)) {
 		return null;
 	}
 
 	return array(
-		'weight_kg'         => round( $total_weight_g / 1000, 2, PHP_ROUND_HALF_UP ),
+		'weight_kg'         => round($total_weight_g / 1000, 2, PHP_ROUND_HALF_UP),
 		'volumes'           => $volumes,
 		'cubagem'           => $cubagem,
-		'approval_version'  => (int) ( $snapshot['approval_version'] ?? 0 ),
-		'physical_hash'     => (string) ( $snapshot['physical_hash'] ?? '' ),
-		'measurement_source' => (string) ( $snapshot['measurement_source'] ?? '' ),
+		'approval_version'  => (int) ($snapshot['approval_version'] ?? 0),
+		'physical_hash'     => (string) ($snapshot['physical_hash'] ?? ''),
+		'measurement_source' => (string) ($snapshot['measurement_source'] ?? ''),
 	);
 }
 
@@ -990,30 +1997,31 @@ function papelito_packaging_braspress_package_from_snapshot( array $snapshot ): 
  * @param mixed $packages Pacotes do snapshot.
  * @return array<int,array{length_m:float,width_m:float,height_m:float,volumes:int}> Grupos.
  */
-function papelito_packaging_snapshot_cubagem( mixed $packages ): array {
-	if ( ! is_array( $packages ) ) {
+function papelito_packaging_snapshot_cubagem(mixed $packages): array
+{
+	if (! is_array($packages)) {
 		return array();
 	}
 
 	$groups = array();
-	foreach ( $packages as $package ) {
-		if ( ! is_array( $package ) ) {
+	foreach ($packages as $package) {
+		if (! is_array($package)) {
 			return array();
 		}
 
-		$key = implode( ':', array( (int) ( $package['length_mm'] ?? 0 ), (int) ( $package['width_mm'] ?? 0 ), (int) ( $package['height_mm'] ?? 0 ) ) );
-		if ( ! isset( $groups[ $key ] ) ) {
-			$groups[ $key ] = array(
-				'length_m' => round( (int) ( $package['length_mm'] ?? 0 ) / 1000, 3, PHP_ROUND_HALF_UP ),
-				'width_m'  => round( (int) ( $package['width_mm'] ?? 0 ) / 1000, 3, PHP_ROUND_HALF_UP ),
-				'height_m' => round( (int) ( $package['height_mm'] ?? 0 ) / 1000, 3, PHP_ROUND_HALF_UP ),
+		$key = implode(':', array((int) ($package['length_mm'] ?? 0), (int) ($package['width_mm'] ?? 0), (int) ($package['height_mm'] ?? 0)));
+		if (! isset($groups[$key])) {
+			$groups[$key] = array(
+				'length_m' => round((int) ($package['length_mm'] ?? 0) / 1000, 3, PHP_ROUND_HALF_UP),
+				'width_m'  => round((int) ($package['width_mm'] ?? 0) / 1000, 3, PHP_ROUND_HALF_UP),
+				'height_m' => round((int) ($package['height_mm'] ?? 0) / 1000, 3, PHP_ROUND_HALF_UP),
 				'volumes'  => 0,
 			);
 		}
-		$groups[ $key ]['volumes'] += (int) ( $package['count'] ?? 0 );
+		$groups[$key]['volumes'] += (int) ($package['count'] ?? 0);
 	}
 
-	return array_values( $groups );
+	return array_values($groups);
 }
 
 /**
@@ -1026,23 +2034,24 @@ function papelito_packaging_snapshot_cubagem( mixed $packages ): array {
  * @param array<int,array<string,mixed>> $items Itens do carrinho.
  * @return array<string,mixed>|null Pacote físico ou nulo.
  */
-function papelito_packaging_braspress_package( int $vendor_id, array $items ): ?array {
-	$profiles = papelito_packaging_profiles_for_vendor( $vendor_id );
-	if ( empty( $profiles ) ) {
+function papelito_packaging_braspress_package(int $vendor_id, array $items): ?array
+{
+	$profiles = papelito_packaging_profiles_for_vendor($vendor_id);
+	if (empty($profiles)) {
 		return null;
 	}
 
-	$lines = papelito_packaging_items_to_lines( $items );
-	if ( null === $lines ) {
+	$lines = papelito_packaging_items_to_lines($items);
+	if (null === $lines) {
 		return null;
 	}
 
-	$profile = papelito_packaging_resolve_profile( $profiles, papelito_packaging_rules_for_vendor( $vendor_id ), $lines, PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR );
-	if ( null === $profile ) {
+	$profile = papelito_packaging_resolve_profile($profiles, papelito_packaging_rules_for_vendor($vendor_id), $lines, PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR);
+	if (null === $profile) {
 		return null;
 	}
 
-	return papelito_packaging_braspress_package_from_profile( $vendor_id, $profile, $lines, $items );
+	return papelito_packaging_braspress_package_from_profile($vendor_id, $profile, $lines, $items);
 }
 
 /**
@@ -1056,10 +2065,11 @@ function papelito_packaging_braspress_package( int $vendor_id, array $items ): ?
  * @param array<int,array<string,mixed>> $items Itens do carrinho.
  * @return array<string,mixed>|null Pacote aprovado ou nulo.
  */
-function papelito_packaging_braspress_package_filter( mixed $ignored, int $vendor_id, array $items ): ?array {
-	return papelito_packaging_braspress_package( $vendor_id, $items );
+function papelito_packaging_braspress_package_filter(mixed $ignored, int $vendor_id, array $items): ?array
+{
+	return papelito_packaging_braspress_package($vendor_id, $items);
 }
 
-if ( function_exists( 'add_filter' ) ) {
-	add_filter( 'papelito_braspress_physical_package', 'papelito_packaging_braspress_package_filter', 10, 3 );
+if (function_exists('add_filter')) {
+	add_filter('papelito_braspress_physical_package', 'papelito_packaging_braspress_package_filter', 10, 3);
 }
