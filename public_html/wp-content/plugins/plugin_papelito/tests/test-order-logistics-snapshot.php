@@ -477,6 +477,7 @@ $routed_snapshot = is_array( $resolved ) ? ( $resolved['logistics_snapshot'] ?? 
 logistics_assert( 'o checkout devolve o snapshot junto da opção', is_array( $routed_snapshot ) );
 logistics_assert( 'o quote_context chegou ao produtor pelo caminho do pedido', is_array( $routed_snapshot ) && LOGISTICS_TEST_MERCHANDISE_CENTS === $routed_snapshot['merchandise_value_cents'] );
 logistics_assert( 'o destino resolvido chegou ao snapshot', is_array( $routed_snapshot ) && LOGISTICS_TEST_DESTINATION_CEP === $routed_snapshot['destination_cep'] );
+logistics_assert( 'a origem que cotou chegou ao snapshot', is_array( $routed_snapshot ) && LOGISTICS_TEST_ORIGIN_CEP === $routed_snapshot['origin_cep'] );
 logistics_assert( 'pedido Correios do caminho real declara not_applicable', is_array( $routed_snapshot ) && LOGISTICS_TEST_NOT_APPLICABLE === $routed_snapshot['verification'] );
 
 if ( $failures > 0 ) {

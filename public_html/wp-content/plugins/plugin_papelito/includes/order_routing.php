@@ -524,6 +524,10 @@ function papelito_order_routing_validate_vendor_coverage( int $vendor_id, string
 /**
  * Revalida o frete selecionado a partir do CEP do vendor.
  *
+ * A opção devolvida recebe o `origin_cep` do envelope da cotação. A origem é
+ * quem despachou aquele preço e precisa ser congelada no pedido; reler o
+ * cadastro do vendor depois traria a origem de agora, não a que cotou.
+ *
  * @param int    $vendor_id        Vendor do pedido.
  * @param string $destination_cep  CEP destino normalizado.
  * @param string $selected_option_key Chave da opção escolhida.
@@ -558,6 +562,8 @@ function papelito_order_routing_resolve_shipping( int $vendor_id, string $destin
 		}
 
 		if ( papelito_order_routing_shipping_option_matches( $option, $selected_option_key, $expected_shipping, $require_snapshot ) ) {
+			$option['origin_cep'] = sanitize_text_field( (string) ( $quote['origin_cep'] ?? '' ) );
+
 			return $option;
 		}
 	}
@@ -1364,7 +1370,13 @@ function papelito_order_routing_resolve_checkout_shipping( array $payload, array
 			$vendor_id,
 			$lines,
 			$shipping,
-			array_merge( $quote_context, array( 'destination_cep' => $destination_cep ) )
+			array_merge(
+				$quote_context,
+				array(
+					'destination_cep' => $destination_cep,
+					'origin_cep'      => (string) ( $shipping['origin_cep'] ?? '' ),
+				)
+			)
 		),
 	);
 }
