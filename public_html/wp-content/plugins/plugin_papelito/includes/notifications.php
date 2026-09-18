@@ -45,6 +45,7 @@ if ( ! defined( 'PAPELITO_NOTIF_NEW_VENDOR_APPLICATION' ) ) {
 	define( 'PAPELITO_NOTIF_PROCESSING_OVERDUE', 'vendor_processing_overdue' );
 	define( 'PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING', 'vendor_registration_pending' );
 	define( 'PAPELITO_NOTIF_VENDOR_PAGARME_SYNC_PENDING', 'vendor_pagarme_sync_pending' );
+	define( 'PAPELITO_NOTIF_VENDOR_PACKAGING_PROFILES_PENDING', 'vendor_packaging_profiles_pending' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_POSTED', 'shipment_posted' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED', 'shipment_tracking_updated' );
 	define( 'PAPELITO_NOTIF_SHIPMENT_OUT_FOR_DELIVERY', 'shipment_out_for_delivery' );
@@ -149,6 +150,7 @@ function papelito_notification_allowed_types() {
 		PAPELITO_NOTIF_PROCESSING_OVERDUE,
 		PAPELITO_NOTIF_VENDOR_REGISTRATION_PENDING,
 		PAPELITO_NOTIF_VENDOR_PAGARME_SYNC_PENDING,
+		PAPELITO_NOTIF_VENDOR_PACKAGING_PROFILES_PENDING,
 		PAPELITO_NOTIF_SHIPMENT_POSTED,
 		PAPELITO_NOTIF_SHIPMENT_TRACKING_UPDATED,
 		PAPELITO_NOTIF_SHIPMENT_OUT_FOR_DELIVERY,
@@ -1113,6 +1115,130 @@ function papelito_handle_vendor_pagarme_sync_completed_notification( int $vendor
 	);
 }
 add_action( 'papelito_vendor_pagarme_sync_completed', 'papelito_handle_vendor_pagarme_sync_completed_notification', 10, 1 );
+
+/**
+ * Mantem um unico aviso aberto enquanto o vendor nao tem caixas suficientes.
+ *
+ * Sem o minimo de caixas cadastradas o vendor some da vitrine, e ele nao tem
+ * como adivinhar o motivo. Chegar ao minimo arquiva o aviso; cair de novo abaixo
+ * dele volta a tirar o vendor da cobertura no mesmo instante.
+ *
+ * @param int $vendor_user_id Usuario vendor.
+ * @return void
+ */
+function papelito_handle_vendor_packaging_profiles_notification( int $vendor_user_id ): void {
+	if ( $vendor_user_id <= 0 || ! function_exists( 'papelito_packaging_vendor_is_eligible' ) ) {
+		return;
+	}
+
+	if ( papelito_packaging_vendor_is_eligible( $vendor_user_id ) ) {
+		papelito_archive_vendor_packaging_profiles_notification( $vendor_user_id );
+
+		return;
+	}
+
+	papelito_dispatch_notification(
+		$vendor_user_id,
+		PAPELITO_NOTIF_VENDOR_PACKAGING_PROFILES_PENDING,
+		array( 'href' => '/vendor/cubagem' ),
+		'vendor-packaging-profiles-pending:' . $vendor_user_id
+	);
+
+	papelito_send_vendor_packaging_profiles_pending_email( $vendor_user_id );
+}
+add_action( 'papelito_vendor_packaging_profiles_changed', 'papelito_handle_vendor_packaging_profiles_notification', 10, 1 );
+
+/**
+ * Arquiva o aviso de embalagem quando o vendor atinge o minimo de caixas.
+ *
+ * @param int $vendor_user_id Usuario vendor.
+ * @return void
+ */
+function papelito_archive_vendor_packaging_profiles_notification( int $vendor_user_id ): void {
+	global $wpdb;
+
+	$wpdb->query(
+		$wpdb->prepare(
+			'UPDATE ' . papelito_notifications_table_name() . ' SET read_at = %s WHERE user_id = %d AND type = %s AND read_at IS NULL',
+			current_time( 'mysql', true ),
+			$vendor_user_id,
+			PAPELITO_NOTIF_VENDOR_PACKAGING_PROFILES_PENDING
+		)
+	);
+}
+
+/**
+ * Envia uma unica vez o e-mail que pede o cadastro das caixas.
+ *
+ * O vendor que nao abre o painel e justamente quem precisa ser alcancado, entao
+ * o aviso nao pode viver so na sineta. O claim de envio impede repeticao.
+ *
+ * @param int $vendor_user_id Usuario vendor.
+ * @return bool Se o e-mail foi enviado agora.
+ */
+function papelito_send_vendor_packaging_profiles_pending_email( int $vendor_user_id ): bool {
+	if ( ! papelito_claim_notification_email_dispatch( $vendor_user_id, PAPELITO_NOTIF_VENDOR_PACKAGING_PROFILES_PENDING, 'vendor-packaging-profiles-pending:' . $vendor_user_id ) ) {
+		return false;
+	}
+
+	$user = get_user_by( 'id', $vendor_user_id );
+	if ( ! $user instanceof WP_User ) {
+		return false;
+	}
+
+	$recipient = sanitize_email( (string) $user->user_email );
+	if ( '' === $recipient || ! is_email( $recipient ) ) {
+		return false;
+	}
+
+	$view = papelito_vendor_packaging_profiles_email_view( $vendor_user_id );
+
+	return papelito_email_send(
+		$recipient,
+		'Cadastre suas caixas de envio - Papelito',
+		papelito_email_notice_html( $view ),
+		papelito_email_notice_text( $view )
+	);
+}
+
+/**
+ * Monta o conteudo do aviso de caixas pendentes.
+ *
+ * O texto evita a palavra bloqueio de proposito: a conta segue ativa e o painel
+ * tambem. O que acontece e a vitrine parar de mostrar os produtos, igual a falta
+ * de estoque, e isso precisa ficar claro para o vendor nao achar que perdeu a loja.
+ *
+ * @param int $vendor_user_id Usuario vendor.
+ * @return array<string,mixed> View do aviso transacional.
+ */
+function papelito_vendor_packaging_profiles_email_view( int $vendor_user_id ): array {
+	$ativas = function_exists( 'papelito_packaging_active_profile_count' ) ? papelito_packaging_active_profile_count( $vendor_user_id ) : 0;
+	$minimo = PAPELITO_PACKAGING_MIN_ACTIVE_PROFILES;
+	$faltam = max( 0, $minimo - $ativas );
+
+	return array(
+		'kicker'       => 'Embalagem',
+		'preheader'    => sprintf( 'Faltam %d caixas para seus produtos voltarem a aparecer.', $faltam ),
+		'headline'     => 'Cadastre suas caixas de envio.',
+		'lead'         => sprintf(
+			'Para calcular o frete, precisamos saber em qual caixa o pedido vai. Enquanto você não tiver %d caixas cadastradas, seus produtos não aparecem para os clientes.',
+			$minimo
+		),
+		'facts'        => array(
+			'Caixas cadastradas' => sprintf( '%d de %d', $ativas, $minimo ),
+			'Faltam'             => sprintf( '%d caixas', $faltam ),
+		),
+		'cta'          => array(
+			'label' => 'Cadastrar caixas',
+			'url'   => papelito_notification_frontend_link( '/vendor/cubagem' ),
+		),
+		'notes'        => array(
+			'Sua conta e seu painel continuam funcionando normalmente. Só a vitrine deixa de mostrar seus produtos, como acontece quando falta estoque.',
+			'Assim que a última caixa entrar, seus produtos voltam sozinhos.',
+		),
+		'footer_lines' => array( 'Se você já cadastrou suas caixas, pode ignorar este e-mail.' ),
+	);
+}
 
 /**
  * Notifica vendor quando estoque zera.

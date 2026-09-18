@@ -112,6 +112,13 @@ Além disso: a query parte de `FROM wp_posts p LEFT JOIN papelito_vendor_stock v
 45. Toda mutação empresarial recarrega empresa e membership do banco e exige `Idempotency-Key` durável.
 46. Transferência de titularidade e decisões de candidatura usam `SELECT ... FOR UPDATE`.
 
+## Gate de embalagem na cobertura
+
+47. **O mínimo de caixas é gate comercial, não exigência do algoritmo.** `PAPELITO_PACKAGING_MIN_ACTIVE_PROFILES` são 3 caixas ativas; a escolha da menor caixa funciona com qualquer quantidade. `papelito_packaging_vendor_is_eligible()` é a leitura, e `papelito_vendor_meets_packaging_gate()` a aplica em `papelito_matching_vendor_ids()`, ao lado das guardas de pagamento e suspensão.
+47a. **O gate nasce desligado e isso não é provisório por descuido.** `papelito_packaging_profile_gate_enabled()` lê `PAPELITO_PACKAGING_PROFILE_GATE_ENABLED`, padrão `false`. Ligá-lo antes de avisar os vendors e correr o prazo **apaga a vitrine**, porque vendor sem caixa cadastrada some da cobertura. A ordem obrigatória — tela no ar, aviso disparado, prazo corrido, só então o gate — está na BRASPRESS-003.
+47b. **Sumir da vitrine não é bloqueio.** O vendor inelegível mantém conta, login e painel; o que ele perde é a exibição dos produtos, como quem está sem estoque. Cair de 3 para 2 devolve à inelegibilidade no mesmo instante, porque a contagem é lida na hora e não há cache do gate.
+47c. **O aviso é `papelito_vendor_packaging_profiles_changed`.** Criar, editar, desativar, reativar e excluir caixa disparam o evento; `papelito_handle_vendor_packaging_profiles_notification()` abre o aviso quando falta caixa e o arquiva quando o mínimo é atingido. Quem nunca cadastrou nada nunca dispara evento nenhum — para esse existe `wp papelito packaging notify-eligibility`, que é empurrão de rollout e não rotina.
+
 ## Suspensão de conta
 
 39a. `papelito_account_is_suspended()` é a **única** leitura do estado comercial da conta; nenhuma superfície replica a condição. Compra passa por `papelito_company_purchase_capability()`, escrita de vendor por `papelito_account_guard_commercial()`, e cobertura/vitrine por `papelito_matching_vendor_ids()`.

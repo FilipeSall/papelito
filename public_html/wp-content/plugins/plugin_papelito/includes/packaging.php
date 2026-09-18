@@ -17,6 +17,7 @@ defined('ABSPATH') || exit;
 const PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR = 0.75;
 
 const PAPELITO_PACKAGING_SNAPSHOT_SCHEMA_VERSION = 1;
+const PAPELITO_PACKAGING_MIN_ACTIVE_PROFILES     = 3;
 const PAPELITO_PACKAGING_MEASUREMENT_PROFILE     = 'profile';
 const PAPELITO_PACKAGING_MEASUREMENT_LEGACY      = 'legacy_synthetic';
 
@@ -1167,7 +1168,10 @@ function papelito_packaging_create_profile(int $vendor_id, array $payload, int $
 		return papelito_packaging_persistence_error((string) $wpdb->last_error);
 	}
 
-	return papelito_packaging_profile_for_vendor_admin($vendor_id, (int) $wpdb->insert_id);
+	$created = papelito_packaging_profile_for_vendor_admin($vendor_id, (int) $wpdb->insert_id);
+	papelito_packaging_announce_profiles_changed($vendor_id);
+
+	return $created;
 }
 
 /**
@@ -1238,7 +1242,10 @@ function papelito_packaging_update_profile(int $vendor_id, int $profile_id, arra
 		return papelito_packaging_persistence_error((string) $wpdb->last_error);
 	}
 
-	return papelito_packaging_profile_for_vendor_admin($vendor_id, $profile_id);
+	$updated = papelito_packaging_profile_for_vendor_admin($vendor_id, $profile_id);
+	papelito_packaging_announce_profiles_changed($vendor_id);
+
+	return $updated;
 }
 
 /**
@@ -1380,6 +1387,8 @@ function papelito_packaging_delete_profile(int $vendor_id, int $profile_id)
 	if (false === $deleted) {
 		return papelito_packaging_persistence_error((string) $wpdb->last_error);
 	}
+
+	papelito_packaging_announce_profiles_changed($vendor_id);
 
 	return true;
 }
@@ -2177,6 +2186,107 @@ function papelito_packaging_legacy_snapshot(int $vendor_id, array $package, arra
 }
 
 /**
+ * Avisa que as caixas do vendor mudaram.
+ *
+ * Criar, editar, desativar, reativar e excluir passam por aqui: qualquer uma
+ * delas pode cruzar o mínimo em qualquer direção, e quem escuta decide se
+ * abre ou arquiva o aviso.
+ *
+ * @param int $vendor_id Vendor dono das caixas.
+ * @return void
+ */
+function papelito_packaging_announce_profiles_changed(int $vendor_id): void
+{
+	if ($vendor_id > 0) {
+		do_action('papelito_vendor_packaging_profiles_changed', $vendor_id);
+	}
+}
+
+/**
+ * Diz se o vendor tem embalagem suficiente para vender.
+ *
+ * O mínimo é gate de ativação comercial, não exigência do algoritmo: a escolha
+ * da caixa funciona com qualquer quantidade. Cair abaixo dele devolve o vendor
+ * à inelegibilidade no mesmo instante.
+ *
+ * @param int $vendor_id Vendor consultado.
+ * @return bool Se o vendor atinge o mínimo de caixas ativas.
+ */
+function papelito_packaging_vendor_is_eligible(int $vendor_id): bool
+{
+	if ($vendor_id <= 0) {
+		return false;
+	}
+
+	return papelito_packaging_active_profile_count($vendor_id) >= PAPELITO_PACKAGING_MIN_ACTIVE_PROFILES;
+}
+
+/**
+ * Diz se o gate de embalagem já vale para a cobertura.
+ *
+ * Nasce desligado de propósito. Ligá-lo antes de avisar os vendors e dar prazo
+ * apagaria a vitrine inteira, porque um vendor sem caixa cadastrada some da
+ * cobertura. A ordem de ativação está na BRASPRESS-003.
+ *
+ * @return bool Se a cobertura deve exigir o mínimo de caixas ativas.
+ */
+function papelito_packaging_profile_gate_enabled(): bool
+{
+	$configured = function_exists('papelito_shipping_provider_config')
+		? papelito_shipping_provider_config('PAPELITO_PACKAGING_PROFILE_GATE_ENABLED', 'false')
+		: false;
+
+	return (bool) apply_filters(
+		'papelito_packaging_profile_gate_enabled',
+		true === filter_var($configured, FILTER_VALIDATE_BOOLEAN)
+	);
+}
+
+/**
+ * Varre os vendors e avisa quem está abaixo do mínimo de caixas.
+ *
+ * O aviso automático nasce de quem mexe nas próprias caixas, e quem nunca
+ * cadastrou nada nunca mexe em nada — é justamente quem mais precisa ser
+ * alcançado. Esta varredura é o empurrão inicial do rollout, não rotina.
+ *
+ * @param bool $dry_run Quando verdadeiro apenas conta, sem avisar ninguém.
+ * @return array{vendors:int,pendentes:int,elegiveis:int} Resumo da varredura.
+ */
+function papelito_packaging_sweep_vendor_eligibility(bool $dry_run = false): array
+{
+	$resumo = array('vendors' => 0, 'pendentes' => 0, 'elegiveis' => 0);
+
+	foreach (papelito_packaging_sweep_vendor_ids() as $vendor_id) {
+		++$resumo['vendors'];
+		$elegivel = papelito_packaging_vendor_is_eligible($vendor_id);
+		$chave    = $elegivel ? 'elegiveis' : 'pendentes';
+		++$resumo[$chave];
+
+		if (! $dry_run) {
+			papelito_packaging_announce_profiles_changed($vendor_id);
+		}
+	}
+
+	return $resumo;
+}
+
+/**
+ * Lê os vendors que a varredura precisa avaliar.
+ *
+ * @return array<int,int> IDs de vendor.
+ */
+function papelito_packaging_sweep_vendor_ids(): array
+{
+	if (! function_exists('get_users')) {
+		return array();
+	}
+
+	$vendors = get_users(array('role' => 'seller', 'fields' => 'ID'));
+
+	return array_values(array_filter(array_map('absint', is_array($vendors) ? $vendors : array())));
+}
+
+/**
  * Callback do filtro de pacote físico da Braspress.
  *
  * O primeiro argumento é o valor inicial do filtro; a decisão usa somente o
@@ -2194,4 +2304,43 @@ function papelito_packaging_braspress_package_filter(mixed $ignored, int $vendor
 
 if (function_exists('add_filter')) {
 	add_filter('papelito_braspress_physical_package', 'papelito_packaging_braspress_package_filter', 10, 3);
+}
+
+if (defined('WP_CLI') && WP_CLI) {
+	/**
+	 * Comandos de embalagem do Papelito.
+	 */
+	class Papelito_Packaging_CLI
+	{
+		/**
+		 * Avisa os vendors que ainda não têm o mínimo de caixas cadastradas.
+		 *
+		 * ## OPTIONS
+		 *
+		 * [--dry-run]
+		 * : Apenas conta quem está pendente, sem criar aviso nem enviar e-mail.
+		 *
+		 * ## EXAMPLES
+		 *
+		 *     wp papelito packaging notify-eligibility --dry-run
+		 *     wp papelito packaging notify-eligibility
+		 *
+		 * @param array<int,string>    $args Argumentos posicionais.
+		 * @param array<string,string> $assoc_args Opções nomeadas.
+		 * @return void
+		 */
+		public function notify_eligibility(array $args, array $assoc_args): void
+		{
+			$dry_run = isset($assoc_args['dry-run']);
+			$resumo  = papelito_packaging_sweep_vendor_eligibility($dry_run);
+
+			WP_CLI::log(sprintf('Vendors avaliados: %d', $resumo['vendors']));
+			WP_CLI::log(sprintf('Com o mínimo de caixas: %d', $resumo['elegiveis']));
+			WP_CLI::log(sprintf('Abaixo do mínimo: %d', $resumo['pendentes']));
+
+			WP_CLI::success($dry_run ? 'Simulação concluída; nada foi enviado.' : 'Varredura concluída.');
+		}
+	}
+
+	WP_CLI::add_command('papelito packaging', 'Papelito_Packaging_CLI');
 }

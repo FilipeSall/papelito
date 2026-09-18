@@ -113,6 +113,17 @@ function add_action( ...$args ): void {
 }
 
 /**
+ * Registra as actions disparadas pelas escritas de perfil.
+ *
+ * @param mixed ...$args Hook e argumentos.
+ * @return void
+ */
+function do_action( ...$args ): void {
+    global $packaging_api_actions;
+    $packaging_api_actions[] = $args;
+}
+
+/**
  * Stub do registrador de rotas.
  *
  * @param mixed ...$args Argumentos ignorados.
@@ -129,6 +140,7 @@ function register_rest_route( ...$args ): void {
  * @var array<int,array<int,mixed>>
  */
 $packaging_api_registered_routes = array();
+$packaging_api_actions          = array();
 
 /**
  * Stub do servidor REST.
