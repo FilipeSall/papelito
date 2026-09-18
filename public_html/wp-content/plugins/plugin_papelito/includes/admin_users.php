@@ -611,6 +611,25 @@ function papelito_admin_users_order_vendor_id( $order ): int {
 }
 
 /**
+ * Diz se o admin ainda pode cancelar operacionalmente este pedido.
+ *
+ * Sem vendor operacional o endpoint recusa com 409, e fora das transições
+ * administrativas ele recusa com 422. A tela precisa saber das duas coisas para
+ * não oferecer um botão que o backend sempre nega.
+ *
+ * @param object $order         Pedido WooCommerce.
+ * @param string $vendor_status Estado operacional já resolvido.
+ */
+function papelito_admin_users_order_can_cancel( $order, string $vendor_status ): bool {
+	if ( ! function_exists( 'papelito_vendor_dashboard_can_cancel' ) ) {
+		return false;
+	}
+
+	return papelito_admin_users_order_vendor_id( $order ) > 0
+		&& papelito_vendor_dashboard_can_cancel( $vendor_status, true );
+}
+
+/**
  * Mapeia um pedido relacionado ao usuario.
  *
  * @param object $order Pedido WooCommerce.
@@ -638,6 +657,7 @@ function papelito_admin_users_map_related_order( $order, string $relationship, i
 		'vendorStatus'      => $vendor_status,
 		'cancelReason'      => $cancel_reason,
 		'isCancelled'       => papelito_admin_users_order_is_cancelled( $order, $mapped ),
+		'canCancel'         => papelito_admin_users_order_can_cancel( $order, $vendor_status ),
 	);
 }
 

@@ -902,14 +902,24 @@ function papelito_vendor_dashboard_kpis( int $vendor_id, array $period ): array 
 /**
  * Return the next states available from a current state.
  *
+ * O pacote de um pedido `enviado` já saiu do estoque, então o vendor não tem
+ * mais saída por conta própria. O administrador tem: é o último recurso
+ * operacional e a própria recusa ao vendor manda "solicitar o cancelamento
+ * administrativo". `entregue` continua fechado para todo mundo — dali o
+ * caminho é devolução, não cancelamento.
+ *
+ * @param string $current        Estado operacional atual.
+ * @param bool   $administrative Ação administrativa, não do vendor dono do pedido.
  * @return array<int,string>
  */
-function papelito_vendor_dashboard_next_statuses( string $current ): array {
+function papelito_vendor_dashboard_next_statuses( string $current, bool $administrative = false ): array {
 	switch ( $current ) {
 		case PAPELITO_VENDOR_STATUS_AWAITING_SHIPMENT:
 			return array( PAPELITO_VENDOR_STATUS_PICKING, PAPELITO_VENDOR_STATUS_CANCELLED );
 		case PAPELITO_VENDOR_STATUS_PICKING:
 			return array( PAPELITO_VENDOR_STATUS_CANCELLED );
+		case PAPELITO_VENDOR_STATUS_SHIPPED:
+			return $administrative ? array( PAPELITO_VENDOR_STATUS_CANCELLED ) : array();
 		default:
 			return array();
 	}
@@ -928,6 +938,23 @@ function papelito_vendor_dashboard_vendor_order( int $order_id, int $vendor_id )
 	}
 
 	return $order;
+}
+
+/**
+ * Diz se o cancelamento operacional é possível a partir do estado atual.
+ *
+ * A tela que oferece o botão precisa da mesma resposta que a validação vai dar;
+ * sem isso o admin via CANCELAR num pedido `enviado` e só descobria no POST.
+ *
+ * @param string $current        Estado operacional atual.
+ * @param bool   $administrative Ação administrativa, não do vendor dono do pedido.
+ */
+function papelito_vendor_dashboard_can_cancel( string $current, bool $administrative = false ): bool {
+	return in_array(
+		PAPELITO_VENDOR_STATUS_CANCELLED,
+		papelito_vendor_dashboard_next_statuses( $current, $administrative ),
+		true
+	);
 }
 
 /**
@@ -958,7 +985,7 @@ function papelito_vendor_dashboard_update_order_status( int $order_id, int $vend
 		);
 	}
 
-	if ( ! in_array( $next, papelito_vendor_dashboard_next_statuses( $current ), true ) ) {
+	if ( ! in_array( $next, papelito_vendor_dashboard_next_statuses( $current, $administrative ), true ) ) {
 		return new WP_Error( 'papelito_vendor_invalid_status_transition', 'Transicao de status invalida.', array( 'status' => 422 ) );
 	}
 
