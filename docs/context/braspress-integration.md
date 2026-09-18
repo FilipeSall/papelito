@@ -38,6 +38,27 @@ ou divisão em várias caixas.
 `papelito_braspress_quote()` copia esse `physical_hash` para a opção bruta, permitindo que a
 normalização altere o `fingerprint` quando a caixa mudar, sem expor o hash no envelope público.
 
+## Código estável da opção
+
+`papelito_braspress_service_code()` traduz o modal contratado no `code` da opção bruta pelo mapa
+`PAPELITO_BRASPRESS_SERVICE_CODE_BY_MODAL` (`R` → `rodoviario`, `A` → `aereo`), e a `option_key`
+resultante é `braspress:rodoviario`. **O código nomeia a modalidade, nunca a cotação.** Até
+17/09/2026 ele era o `id` que a Braspress devolve em cada POST: a chave mudava a cada cotação e o
+`place-order` só fechava enquanto o transient da cotação sobrevivesse — expirado o cache, a
+recotação produzia outra chave e o checkout respondia `409 papelito_checkout_shipping_stale` para
+sempre. O identificador de cada cotação continua viajando em `external_quote_id` e é persistido no
+pedido em `_papelito_shipping_external_quote_id`; é ele que prova qual cotação gerou aquele preço.
+
+Modal fora do mapa não vira payload: `papelito_braspress_build_quote_payload()` recusa com
+`papelito_braspress_payload_invalid` antes de qualquer chamada, em vez de deixar a opção ser
+descartada silenciosamente na normalização.
+
+A chave estável **não** afrouxa a validação do `place-order`. Preço, prazo, validade e
+`physical_hash` continuam presos ao `fingerprint`, e o `physical_hash` cobre o `vendor_id` do
+`LogisticsSnapshot` — por isso a seleção de um vendor segue sem casar com a opção de outro, mesmo
+agora que os dois publicam a mesma `option_key`. Pedido histórico com `braspress:<id da cotação>`
+continua legível: `_papelito_shipping_option_key` é gravado e nunca relido para autorizar nada.
+
 ## Cache de cotação
 
 `papelito_braspress_quote_at()` consulta o transient antes do POST e grava somente a opção

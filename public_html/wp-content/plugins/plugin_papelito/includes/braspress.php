@@ -15,6 +15,17 @@ const PAPELITO_BRASPRESS_QUOTE_CACHE_PREFIX  = 'papelito_braspress_quote_v1_';
 const PAPELITO_BRASPRESS_QUOTE_CACHE_MAX_TTL = 600;
 
 /**
+ * Código estável da opção de frete por modal contratado.
+ *
+ * A Braspress não tem catálogo de serviços: o modal é a modalidade contratada e
+ * é ele, não o identificador da cotação, que identifica a opção no checkout.
+ */
+const PAPELITO_BRASPRESS_SERVICE_CODE_BY_MODAL = array(
+	'R' => 'rodoviario',
+	'A' => 'aereo',
+);
+
+/**
  * Categorias de erro do vocabulário em docs/braspress/08-error-handling-and-observability.md.
  */
 const PAPELITO_BRASPRESS_ERROR_AUTHENTICATION  = 'authentication_error';
@@ -434,6 +445,22 @@ function papelito_braspress_package_is_valid( array $package ): bool {
 }
 
 /**
+ * Traduz o modal contratado no código estável da opção de frete.
+ *
+ * O código nomeia a modalidade, nunca a cotação: duas cotações seguidas do mesmo
+ * contrato produzem a mesma `option_key`, e a seleção do checkout sobrevive à
+ * expiração do cache. O identificador de cada cotação viaja em `external_quote_id`.
+ *
+ * @param mixed $modal Modal contratado, como viaja no payload oficial.
+ * @return string Código canônico da modalidade ou vazio quando o modal é desconhecido.
+ */
+function papelito_braspress_service_code( mixed $modal ): string {
+	$contracted = is_scalar( $modal ) ? strtoupper( trim( (string) $modal ) ) : '';
+
+	return PAPELITO_BRASPRESS_SERVICE_CODE_BY_MODAL[ $contracted ] ?? '';
+}
+
+/**
  * Monta o corpo de cotação sem incluir credenciais.
  *
  * @param array<string,mixed> $integration Integração resolvida para o vendor.
@@ -445,7 +472,7 @@ function papelito_braspress_package_is_valid( array $package ): bool {
  */
 function papelito_braspress_build_quote_payload( array $integration, string $recipient_cnpj, string $destination_cep, array $package, int $merchandise_value_cents ) {
 	$config = is_array( $integration['config'] ?? null ) ? $integration['config'] : array();
-	if ( ! papelito_vendor_integration_config_complete( $config ) || ! papelito_braspress_package_is_valid( $package ) || 14 !== strlen( papelito_vendor_integration_normalize_document( $recipient_cnpj ) ) || ! papelito_braspress_cep_is_quotable( $destination_cep ) || $merchandise_value_cents <= 0 ) {
+	if ( ! papelito_vendor_integration_config_complete( $config ) || '' === papelito_braspress_service_code( $config['modal'] ?? '' ) || ! papelito_braspress_package_is_valid( $package ) || 14 !== strlen( papelito_vendor_integration_normalize_document( $recipient_cnpj ) ) || ! papelito_braspress_cep_is_quotable( $destination_cep ) || $merchandise_value_cents <= 0 ) {
 		return new WP_Error( 'papelito_braspress_payload_invalid', 'Os dados necessários para a cotação Braspress não estão completos.', array( 'status' => 422 ) );
 	}
 
@@ -789,7 +816,7 @@ function papelito_braspress_quote_at( array $integration, string $recipient_cnpj
 
 	$result = array(
 		'service'           => 'Braspress',
-		'code'              => $id,
+		'code'              => papelito_braspress_service_code( $payload['modal'] ),
 		'name'              => 'Braspress',
 		'price'             => (float) $price,
 		'delivery_time'     => (int) $days,
