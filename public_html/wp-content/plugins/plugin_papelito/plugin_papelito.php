@@ -84,6 +84,8 @@ require_once __DIR__ . '/includes/integration_secrets.php';
 require_once __DIR__ . '/includes/vendor_integrations.php';
 require_once __DIR__ . '/includes/braspress.php';
 require_once __DIR__ . '/includes/shipping_providers.php';
+require_once __DIR__ . '/includes/shipping_observability.php';
+require_once __DIR__ . '/includes/shipping_breaker.php';
 require_once __DIR__ . '/includes/braspress_tracking.php';
 require_once __DIR__ . '/includes/company_schema.php';
 require_once __DIR__ . '/includes/company_onboarding.php';
@@ -110,7 +112,7 @@ require_once __DIR__ . '/includes/account_admin_endpoints.php';
 require_once __DIR__ . '/includes/packaging.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.50.0' );
+	define( 'PAPELITO_DB_VERSION', '1.51.0' );
 }
 
 /**

@@ -68,6 +68,10 @@ function add_action(mixed ...$args): bool
 {
 	return true;
 }
+function do_action(mixed ...$args): bool
+{
+	return true;
+}
 function apply_filters(mixed $hook, mixed $value, mixed ...$args): mixed
 {
 	if ('papelito_braspress_physical_package' === $hook) {

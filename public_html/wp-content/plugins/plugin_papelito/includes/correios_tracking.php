@@ -1860,14 +1860,37 @@ function papelito_tracking_ingest_event( array $shipment, array $event, string $
 	return true;
 }
 
+/**
+ * Publica o desfecho de um poll com o provider da remessa, sem nada mais.
+ *
+ * Fica no agendamento do próximo poll porque é o único ponto por onde os dois
+ * pollers passam nos dois desfechos; instrumentar cada poller faria a próxima
+ * transportadora nascer sem métrica. Só provider, desfecho e código de erro
+ * atravessam — nem ID de remessa, nem código de rastreio, nem pedido.
+ *
+ * @param string $provider Provider persistido na remessa.
+ * @param bool   $failed Se o poll falhou.
+ * @param string $error_code Código do erro, vazio no sucesso.
+ */
+function papelito_tracking_publish_poll_result( string $provider, bool $failed, string $error_code = '' ): void {
+	$provider = sanitize_key( $provider );
+	if ( '' === $provider ) {
+		return;
+	}
+
+	do_action( 'papelito_tracking_poll_result', $provider, $failed, sanitize_key( $error_code ) );
+}
+
 /** Agenda a proxima consulta com backoff em falhas. */
 function papelito_tracking_schedule_next_poll( int $shipment_id, bool $failed, string $error_code = '' ): void {
 	global $wpdb;
 	$table = papelito_tracking_shipments_table_name();
-	$row   = $wpdb->get_row( $wpdb->prepare( "SELECT status, poll_attempts FROM {$table} WHERE id = %d", $shipment_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	$row   = $wpdb->get_row( $wpdb->prepare( "SELECT status, poll_attempts, provider FROM {$table} WHERE id = %d", $shipment_id ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	if ( ! is_array( $row ) ) {
 		return;
 	}
+
+	papelito_tracking_publish_poll_result( (string) ( $row['provider'] ?? '' ), $failed, $error_code );
 	if ( 'delivered' === $row['status'] ) {
 		$wpdb->update(
 			$table,

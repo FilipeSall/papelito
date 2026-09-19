@@ -715,6 +715,10 @@ function papelito_shipping_quote_braspress( int $vendor_id, string $destination_
 		return null;
 	}
 
+	if ( function_exists( 'papelito_shipping_breaker_allows' ) && ! papelito_shipping_breaker_allows( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $vendor_id ) ) {
+		return null;
+	}
+
 	$integration = papelito_vendor_integration_resolve_braspress( $vendor_id );
 	if ( null === $integration ) {
 		return null;
@@ -748,6 +752,30 @@ function papelito_shipping_quote_braspress( int $vendor_id, string $destination_
 }
 
 /**
+ * Cota um provider medindo a própria tentativa e publica o desfecho.
+ *
+ * A medição envolve a tentativa inteira, inclusive o gate de elegibilidade, e
+ * não só a chamada HTTP: quem investiga um checkout lento quer o custo do
+ * provider no caminho, não o de um trecho escolhido a dedo. O desfecho é
+ * publicado bruto porque quem consome é que conhece o vocabulário de
+ * observabilidade; este ponto não classifica nem redige nada.
+ *
+ * @param string   $provider Identificador do provider.
+ * @param int      $vendor_id ID interno do vendor cotado.
+ * @param callable $quote Tentativa de cotação já fechada sobre seus argumentos.
+ * @return mixed Resultado bruto do provider, intocado.
+ */
+function papelito_shipping_observe_provider_quote( string $provider, int $vendor_id, callable $quote ) {
+	$started = microtime( true );
+	$result  = $quote();
+	$elapsed = (int) round( ( microtime( true ) - $started ) * 1000 );
+
+	do_action( 'papelito_shipping_provider_quote_result', $provider, $result, $elapsed, $vendor_id );
+
+	return $result;
+}
+
+/**
  * Cota cada provider de modo isolado e combina apenas opções válidas.
  *
  * @param int                      $vendor_id ID do vendor.
@@ -757,8 +785,22 @@ function papelito_shipping_quote_braspress( int $vendor_id, string $destination_
  * @return array<string,mixed>|WP_Error Resultado de cotação ou indisponibilidade total.
  */
 function papelito_shipping_quote_all_providers( int $vendor_id, string $destination_cep, array $items, array $context = array() ) {
-	$correios  = papelito_correios_quote( $vendor_id, $destination_cep, $items );
-	$braspress = papelito_shipping_quote_braspress( $vendor_id, $destination_cep, $items, $context );
+	$correios = papelito_shipping_observe_provider_quote(
+		PAPELITO_SHIPPING_PROVIDER_CORREIOS,
+		$vendor_id,
+		static function () use ( $vendor_id, $destination_cep, $items ) {
+			return papelito_correios_quote( $vendor_id, $destination_cep, $items );
+		}
+	);
+
+	$braspress = papelito_shipping_observe_provider_quote(
+		PAPELITO_SHIPPING_PROVIDER_BRASPRESS,
+		$vendor_id,
+		static function () use ( $vendor_id, $destination_cep, $items, $context ) {
+			return papelito_shipping_quote_braspress( $vendor_id, $destination_cep, $items, $context );
+		}
+	);
+
 	$quoted_at = current_time( 'mysql', true );
 
 	return papelito_shipping_aggregate_provider_results(
