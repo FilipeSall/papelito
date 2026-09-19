@@ -1907,7 +1907,6 @@ function papelito_tracking_apply_jitter( int $delay ): int {
 	return (int) max( MINUTE_IN_SECONDS, $delay + $offset );
 }
 
-/** Consulta um envio e ingere todos os eventos retornados. */
 /**
  * Transportadoras que sabem consultar o próprio rastreio, por provider.
  *

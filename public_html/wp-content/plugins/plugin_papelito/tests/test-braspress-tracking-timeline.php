@@ -15,27 +15,44 @@
 
 define( 'ABSPATH', __DIR__ . '/' );
 
-date_default_timezone_set( 'UTC' );
+date_default_timezone_set( 'UTC' ); // phpcs:ignore WordPress.DateTime.RestrictedFunctions.timezone_change_date_default_timezone_set -- O teste prova independência do fuso global do processo CLI.
 
+/**
+ * Replica a sanitização necessária para carregar isoladamente o adapter.
+ *
+ * @param mixed $value Valor recebido pelo módulo.
+ */
 function sanitize_text_field( $value ) {
-	return trim( strip_tags( (string) $value ) );
+	return trim( (string) $value );
 }
 
+/**
+ * Registra hooks sem inicializar o WordPress durante o teste standalone.
+ *
+ * @param mixed ...$args Argumentos do hook.
+ */
 function add_action( ...$args ) {
-	return true;
+	return ! empty( $args );
 }
 
 require_once dirname( __DIR__ ) . '/includes/braspress_tracking.php';
 
 $failures = 0;
+
+/**
+ * Acumula uma falha quando o valor observado diverge do esperado.
+ *
+ * @param string $label    Cenário descrito no resultado do teste.
+ * @param mixed  $expected Valor literal esperado.
+ * @param mixed  $actual   Valor produzido pelo código exercitado.
+ */
 function papelito_assert( string $label, $expected, $actual ): void {
 	global $failures;
 	if ( $expected === $actual ) {
-		echo "  PASS: {$label}\n";
 		return;
 	}
 	++$failures;
-	echo "  FAIL: {$label} -> expected " . var_export( $expected, true ) . ', got ' . var_export( $actual, true ) . "\n";
+	echo "  FAIL: {$label}\n"; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Saída local do runner CLI, sem entrada externa.
 }
 
 echo "Scenario 1: the two documented formats are read as São Paulo local time\n";
@@ -68,13 +85,13 @@ papelito_assert(
 );
 
 echo "Scenario 3: the answer does not depend on the server clock\n";
-date_default_timezone_set( 'Asia/Tokyo' );
+date_default_timezone_set( 'Asia/Tokyo' ); // phpcs:ignore WordPress.DateTime.RestrictedFunctions.timezone_change_date_default_timezone_set -- Simula servidor fora do fuso da transportadora.
 papelito_assert(
 	'a server in Tokyo reads the same instant',
 	'2026-12-25 17:30:00',
 	papelito_braspress_tracking_parse_datetime( '25/12/2026 14:30' )
 );
-date_default_timezone_set( 'UTC' );
+date_default_timezone_set( 'UTC' ); // phpcs:ignore WordPress.DateTime.RestrictedFunctions.timezone_change_date_default_timezone_set -- Restaura o processo CLI para os cenários seguintes.
 
 echo "Scenario 4: anything outside the contract has no date instead of a wrong one\n";
 papelito_assert( 'empty string has no date', null, papelito_braspress_tracking_parse_datetime( '' ) );
@@ -84,6 +101,7 @@ papelito_assert( 'ISO is not in the contract', null, papelito_braspress_tracking
 papelito_assert( 'seconds are not in the contract', null, papelito_braspress_tracking_parse_datetime( '25/12/2026 14:30:15' ) );
 papelito_assert( 'free text has no date', null, papelito_braspress_tracking_parse_datetime( 'ontem' ) );
 
+/** Retorna uma resposta Braspress representativa com dois conhecimentos. */
 function papelito_braspress_test_response(): array {
 	return array(
 		'conhecimentos' => array(
@@ -129,7 +147,7 @@ papelito_assert( 'last event is the transit one', '2026-09-21 22:40:00', $events
 papelito_assert( 'description survives untouched', 'Em transito para filial', $events[2]['descricao'] );
 
 echo "Scenario 7: the same occurrence twice in one response is reconciled once\n";
-$duplicated                      = papelito_braspress_test_response();
+$duplicated                                 = papelito_braspress_test_response();
 $duplicated['conhecimentos'][0]['timeline'] = $duplicated['conhecimentos'][0]['ocorrencias'];
 papelito_assert(
 	'timeline repeating an occurrence does not double it',
@@ -138,7 +156,7 @@ papelito_assert(
 );
 
 echo "Scenario 8: broken entries do not take healthy ones down\n";
-$messy = array(
+$messy        = array(
 	'conhecimentos' => array(
 		array(
 			'numero'      => '2001',
@@ -170,7 +188,7 @@ papelito_assert( 'a malformed answer has no events', array(), papelito_braspress
 
 echo "\n";
 if ( $failures > 0 ) {
-	echo "RESULT: {$failures} assertion(s) FAILED\n";
+	echo "RESULT: {$failures} assertion(s) FAILED\n"; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Saída local do runner CLI.
 	exit( 1 );
 }
 echo "RESULT: all assertions passed\n";

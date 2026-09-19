@@ -393,7 +393,7 @@ function papelito_vendor_dashboard_map_order_detail( $order, ?int $vendor_id, bo
 		? papelito_tracking_order_snapshot( (int) $order->get_id() )
 		: array( 'status' => 'not_started', 'all_packages_done' => false, 'packages_total' => 0, 'packages_delivered' => 0, 'last_event_at' => '', 'shipments' => array() );
 	if ( null === $vendor_id ) {
-		$public_shipments = array_map( 'papelito_tracking_customer_shipment', $logistics['shipments'] );
+		$public_shipments    = array_map( 'papelito_tracking_customer_shipment', $logistics['shipments'] );
 		$result['logistics'] = array(
 			'status' => $logistics['status'],
 			'all_packages_done' => $logistics['all_packages_done'],

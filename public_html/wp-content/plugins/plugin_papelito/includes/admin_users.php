@@ -963,6 +963,44 @@ function papelito_admin_users_query_rows( array $filters, ?int $limit = null, ?i
 }
 
 /**
+ * Verifica se uma candidatura pre-conta corresponde a busca administrativa.
+ *
+ * A comparacao preserva tanto o texto original quanto a versao somente com
+ * digitos, usada para localizar CNPJ mesmo quando a pontuacao difere.
+ *
+ * @param array<string, mixed> $application Candidatura pre-conta.
+ * @param string               $search      Busca administrativa sanitizada.
+ */
+function papelito_admin_users_pre_account_matches_search( array $application, string $search ): bool {
+	if ( '' === $search ) {
+		return true;
+	}
+
+	$searchable            = implode(
+		' ',
+		array(
+			(string) ( $application['fullName'] ?? '' ),
+			(string) ( $application['email'] ?? '' ),
+			(string) ( $application['companyName'] ?? '' ),
+			(string) ( $application['cnpj'] ?? '' ),
+		)
+	);
+	$normalized_search     = preg_replace( '/\D+/', '', $search );
+	$normalized_searchable = preg_replace( '/\D+/', '', $searchable );
+
+	if ( ! $normalized_search ) {
+		$normalized_search = $search;
+	}
+
+	if ( ! $normalized_searchable ) {
+		$normalized_searchable = $searchable;
+	}
+
+	return false !== stripos( $searchable, $search )
+		|| false !== stripos( $normalized_searchable, $normalized_search );
+}
+
+/**
  * Monta linhas de candidaturas que ainda não possuem conta WordPress.
  *
  * @param array<string, int|string> $filters Filtros da listagem.
@@ -988,23 +1026,7 @@ function papelito_admin_users_pending_pre_account_rows( array $filters ): array 
 			continue;
 		}
 
-		$searchable = implode(
-			' ',
-			array(
-				(string) ( $application['fullName'] ?? '' ),
-				(string) ( $application['email'] ?? '' ),
-				(string) ( $application['companyName'] ?? '' ),
-				(string) ( $application['cnpj'] ?? '' ),
-			)
-		);
-		$normalized_search     = preg_replace( '/\D+/', '', $search ) ?: $search;
-		$normalized_searchable = preg_replace( '/\D+/', '', $searchable ) ?: $searchable;
-
-		if (
-			'' !== $search &&
-			false === stripos( $searchable, $search ) &&
-			false === stripos( $normalized_searchable, $normalized_search )
-		) {
+		if ( ! papelito_admin_users_pre_account_matches_search( $application, $search ) ) {
 			continue;
 		}
 
