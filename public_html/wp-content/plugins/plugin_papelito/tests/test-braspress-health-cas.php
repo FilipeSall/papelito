@@ -34,6 +34,7 @@ $GLOBALS['cas_test_updates'] = array();
 $GLOBALS['cas_test_where']   = array();
 $GLOBALS['cas_test_fail']    = false;
 $GLOBALS['cas_test_ghost']   = false;
+$GLOBALS['cas_test_concurrent'] = '';
 
 /** Erro WordPress mínimo. */
 class WP_Error {
@@ -53,7 +54,14 @@ class Papelito_Cas_Test_Wpdb {
 	public function get_charset_collate(): string { return ''; }
 
 	public function get_row( mixed $query, mixed $output = null ): ?array {
-		return $GLOBALS['cas_test_row'];
+		$row = $GLOBALS['cas_test_row'];
+
+		if ( '' !== (string) $GLOBALS['cas_test_concurrent'] ) {
+			$GLOBALS['cas_test_row']['status'] = $GLOBALS['cas_test_concurrent'];
+			$GLOBALS['cas_test_concurrent']    = '';
+		}
+
+		return $row;
 	}
 
 	public function prepare( mixed $query, mixed ...$args ): string { return (string) $query; }
@@ -77,14 +85,22 @@ class Papelito_Cas_Test_Wpdb {
 			return 0;
 		}
 
-		$expected = $where['configuration_version'] ?? null;
-		if ( null !== $expected && (int) $expected !== (int) ( $GLOBALS['cas_test_row']['configuration_version'] ?? 0 ) ) {
-			return 0;
+		foreach ( array( 'configuration_version', 'status' ) as $column ) {
+			if ( isset( $where[ $column ] ) && (string) $where[ $column ] !== (string) ( $GLOBALS['cas_test_row'][ $column ] ?? '' ) ) {
+				return 0;
+			}
+		}
+
+		$changed = false;
+		foreach ( $data as $column => $value ) {
+			if ( ( $GLOBALS['cas_test_row'][ $column ] ?? null ) !== $value ) {
+				$changed = true;
+			}
 		}
 
 		$GLOBALS['cas_test_row'] = array_merge( (array) $GLOBALS['cas_test_row'], $data );
 
-		return 1;
+		return $changed ? 1 : 0;
 	}
 
 	public function insert( mixed $table, array $data, mixed $format = null ): int { return 1; }
@@ -161,6 +177,7 @@ function cas_reset( string $status = PAPELITO_VENDOR_INTEGRATION_READY, int $ver
 	$GLOBALS['cas_test_where']   = array();
 	$GLOBALS['cas_test_fail']    = false;
 	$GLOBALS['cas_test_ghost']   = false;
+	$GLOBALS['cas_test_concurrent'] = '';
 }
 
 echo "Cenário 1: a transição só aplica sobre a versão que originou a cotação\n";
@@ -284,6 +301,38 @@ $outcome = papelito_vendor_integration_apply_braspress_health(
 
 cas_assert( 'Vendor sem integração não escreve nada', PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE === $outcome );
 cas_assert( 'Nenhuma escrita foi tentada', array() === $GLOBALS['cas_test_updates'] );
+
+echo "\nCenário 9: 401 que grava entre o SELECT e o UPDATE não é sobrescrito\n";
+cas_reset( PAPELITO_VENDOR_INTEGRATION_ACTIVE );
+$GLOBALS['cas_test_concurrent'] = PAPELITO_VENDOR_INTEGRATION_INVALID;
+
+$outcome = papelito_vendor_integration_apply_braspress_health(
+	CAS_TEST_VENDOR_ID,
+	PAPELITO_VENDOR_INTEGRATION_ACTIVE,
+	'',
+	CAS_TEST_VERSION
+);
+
+cas_assert(
+	'A cotação boa que chega depois do 401 é descartada',
+	PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE === $outcome
+);
+cas_assert(
+	'A conta continua recusada, não volta para active',
+	PAPELITO_VENDOR_INTEGRATION_INVALID === $GLOBALS['cas_test_row']['status']
+);
+
+echo "\nCenário 10: UPDATE que casa sem alterar nada é sucesso, não obsolescência\n";
+cas_reset();
+
+$first  = papelito_vendor_integration_apply_braspress_health( CAS_TEST_VENDOR_ID, PAPELITO_VENDOR_INTEGRATION_ACTIVE, '', CAS_TEST_VERSION );
+$second = papelito_vendor_integration_apply_braspress_health( CAS_TEST_VENDOR_ID, PAPELITO_VENDOR_INTEGRATION_ACTIVE, '', CAS_TEST_VERSION );
+
+cas_assert( 'A primeira cotação aplica', PAPELITO_VENDOR_INTEGRATION_HEALTH_APPLIED === $first );
+cas_assert(
+	'A segunda cotação do mesmo segundo não é descartada como obsoleta',
+	PAPELITO_VENDOR_INTEGRATION_HEALTH_APPLIED === $second
+);
 
 echo "\n";
 echo 0 === $failures ? "OK\n" : "FALHAS: {$failures}\n";

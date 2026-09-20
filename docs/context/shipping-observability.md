@@ -92,7 +92,12 @@ sem integração.
 
 - Abre com **4 falhas seguidas** de `timeout`, `network_error`, `rate_limited`
   ou `provider_5xx`. Qualquer sucesso no meio zera a contagem.
-- Fica aberto por **120 s**, depois meia-abre e libera **uma** sonda.
+- Fica aberto por **120 s**, depois meia-abre e libera **uma** sonda. A posse da
+  sonda é tomada com `add_option()`, que é `INSERT` com índice único: um pico de
+  checkouts simultâneos no fim do descanso rende uma sonda, não um por
+  requisição.
+- A posse expira depois de um descanso. Um processo que morra entre tomar a sonda
+  e reportar o desfecho não deixa a Braspress fora do checkout para sempre.
 - Sonda boa fecha; sonda ruim reabre e o descanso recomeça.
 - `not_available`, `authentication_error` e `validation_error` **não abrem**.
   Rota fora da malha abriria o disjuntor todo dia; credencial recusada já tem

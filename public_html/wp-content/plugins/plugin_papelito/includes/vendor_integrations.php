@@ -513,6 +513,7 @@ function papelito_vendor_integration_apply_braspress_health( int $vendor_id, str
 	$where    = array(
 		'vendor_id' => $vendor_id,
 		'provider'  => PAPELITO_VENDOR_INTEGRATION_PROVIDER,
+		'status'    => $previous,
 	);
 	if ( $expected_version > 0 ) {
 		$where['configuration_version'] = $expected_version;
@@ -530,13 +531,38 @@ function papelito_vendor_integration_apply_braspress_health( int $vendor_id, str
 		return PAPELITO_VENDOR_INTEGRATION_HEALTH_FAILED;
 	}
 
-	if ( 0 === (int) $written && $expected_version > 0 ) {
-		return PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE;
+	if ( 0 === (int) $written ) {
+		return papelito_vendor_integration_health_recheck( $vendor_id, $status, $expected_version );
 	}
 
 	papelito_vendor_integration_announce_health_change( $vendor_id, $previous, $status, $error_category );
 
 	return PAPELITO_VENDOR_INTEGRATION_HEALTH_APPLIED;
+}
+
+/**
+ * Desempata o `UPDATE` que não afetou linha nenhuma.
+ *
+ * O MySQL devolve zero em dois casos opostos: a cláusula não casou — alguém
+ * gravou entre o `SELECT` e o `UPDATE` — ou casou e os valores já eram os
+ * mesmos, que é o que acontece quando duas cotações boas terminam no mesmo
+ * segundo. Tratar os dois como obsolescência descartaria cotação válida; tratar
+ * os dois como sucesso reabriria a corrida. Só relendo dá para saber qual foi.
+ *
+ * @param int    $vendor_id ID do vendor.
+ * @param string $status Estado que se queria aplicar.
+ * @param int    $expected_version Versão que originou a tentativa.
+ * @return string `applied` quando a linha já está no estado desejado, `stale` caso contrário.
+ */
+function papelito_vendor_integration_health_recheck( int $vendor_id, string $status, int $expected_version ): string {
+	$row = papelito_vendor_integration_find_row( $vendor_id );
+	if ( ! papelito_vendor_integration_health_is_current( $row, $status, $expected_version ) ) {
+		return PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE;
+	}
+
+	return sanitize_key( (string) ( $row['status'] ?? '' ) ) === $status
+		? PAPELITO_VENDOR_INTEGRATION_HEALTH_APPLIED
+		: PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE;
 }
 
 /**

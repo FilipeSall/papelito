@@ -165,15 +165,70 @@ function papelito_shipping_breaker_allows( string $provider, int $vendor_id, ?in
 		return false;
 	}
 
-	$stored = papelito_shipping_breaker_read( $provider, $vendor_id );
-	if ( $stored['probing'] ) {
+	return papelito_shipping_breaker_claim_probe( $provider, $vendor_id, null === $now ? time() : $now );
+}
+
+/**
+ * Nome da option que representa a posse da sonda.
+ *
+ * @param string $provider Provider já saneado.
+ * @param int    $vendor_id ID interno do vendor.
+ * @return string Nome da option.
+ */
+function papelito_shipping_breaker_probe_key( string $provider, int $vendor_id ): string {
+	return papelito_shipping_breaker_option_key( $provider, $vendor_id ) . '_probe';
+}
+
+/**
+ * Tenta tomar a sonda para si, e devolve se conseguiu.
+ *
+ * `add_option()` é a única primitiva atômica que existe para options: por baixo é
+ * um `INSERT` numa coluna com índice único, então dois processos que cheguem
+ * juntos não podem vencer os dois. Ler, conferir e gravar — que era o que estava
+ * aqui — deixa passar todos os checkouts que leram antes da primeira escrita, e
+ * é justamente um pico desses que o disjuntor existe para conter.
+ *
+ * A posse expira depois de um descanso. Sem isso, um processo que morresse entre
+ * tomar a sonda e reportar o desfecho deixaria a Braspress fora do checkout para
+ * sempre, sem nada no estado que explicasse por quê.
+ *
+ * @param string $provider Provider já saneado.
+ * @param int    $vendor_id ID interno do vendor.
+ * @param int    $now Instante Unix da tentativa.
+ * @return bool Se esta chamada é a dona da sonda.
+ */
+function papelito_shipping_breaker_claim_probe( string $provider, int $vendor_id, int $now ): bool {
+	$option = papelito_shipping_breaker_probe_key( $provider, $vendor_id );
+	$held   = get_option( $option, null );
+
+	if ( is_numeric( $held ) && $now - (int) $held < PAPELITO_SHIPPING_BREAKER_COOLDOWN ) {
 		return false;
 	}
 
-	$stored['probing'] = true;
-	papelito_shipping_breaker_write( $provider, $vendor_id, $stored );
+	try {
+		if ( null !== $held ) {
+			delete_option( $option );
+		}
 
-	return true;
+		return (bool) add_option( $option, $now, '', false );
+	} catch ( Throwable $error ) {
+		return false;
+	}
+}
+
+/**
+ * Devolve a sonda, para que o próximo desfecho possa tomá-la de novo.
+ *
+ * @param string $provider Provider já saneado.
+ * @param int    $vendor_id ID interno do vendor.
+ * @return void
+ */
+function papelito_shipping_breaker_release_probe( string $provider, int $vendor_id ): void {
+	try {
+		delete_option( papelito_shipping_breaker_probe_key( $provider, $vendor_id ) );
+	} catch ( Throwable $error ) {
+		return;
+	}
 }
 
 /**
@@ -210,6 +265,8 @@ function papelito_shipping_breaker_record( string $provider, int $vendor_id, str
  * @return void
  */
 function papelito_shipping_breaker_close( string $provider, int $vendor_id ): void {
+	papelito_shipping_breaker_release_probe( $provider, $vendor_id );
+
 	try {
 		delete_option( papelito_shipping_breaker_option_key( $provider, $vendor_id ) );
 	} catch ( Throwable $error ) {
@@ -230,6 +287,19 @@ function papelito_shipping_breaker_close( string $provider, int $vendor_id ): vo
  */
 function papelito_shipping_breaker_count_failure( string $provider, int $vendor_id, int $now ): void {
 	$state = papelito_shipping_breaker_read( $provider, $vendor_id );
+	if ( papelito_shipping_breaker_state( $provider, $vendor_id, $now ) === PAPELITO_SHIPPING_BREAKER_HALF_OPEN ) {
+		papelito_shipping_breaker_release_probe( $provider, $vendor_id );
+		papelito_shipping_breaker_write(
+			$provider,
+			$vendor_id,
+			array(
+				'failures'  => PAPELITO_SHIPPING_BREAKER_THRESHOLD,
+				'opened_at' => $now,
+				'probing'   => false,
+			)
+		);
+		return;
+	}
 	if ( $state['probing'] ) {
 		papelito_shipping_breaker_write(
 			$provider,

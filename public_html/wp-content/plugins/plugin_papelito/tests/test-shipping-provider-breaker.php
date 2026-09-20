@@ -23,6 +23,7 @@ const BREAKER_TEST_BRASPRESS    = 'braspress';
 const BREAKER_TEST_START        = 1789000000;
 
 $GLOBALS['breaker_test_options'] = array();
+$GLOBALS['breaker_test_frozen']  = null;
 
 /** Sanitização de identidade igual à chave do WordPress. */
 function sanitize_key( mixed $value ): string { return preg_replace( '/[^a-z0-9_-]/', '', strtolower( (string) $value ) ); }
@@ -33,11 +34,19 @@ function add_action( mixed ...$args ): bool { return true; }
 /** Nenhum listener é executado neste teste. */
 function do_action( mixed ...$args ): bool { return true; }
 
-/** Lê a option do armazenamento em memória do teste. */
+/**
+ * Lê a option, opcionalmente de um retrato congelado.
+ *
+ * Congelar a leitura é como o teste representa concorrência real: vários
+ * checkouts que já leram o estado antes de qualquer um deles escrever. Sem isso
+ * o laço é sequencial e a corrida nunca aparece.
+ */
 function get_option( mixed $option, mixed $default_value = false ): mixed {
-	return array_key_exists( (string) $option, $GLOBALS['breaker_test_options'] )
-		? $GLOBALS['breaker_test_options'][ (string) $option ]
-		: $default_value;
+	$store = null === $GLOBALS['breaker_test_frozen']
+		? $GLOBALS['breaker_test_options']
+		: $GLOBALS['breaker_test_frozen'];
+
+	return array_key_exists( (string) $option, $store ) ? $store[ (string) $option ] : $default_value;
 }
 
 /** Grava a option no armazenamento em memória do teste. */
@@ -50,6 +59,23 @@ function update_option( mixed $option, mixed $value, mixed $autoload = null ): b
 /** Remove a option do armazenamento em memória do teste. */
 function delete_option( mixed $option ): bool {
 	unset( $GLOBALS['breaker_test_options'][ (string) $option ] );
+
+	return true;
+}
+
+/**
+ * Criação exclusiva, como o `add_option` do WordPress: falha se já existe.
+ *
+ * É a única primitiva atômica disponível para options, e é nela que a sonda
+ * única se apoia — `INSERT` numa coluna com índice único não deixa dois
+ * processos vencerem.
+ */
+function add_option( mixed $option, mixed $value = '', mixed $deprecated = '', mixed $autoload = null ): bool {
+	if ( array_key_exists( (string) $option, $GLOBALS['breaker_test_options'] ) ) {
+		return false;
+	}
+
+	$GLOBALS['breaker_test_options'][ (string) $option ] = $value;
 
 	return true;
 }
@@ -73,6 +99,7 @@ function breaker_assert( string $label, bool $condition ): void {
 /** Zera o armazenamento entre cenários. */
 function breaker_reset(): void {
 	$GLOBALS['breaker_test_options'] = array();
+	$GLOBALS['breaker_test_frozen']  = null;
 }
 
 /** Registra um desfecho da Braspress no instante informado. */
@@ -229,6 +256,35 @@ papelito_shipping_breaker_record( BREAKER_TEST_CORREIOS, BREAKER_TEST_VENDOR_ID,
 breaker_assert(
 	'Falha dos Correios não cria estado de disjuntor',
 	array() === $GLOBALS['breaker_test_options']
+);
+
+echo "\nCenário 9: checkouts simultâneos na meia-abertura liberam uma sonda só\n";
+breaker_reset();
+breaker_record_many( 'timeout', PAPELITO_SHIPPING_BREAKER_THRESHOLD, BREAKER_TEST_START );
+
+$GLOBALS['breaker_test_frozen'] = $GLOBALS['breaker_test_options'];
+
+$granted = 0;
+for ( $attempt = 0; $attempt < 8; $attempt++ ) {
+	if ( papelito_shipping_breaker_allows( BREAKER_TEST_BRASPRESS, BREAKER_TEST_VENDOR_ID, $after ) ) {
+		++$granted;
+	}
+}
+
+$GLOBALS['breaker_test_frozen'] = null;
+
+breaker_assert( 'Oito chegadas no fim do descanso rendem uma sonda', 1 === $granted );
+
+echo "\nCenário 10: a sonda não fica presa se ninguém reportar o desfecho\n";
+breaker_reset();
+breaker_record_many( 'timeout', PAPELITO_SHIPPING_BREAKER_THRESHOLD, BREAKER_TEST_START );
+
+papelito_shipping_breaker_allows( BREAKER_TEST_BRASPRESS, BREAKER_TEST_VENDOR_ID, $after );
+$abandoned = BREAKER_TEST_START + PAPELITO_SHIPPING_BREAKER_COOLDOWN * 2;
+
+breaker_assert(
+	'Passado um descanso sem desfecho, outra sonda é liberada',
+	papelito_shipping_breaker_allows( BREAKER_TEST_BRASPRESS, BREAKER_TEST_VENDOR_ID, $abandoned )
 );
 
 echo "\n";
