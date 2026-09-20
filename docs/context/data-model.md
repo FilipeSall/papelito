@@ -554,6 +554,54 @@ openssl rand -hex 32   # PAPELITO_PII_ENCRYPTION_KEY
 
 Valores reais vivem apenas no `.env` (gitignorado) e no cofre/ambientes. O `.env.example` só tem placeholders `change-me`.
 
+## Migrações de schema: o que rodou, quando, e deu certo
+
+`papelito_maybe_migrate_db()` compara `PAPELITO_DB_VERSION` com a option
+`papelito_db_version`, pega um `GET_LOCK` no MySQL e chama a lista de migrações.
+Quem executa cada uma é `papelito_run_db_migration()`, em `db_migrations.php`.
+
+Cada execução deixa uma entrada em `papelito_db_migration_log` (option sem
+autoload, anel de 200 entradas):
+
+```php
+array( 'migration' => 'papelito_vendor_integrations_install_tables',
+       'outcome'   => 'ok',      // ok | skipped | failed
+       'version'   => '1.51.0',
+       'at'        => '2026-09-20 12:00:00' )
+```
+
+```bash
+docker compose exec -T -u www-data web wp eval \
+  'print_r( papelito_db_migration_log() );'
+```
+
+- `skipped` significa que o callback não existia — módulo removido ou renomeado.
+- `failed` traz `error` com a **classe** da exceção. A mensagem completa fica no
+  `error_log`, porque erro de SQL costuma ecoar o valor que causou o conflito, e
+  isso é dado de cliente.
+
+> **Uma migração que falha não bloqueia o avanço de `papelito_db_version`.** É
+> decisão, não descuido: bloquear faria cada requisição tentar de novo pegando o
+> lock, e transformaria uma migração permanentemente quebrada em site fora do ar.
+> O preço é que o defeito só aparece no registro — **confira o log depois de todo
+> deploy que suba a versão de schema.**
+
+## Rollback de schema: não existe, e é de propósito
+
+O schema é **aditivo**. Não há script que desfaça uma migração, e isso é
+invariante do projeto, não pendência: desligar uma feature flag **não** remove
+tabela, porque a tabela pode conter pedido histórico que ainda precisa ser lido.
+
+Reverter uma entrega que mexeu no schema é:
+
+1. voltar o **código** (build anterior ou feature flag desligada);
+2. deixar tabela e coluna onde estão.
+
+Coluna a mais sem código que a leia não faz mal. Tabela apagada com pedido dentro
+não volta. Se uma migração realmente precisar ser desfeita — o caso raro de uma
+coluna com tipo errado —, isso é intervenção manual documentada no incidente, com
+dump antes, e não um caminho automatizado.
+
 ## Cofre das credenciais de transportadora do vendor
 
 Em `vendor_secrets.php`. É **separado** do cofre de PII de propósito: a credencial

@@ -122,6 +122,7 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `shipping_breaker.php` | disjuntor da Braspress por vendor: quatro falhas seguidas de indisponibilidade tiram o provider da cotação por 120 s, sem tocar nos Correios |
 | `vendor_integrations.php`, `braspress.php` | contrato Braspress por vendor, cofre write-only e cliente HTTP de cotação |
 | `vendor_secrets.php` | cofre das credenciais de transportadora do vendor: chave derivada da de PII por HMAC com rótulo de domínio, envelope `k<versão>`, sem variável de ambiente própria |
+| `db_migrations.php` | executor das migrações de schema e o registro auditável do que cada uma fez (`papelito_db_migration_log()`) |
 | `correios_prepostage.php` | pré-postagem e etiqueta |
 | `correios_tracking.php`, `braspress_tracking.php` | polling por provider; Rastro/S10 e Braspress `byNumPedido` com status externo preservado |
 | `receipts.php` | recibo persistido: numeração anual, snapshot imutável em centavos, parcelas por vendor |

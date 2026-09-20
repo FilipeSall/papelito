@@ -46,6 +46,7 @@ require_once __DIR__ . '/includes/admin_media_cleanup.php';
 require_once __DIR__ . '/includes/admin_reports.php';
 require_once __DIR__ . '/includes/analytics_ga4.php';
 require_once __DIR__ . '/includes/admin_users.php';
+require_once __DIR__ . '/includes/db_migrations.php';
 require_once __DIR__ . '/includes/shipping.php';
 require_once __DIR__ . '/includes/shipping_metrics.php';
 require_once __DIR__ . '/includes/correios_prepostage.php';
@@ -196,20 +197,6 @@ function papelito_maybe_migrate_db() {
 		update_option( 'papelito_db_version', PAPELITO_DB_VERSION, true );
 	} finally {
 		$wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-	}
-}
-
-/**
- * Run database migration callbacks that may not exist in every deployment.
- *
- * @param string[] $callbacks Migration callback names.
- * @return void
- */
-function papelito_run_optional_db_migrations( array $callbacks ): void {
-	foreach ( $callbacks as $callback ) {
-		if ( function_exists( $callback ) ) {
-			$callback();
-		}
 	}
 }
 
