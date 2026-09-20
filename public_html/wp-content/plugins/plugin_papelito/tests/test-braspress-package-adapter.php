@@ -483,6 +483,13 @@ function papelito_shipping_cache_fingerprint( string $value ): string {
 	return hash( 'sha256', $value );
 }
 
+const PAPELITO_VENDOR_INTEGRATION_ACTIVE          = 'active';
+const PAPELITO_VENDOR_INTEGRATION_INVALID         = 'invalid_credentials';
+const PAPELITO_VENDOR_INTEGRATION_BLOCKED         = 'provider_blocked';
+const PAPELITO_VENDOR_INTEGRATION_HEALTH_APPLIED  = 'applied';
+const PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE    = 'stale';
+const PAPELITO_VENDOR_INTEGRATION_HEALTH_FAILED   = 'failed';
+
 require_once dirname( __DIR__ ) . '/includes/packaging.php';
 require_once dirname( __DIR__ ) . '/includes/braspress.php';
 require_once dirname( __DIR__ ) . '/includes/shipping_providers.php';

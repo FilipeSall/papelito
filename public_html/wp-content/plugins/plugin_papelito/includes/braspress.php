@@ -695,6 +695,36 @@ function papelito_braspress_domain_error_definition( string $category, string $o
 }
 
 /**
+ * Marca a conta quando a falha é da própria conta, e só nesse caso.
+ *
+ * Timeout, rede, `429` e `5xx` não passam por aqui de propósito: a credencial
+ * continua boa e degradar a conta por indisponibilidade tiraria a Braspress do
+ * checkout muito além do incidente. A versão que originou a tentativa viaja
+ * junto para não marcar uma credencial que o vendor acabou de substituir.
+ *
+ * @param array<string,mixed> $integration Integração resolvida para o vendor.
+ * @param string              $category Categoria classificada da falha.
+ * @return void
+ */
+function papelito_braspress_apply_failure_health( array $integration, string $category ): void {
+	$states = array(
+		PAPELITO_BRASPRESS_ERROR_AUTHENTICATION  => PAPELITO_VENDOR_INTEGRATION_INVALID,
+		PAPELITO_BRASPRESS_ERROR_ACCOUNT_BLOCKED => PAPELITO_VENDOR_INTEGRATION_BLOCKED,
+	);
+
+	if ( ! isset( $states[ $category ] ) || ! function_exists( 'papelito_vendor_integration_apply_braspress_health' ) ) {
+		return;
+	}
+
+	papelito_vendor_integration_apply_braspress_health(
+		(int) ( $integration['vendor_id'] ?? 0 ),
+		$states[ $category ],
+		$category,
+		(int) ( $integration['configuration_version'] ?? 0 )
+	);
+}
+
+/**
  * Aplica estado de domínio, log restrito e dados públicos após falha do transporte.
  *
  * @param array<string,mixed> $integration Integração resolvida para o vendor.
@@ -717,12 +747,7 @@ function papelito_braspress_handle_transport_error( array $integration, WP_Error
 		)
 	);
 
-	if ( PAPELITO_BRASPRESS_ERROR_AUTHENTICATION === $category && function_exists( 'papelito_vendor_integration_set_braspress_operational_state' ) ) {
-		papelito_vendor_integration_set_braspress_operational_state( $vendor_id, PAPELITO_VENDOR_INTEGRATION_INVALID, $category );
-	}
-	if ( PAPELITO_BRASPRESS_ERROR_ACCOUNT_BLOCKED === $category && function_exists( 'papelito_vendor_integration_set_braspress_operational_state' ) ) {
-		papelito_vendor_integration_set_braspress_operational_state( $vendor_id, PAPELITO_VENDOR_INTEGRATION_BLOCKED, $category );
-	}
+	papelito_braspress_apply_failure_health( $integration, $category );
 
 	$domain_category = in_array( $category, array( PAPELITO_BRASPRESS_ERROR_AUTHENTICATION, PAPELITO_BRASPRESS_ERROR_ACCOUNT_BLOCKED, PAPELITO_BRASPRESS_ERROR_NOT_AVAILABLE ), true ) ? $category : $metadata['category'];
 	$definition      = papelito_braspress_domain_error_definition( $domain_category, $operation );
@@ -827,8 +852,8 @@ function papelito_braspress_quote_at( array $integration, string $recipient_cnpj
 		'physical_hash'     => is_scalar( $package['physical_hash'] ?? null ) ? (string) $package['physical_hash'] : '',
 	);
 
-	if ( function_exists( 'papelito_vendor_integration_set_braspress_operational_state' ) ) {
-		papelito_vendor_integration_set_braspress_operational_state( (int) ( $integration['vendor_id'] ?? 0 ), PAPELITO_VENDOR_INTEGRATION_ACTIVE );
+	if ( PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE === papelito_braspress_confirm_active( $integration, $status, $duration ) ) {
+		return null;
 	}
 
 	$cache_ttl = papelito_braspress_quote_cache_ttl( $quoted_at );
@@ -837,4 +862,65 @@ function papelito_braspress_quote_at( array $integration, string $recipient_cnpj
 	}
 
 	return $result;
+}
+
+/**
+ * Confirma a conta como ativa sobre a versão que originou esta cotação.
+ *
+ * Devolver `stale` é o que descarta a resposta em trânsito: entre o pedido e a
+ * resposta cabem quinze segundos, e nesse intervalo o vendor pode ter
+ * desabilitado a integração ou trocado a credencial. A cotação obsoleta não
+ * vira opção nem entra no cache.
+ *
+ * @param array<string,mixed> $integration Integração resolvida para o vendor.
+ * @param int                 $status Código HTTP da resposta aceita.
+ * @param int                 $duration_ms Duração do transporte em milissegundos.
+ * @return string Desfecho da transição, ou `applied` quando não há política instalada.
+ */
+function papelito_braspress_confirm_active( array $integration, int $status = 200, int $duration_ms = 0 ): string {
+	if ( ! function_exists( 'papelito_vendor_integration_apply_braspress_health' ) ) {
+		return PAPELITO_VENDOR_INTEGRATION_HEALTH_APPLIED;
+	}
+
+	$vendor_id = (int) ( $integration['vendor_id'] ?? 0 );
+	$outcome   = papelito_vendor_integration_apply_braspress_health(
+		$vendor_id,
+		PAPELITO_VENDOR_INTEGRATION_ACTIVE,
+		'',
+		(int) ( $integration['configuration_version'] ?? 0 )
+	);
+
+	$category = papelito_braspress_health_log_category( $outcome );
+	if ( '' !== $category ) {
+		papelito_braspress_log_failure(
+			$vendor_id,
+			$status,
+			array(
+				'category' => $category,
+				'messages' => array(),
+				'trace_id' => '',
+			),
+			'quote',
+			$duration_ms
+		);
+	}
+
+	return $outcome;
+}
+
+/**
+ * Traduz o desfecho da transição de saúde na categoria registrada em log.
+ *
+ * Os dois casos existem para explicar uma opção que não apareceu ou uma conta
+ * que continuou `ready` depois de cotar. Sucesso não gera linha.
+ *
+ * @param string $outcome Desfecho devolvido pela política de saúde.
+ * @return string Categoria da taxonomia, ou vazio quando não há o que registrar.
+ */
+function papelito_braspress_health_log_category( string $outcome ): string {
+	if ( PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE === $outcome ) {
+		return 'integration_not_ready';
+	}
+
+	return PAPELITO_VENDOR_INTEGRATION_HEALTH_FAILED === $outcome ? 'persistence_error' : '';
 }

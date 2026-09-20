@@ -471,6 +471,28 @@ obs_assert(
 	! array_key_exists( 'latency', $report['tracking'][ OBS_TEST_BRASPRESS ] )
 );
 
+echo "\nCenário 9: cotação descartada por configuração obsoleta não vira opção nula\n";
+obs_reset();
+
+$GLOBALS['obs_test_correios']    = obs_success_result();
+$GLOBALS['obs_test_integration'] = obs_integration();
+$GLOBALS['obs_test_braspress']   = null;
+
+$quote  = papelito_shipping_quote_all_providers( OBS_TEST_VENDOR_ID, OBS_TEST_DESTINATION_CEP, array(), obs_quote_context() );
+$report = papelito_shipping_provider_metrics_report();
+
+obs_assert(
+	'O checkout recebe só a opção dos Correios, sem entrada vazia',
+	is_array( $quote ) && 1 === count( $quote['options'] ?? array() )
+	&& is_array( $quote['options'][0] ?? null )
+);
+obs_assert(
+	'O descarte é contado como skipped, não como sucesso nem como falha',
+	1 === ( $report['quote'][ OBS_TEST_BRASPRESS ]['skipped'] ?? null )
+	&& 0 === ( $report['quote'][ OBS_TEST_BRASPRESS ]['success'] ?? null )
+	&& 0 === ( $report['quote'][ OBS_TEST_BRASPRESS ]['failures'] ?? null )
+);
+
 echo "\n";
 echo 0 === $failures ? "OK\n" : "FALHAS: {$failures}\n";
 exit( 0 === $failures ? 0 : 1 );

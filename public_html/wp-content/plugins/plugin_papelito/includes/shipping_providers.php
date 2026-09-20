@@ -743,6 +743,15 @@ function papelito_shipping_quote_braspress( int $vendor_id, string $destination_
 		return $result;
 	}
 
+	/**
+	 * Nulo aqui é a cotação descartada porque a configuração mudou enquanto a
+	 * Braspress respondia. É pulo de elegibilidade, não sucesso: embrulhá-la
+	 * contaria como cotação boa uma conta que já não existe.
+	 */
+	if ( ! is_array( $result ) ) {
+		return null;
+	}
+
 	return array(
 		'origin_cep'      => $integration['config']['origin_cep'],
 		'destination_cep' => $destination_cep,

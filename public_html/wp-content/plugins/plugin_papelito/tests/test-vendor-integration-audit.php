@@ -31,6 +31,7 @@ $GLOBALS['audit_test_row']       = null;
 $GLOBALS['audit_test_rows']      = array();
 $GLOBALS['audit_test_rate_ok']   = true;
 $GLOBALS['audit_test_actions']   = array();
+$GLOBALS['audit_test_alerts']    = array();
 
 /** Erro WordPress mínimo, com a leitura de código e `status` que a auditoria usa. */
 class WP_Error {
@@ -85,8 +86,14 @@ $GLOBALS['wpdb'] = new Papelito_Audit_Test_Wpdb();
 
 /** Registra o listener sem executá-lo; o teste inspeciona a tabela, não o hook. */
 function add_action( mixed $hook, mixed $callback = null, mixed $priority = 10, mixed $accepted = 1 ): bool { return true; }
-/** Nenhum listener é executado neste teste. */
-function do_action( mixed ...$args ): bool { return true; }
+/** Guarda o alerta publicado para inspeção; os demais eventos passam direto. */
+function do_action( mixed ...$args ): bool {
+	if ( 'papelito_shipping_provider_alert' === (string) ( $args[0] ?? '' ) ) {
+		$GLOBALS['audit_test_alerts'][] = array_slice( $args, 1 );
+	}
+
+	return true;
+}
 /** Nenhum filtro instalado. */
 function add_filter( mixed ...$args ): bool { return true; }
 /** Devolve o valor recebido, sem filtro instalado. */
@@ -135,6 +142,7 @@ function papelito_pii_decrypt( string $envelope ): mixed {
 function papelito_validate_cnpj( string $cnpj ): bool { return AUDIT_TEST_CNPJ === $cnpj; }
 
 require_once dirname( __DIR__ ) . '/includes/vendor_integrations.php';
+require_once dirname( __DIR__ ) . '/includes/shipping_observability.php';
 
 $failures = 0;
 
@@ -156,6 +164,7 @@ function audit_reset( ?array $row = null ): void {
 	$GLOBALS['audit_test_row']                          = $row;
 	$GLOBALS['audit_test_rows']                         = array();
 	$GLOBALS['audit_test_rate_ok']                      = true;
+	$GLOBALS['audit_test_alerts']                       = array();
 }
 
 /** Corpo de requisição que troca a credencial write-only. */
@@ -255,6 +264,54 @@ $row = audit_last_row();
 
 audit_assert( 'A remoção é auditada', 'removed' === ( $row['action'] ?? null ) );
 audit_assert( 'A remoção bem-sucedida tem status de sucesso', 'success' === ( $row['status'] ?? null ) );
+
+echo "\nCenário 7: trocar a credencial recusada fecha o alerta aberto\n";
+audit_reset(
+	array(
+		'id'                    => 7,
+		'vendor_id'             => AUDIT_TEST_VENDOR_ID,
+		'provider'              => PAPELITO_VENDOR_INTEGRATION_PROVIDER,
+		'config_json'           => wp_json_encode( array( 'origin_cep' => AUDIT_TEST_CEP ) ),
+		'secret_envelope'       => AUDIT_TEST_ENVELOPE,
+		'configuration_version' => 4,
+		'enabled'               => 1,
+		'status'                => PAPELITO_VENDOR_INTEGRATION_INVALID,
+	)
+);
+
+papelito_vendor_integration_save_braspress( AUDIT_TEST_VENDOR_ID, audit_credential_payload(), AUDIT_TEST_VENDOR_ID );
+
+audit_assert(
+	'A credencial nova tira a integração de invalid_credentials',
+	PAPELITO_VENDOR_INTEGRATION_READY === ( $GLOBALS['audit_test_row']['status'] ?? null )
+);
+audit_assert(
+	'A recuperação é publicada, para fechar o alerta que abriu no 401',
+	1 === count( $GLOBALS['audit_test_alerts'] )
+	&& PAPELITO_VENDOR_INTEGRATION_READY === ( $GLOBALS['audit_test_alerts'][0][1] ?? null )
+	&& PAPELITO_VENDOR_INTEGRATION_INVALID === ( $GLOBALS['audit_test_alerts'][0][2]['previous_state'] ?? null )
+);
+
+echo "\nCenário 8: salvar sem sair de estado degradado não gera alerta\n";
+audit_reset(
+	array(
+		'id'                    => 7,
+		'vendor_id'             => AUDIT_TEST_VENDOR_ID,
+		'provider'              => PAPELITO_VENDOR_INTEGRATION_PROVIDER,
+		'config_json'           => wp_json_encode( array( 'origin_cep' => AUDIT_TEST_CEP ) ),
+		'secret_envelope'       => AUDIT_TEST_ENVELOPE,
+		'configuration_version' => 4,
+		'enabled'               => 1,
+		'status'                => PAPELITO_VENDOR_INTEGRATION_ACTIVE,
+	)
+);
+
+papelito_vendor_integration_save_braspress( AUDIT_TEST_VENDOR_ID, audit_credential_payload(), AUDIT_TEST_VENDOR_ID );
+
+audit_assert(
+	'Trocar credencial de uma conta saudável não abre nem fecha alerta',
+	array() === $GLOBALS['audit_test_alerts']
+);
 
 echo "\n";
 echo 0 === $failures ? "OK\n" : "FALHAS: {$failures}\n";

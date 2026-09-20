@@ -46,8 +46,9 @@ por provider:
 Três leituras que enganam se você não souber:
 
 - **`skipped` alto não é incidente.** É a Braspress não participando: flag
-  desligada, vendor fora da allowlist, sem integração, sem caixa cadastrada ou
-  disjuntor aberto. Todo vendor sem Braspress soma aqui o dia inteiro.
+  desligada, vendor fora da allowlist, sem integração, sem caixa cadastrada,
+  disjuntor aberto **ou cotação descartada porque a configuração mudou enquanto
+  a Braspress respondia**. Todo vendor sem Braspress soma aqui o dia inteiro.
 - **`not_available` alto é normal.** É destino fora da malha, e de Bebedouro/SP
   isso inclui Vitória e Vila Velha. **Não alerte por isso.**
 - **`tracking` não tem `latency`.** O poll roda em cron e o tempo dele não é
@@ -80,6 +81,8 @@ número serve para tendência, não para conciliação.
 | `provider_4xx` | payload recusado (ProblemDetails) | Defeito nosso de contrato. O log traz o campo recusado e o `traceId`, que é o único identificador para abrir chamado na Braspress. |
 | `invalid_response` | JSON inválido ou campo crítico ausente | Descartada. Se repetir, é mudança de contrato do provider. |
 | `not_found` | só em `tracking`: conhecimento ainda não emitido | Esperado na janela inicial da postagem. Só investigue se ficar dias assim. |
+| `integration_not_ready` | a configuração do vendor mudou durante a cotação e a resposta foi descartada | **Nada**, se for isolado: o vendor salvou o formulário enquanto um checkout cotava. Se for constante, alguém está gravando a integração em laço — confira a auditoria. |
+| `persistence_error` | a cotação foi válida, mas o estado de saúde não gravou | O comprador **não** perdeu o frete. Olhe o banco: a integração continua no status anterior e o `last_successful_quote_at` não avançou. |
 
 ## O disjuntor
 
@@ -177,8 +180,14 @@ add_action(
 ```
 
 O alerta sai **na transição** de saúde, não a cada cotação: uma credencial
-vencida alertaria uma vez por checkout e o canal viraria ruído em uma tarde. A
-recuperação também é publicada, para fechar o alerta aberto.
+vencida alertaria uma vez por checkout e o canal viraria ruído em uma tarde.
+
+A recuperação também é publicada, para fechar o alerta aberto — mas ela vem do
+**salvamento**, não de uma cotação. Nenhuma cotação tira a integração de
+`invalid_credentials`: a saída é o vendor substituir usuário e senha, o que
+incrementa `configuration_version` e devolve a conta para `ready`. Se você vir um
+alerta de `invalid_credentials` que nunca fecha, o vendor ainda não trocou a
+credencial.
 
 ## Pendências conhecidas
 

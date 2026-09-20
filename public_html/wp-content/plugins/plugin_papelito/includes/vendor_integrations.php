@@ -26,6 +26,18 @@ const PAPELITO_VENDOR_INTEGRATION_AUDIT_REJECTED = 'rejected';
 const PAPELITO_VENDOR_INTEGRATION_AUDIT_FAILED   = 'failed';
 
 /**
+ * Desfecho de uma tentativa de gravar a saúde da integração.
+ *
+ * `stale` e `failed` são deliberadamente distintos: o primeiro diz que a conta
+ * que produziu a cotação já não vale e a resposta em trânsito deve ser
+ * descartada; o segundo diz que só o registro de saúde falhou, e a cotação
+ * continua boa para o comprador.
+ */
+const PAPELITO_VENDOR_INTEGRATION_HEALTH_APPLIED = 'applied';
+const PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE   = 'stale';
+const PAPELITO_VENDOR_INTEGRATION_HEALTH_FAILED  = 'failed';
+
+/**
  * Parâmetros contratuais fixos do marketplace, deliberadamente não editáveis.
  *
  * Rodoviário é o único modal com preço viável para papelaria, e CIF é o único
@@ -413,37 +425,118 @@ function papelito_vendor_integration_security_event( int $vendor_id, string $act
  * @return void
  */
 function papelito_vendor_integration_set_braspress_operational_state( int $vendor_id, string $status, string $error_category = '' ): void {
+	papelito_vendor_integration_apply_braspress_health( $vendor_id, $status, $error_category );
+}
+
+/**
+ * Decide se a transição pedida ainda vale para a configuração que está no banco.
+ *
+ * Uma cotação leva até 15 segundos, e nesse intervalo o vendor pode desabilitar
+ * a integração, trocar a credencial ou mudar a origem. Sem esta comparação, a
+ * resposta que chega depois marcaria `active` uma conta que já não existe.
+ *
+ * Credencial recusada prevalece sobre cotação boa da **mesma** versão: as duas
+ * saíram com a mesma conta, e reativar por causa da ordem de chegada esconderia
+ * do vendor que a senha precisa ser trocada. Só uma versão nova tira a
+ * integração de `invalid_credentials`.
+ *
+ * @param mixed  $row Linha corrente da integração, ou nulo quando não existe.
+ * @param string $status Estado que se quer aplicar.
+ * @param int    $expected_version Versão que originou a tentativa; zero dispensa a comparação.
+ * @return bool Se a transição ainda é válida.
+ */
+function papelito_vendor_integration_health_is_current( mixed $row, string $status, int $expected_version ): bool {
+	if ( ! is_array( $row ) ) {
+		return false;
+	}
+
+	if ( $expected_version > 0 && (int) ( $row['configuration_version'] ?? 0 ) !== $expected_version ) {
+		return false;
+	}
+
+	$current = sanitize_key( (string) ( $row['status'] ?? '' ) );
+
+	return ! ( PAPELITO_VENDOR_INTEGRATION_INVALID === $current && PAPELITO_VENDOR_INTEGRATION_ACTIVE === $status );
+}
+
+/**
+ * Monta os campos de saúde gravados na integração.
+ *
+ * @param string $status Estado alcançado.
+ * @param string $error_category Categoria pública e redigida do erro.
+ * @return array<string,mixed> Campos a gravar.
+ */
+function papelito_vendor_integration_health_columns( string $status, string $error_category ): array {
+	$now  = current_time( 'mysql', true );
+	$data = array(
+		'status'                 => $status,
+		'last_health_checked_at' => $now,
+		'last_error_category'    => '' !== $error_category ? sanitize_key( $error_category ) : null,
+		'updated_at'             => $now,
+	);
+
+	if ( PAPELITO_VENDOR_INTEGRATION_ACTIVE === $status ) {
+		$data['last_successful_quote_at'] = $now;
+	}
+
+	return $data;
+}
+
+/**
+ * Aplica a saúde da integração somente sobre a versão que originou a tentativa.
+ *
+ * Distingue três desfechos porque quem chama reage a cada um de um jeito:
+ * `applied` segue o fluxo, `stale` **descarta a cotação em trânsito** — a conta
+ * que a produziu já não vale — e `failed` preserva a cotação, porque o comprador
+ * não pode perder um frete válido só porque o contador de saúde não gravou.
+ *
+ * @param int    $vendor_id ID do vendor.
+ * @param string $status Novo estado operacional permitido.
+ * @param string $error_category Categoria pública e redigida do erro.
+ * @param int    $expected_version Versão de configuração que originou a tentativa.
+ * @return string Desfecho do vocabulário `PAPELITO_VENDOR_INTEGRATION_HEALTH_*`.
+ */
+function papelito_vendor_integration_apply_braspress_health( int $vendor_id, string $status, string $error_category = '', int $expected_version = 0 ): string {
 	global $wpdb;
 
 	if ( ! in_array( $status, array( PAPELITO_VENDOR_INTEGRATION_ACTIVE, PAPELITO_VENDOR_INTEGRATION_INVALID, PAPELITO_VENDOR_INTEGRATION_BLOCKED ), true ) ) {
-		return;
+		return PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE;
 	}
 
-	$row      = papelito_vendor_integration_find_row( $vendor_id );
+	$row = papelito_vendor_integration_find_row( $vendor_id );
+	if ( ! papelito_vendor_integration_health_is_current( $row, $status, $expected_version ) ) {
+		return PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE;
+	}
+
 	$previous = sanitize_key( (string) ( $row['status'] ?? PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED ) );
-
-	$data = array(
-		'status'                 => $status,
-		'last_health_checked_at' => current_time( 'mysql', true ),
-		'last_error_category'    => '' !== $error_category ? sanitize_key( $error_category ) : null,
-		'updated_at'             => current_time( 'mysql', true ),
+	$data     = papelito_vendor_integration_health_columns( $status, $error_category );
+	$where    = array(
+		'vendor_id' => $vendor_id,
+		'provider'  => PAPELITO_VENDOR_INTEGRATION_PROVIDER,
 	);
-	if ( PAPELITO_VENDOR_INTEGRATION_ACTIVE === $status ) {
-		$data['last_successful_quote_at'] = current_time( 'mysql', true );
+	if ( $expected_version > 0 ) {
+		$where['configuration_version'] = $expected_version;
 	}
 
-	$wpdb->update(
+	$written = $wpdb->update(
 		papelito_vendor_integrations_table_name(),
 		$data,
-		array(
-			'vendor_id' => $vendor_id,
-			'provider'  => PAPELITO_VENDOR_INTEGRATION_PROVIDER,
-		),
+		$where,
 		array_fill( 0, count( $data ), '%s' ),
-		array( '%d', '%s' )
+		array_fill( 0, count( $where ), '%s' )
 	);
 
+	if ( false === $written ) {
+		return PAPELITO_VENDOR_INTEGRATION_HEALTH_FAILED;
+	}
+
+	if ( 0 === (int) $written && $expected_version > 0 ) {
+		return PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE;
+	}
+
 	papelito_vendor_integration_announce_health_change( $vendor_id, $previous, $status, $error_category );
+
+	return PAPELITO_VENDOR_INTEGRATION_HEALTH_APPLIED;
 }
 
 /**
@@ -522,6 +615,21 @@ function papelito_vendor_integration_save_braspress( int $vendor_id, array $payl
 		papelito_vendor_integration_intended_action( $payload ),
 		papelito_vendor_integration_apply_braspress_save( $vendor_id, $payload, $actor_user_id )
 	);
+}
+
+/**
+ * Nomeia a ação efetivamente gravada, para a auditoria e para o aviso ao titular.
+ *
+ * @param bool $credentials_changed Se o segredo foi substituído ou removido.
+ * @param bool $secret_removed Se a integração ficou sem envelope.
+ * @return string Ação do vocabulário auditável.
+ */
+function papelito_vendor_integration_saved_action( bool $credentials_changed, bool $secret_removed ): string {
+	if ( ! $credentials_changed ) {
+		return 'configuration_saved';
+	}
+
+	return $secret_removed ? 'credentials_removed' : 'credentials_saved';
 }
 
 /**
@@ -634,9 +742,13 @@ function papelito_vendor_integration_apply_braspress_save( int $vendor_id, array
 		return new WP_Error( 'papelito_vendor_integration_save_failed', 'Não foi possível salvar a integração.', array( 'status' => 500 ) );
 	}
 
-	$action = $credentials_changed
-		? ( empty( $secret_envelope ) ? 'credentials_removed' : 'credentials_saved' )
-		: 'configuration_saved';
+	$action = papelito_vendor_integration_saved_action( $credentials_changed, empty( $secret_envelope ) );
+	papelito_vendor_integration_announce_health_change(
+		$vendor_id,
+		sanitize_key( (string) ( $existing['status'] ?? PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED ) ),
+		$status,
+		''
+	);
 	papelito_vendor_integration_audit( $vendor_id, PAPELITO_VENDOR_INTEGRATION_PROVIDER, $actor_user_id, $action, PAPELITO_VENDOR_INTEGRATION_AUDIT_SUCCESS );
 	papelito_vendor_integration_security_event( $vendor_id, $action );
 

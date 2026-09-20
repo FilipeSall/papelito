@@ -232,19 +232,32 @@ alert_assert(
 	array() === $GLOBALS['alert_test_alerts']
 );
 
-echo "\nCenário 5: voltar a cotar fecha o alerta e restaura o estado ativo\n";
+echo "\nCenário 5: cotação boa concorrente não apaga a credencial recusada\n";
 alert_reset( PAPELITO_VENDOR_INTEGRATION_INVALID );
 
 papelito_vendor_integration_set_braspress_operational_state( ALERT_TEST_VENDOR_ID, PAPELITO_VENDOR_INTEGRATION_ACTIVE );
 
 alert_assert(
-	'Uma cotação válida devolve a integração para active',
-	PAPELITO_VENDOR_INTEGRATION_ACTIVE === ( $GLOBALS['alert_test_updates'][0]['status'] ?? null )
+	'Nenhuma cotação tira a conta de invalid_credentials',
+	array() === $GLOBALS['alert_test_updates']
+	&& PAPELITO_VENDOR_INTEGRATION_INVALID === $GLOBALS['alert_test_row']['status']
 );
 alert_assert(
-	'A recuperação também é publicada, para fechar o alerta aberto',
-	1 === count( $GLOBALS['alert_test_alerts'] )
-	&& PAPELITO_VENDOR_INTEGRATION_ACTIVE === ( $GLOBALS['alert_test_alerts'][0][1] ?? null )
+	'Sem transição de saúde não há alerta novo',
+	array() === $GLOBALS['alert_test_alerts']
+);
+
+echo "\nCenário 6: o disjuntor da conta só abre por credencial, não por indisponibilidade\n";
+alert_reset( PAPELITO_VENDOR_INTEGRATION_ACTIVE );
+
+foreach ( array( 'timeout', 'network_error', 'provider_5xx', 'not_available' ) as $category ) {
+	papelito_vendor_integration_set_braspress_operational_state( ALERT_TEST_VENDOR_ID, $category );
+}
+
+alert_assert(
+	'Categoria que não é estado operacional nunca vira status',
+	array() === $GLOBALS['alert_test_updates']
+	&& PAPELITO_VENDOR_INTEGRATION_ACTIVE === $GLOBALS['alert_test_row']['status']
 );
 
 echo "\n";

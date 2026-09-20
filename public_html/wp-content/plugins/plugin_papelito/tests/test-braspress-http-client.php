@@ -89,14 +89,19 @@ function papelito_vendor_integration_normalize_cep( mixed $value ): string { ret
 const PAPELITO_VENDOR_INTEGRATION_ACTIVE  = 'active';
 const PAPELITO_VENDOR_INTEGRATION_INVALID = 'invalid_credentials';
 const PAPELITO_VENDOR_INTEGRATION_BLOCKED = 'provider_blocked';
+const PAPELITO_VENDOR_INTEGRATION_HEALTH_APPLIED = 'applied';
+const PAPELITO_VENDOR_INTEGRATION_HEALTH_STALE   = 'stale';
+const PAPELITO_VENDOR_INTEGRATION_HEALTH_FAILED  = 'failed';
 
 /** Registra transições de saúde sintéticas para verificar a separação de domínio. */
-function papelito_vendor_integration_set_braspress_operational_state( int $vendor_id, string $status, string $error_category = '' ): void {
+function papelito_vendor_integration_apply_braspress_health( int $vendor_id, string $status, string $error_category = '', int $expected_version = 0 ): string {
 	$GLOBALS['braspress_http_states'][] = array(
 		'vendor_id'      => $vendor_id,
 		'status'         => $status,
 		'error_category' => $error_category,
 	);
+
+	return PAPELITO_VENDOR_INTEGRATION_HEALTH_APPLIED;
 }
 
 const BRASPRESS_TEST_USERNAME       = 'usuario-sintetico';
