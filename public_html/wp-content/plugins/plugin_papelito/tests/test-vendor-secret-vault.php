@@ -21,7 +21,6 @@ define( 'PAPELITO_PII_CIPHER', 'aes-256-gcm' );
 
 const VAULT_TEST_PII_KEY       = 'chave-de-pii-do-teste-com-tamanho-suficiente-1234';
 const VAULT_TEST_PII_KEY_V2    = 'chave-de-pii-v2-do-teste-com-tamanho-suficiente-9';
-const VAULT_TEST_EXPLICIT_KEY  = 'chave-de-integracao-explicita-do-teste-1234567890';
 const VAULT_TEST_SECRET        = '{"username":"usuario-sintetico","password":"senha-sintetica"}';
 const VAULT_TEST_LEGACY_PLAIN  = '{"username":"legado","password":"legado"}';
 const VAULT_TEST_LEGACY_ENVELOPE = 'v1:aWl2:dGFn:Y2lwaGVy';
@@ -149,18 +148,17 @@ vault_assert(
 	VAULT_TEST_LEGACY_PLAIN === papelito_vendor_secret_decrypt( VAULT_TEST_LEGACY_ENVELOPE )
 );
 
-echo "\nCenário 4: chave explícita provisionada vence a derivada\n";
-vault_reset( array( 'PAPELITO_VENDOR_SECRET_KEY' => VAULT_TEST_EXPLICIT_KEY ) );
-
-$explicit = (string) papelito_vendor_secret_encrypt( VAULT_TEST_SECRET );
-
-vault_assert( 'A chave explícita é usada como está', VAULT_TEST_EXPLICIT_KEY === papelito_vendor_secret_key_for_version( 1 ) );
-vault_assert( 'O envelope da chave explícita volta íntegro', VAULT_TEST_SECRET === papelito_vendor_secret_decrypt( $explicit ) );
-
+echo "\nCenário 4: o cofre não pede variável de ambiente própria\n";
 vault_reset();
+
 vault_assert(
-	'Sem a chave explícita, o envelope dela deixa de abrir',
-	is_wp_error( papelito_vendor_secret_decrypt( $explicit ) )
+	'A chave sai da raiz de PII já provisionada, sem segredo novo para operar',
+	is_string( papelito_vendor_secret_key_for_version( 1 ) )
+);
+vault_assert(
+	'Nenhuma variável exclusiva do cofre é consultada',
+	array( 'PAPELITO_PII_ENCRYPTION_KEY' ) === array_keys( $GLOBALS['vault_env'] )
+	&& is_string( papelito_vendor_secret_encrypt( VAULT_TEST_SECRET ) )
 );
 
 echo "\nCenário 5: rotação preserva o envelope da versão anterior\n";

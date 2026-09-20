@@ -121,7 +121,7 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `shipping_observability.php` | contador diário de desfecho e latência por provider, em cotação e rastreio, e o alerta de saúde da integração |
 | `shipping_breaker.php` | disjuntor da Braspress por vendor: quatro falhas seguidas de indisponibilidade tiram o provider da cotação por 120 s, sem tocar nos Correios |
 | `vendor_integrations.php`, `braspress.php` | contrato Braspress por vendor, cofre write-only e cliente HTTP de cotação |
-| `vendor_secrets.php` | cofre das credenciais de transportadora do vendor, com chave própria separada da de PII e envelope `k<versão>` |
+| `vendor_secrets.php` | cofre das credenciais de transportadora do vendor: chave derivada da de PII por HMAC com rótulo de domínio, envelope `k<versão>`, sem variável de ambiente própria |
 | `correios_prepostage.php` | pré-postagem e etiqueta |
 | `correios_tracking.php`, `braspress_tracking.php` | polling por provider; Rastro/S10 e Braspress `byNumPedido` com status externo preservado |
 | `receipts.php` | recibo persistido: numeração anual, snapshot imutável em centavos, parcelas por vendor |
@@ -227,7 +227,6 @@ mu-plugins carregam automaticamente e **não podem ser desativados pela interfac
 | `PAPELITO_PAGARME_SIMULATION_ENABLED`, `PAPELITO_PAGARME_SIMULATION_TOKEN` | só local/teste | simulador de webhook |
 | `PAPELITO_CORREIOS_*` | frete | ver [context/correios-integration.md](correios-integration.md) |
 | `PAPELITO_PII_LOOKUP_KEY`, `PAPELITO_PII_ENCRYPTION_KEY`, `PAPELITO_PII_KEY_VERSION` | B2B | ver [context/data-model.md](data-model.md#criptografia-de-pii) |
-| `PAPELITO_VENDOR_SECRET_KEY`, `PAPELITO_VENDOR_SECRET_KEY_VERSION` | Frete | opcionais; sem elas a chave do cofre de transportadora é derivada da de PII. Provisioná-las corta o elo entre um vazamento de PII e as credenciais dos vendors — ver [context/data-model.md](data-model.md#cofre-das-credenciais-de-transportadora-do-vendor) |
 | `PAPELITO_CNPJWS_TOKEN`, `PAPELITO_RECEITAWS_TOKEN` | opcional | provedores de CNPJ |
 | `PAPELITO_PRIVATE_COMPANY_DOCUMENTS_DIR` | análise documental | default fora do webroot |
 | `PAPELITO_PRIVATE_FISCAL_DOCUMENTS_DIR` | notas anexadas pelo vendor | default fora do webroot; **sem fallback público** |

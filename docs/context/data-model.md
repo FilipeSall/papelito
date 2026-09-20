@@ -568,18 +568,14 @@ transporte leria PII, e rotacionar PII derrubaria toda cotação do marketplace.
   k<key_version>:<iv_base64>:<tag_base64>:<ciphertext_base64>
   ```
 
-- **Resolução da chave**, nesta ordem:
-  1. `PAPELITO_VENDOR_SECRET_KEY` (ou `..._V<n>`) quando operação provisiona uma
-     raiz independente;
-  2. **derivada** da chave de PII da mesma versão —
-     `HMAC-SHA256('papelito:vendor-integration-secret:v1', chave_de_pii)`.
-
-  A derivação existe porque em produção o `wp-config.php` é editado à mão e
-  variável nova não chega com o deploy: falhar fechado deixaria todo vendor sem
-  salvar credencial até alguém entrar no servidor. A chave derivada é material
-  distinto, não permite recuperar a chave de PII e **não abre** envelope do outro
-  cofre — isso é asserção de teste em `test-vendor-secret-vault.php`, não
-  promessa.
+- **Resolução da chave** — sempre derivada da chave de PII da mesma versão:
+  `HMAC-SHA256('papelito:vendor-integration-secret:v1', chave_de_pii)`.
+  **Não há variável de ambiente própria**, por decisão: em produção o
+  `wp-config.php` é editado à mão e não vem no deploy, então cada segredo novo é
+  mais uma chance de a integração nascer quebrada no servidor. A chave derivada é
+  material distinto, não permite recuperar a chave de PII e **não abre** envelope
+  do outro cofre — isso é asserção de teste em `test-vendor-secret-vault.php`,
+  não promessa.
 
 - **Envelope legado** — o prefixo `v` é aceito na leitura e delegado ao cofre de
   PII. Vendors cadastrados antes desta separação continuam cotando; recusá-los
@@ -594,24 +590,16 @@ transporte leria PII, e rotacionar PII derrubaria toda cotação do marketplace.
 | Ameaça | O que a separação muda |
 |---|---|
 | Vazamento do dump do banco | Sem chave, nem PII nem credencial abrem. Igual antes. |
-| Vazamento da chave de PII | Continua expondo as credenciais de transporte, porque elas derivam dela. **Provisione `PAPELITO_VENDOR_SECRET_KEY` para cortar esse elo.** |
-| Vazamento da chave de integração | Expõe credenciais de transportadora; **não** expõe CPF, nascimento, razão social nem e-mail de candidatura. É o elo que a separação corta hoje. |
+| Vazamento da chave de PII | Continua expondo as credenciais de transporte, porque elas derivam dela. **A separação não cobre esta direção** — cobrir exigiria uma raiz independente, e a decisão foi não introduzir mais um segredo para operar. |
+| Vazamento da chave de integração | Expõe credenciais de transportadora; **não** expõe CPF, nascimento, razão social nem e-mail de candidatura. É a direção que a separação corta. |
 | Uso cruzado acidental | Impossível: envelope de um cofre não abre no outro, e o prefixo identifica a origem. |
 
-Rotação, na derivação: siga a rotação de PII (subir `PAPELITO_PII_KEY_VERSION` e
-manter a chave anterior disponível). Os envelopes `k<n>` antigos continuam
-abrindo porque a versão viaja no envelope e a chave anterior ainda resolve.
+Rotação: **não há procedimento próprio**. Este cofre acompanha a rotação de PII
+— suba `PAPELITO_PII_KEY_VERSION` e mantenha a chave anterior disponível, como a
+seção acima já manda. Os envelopes `k<n>` antigos continuam abrindo porque a
+versão viaja no envelope e a chave anterior ainda resolve.
 
-Rotação, com chave explícita: suba `PAPELITO_VENDOR_SECRET_KEY_VERSION`, publique
-a chave nova em `PAPELITO_VENDOR_SECRET_KEY` e **mantenha a anterior** em
-`PAPELITO_VENDOR_SECRET_KEY_V<n-1>` enquanto houver envelope naquela versão. Não
-há recriptografia em lote: cada vendor migra ao salvar a configuração.
-
-```bash
-openssl rand -hex 32   # PAPELITO_VENDOR_SECRET_KEY
-```
-
-> **Não existe recriptografia automática.** Descartar uma chave antiga antes de
-> todos os vendors terem salvado de novo torna a integração deles irrecuperável —
-> e o sintoma é `papelito_vendor_integration_secret_unavailable` no checkout, não
-> um erro no painel.
+> **Não existe recriptografia automática.** Descartar uma chave de PII antiga
+> antes de todos os vendors terem salvado de novo torna a integração deles
+> irrecuperável — e o sintoma é `papelito_vendor_integration_secret_unavailable`
+> no checkout, não um erro no painel.

@@ -10,14 +10,18 @@
  * construção criptográfica já validada no `customer_identity.php` — AES-256-GCM,
  * autenticada, com envelope versionado.
  *
- * A chave é resolvida em duas fontes, nesta ordem. A explícita
- * (`PAPELITO_VENDOR_SECRET_KEY`) é a que operação provisiona quando quer raiz
- * independente. Sem ela, a chave é **derivada** da chave de PII por HMAC com
- * rótulo de domínio: material distinto, impossível de reverter para a chave de
- * PII e incapaz de abrir envelope do outro cofre. A derivação existe porque em
- * produção o `wp-config.php` é editado à mão e variável nova não chega junto com
- * o deploy — falhar fechado ali deixaria todo vendor sem conseguir salvar
- * credencial até alguém entrar no servidor.
+ * A chave é **derivada** da chave de PII da mesma versão, por HMAC com rótulo de
+ * domínio: material distinto, impossível de reverter para a chave de PII e
+ * incapaz de abrir envelope do outro cofre. Não existe variável de ambiente
+ * própria, e isso é decisão, não omissão: em produção o `wp-config.php` é
+ * editado à mão e não vem no deploy, então cada segredo novo é mais uma chance
+ * de a integração nascer quebrada no servidor. Derivar por versão faz este cofre
+ * acompanhar a rotação que o cofre de PII já tem, sem calendário próprio.
+ *
+ * O que a derivação **não** resolve: um vazamento da chave de PII ainda alcança
+ * as credenciais de transporte, porque elas descendem dela. O que ela corta é o
+ * caminho inverso — vazar o cofre de transporte não entrega CPF, nascimento,
+ * razão social nem e-mail de candidatura.
  *
  * O envelope legado, escrito quando o segredo do vendor ainda usava a chave de
  * PII, continua sendo lido pelo prefixo `v`. Recusá-lo apagaria em silêncio a
@@ -47,23 +51,7 @@ const PAPELITO_VENDOR_SECRET_DOMAIN = 'papelito:vendor-integration-secret:v1';
  * @return int Versão positiva; entrada inválida cai em 1.
  */
 function papelito_vendor_secret_key_version(): int {
-	$declared = (int) papelito_env( 'PAPELITO_VENDOR_SECRET_KEY_VERSION', '0' );
-	if ( $declared > 0 ) {
-		return $declared;
-	}
-
 	return function_exists( 'papelito_pii_current_key_version' ) ? papelito_pii_current_key_version() : 1;
-}
-
-/**
- * Nome da variável que guarda a chave explícita de uma versão.
- *
- * @param int    $version Versão da chave.
- * @param string $base Prefixo da variável.
- * @return string Nome da variável de ambiente.
- */
-function papelito_vendor_secret_env_name( int $version, string $base ): string {
-	return 1 === $version ? $base : $base . '_V' . $version;
 }
 
 /**
@@ -87,11 +75,6 @@ function papelito_vendor_secret_derive( string $root ): string {
  * @return string|WP_Error Chave utilizável ou falha de configuração.
  */
 function papelito_vendor_secret_key_for_version( int $version ) {
-	$explicit = papelito_env( papelito_vendor_secret_env_name( $version, 'PAPELITO_VENDOR_SECRET_KEY' ), '' );
-	if ( '' !== $explicit ) {
-		return $explicit;
-	}
-
 	if ( ! function_exists( 'papelito_pii_get_encryption_key_for_version' ) ) {
 		return new WP_Error( 'papelito_vendor_secret_key_missing', 'O cofre de credenciais do vendor não está configurado.' );
 	}
