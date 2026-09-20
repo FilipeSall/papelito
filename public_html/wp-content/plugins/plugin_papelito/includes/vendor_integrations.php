@@ -685,7 +685,7 @@ function papelito_vendor_integration_apply_braspress_save( int $vendor_id, array
 	$secret_envelope     = $existing['secret_envelope'] ?? null;
 	$credentials_changed = '' !== $username;
 	if ( $credentials_changed ) {
-		$secret_envelope = papelito_pii_encrypt(
+		$secret_envelope = papelito_vendor_secret_encrypt(
 			wp_json_encode(
 				array(
 					'username' => $username,
@@ -832,7 +832,7 @@ function papelito_vendor_integration_resolve_braspress( int $vendor_id ) {
 		return null;
 	}
 
-	$secret = papelito_pii_decrypt( (string) $row['secret_envelope'] );
+	$secret = papelito_vendor_secret_decrypt( (string) $row['secret_envelope'] );
 	if ( is_wp_error( $secret ) ) {
 		return new WP_Error( 'papelito_vendor_integration_secret_unavailable', 'A integração Braspress não está disponível.', array( 'status' => 503 ) );
 	}

@@ -553,3 +553,65 @@ openssl rand -hex 32   # PAPELITO_PII_ENCRYPTION_KEY
 - **`PAPELITO_PII_LOOKUP_KEY`**: **nunca rotacione sem reindexar todos os `cpf_hmac`.** Trocar a chave muda todos os hashes de uma vez, e a busca por CPF para de encontrar qualquer registro.
 
 Valores reais vivem apenas no `.env` (gitignorado) e no cofre/ambientes. O `.env.example` só tem placeholders `change-me`.
+
+## Cofre das credenciais de transportadora do vendor
+
+Em `vendor_secrets.php`. É **separado** do cofre de PII de propósito: a credencial
+Braspress de um seller e o CPF de um comprador têm donos, ciclos de vida e
+consequências de vazamento diferentes. Com chave única, quem obtivesse a chave de
+transporte leria PII, e rotacionar PII derrubaria toda cotação do marketplace.
+
+- **Mesma construção** — AES-256-GCM autenticado, IV aleatório por operação, tag
+  de 16 bytes. O que muda é a chave e o prefixo do envelope:
+
+  ```
+  k<key_version>:<iv_base64>:<tag_base64>:<ciphertext_base64>
+  ```
+
+- **Resolução da chave**, nesta ordem:
+  1. `PAPELITO_VENDOR_SECRET_KEY` (ou `..._V<n>`) quando operação provisiona uma
+     raiz independente;
+  2. **derivada** da chave de PII da mesma versão —
+     `HMAC-SHA256('papelito:vendor-integration-secret:v1', chave_de_pii)`.
+
+  A derivação existe porque em produção o `wp-config.php` é editado à mão e
+  variável nova não chega com o deploy: falhar fechado deixaria todo vendor sem
+  salvar credencial até alguém entrar no servidor. A chave derivada é material
+  distinto, não permite recuperar a chave de PII e **não abre** envelope do outro
+  cofre — isso é asserção de teste em `test-vendor-secret-vault.php`, não
+  promessa.
+
+- **Envelope legado** — o prefixo `v` é aceito na leitura e delegado ao cofre de
+  PII. Vendors cadastrados antes desta separação continuam cotando; recusá-los
+  apagaria a integração deles em silêncio. A gravação **sempre** usa o cofre
+  novo, então o legado se extingue conforme cada vendor salva a configuração.
+
+- **Fail-closed** — sem chave nenhuma, cifrar e decifrar devolvem `WP_Error` e
+  nada é gravado em claro.
+
+### Rotação e modelo de ameaça
+
+| Ameaça | O que a separação muda |
+|---|---|
+| Vazamento do dump do banco | Sem chave, nem PII nem credencial abrem. Igual antes. |
+| Vazamento da chave de PII | Continua expondo as credenciais de transporte, porque elas derivam dela. **Provisione `PAPELITO_VENDOR_SECRET_KEY` para cortar esse elo.** |
+| Vazamento da chave de integração | Expõe credenciais de transportadora; **não** expõe CPF, nascimento, razão social nem e-mail de candidatura. É o elo que a separação corta hoje. |
+| Uso cruzado acidental | Impossível: envelope de um cofre não abre no outro, e o prefixo identifica a origem. |
+
+Rotação, na derivação: siga a rotação de PII (subir `PAPELITO_PII_KEY_VERSION` e
+manter a chave anterior disponível). Os envelopes `k<n>` antigos continuam
+abrindo porque a versão viaja no envelope e a chave anterior ainda resolve.
+
+Rotação, com chave explícita: suba `PAPELITO_VENDOR_SECRET_KEY_VERSION`, publique
+a chave nova em `PAPELITO_VENDOR_SECRET_KEY` e **mantenha a anterior** em
+`PAPELITO_VENDOR_SECRET_KEY_V<n-1>` enquanto houver envelope naquela versão. Não
+há recriptografia em lote: cada vendor migra ao salvar a configuração.
+
+```bash
+openssl rand -hex 32   # PAPELITO_VENDOR_SECRET_KEY
+```
+
+> **Não existe recriptografia automática.** Descartar uma chave antiga antes de
+> todos os vendors terem salvado de novo torna a integração deles irrecuperável —
+> e o sintoma é `papelito_vendor_integration_secret_unavailable` no checkout, não
+> um erro no painel.

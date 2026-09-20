@@ -20,7 +20,8 @@ const ALERT_TEST_CNPJ       = '20024291000165';
 const ALERT_TEST_CEP        = '14711142';
 const ALERT_TEST_CREDENTIAL = 'braspress-usuario-do-teste';
 const ALERT_TEST_SECRET     = 'braspress-senha-do-teste';
-const ALERT_TEST_ENVELOPE   = 'papelito:v1:envelope-cifrado-do-teste';
+const ALERT_TEST_LEGACY_ENVELOPE = 'v1:envelope-legado-do-cofre-de-pii';
+const ALERT_TEST_PII_KEY         = 'chave-de-pii-do-teste-com-tamanho-suficiente-1234';
 const ALERT_TEST_AUTH       = 'authentication_error';
 
 $GLOBALS['alert_test_meta']    = array();
@@ -109,15 +110,38 @@ function current_time( mixed $format = 'mysql', mixed $gmt = false ): string { r
 function get_user_meta( int $user_id, string $key, bool $single = false ): string {
 	return $GLOBALS['alert_test_meta'][ $user_id ][ $key ] ?? '';
 }
-/** O envelope da fixture decifra para a credencial da fixture. */
+/** Só o envelope legado da fixture decifra pelo cofre de PII. */
 function papelito_pii_decrypt( string $envelope ): mixed {
-	return ALERT_TEST_ENVELOPE === $envelope
+	return ALERT_TEST_LEGACY_ENVELOPE === $envelope
 		? wp_json_encode( array( 'username' => ALERT_TEST_CREDENTIAL, 'password' => ALERT_TEST_SECRET ) )
 		: new WP_Error( 'papelito_pii_decrypt_failed', 'Envelope indisponível.' );
+}
+
+/** Ambiente com a chave de PII provisionada, para o cofre derivar a sua. */
+function papelito_env( string $name, string $fallback = '' ): string {
+	return 'PAPELITO_PII_ENCRYPTION_KEY' === $name ? ALERT_TEST_PII_KEY : $fallback;
+}
+
+/** Validação de chave com o mesmo contrato do cofre de PII. */
+function papelito_pii_get_key( string $env_key ) {
+	$value = papelito_env( $env_key, '' );
+
+	return '' === $value ? new WP_Error( 'papelito_pii_key_missing', 'Chave ausente.' ) : $value;
+}
+
+/** Versão corrente do cofre de PII. */
+function papelito_pii_current_key_version(): int { return 1; }
+
+/** Resolução por versão idêntica à da produção. */
+function papelito_pii_get_encryption_key_for_version( int $version ) {
+	return 1 === $version
+		? papelito_pii_get_key( 'PAPELITO_PII_ENCRYPTION_KEY' )
+		: new WP_Error( 'papelito_pii_key_missing', 'Chave ausente.' );
 }
 /** Cifragem não exercitada neste teste. */
 function papelito_pii_encrypt( string $plain ): string { return ALERT_TEST_ENVELOPE; }
 
+require_once dirname( __DIR__ ) . '/includes/vendor_secrets.php';
 require_once dirname( __DIR__ ) . '/includes/vendor_integrations.php';
 require_once dirname( __DIR__ ) . '/includes/shipping_observability.php';
 
@@ -143,7 +167,7 @@ function alert_reset( string $status = PAPELITO_VENDOR_INTEGRATION_ACTIVE, strin
 		'vendor_id'             => ALERT_TEST_VENDOR_ID,
 		'provider'              => PAPELITO_VENDOR_INTEGRATION_PROVIDER,
 		'config_json'           => wp_json_encode( array( 'origin_cep' => $origin_cep ) ),
-		'secret_envelope'       => ALERT_TEST_ENVELOPE,
+		'secret_envelope'       => (string) papelito_vendor_secret_encrypt( wp_json_encode( array( 'username' => ALERT_TEST_CREDENTIAL, 'password' => ALERT_TEST_SECRET ) ) ),
 		'configuration_version' => 4,
 		'enabled'               => 1,
 		'status'                => $status,
@@ -199,7 +223,7 @@ foreach (
 	array(
 		'usuário da credencial' => ALERT_TEST_CREDENTIAL,
 		'senha da credencial'   => ALERT_TEST_SECRET,
-		'envelope cifrado'      => ALERT_TEST_ENVELOPE,
+		'envelope cifrado'      => (string) $GLOBALS['alert_test_row']['secret_envelope'],
 		'CNPJ do vendor'        => ALERT_TEST_CNPJ,
 		'CEP de origem'         => ALERT_TEST_CEP,
 	) as $label => $needle
@@ -258,6 +282,29 @@ alert_assert(
 	'Categoria que não é estado operacional nunca vira status',
 	array() === $GLOBALS['alert_test_updates']
 	&& PAPELITO_VENDOR_INTEGRATION_ACTIVE === $GLOBALS['alert_test_row']['status']
+);
+
+echo "\nCenário 7: a credencial protegida abre pelos dois cofres enquanto houver legado\n";
+alert_reset( PAPELITO_VENDOR_INTEGRATION_READY );
+
+$resolved = papelito_vendor_integration_resolve_braspress( ALERT_TEST_VENDOR_ID );
+
+alert_assert(
+	'O envelope do cofre de integração é aberto na cotação',
+	is_array( $resolved ) && ALERT_TEST_CREDENTIAL === ( $resolved['credentials']['username'] ?? null )
+);
+alert_assert(
+	'O envelope não é o do cofre de PII',
+	str_starts_with( (string) $GLOBALS['alert_test_row']['secret_envelope'], 'k' )
+);
+
+alert_reset( PAPELITO_VENDOR_INTEGRATION_READY );
+$GLOBALS['alert_test_row']['secret_envelope'] = ALERT_TEST_LEGACY_ENVELOPE;
+$legacy = papelito_vendor_integration_resolve_braspress( ALERT_TEST_VENDOR_ID );
+
+alert_assert(
+	'Vendor cadastrado antes do cofre novo continua cotando',
+	is_array( $legacy ) && ALERT_TEST_CREDENTIAL === ( $legacy['credentials']['username'] ?? null )
 );
 
 echo "\n";

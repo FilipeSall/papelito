@@ -24,7 +24,8 @@ const AUDIT_TEST_CEP          = '14711142';
 const AUDIT_TEST_ACCOUNT_PASS = 'senha-da-conta-do-vendor';
 const AUDIT_TEST_USERNAME     = 'braspress-usuario-do-teste';
 const AUDIT_TEST_SECRET       = 'Zk7-senha-secretissima-do-contrato';
-const AUDIT_TEST_ENVELOPE     = 'papelito:v1:envelope-cifrado-do-teste';
+const AUDIT_TEST_ENVELOPE     = 'k1:envelope-do-cofre-de-integracao';
+const AUDIT_TEST_PII_ENVELOPE = 'v1:envelope-do-cofre-de-pii';
 
 $GLOBALS['audit_test_meta']      = array();
 $GLOBALS['audit_test_row']       = null;
@@ -64,7 +65,11 @@ class Papelito_Audit_Test_Wpdb {
 	public function insert( mixed $table, array $data, mixed $format = null ): int {
 		if ( str_contains( (string) $table, 'audit' ) ) {
 			$GLOBALS['audit_test_rows'][] = $data;
+
+			return 1;
 		}
+
+		$GLOBALS['audit_test_row'] = array_merge( array( 'id' => 7 ), $data );
 
 		return 1;
 	}
@@ -132,8 +137,14 @@ function is_email( mixed $value ): bool { return false !== strpos( (string) $val
 function wp_mail( mixed ...$args ): bool { return true; }
 /** Limite de escrita controlado pela fixture. */
 function papelito_auth_rate_limit( mixed ...$args ): bool { return (bool) $GLOBALS['audit_test_rate_ok']; }
-/** Cifragem determinística restrita ao teste. */
-function papelito_pii_encrypt( string $plain ): string { return AUDIT_TEST_ENVELOPE; }
+/** O cofre de PII não deve mais ser usado para credencial de transportadora. */
+function papelito_pii_encrypt( string $plain ): string { return AUDIT_TEST_PII_ENVELOPE; }
+/** Cofre próprio da credencial do vendor, com envelope distinguível. */
+function papelito_vendor_secret_encrypt( string $plain ): string { return AUDIT_TEST_ENVELOPE; }
+/** Abertura do cofre próprio, restrita ao teste. */
+function papelito_vendor_secret_decrypt( string $envelope ): string {
+	return wp_json_encode( array( 'username' => AUDIT_TEST_USERNAME, 'password' => AUDIT_TEST_SECRET ) );
+}
 /** O envelope da fixture decifra para a credencial da fixture. */
 function papelito_pii_decrypt( string $envelope ): mixed {
 	return wp_json_encode( array( 'username' => AUDIT_TEST_USERNAME, 'password' => AUDIT_TEST_SECRET ) );
@@ -311,6 +322,20 @@ papelito_vendor_integration_save_braspress( AUDIT_TEST_VENDOR_ID, audit_credenti
 audit_assert(
 	'Trocar credencial de uma conta saudável não abre nem fecha alerta',
 	array() === $GLOBALS['audit_test_alerts']
+);
+
+echo "\nCenário 9: a credencial da transportadora não usa o cofre de PII\n";
+audit_reset();
+
+papelito_vendor_integration_save_braspress( AUDIT_TEST_VENDOR_ID, audit_credential_payload(), AUDIT_TEST_VENDOR_ID );
+
+audit_assert(
+	'O envelope persistido vem do cofre de integração',
+	AUDIT_TEST_ENVELOPE === ( $GLOBALS['audit_test_row']['secret_envelope'] ?? null )
+);
+audit_assert(
+	'A chave que protege CPF e nascimento não é usada para credencial de vendor',
+	AUDIT_TEST_PII_ENVELOPE !== ( $GLOBALS['audit_test_row']['secret_envelope'] ?? null )
 );
 
 echo "\n";
