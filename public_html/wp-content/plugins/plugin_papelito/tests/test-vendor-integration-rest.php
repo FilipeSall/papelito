@@ -44,6 +44,7 @@ $GLOBALS['rest_test_routes']   = array();
 $GLOBALS['rest_test_rate_ok']  = true;
 $GLOBALS['rest_test_envelope'] = REST_TEST_ENVELOPE_A;
 $GLOBALS['rest_test_mails']    = array();
+$GLOBALS['rest_test_transients'] = array();
 
 /** Erro do core com a leitura de código, mensagem e `status` usada pela rota. */
 class WP_Error {
@@ -249,6 +250,14 @@ function wp_mail( mixed $to, mixed $subject = '', mixed $message = '', mixed $he
 
 	return true;
 }
+/** Transients em memória, usados pela deduplicação de recusa repetida. */
+function get_transient( mixed $key ): mixed { return $GLOBALS['rest_test_transients'][ (string) $key ] ?? false; }
+/** Grava o transient em memória. */
+function set_transient( mixed $key, mixed $value, mixed $ttl = 0 ): bool {
+	$GLOBALS['rest_test_transients'][ (string) $key ] = $value;
+
+	return true;
+}
 /** Limite de escrita controlado pela fixture; a política tem suíte própria. */
 function papelito_auth_rate_limit( mixed ...$args ): bool { return (bool) $GLOBALS['rest_test_rate_ok']; }
 /** Cofre de integração com envelope distinguível por loja. */
@@ -293,6 +302,7 @@ function rest_reset(): void {
 	$GLOBALS['wpdb']              = new Papelito_Rest_Test_Wpdb();
 	$GLOBALS['rest_test_rate_ok'] = true;
 	$GLOBALS['rest_test_mails']   = array();
+	$GLOBALS['rest_test_transients'] = array();
 	$GLOBALS['rest_test_meta']    = array(
 		REST_TEST_VENDOR_A_ID  => array(
 			'cnpj' => REST_TEST_VENDOR_A_CNPJ,
@@ -393,15 +403,15 @@ foreach ( $route as $entry ) {
 rest_assert( 'A rota da integração é registrada', 3 === count( $route ) );
 rest_assert(
 	'A leitura passa pelo porteiro de seller',
-	'papelito_vendor_dashboard_permission_seller' === ( $by_method[ WP_REST_Server::READABLE ]['permission_callback'] ?? null )
+	'papelito_vendor_integration_permission_read' === ( $by_method[ WP_REST_Server::READABLE ]['permission_callback'] ?? null )
 );
 rest_assert(
 	'A escrita passa pelo porteiro comercial',
-	'papelito_vendor_dashboard_permission_seller_commercial' === ( $by_method[ WP_REST_Server::EDITABLE ]['permission_callback'] ?? null )
+	'papelito_vendor_integration_permission_write' === ( $by_method[ WP_REST_Server::EDITABLE ]['permission_callback'] ?? null )
 );
 rest_assert(
 	'A remoção passa pelo porteiro comercial',
-	'papelito_vendor_dashboard_permission_seller_commercial' === ( $by_method[ WP_REST_Server::DELETABLE ]['permission_callback'] ?? null )
+	'papelito_vendor_integration_permission_write' === ( $by_method[ WP_REST_Server::DELETABLE ]['permission_callback'] ?? null )
 );
 rest_assert(
 	'Os três métodos apontam para os handlers da integração',
@@ -414,23 +424,38 @@ echo "\nCenário 2: o porteiro decide antes de o handler existir\n";
 rest_reset();
 
 rest_login( 0 );
-rest_assert( 'Anônimo não lê a integração', 401 === rest_error_status( papelito_vendor_dashboard_permission_seller() ) );
-rest_assert( 'Anônimo não escreve a integração', 401 === rest_error_status( papelito_vendor_dashboard_permission_seller_commercial() ) );
+rest_assert( 'Anônimo não lê a integração', 401 === rest_error_status( papelito_vendor_integration_permission_read() ) );
+rest_assert( 'Anônimo não escreve a integração', 401 === rest_error_status( papelito_vendor_integration_permission_write() ) );
 
 rest_login( REST_TEST_CUSTOMER_ID );
-rest_assert( 'Comprador não lê a integração de ninguém', 403 === rest_error_status( papelito_vendor_dashboard_permission_seller() ) );
-rest_assert( 'Comprador não escreve a integração de ninguém', 403 === rest_error_status( papelito_vendor_dashboard_permission_seller_commercial() ) );
+rest_assert( 'Comprador não lê a integração de ninguém', 403 === rest_error_status( papelito_vendor_integration_permission_read() ) );
+rest_assert( 'Comprador não escreve a integração de ninguém', 403 === rest_error_status( papelito_vendor_integration_permission_write() ) );
 
 rest_login( REST_TEST_SUSPENDED_ID );
-rest_assert( 'Loja suspensa continua consultando a própria integração', true === papelito_vendor_dashboard_permission_seller() );
+rest_assert( 'Loja suspensa continua consultando a própria integração', true === papelito_vendor_integration_permission_read() );
 rest_assert(
 	'Loja suspensa não altera a própria integração',
-	'papelito_account_suspended' === rest_error_code( papelito_vendor_dashboard_permission_seller_commercial() )
+	'papelito_account_suspended' === rest_error_code( papelito_vendor_integration_permission_write() )
 );
 
 rest_login( REST_TEST_VENDOR_A_ID );
-rest_assert( 'Loja ativa lê a própria integração', true === papelito_vendor_dashboard_permission_seller() );
-rest_assert( 'Loja ativa altera a própria integração', true === papelito_vendor_dashboard_permission_seller_commercial() );
+rest_assert( 'Loja ativa lê a própria integração', true === papelito_vendor_integration_permission_read() );
+rest_assert( 'Loja ativa altera a própria integração', true === papelito_vendor_integration_permission_write() );
+
+$barrados = array_column( $GLOBALS['wpdb']->audit, 'actor_user_id' );
+
+rest_assert(
+	'Cada ator identificado que é barrado deixa uma linha',
+	array( REST_TEST_CUSTOMER_ID, REST_TEST_SUSPENDED_ID ) === $barrados
+);
+rest_assert(
+	'E a linha entra como recusa, não como erro de formulário',
+	array( 'denied', 'denied' ) === array_column( $GLOBALS['wpdb']->audit, 'status' )
+);
+rest_assert(
+	'A tentativa sem sessão não vira linha, porque não há a quem atribuí-la',
+	! in_array( 0, $barrados, true )
+);
 
 echo "\nCenário 3: a leitura enxerga só a loja da sessão\n";
 rest_reset();

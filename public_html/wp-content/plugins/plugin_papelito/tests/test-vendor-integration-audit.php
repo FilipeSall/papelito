@@ -33,6 +33,7 @@ $GLOBALS['audit_test_rows']      = array();
 $GLOBALS['audit_test_rate_ok']   = true;
 $GLOBALS['audit_test_actions']   = array();
 $GLOBALS['audit_test_alerts']    = array();
+$GLOBALS['audit_test_transients'] = array();
 
 /** Erro WordPress mínimo, com a leitura de código e `status` que a auditoria usa. */
 class WP_Error {
@@ -135,6 +136,14 @@ function wp_check_password( mixed $password, mixed $hash, mixed $user_id = '' ):
 function is_email( mixed $value ): bool { return false !== strpos( (string) $value, '@' ); }
 /** Nenhum e-mail é enviado de verdade. */
 function wp_mail( mixed ...$args ): bool { return true; }
+/** Transients em memória, usados pela deduplicação de recusa repetida. */
+function get_transient( mixed $key ): mixed { return $GLOBALS['audit_test_transients'][ (string) $key ] ?? false; }
+/** Grava o transient em memória. */
+function set_transient( mixed $key, mixed $value, mixed $ttl = 0 ): bool {
+	$GLOBALS['audit_test_transients'][ (string) $key ] = $value;
+
+	return true;
+}
 /** Limite de escrita controlado pela fixture. */
 function papelito_auth_rate_limit( mixed ...$args ): bool { return (bool) $GLOBALS['audit_test_rate_ok']; }
 /** O cofre de PII não deve mais ser usado para credencial de transportadora. */
@@ -176,6 +185,7 @@ function audit_reset( ?array $row = null ): void {
 	$GLOBALS['audit_test_rows']                         = array();
 	$GLOBALS['audit_test_rate_ok']                      = true;
 	$GLOBALS['audit_test_alerts']                       = array();
+	$GLOBALS['audit_test_transients']                   = array();
 }
 
 /** Corpo de requisição que troca a credencial write-only. */

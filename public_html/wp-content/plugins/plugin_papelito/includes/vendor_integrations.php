@@ -45,6 +45,19 @@ const PAPELITO_VENDOR_INTEGRATION_HEALTH_FAILED  = 'failed';
  * a transportadora. FOB transferiria a cobrança para o destinatário e
  * consignado exigiria um terceiro pagante, quebrando o repasse integral.
  */
+/**
+ * Por quanto tempo a trilha da integração é guardada, e por quanto uma recusa
+ * repetida é considerada o mesmo fato.
+ *
+ * A tabela cresce por tentativa, e a tentativa mais barata de repetir é
+ * justamente a que já foi recusada: um laço sobre o endpoint bate no limite de
+ * escrita e, sem a janela abaixo, escreveria uma linha por requisição — o
+ * oposto do que o limite existe para conseguir.
+ */
+const PAPELITO_VENDOR_INTEGRATION_AUDIT_RETENTION_DAYS = 180;
+const PAPELITO_VENDOR_INTEGRATION_AUDIT_REPEAT_WINDOW  = 300;
+const PAPELITO_VENDOR_INTEGRATION_AUDIT_PRUNE_HOOK     = 'papelito_vendor_integration_audit_prune';
+
 const PAPELITO_BRASPRESS_CONTRACT_MODAL        = 'R';
 const PAPELITO_BRASPRESS_CONTRACT_FREIGHT_TYPE = '1';
 
@@ -299,7 +312,7 @@ function papelito_vendor_integration_find_row( int $vendor_id, string $provider 
 function papelito_vendor_integration_audit( int $vendor_id, string $provider, int $actor_user_id, string $action, string $status = PAPELITO_VENDOR_INTEGRATION_AUDIT_SUCCESS ): void {
 	global $wpdb;
 
-	$wpdb->insert(
+	$written = $wpdb->insert(
 		papelito_vendor_integration_audit_table_name(),
 		array(
 			'vendor_id'     => $vendor_id,
@@ -311,6 +324,89 @@ function papelito_vendor_integration_audit( int $vendor_id, string $provider, in
 		),
 		array( '%d', '%s', '%d', '%s', '%s', '%s' )
 	);
+
+	if ( false === $written ) {
+		error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			sprintf( 'papelito_vendor_integration_audit_failed vendor=%d action=%s', $vendor_id, sanitize_key( $action ) )
+		);
+	}
+}
+
+/**
+ * Nome do transient que marca uma recusa já registrada nesta janela.
+ *
+ * @param int    $actor_user_id ID de quem tentou.
+ * @param string $reason Motivo da recusa, do vocabulário fechado.
+ * @return string Nome do transient.
+ */
+function papelito_vendor_integration_audit_repeat_key( int $actor_user_id, string $reason ): string {
+	return 'papelito_vi_denied_' . sanitize_key( $reason ) . '_' . $actor_user_id;
+}
+
+/**
+ * Diz se esta recusa já foi registrada na janela, e marca a primeira.
+ *
+ * Só recusa **repetível de graça** passa por aqui: limite de escrita estourado e
+ * porteiro barrando. As duas são o mesmo fato repetido, e uma linha por
+ * requisição transformaria a trilha de segurança num contador de retentativas —
+ * sem trazer informação nova e sem teto, porque nenhuma das duas chega a
+ * executar trabalho que o limite pudesse conter. Recusa que depende de acertar
+ * dado — senha atual errada, CEP inválido — continua linha a linha, porque cada
+ * uma é uma tentativa diferente.
+ *
+ * @param int    $actor_user_id ID de quem tentou.
+ * @param string $reason Motivo da recusa.
+ * @return bool Se esta recusa já tem linha nesta janela.
+ */
+function papelito_vendor_integration_audit_is_repeat( int $actor_user_id, string $reason ): bool {
+	$key = papelito_vendor_integration_audit_repeat_key( $actor_user_id, $reason );
+	if ( false !== get_transient( $key ) ) {
+		return true;
+	}
+
+	set_transient( $key, 1, PAPELITO_VENDOR_INTEGRATION_AUDIT_REPEAT_WINDOW );
+
+	return false;
+}
+
+/**
+ * Apaga a trilha que passou da janela de retenção.
+ *
+ * A tabela só cresce, e nenhuma pergunta de segurança é respondida por linha de
+ * meio ano atrás: o que se investiga é alteração recente de credencial. Sem esta
+ * varredura, os três índices degradam para sempre por causa de tentativa que já
+ * não interessa a ninguém.
+ *
+ * @return void
+ */
+function papelito_vendor_integration_audit_prune(): void {
+	global $wpdb;
+
+	$table  = papelito_vendor_integration_audit_table_name();
+	$cutoff = gmdate( 'Y-m-d H:i:s', time() - PAPELITO_VENDOR_INTEGRATION_AUDIT_RETENTION_DAYS * DAY_IN_SECONDS );
+
+	$wpdb->query(
+		$wpdb->prepare(
+			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name derives exclusively from $wpdb->prefix.
+			"DELETE FROM {$table} WHERE created_at < %s",
+			$cutoff
+		)
+	);
+}
+
+/**
+ * Agenda a varredura diária da trilha.
+ *
+ * @return void
+ */
+function papelito_vendor_integration_schedule_audit_prune(): void {
+	if ( ! function_exists( 'wp_next_scheduled' ) || ! function_exists( 'wp_schedule_event' ) ) {
+		return;
+	}
+
+	if ( ! wp_next_scheduled( PAPELITO_VENDOR_INTEGRATION_AUDIT_PRUNE_HOOK ) ) {
+		wp_schedule_event( time() + HOUR_IN_SECONDS, 'daily', PAPELITO_VENDOR_INTEGRATION_AUDIT_PRUNE_HOOK );
+	}
 }
 
 /**
@@ -339,6 +435,20 @@ function papelito_vendor_integration_audit_status( WP_Error $error ): string {
 }
 
 /**
+ * Diz se o corpo declarou aquele campo como texto não vazio.
+ *
+ * O corpo chega cru de `get_json_params()`, sem schema de rota, então o campo
+ * pode ser array ou objeto. Converter isso para texto emitiria um aviso de PHP a
+ * cada tentativa, num caminho que o atacante controla.
+ *
+ * @param mixed $value Valor bruto do corpo.
+ * @return bool Se há texto declarado.
+ */
+function papelito_vendor_integration_declares_text( mixed $value ): bool {
+	return is_string( $value ) && '' !== $value;
+}
+
+/**
  * Deduz do corpo da requisição qual ação o ator pretendia executar.
  *
  * Uma tentativa recusada nunca chega ao ponto que nomeia a ação, e auditar
@@ -354,7 +464,8 @@ function papelito_vendor_integration_intended_action( array $payload ): string {
 		return 'credentials_removed';
 	}
 
-	$declares_credentials = '' !== (string) ( $payload['username'] ?? '' ) || '' !== (string) ( $payload['password'] ?? '' );
+	$declares_credentials = papelito_vendor_integration_declares_text( $payload['username'] ?? null )
+		|| papelito_vendor_integration_declares_text( $payload['password'] ?? null );
 
 	return $declares_credentials ? 'credentials_saved' : 'configuration_saved';
 }
@@ -372,15 +483,22 @@ function papelito_vendor_integration_intended_action( array $payload ): string {
  * @return mixed O mesmo resultado recebido.
  */
 function papelito_vendor_integration_audit_attempt( int $vendor_id, int $actor_user_id, string $action, mixed $result ): mixed {
-	if ( is_wp_error( $result ) ) {
-		papelito_vendor_integration_audit(
-			$vendor_id,
-			PAPELITO_VENDOR_INTEGRATION_PROVIDER,
-			$actor_user_id,
-			$action,
-			papelito_vendor_integration_audit_status( $result )
-		);
+	if ( ! is_wp_error( $result ) ) {
+		return $result;
 	}
+
+	$rate_limited = 'papelito_vendor_integration_rate_limited' === $result->get_error_code();
+	if ( $rate_limited && papelito_vendor_integration_audit_is_repeat( $actor_user_id, 'rate_limited' ) ) {
+		return $result;
+	}
+
+	papelito_vendor_integration_audit(
+		$vendor_id,
+		PAPELITO_VENDOR_INTEGRATION_PROVIDER,
+		$actor_user_id,
+		$action,
+		papelito_vendor_integration_audit_status( $result )
+	);
 
 	return $result;
 }
@@ -414,18 +532,6 @@ function papelito_vendor_integration_security_event( int $vendor_id, string $act
 		'Papelito: alteração na integração Braspress',
 		'A integração Braspress da sua loja teve uma alteração de credencial ou foi removida. Nenhum segredo é enviado por este e-mail. Se você não reconhece a alteração, entre em contato com o suporte.'
 	);
-}
-
-/**
- * Atualiza o estado operacional sem devolver ou registrar credenciais.
- *
- * @param int    $vendor_id ID do vendor.
- * @param string $status Novo estado operacional permitido.
- * @param string $error_category Categoria pública e redigida do erro.
- * @return void
- */
-function papelito_vendor_integration_set_braspress_operational_state( int $vendor_id, string $status, string $error_category = '' ): void {
-	papelito_vendor_integration_apply_braspress_health( $vendor_id, $status, $error_category );
 }
 
 /**
@@ -822,6 +928,9 @@ function papelito_vendor_integration_apply_braspress_delete( int $vendor_id, arr
 		return $password_check;
 	}
 
+	$row      = papelito_vendor_integration_find_row( $vendor_id );
+	$previous = sanitize_key( (string) ( $row['status'] ?? PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED ) );
+
 	$deleted = $wpdb->delete(
 		papelito_vendor_integrations_table_name(),
 		array(
@@ -835,10 +944,33 @@ function papelito_vendor_integration_apply_braspress_delete( int $vendor_id, arr
 		return new WP_Error( 'papelito_vendor_integration_delete_failed', 'Não foi possível remover a integração.', array( 'status' => 500 ) );
 	}
 
+	papelito_vendor_integration_forget_braspress_health( $vendor_id, $previous );
 	papelito_vendor_integration_audit( $vendor_id, PAPELITO_VENDOR_INTEGRATION_PROVIDER, $actor_user_id, 'removed', PAPELITO_VENDOR_INTEGRATION_AUDIT_SUCCESS );
 	papelito_vendor_integration_security_event( $vendor_id, 'removed' );
 
 	return papelito_vendor_integration_public_record( null, $vendor_id );
+}
+
+/**
+ * Apaga o rastro operacional que a integração removida deixaria para trás.
+ *
+ * São dois rastros, e os dois sobrevivem ao `DELETE` da linha. O alerta de
+ * degradação fica aberto no canal referindo um vendor que já não tem conta —
+ * exatamente o "abre e nunca fecha" que o recorte por transição existe para
+ * evitar. E o disjuntor, que é gravado à parte em option própria, continua
+ * aberto: quem removesse e reconfigurasse na sequência ficaria sem Braspress no
+ * checkout por causa do estado da conta anterior.
+ *
+ * @param int    $vendor_id ID do vendor.
+ * @param string $previous Estado de saúde imediatamente antes da remoção.
+ * @return void
+ */
+function papelito_vendor_integration_forget_braspress_health( int $vendor_id, string $previous ): void {
+	papelito_vendor_integration_announce_health_change( $vendor_id, $previous, PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED, '' );
+
+	if ( function_exists( 'papelito_shipping_breaker_close' ) ) {
+		papelito_shipping_breaker_close( PAPELITO_VENDOR_INTEGRATION_PROVIDER, $vendor_id );
+	}
 }
 
 /**
@@ -919,6 +1051,59 @@ function papelito_vendor_integration_handle_delete_braspress( WP_REST_Request $r
 }
 
 /**
+ * Audita a recusa do porteiro e devolve o resultado intocado.
+ *
+ * O porteiro decide **antes** do callback, então toda tentativa barrada por
+ * papel, sessão ou suspensão comercial sumia da trilha — justamente a tentativa
+ * de acesso não autorizado que a separação entre `denied` e `rejected` existe
+ * para responder. Só ator identificado é registrado: sem sessão não há a quem
+ * atribuir, e escrever por requisição anônima abriria um caminho de gravação sem
+ * limite nenhum antes do rate limit.
+ *
+ * @param mixed  $check Resultado do porteiro.
+ * @param string $action Ação que o ator tentaria executar.
+ * @return mixed O mesmo resultado recebido.
+ */
+function papelito_vendor_integration_audit_permission( mixed $check, string $action ): mixed {
+	$actor_user_id = get_current_user_id();
+	if ( ! is_wp_error( $check ) || $actor_user_id <= 0 ) {
+		return $check;
+	}
+
+	if ( papelito_vendor_integration_audit_is_repeat( $actor_user_id, 'permission' ) ) {
+		return $check;
+	}
+
+	papelito_vendor_integration_audit(
+		$actor_user_id,
+		PAPELITO_VENDOR_INTEGRATION_PROVIDER,
+		$actor_user_id,
+		$action,
+		PAPELITO_VENDOR_INTEGRATION_AUDIT_DENIED
+	);
+
+	return $check;
+}
+
+/**
+ * Porteiro de leitura da integração, com rastro na recusa.
+ *
+ * @return true|WP_Error Resultado do porteiro.
+ */
+function papelito_vendor_integration_permission_read(): mixed {
+	return papelito_vendor_integration_audit_permission( papelito_vendor_dashboard_permission_seller(), 'configuration_read' );
+}
+
+/**
+ * Porteiro de escrita e remoção da integração, com rastro na recusa.
+ *
+ * @return true|WP_Error Resultado do porteiro.
+ */
+function papelito_vendor_integration_permission_write(): mixed {
+	return papelito_vendor_integration_audit_permission( papelito_vendor_dashboard_permission_seller_commercial(), 'configuration_saved' );
+}
+
+/**
  * Registra as rotas REST autenticadas da integração Braspress.
  *
  * @return void
@@ -930,17 +1115,17 @@ function papelito_vendor_integration_register_routes(): void {
 		array(
 			array(
 				'methods'             => WP_REST_Server::READABLE,
-				'permission_callback' => 'papelito_vendor_dashboard_permission_seller',
+				'permission_callback' => 'papelito_vendor_integration_permission_read',
 				'callback'            => 'papelito_vendor_integration_handle_get_braspress',
 			),
 			array(
 				'methods'             => WP_REST_Server::EDITABLE,
-				'permission_callback' => 'papelito_vendor_dashboard_permission_seller_commercial',
+				'permission_callback' => 'papelito_vendor_integration_permission_write',
 				'callback'            => 'papelito_vendor_integration_handle_save_braspress',
 			),
 			array(
 				'methods'             => WP_REST_Server::DELETABLE,
-				'permission_callback' => 'papelito_vendor_dashboard_permission_seller_commercial',
+				'permission_callback' => 'papelito_vendor_integration_permission_write',
 				'callback'            => 'papelito_vendor_integration_handle_delete_braspress',
 			),
 		)
@@ -948,3 +1133,5 @@ function papelito_vendor_integration_register_routes(): void {
 }
 
 add_action( 'rest_api_init', 'papelito_vendor_integration_register_routes' );
+add_action( 'init', 'papelito_vendor_integration_schedule_audit_prune' );
+add_action( PAPELITO_VENDOR_INTEGRATION_AUDIT_PRUNE_HOOK, 'papelito_vendor_integration_audit_prune' );

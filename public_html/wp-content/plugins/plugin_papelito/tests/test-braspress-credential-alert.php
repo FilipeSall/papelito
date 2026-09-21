@@ -179,7 +179,7 @@ function alert_reset( string $status = PAPELITO_VENDOR_INTEGRATION_ACTIVE, strin
 echo "Cenário 1: 401 confirmado marca invalid_credentials sem desabilitar a integração\n";
 alert_reset();
 
-papelito_vendor_integration_set_braspress_operational_state( ALERT_TEST_VENDOR_ID, PAPELITO_VENDOR_INTEGRATION_INVALID, ALERT_TEST_AUTH );
+papelito_vendor_integration_apply_braspress_health( ALERT_TEST_VENDOR_ID, PAPELITO_VENDOR_INTEGRATION_INVALID, ALERT_TEST_AUTH );
 
 $written = $GLOBALS['alert_test_updates'][0] ?? array();
 
@@ -199,9 +199,9 @@ alert_assert(
 echo "\nCenário 2: a transição alerta uma vez, e o alerta não carrega segredo\n";
 alert_reset();
 
-papelito_vendor_integration_set_braspress_operational_state( ALERT_TEST_VENDOR_ID, PAPELITO_VENDOR_INTEGRATION_INVALID, ALERT_TEST_AUTH );
+papelito_vendor_integration_apply_braspress_health( ALERT_TEST_VENDOR_ID, PAPELITO_VENDOR_INTEGRATION_INVALID, ALERT_TEST_AUTH );
 $first = count( $GLOBALS['alert_test_alerts'] );
-papelito_vendor_integration_set_braspress_operational_state( ALERT_TEST_VENDOR_ID, PAPELITO_VENDOR_INTEGRATION_INVALID, ALERT_TEST_AUTH );
+papelito_vendor_integration_apply_braspress_health( ALERT_TEST_VENDOR_ID, PAPELITO_VENDOR_INTEGRATION_INVALID, ALERT_TEST_AUTH );
 
 alert_assert( 'A entrada em invalid_credentials gera alerta', 1 === $first );
 alert_assert(
@@ -259,7 +259,7 @@ alert_assert(
 echo "\nCenário 5: cotação boa concorrente não apaga a credencial recusada\n";
 alert_reset( PAPELITO_VENDOR_INTEGRATION_INVALID );
 
-papelito_vendor_integration_set_braspress_operational_state( ALERT_TEST_VENDOR_ID, PAPELITO_VENDOR_INTEGRATION_ACTIVE );
+papelito_vendor_integration_apply_braspress_health( ALERT_TEST_VENDOR_ID, PAPELITO_VENDOR_INTEGRATION_ACTIVE );
 
 alert_assert(
 	'Nenhuma cotação tira a conta de invalid_credentials',
@@ -275,7 +275,7 @@ echo "\nCenário 6: o disjuntor da conta só abre por credencial, não por indis
 alert_reset( PAPELITO_VENDOR_INTEGRATION_ACTIVE );
 
 foreach ( array( 'timeout', 'network_error', 'provider_5xx', 'not_available' ) as $category ) {
-	papelito_vendor_integration_set_braspress_operational_state( ALERT_TEST_VENDOR_ID, $category );
+	papelito_vendor_integration_apply_braspress_health( ALERT_TEST_VENDOR_ID, $category );
 }
 
 alert_assert(
