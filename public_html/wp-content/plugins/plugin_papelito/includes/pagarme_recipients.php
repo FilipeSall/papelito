@@ -14,6 +14,7 @@ if ( ! defined( 'PAPELITO_PAGARME_RECIPIENT_ID_META' ) ) {
 	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META', 'papelito_pagarme_recipient_last_error' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META', 'papelito_pagarme_recipient_last_error_detail' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META', 'papelito_pagarme_recipient_last_error_code' );
+	define( 'PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_FIELDS_META', 'papelito_pagarme_recipient_last_error_fields' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_KYC_STATUS_META', 'papelito_pagarme_recipient_kyc_status' );
 	define( 'PAPELITO_PAGARME_RECIPIENT_KYC_STATUS_REASON_META', 'papelito_pagarme_recipient_kyc_status_reason' );
 	define( 'PAPELITO_PAGARME_KYC_LINK_LIMITS_TABLE', 'papelito_pagarme_kyc_link_limits' );
@@ -90,10 +91,463 @@ function papelito_pagarme_save_vendor_recipient_state( int $user_id, array $reci
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, '' );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, '' );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META, '' );
+	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_FIELDS_META, '' );
 
 	delete_user_meta( $user_id, 'papelito_pagarme_recipient_kyc_url' );
 
 	return papelito_pagarme_get_vendor_recipient_state( $user_id );
+}
+
+/**
+ * Catalogo dos campos que a Pagar.me costuma recusar no recebedor.
+ *
+ * A v5 nomeia o campo ora pela chave (`register_information.document`), ora dentro da propria
+ * mensagem (`invalid_parameter | agencia | Value too long`), e em portugues ou ingles conforme o
+ * endpoint. Por isso a busca e por trecho sobre chave e mensagem juntas, do mais especifico para o
+ * mais generico: `holder_document` precisa vencer `document`, e `agencia_dv` precisa vencer
+ * `agencia`.
+ *
+ * @return array<int,array<string,mixed>> Entradas na ordem de precedencia.
+ */
+function papelito_pagarme_rejected_field_catalog(): array {
+	return array_merge(
+		papelito_pagarme_rejected_bank_fields(),
+		papelito_pagarme_rejected_partner_fields(),
+		papelito_pagarme_rejected_company_fields()
+	);
+}
+
+/**
+ * Entradas de conta bancaria do catalogo de recusa.
+ *
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_pagarme_rejected_bank_fields(): array {
+	return array(
+		array(
+			'match' => array( 'holder_document', 'documento do titular' ),
+			'field' => 'bank_account.holder_document',
+			'group' => 'bank_account',
+			'label' => 'Documento do titular da conta',
+			'hint'  => 'A conta precisa estar no CNPJ da empresa. Conta de pessoa física, mesmo a do sócio, é recusada.',
+		),
+		array(
+			'match' => array( 'holder_name', 'titular' ),
+			'field' => 'bank_account.holder_name',
+			'group' => 'bank_account',
+			'label' => 'Nome do titular da conta',
+			'hint'  => 'Use a razão social como aparece no banco, com no máximo 30 caracteres.',
+		),
+		array(
+			'match' => array( 'branch_check_digit', 'agencia_dv' ),
+			'field' => 'bank_account.branch_check_digit',
+			'group' => 'bank_account',
+			'label' => 'Dígito da agência',
+			'hint'  => 'Deixe em branco quando o seu banco não usa dígito de agência.',
+		),
+		array(
+			'match' => array( 'branch_number', 'agencia' ),
+			'field' => 'bank_account.branch_number',
+			'group' => 'bank_account',
+			'label' => 'Agência',
+			'hint'  => 'Informe só os números da agência, no máximo quatro dígitos e sem o dígito verificador.',
+		),
+		array(
+			'match' => array( 'account_check_digit', 'conta_dv' ),
+			'field' => 'bank_account.account_check_digit',
+			'group' => 'bank_account',
+			'label' => 'Dígito da conta',
+			'hint'  => 'Informe o dígito separado do número da conta.',
+		),
+		array(
+			'match' => array( 'account_number', 'conta' ),
+			'field' => 'bank_account.account_number',
+			'group' => 'bank_account',
+			'label' => 'Número da conta',
+			'hint'  => 'Informe só os números da conta, sem o dígito verificador.',
+		),
+		array(
+			'match' => array( 'bank', 'banco' ),
+			'field' => 'bank_account.bank',
+			'group' => 'bank_account',
+			'label' => 'Banco',
+			'hint'  => 'Confira o código do banco na lista oficial da Febraban.',
+		),
+		array(
+			'match' => array( 'default_bank_account' ),
+			'field' => 'bank_account',
+			'group' => 'bank_account',
+			'label' => 'Conta bancária',
+			'hint'  => 'Revise banco, agência, conta e titular.',
+		),
+	);
+}
+
+/**
+ * Entradas do responsavel legal no catalogo de recusa.
+ *
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_pagarme_rejected_partner_fields(): array {
+	$partner = 'managing_partners';
+
+	return array(
+		array(
+			'match' => array( $partner . '.*document', 'cpf' ),
+			'field' => 'partner.document',
+			'group' => 'partner',
+			'label' => 'CPF do responsável legal',
+			'hint'  => 'Informe o CPF da pessoa que responde pela empresa, com 11 dígitos.',
+		),
+		array(
+			'match' => array( $partner . '.*birthdate', 'birthdate', 'data_nascimento' ),
+			'field' => 'partner.birthdate',
+			'group' => 'partner',
+			'label' => 'Data de nascimento do responsável legal',
+			'hint'  => 'Use o formato AAAA-MM-DD.',
+		),
+		array(
+			'match' => array( $partner . '.*mother_name', 'mother_name' ),
+			'field' => 'partner.mother_name',
+			'group' => 'partner',
+			'label' => 'Nome da mãe do responsável legal',
+			'hint'  => 'A Pagar.me pede o nome completo da mãe para a verificação de identidade.',
+		),
+		array(
+			'match' => array( 'professional_occupation' ),
+			'field' => 'partner.professional_occupation',
+			'group' => 'partner',
+			'label' => 'Profissão do responsável legal',
+			'hint'  => 'Preencha a ocupação declarada do responsável legal.',
+		),
+		array(
+			'match' => array( 'monthly_income' ),
+			'field' => 'partner.monthly_income',
+			'group' => 'partner',
+			'label' => 'Renda mensal do responsável legal',
+			'hint'  => 'Informe um valor maior que zero, sem centavos.',
+		),
+		array(
+			'match' => array( $partner . '.*address' ),
+			'field' => 'partner.address',
+			'group' => 'partner',
+			'label' => 'Endereço do responsável legal',
+			'hint'  => 'Rua, número, bairro, cidade, estado e CEP do responsável legal.',
+		),
+		array(
+			'match' => array( $partner . '.*phone', $partner . '.*telefone' ),
+			'field' => 'partner.phone',
+			'group' => 'partner',
+			'label' => 'Telefone do responsável legal',
+			'hint'  => 'Informe DDD e número, apenas dígitos.',
+		),
+		array(
+			'match' => array( $partner . '.*email' ),
+			'field' => 'partner.email',
+			'group' => 'partner',
+			'label' => 'E-mail do responsável legal',
+			'hint'  => 'Informe um e-mail válido do responsável legal.',
+		),
+		array(
+			'match' => array( $partner . '.*name', 'self_declared_legal_representative' ),
+			'field' => 'partner.name',
+			'group' => 'partner',
+			'label' => 'Responsável legal',
+			'hint'  => 'Cadastre ao menos um sócio administrador com nome completo.',
+		),
+		array(
+			'match' => array( $partner ),
+			'field' => 'partner',
+			'group' => 'partner',
+			'label' => 'Responsavel legal',
+			'hint'  => 'Revise os dados do sócio administrador informado.',
+		),
+	);
+}
+
+/**
+ * Entradas da empresa no catalogo de recusa.
+ *
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_pagarme_rejected_company_fields(): array {
+	return array(
+		array(
+			'match' => array( 'main_address', 'endereco', 'address', 'zip_code', 'cep' ),
+			'field' => 'company.address',
+			'group' => 'company',
+			'label' => 'Endereço da empresa',
+			'hint'  => 'Rua, número, bairro, cidade, estado e CEP do endereço comercial.',
+		),
+		array(
+			'match' => array( 'annual_revenue' ),
+			'field' => 'company.annual_revenue',
+			'group' => 'company',
+			'label' => 'Faturamento anual',
+			'hint'  => 'Informe um valor maior que zero, sem centavos.',
+		),
+		array(
+			'match' => array( 'founding_date' ),
+			'field' => 'company.founding_date',
+			'group' => 'company',
+			'label' => 'Data de abertura da empresa',
+			'hint'  => 'Use o formato AAAA-MM-DD, ou deixe em branco.',
+		),
+		array(
+			'match' => array( 'corporation_type' ),
+			'field' => 'company.corporation_type',
+			'group' => 'company',
+			'label' => 'Tipo societário',
+			'hint'  => 'Informe a natureza jurídica como no cartão CNPJ, ou deixe em branco.',
+		),
+		array(
+			'match' => array( 'trading_name', 'nome_fantasia' ),
+			'field' => 'company.trading_name',
+			'group' => 'company',
+			'label' => 'Nome fantasia',
+			'hint'  => 'Use o nome fantasia registrado no CNPJ.',
+		),
+		array(
+			'match' => array( 'company_name', 'razao_social', 'razao social' ),
+			'field' => 'company.company_name',
+			'group' => 'company',
+			'label' => 'Razão social',
+			'hint'  => 'Use a razão social exatamente como no cartão CNPJ.',
+		),
+		array(
+			'match' => array( 'document', 'cnpj' ),
+			'field' => 'company.document',
+			'group' => 'company',
+			'label' => 'CNPJ da empresa',
+			'hint'  => 'Informe o CNPJ com 14 dígitos, ativo na Receita Federal.',
+		),
+		array(
+			'match' => array( 'phone' ),
+			'field' => 'company.phone',
+			'group' => 'company',
+			'label' => 'Telefone da empresa',
+			'hint'  => 'Informe DDD e numero, apenas digitos.',
+		),
+		array(
+			'match' => array( 'email' ),
+			'field' => 'company.email',
+			'group' => 'company',
+			'label' => 'E-mail da empresa',
+			'hint'  => 'Informe um e-mail válido da conta.',
+		),
+	);
+}
+
+/**
+ * Casa um detalhe cru da Pagar.me com uma entrada do catalogo.
+ *
+ * @param string $haystack Chave e mensagem em minusculas.
+ * @return array<string,mixed>|null Entrada do catalogo, ou nulo quando nada casa.
+ */
+function papelito_pagarme_match_rejected_field( string $haystack ): ?array {
+	foreach ( papelito_pagarme_rejected_field_catalog() as $entry ) {
+		foreach ( $entry['match'] as $needle ) {
+			if ( papelito_pagarme_detail_matches( $haystack, $needle ) ) {
+				return $entry;
+			}
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Diz se o detalhe casa com um trecho do catalogo.
+ *
+ * O `.*` no trecho vira curinga, para `managing_partners.*document` alcancar
+ * `register_information.managing_partners[0].document` sem listar cada indice. Os dois lados
+ * passam pela mesma normalizacao, entao `holder_name` tambem alcanca "holder name" — a Pagar.me
+ * escreve o campo nas duas formas conforme o endpoint.
+ *
+ * @param string $haystack Chave e mensagem ja normalizadas.
+ * @param string $needle   Trecho do catalogo.
+ * @return bool Se o detalhe pertence aquela entrada.
+ */
+function papelito_pagarme_detail_matches( string $haystack, string $needle ): bool {
+	$normalized = papelito_pagarme_normalize_detail( $needle );
+
+	if ( false === strpos( $normalized, '.*' ) ) {
+		return false !== strpos( $haystack, $normalized );
+	}
+
+	return 1 === preg_match( '/' . str_replace( '\.\*', '.*', preg_quote( $normalized, '/' ) ) . '/', $haystack );
+}
+
+/**
+ * Traduz os detalhes crus da Pagar.me na lista de campos a corrigir.
+ *
+ * O vendor recebe o nome do campo em portugues e o que fazer com ele; a frase crua da Pagar.me
+ * viaja junto em `detail` porque e ela que distingue "campo obrigatorio" de "valor longo demais",
+ * e nenhum dicionario acompanharia isso sozinho. Detalhe que nao casa com campo nenhum ainda
+ * aparece, como pendencia generica, em vez de sumir e deixar o vendor sem pista.
+ *
+ * @param array<int,string> $details Detalhes de `papelito_pagarme_collect_error_details()`.
+ * @return array<int,array<string,string>> Campos recusados, sem repeticao.
+ */
+function papelito_pagarme_rejected_fields_from_details( array $details ): array {
+	$fields = array();
+
+	foreach ( $details as $detail ) {
+		$text  = sanitize_text_field( (string) $detail );
+		$entry = papelito_pagarme_match_rejected_field( papelito_pagarme_normalize_detail( $text ) );
+		$field = null === $entry ? 'outros' : (string) $entry['field'];
+
+		if ( isset( $fields[ $field ] ) ) {
+			continue;
+		}
+
+		$fields[ $field ] = array(
+			'field'  => $field,
+			'group'  => null === $entry ? 'outros' : (string) $entry['group'],
+			'label'  => null === $entry ? 'Outro dado do cadastro' : (string) $entry['label'],
+			'hint'   => null === $entry ? 'A Pagar.me recusou um dado que a Papelito ainda não sabe nomear. Envie esta mensagem ao suporte.' : (string) $entry['hint'],
+			'detail' => papelito_pagarme_trim_detail( $text ),
+		);
+	}
+
+	return array_values( $fields );
+}
+
+/**
+ * Normaliza um detalhe cru para a busca no catalogo.
+ *
+ * O underscore vira espaco nos dois lados da comparacao: a Pagar.me manda `holder_name` na chave
+ * e "holder name" na frase, e sem isso a segunda escapava do catalogo e caia numa entrada mais
+ * generica.
+ *
+ * @param string $detail Detalhe cru.
+ * @return string Texto em minusculas, sem acento e sem underscore.
+ */
+function papelito_pagarme_normalize_detail( string $detail ): string {
+	$lower = function_exists( 'mb_strtolower' ) ? mb_strtolower( $detail, 'UTF-8' ) : strtolower( $detail );
+
+	return strtr(
+		$lower,
+		array(
+			'á' => 'a',
+			'â' => 'a',
+			'ã' => 'a',
+			'à' => 'a',
+			'é' => 'e',
+			'ê' => 'e',
+			'í' => 'i',
+			'ó' => 'o',
+			'ô' => 'o',
+			'õ' => 'o',
+			'ú' => 'u',
+			'ç' => 'c',
+			'_' => ' ',
+		)
+	);
+}
+
+/**
+ * Encurta a frase da Pagar.me para caber numa linha da interface.
+ *
+ * @param string $detail Detalhe sanitizado.
+ * @return string Detalhe com no maximo 160 caracteres.
+ */
+function papelito_pagarme_trim_detail( string $detail ): string {
+	if ( strlen( $detail ) <= 160 ) {
+		return $detail;
+	}
+
+	return rtrim( substr( $detail, 0, 157 ) ) . '...';
+}
+
+/**
+ * Extrai os campos recusados de um WP_Error da Pagar.me.
+ *
+ * Nem toda recusa vem com `errors` por campo: boa parte chega como uma frase única em `message`
+ * — foi assim com "Bank account holder name must be lower than 30 characters.", que travou um
+ * vendor real. Quando não há `details`, a frase é submetida ao mesmo catálogo, e só vira linha se
+ * nomear um campo; frase genérica continua fora, para não repetir o banner com outras palavras.
+ *
+ * @param mixed $error Erro devolvido pelo cliente.
+ * @return array<int,array<string,string>> Campos recusados.
+ */
+function papelito_pagarme_rejected_fields_from_error( mixed $error ): array {
+	if ( ! $error instanceof WP_Error ) {
+		return array();
+	}
+
+	$data = $error->get_error_data();
+	$body = is_array( $data ) && isset( $data['pagarme_body'] ) && is_array( $data['pagarme_body'] ) ? $data['pagarme_body'] : array();
+
+	if ( isset( $body['details'] ) && is_array( $body['details'] ) && ! empty( $body['details'] ) ) {
+		return papelito_pagarme_rejected_fields_from_details( $body['details'] );
+	}
+
+	return papelito_pagarme_rejected_fields_from_message( (string) ( $body['message'] ?? '' ) );
+}
+
+/**
+ * Traduz a recusa que veio como frase única, sem mapa de campos.
+ *
+ * @param string $message Mensagem da Pagar.me.
+ * @return array<int,array<string,string>> Uma linha, ou nenhuma quando a frase não nomeia campo.
+ */
+function papelito_pagarme_rejected_fields_from_message( string $message ): array {
+	$text = sanitize_text_field( $message );
+
+	if ( '' === $text || null === papelito_pagarme_match_rejected_field( papelito_pagarme_normalize_detail( $text ) ) ) {
+		return array();
+	}
+
+	return papelito_pagarme_rejected_fields_from_details( array( $text ) );
+}
+
+/**
+ * Le os campos recusados na ultima tentativa de sincronizacao.
+ *
+ * Vendor que ja estava travado antes desta traducao existir nao tem o meta novo, so o diagnostico
+ * antigo em `last_error_detail`. Em vez de exigir uma nova tentativa para o painel voltar a
+ * explicar o motivo, a leitura reconstroi a lista a partir dele — o diagnostico guarda exatamente
+ * os mesmos `message` e `details` que a traducao consome.
+ *
+ * @param int $user_id Usuario vendor.
+ * @return array<int,array<string,string>> Campos recusados.
+ */
+function papelito_pagarme_get_vendor_rejected_fields( int $user_id ): array {
+	$stored  = get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_FIELDS_META, true );
+	$decoded = is_string( $stored ) && '' !== $stored ? json_decode( $stored, true ) : null;
+
+	if ( is_array( $decoded ) && ! empty( $decoded ) ) {
+		return array_values( array_filter( $decoded, 'is_array' ) );
+	}
+
+	return papelito_pagarme_rejected_fields_from_legacy_detail( $user_id );
+}
+
+/**
+ * Reconstroi os campos recusados a partir do diagnostico guardado para o suporte.
+ *
+ * @param int $user_id Usuario vendor.
+ * @return array<int,array<string,string>> Campos recusados, ou lista vazia.
+ */
+function papelito_pagarme_rejected_fields_from_legacy_detail( int $user_id ): array {
+	$raw = get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, true );
+
+	if ( ! is_string( $raw ) || '' === $raw ) {
+		return array();
+	}
+
+	$body = json_decode( $raw, true );
+
+	if ( ! is_array( $body ) ) {
+		return array();
+	}
+
+	if ( isset( $body['details'] ) && is_array( $body['details'] ) && ! empty( $body['details'] ) ) {
+		return papelito_pagarme_rejected_fields_from_details( $body['details'] );
+	}
+
+	return papelito_pagarme_rejected_fields_from_message( (string) ( $body['message'] ?? '' ) );
 }
 
 /**
@@ -128,15 +582,20 @@ function papelito_pagarme_save_vendor_recipient_error( int $user_id, $error ): v
 	}
 
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, $detail );
+
+	$fields  = papelito_pagarme_rejected_fields_from_error( $error );
+	$encoded = empty( $fields ) ? '' : wp_json_encode( $fields, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+
+	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_FIELDS_META, is_string( $encoded ) ? $encoded : '' );
 }
 
 /**
  * Monta a resposta REST de erro do recebedor sem vazar detalhe tecnico.
  *
- * So retorna o codigo estavel do erro (usado pelo front para mapear uma
- * mensagem amigavel) e o status HTTP. O corpo cru do gateway (`response_body`)
- * nunca sai do backend; somente um diagnostico sanitizado (`pagarme_body`) fica
- * no meta `last_error_detail`, nunca na resposta REST.
+ * Retorna o codigo estavel do erro, o status HTTP e a lista de campos que a Pagar.me recusou,
+ * ja traduzida — sem ela o vendor lia "nao foi possivel validar" e nao tinha o que corrigir. O
+ * corpo cru do gateway (`response_body`) continua sem sair do backend; o que viaja e o nome do
+ * campo, o que fazer com ele e a frase de validacao sanitizada.
  *
  * @param WP_Error $error Erro original.
  * @return WP_Error
@@ -144,18 +603,25 @@ function papelito_pagarme_save_vendor_recipient_error( int $user_id, $error ): v
 function papelito_pagarme_recipient_error_response( WP_Error $error ): WP_Error {
 	$data   = $error->get_error_data();
 	$status = is_array( $data ) && isset( $data['status'] ) ? (int) $data['status'] : 500;
+	$fields = papelito_pagarme_rejected_fields_from_error( $error );
 
 	return new WP_Error(
 		$error->get_error_code(),
 		'Não foi possível validar os dados do recebedor.',
-		array( 'status' => $status )
+		array(
+			'status' => $status,
+			'fields' => $fields,
+		)
 	);
 }
 
 /**
  * Retorna o estado serializado do recebedor.
  *
- * @return array<string,string>
+ * `last_error_fields` e a lista traduzida do que a Pagar.me recusou na ultima tentativa; fica
+ * vazia depois de uma sincronizacao bem-sucedida, junto com os demais metas de erro.
+ *
+ * @return array<string,mixed>
  */
 function papelito_pagarme_get_vendor_recipient_state( int $user_id ): array {
 	return array(
@@ -166,6 +632,7 @@ function papelito_pagarme_get_vendor_recipient_state( int $user_id ): array {
 		'last_sync_at'      => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, true ) ),
 		'last_error'        => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, true ) ),
 		'last_error_code'   => sanitize_key( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META, true ) ),
+		'last_error_fields' => papelito_pagarme_get_vendor_rejected_fields( $user_id ),
 	);
 }
 
