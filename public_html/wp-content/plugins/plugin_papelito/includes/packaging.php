@@ -2222,19 +2222,24 @@ function papelito_packaging_vendor_is_eligible(int $vendor_id): bool
 }
 
 /**
- * Diz se o gate de embalagem já vale para a cobertura.
+ * Diz se o gate de embalagem vale para a cobertura.
  *
- * Nasce desligado de propósito. Ligá-lo antes de avisar os vendors e dar prazo
- * apagaria a vitrine inteira, porque um vendor sem caixa cadastrada some da
- * cobertura. A ordem de ativação está na BRASPRESS-003.
+ * Nasce **ligado**. Ele já nasceu desligado uma vez, para dar prazo a quem
+ * vendia sem caixa cadastrada — só que o marketplace nunca abriu, não há
+ * vitrine a preservar e cotar sem saber a caixa é o que produz cobrança
+ * complementar na fatura depois. Vendor sem o mínimo some da cobertura como
+ * quem está sem estoque, com conta e painel intactos.
+ *
+ * `PAPELITO_PACKAGING_PROFILE_GATE_ENABLED=false` continua desligando sem
+ * deploy, e o filtro homônimo resolve o caso local de base semeada sem caixa.
  *
  * @return bool Se a cobertura deve exigir o mínimo de caixas ativas.
  */
 function papelito_packaging_profile_gate_enabled(): bool
 {
 	$configured = function_exists('papelito_shipping_provider_config')
-		? papelito_shipping_provider_config('PAPELITO_PACKAGING_PROFILE_GATE_ENABLED', 'false')
-		: false;
+		? papelito_shipping_provider_config('PAPELITO_PACKAGING_PROFILE_GATE_ENABLED', 'true')
+		: true;
 
 	return (bool) apply_filters(
 		'papelito_packaging_profile_gate_enabled',

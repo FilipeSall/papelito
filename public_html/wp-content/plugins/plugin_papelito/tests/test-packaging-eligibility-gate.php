@@ -5,9 +5,9 @@
  * Gate de elegibilidade por embalagem cadastrada.
  *
  * Vendor sem o mínimo de caixas ativas some da cobertura como quem está sem
- * estoque, sem perder conta nem painel. O gate nasce desligado: ligá-lo antes
- * de avisar os vendors apagaria a vitrine inteira, porque hoje quase ninguém
- * cadastrou caixa.
+ * estoque, sem perder conta nem painel. O gate nasce ligado: o marketplace não
+ * abriu, então não há vitrine a preservar, e cotar sem saber a caixa é o que
+ * produz cobrança complementar depois. Desligar continua sendo possível.
  *
  * @package Papelito
  */
@@ -251,12 +251,18 @@ gate_assert( 'vendor com duas caixas não é elegível', ! papelito_packaging_ve
 gate_assert( 'vendor sem caixa não é elegível', ! papelito_packaging_vendor_is_eligible( GATE_TEST_EMPTY_VENDOR_ID ) );
 gate_assert( 'a contagem devolve inteiro', 2 === papelito_packaging_active_profile_count( GATE_TEST_SHORT_VENDOR_ID ) );
 
-echo "Scenario 2: o gate nasce desligado\n";
-gate_assert( 'sem configuração explícita o gate está desligado', ! papelito_packaging_profile_gate_enabled() );
+echo "Scenario 2: o gate nasce ligado\n";
+gate_assert( 'sem configuração explícita o gate está ligado', papelito_packaging_profile_gate_enabled() );
 gate_set_users( array( GATE_TEST_ELIGIBLE_VENDOR_ID, GATE_TEST_SHORT_VENDOR_ID, GATE_TEST_EMPTY_VENDOR_ID ) );
+$cobertura_padrao = papelito_matching_vendor_ids( GATE_TEST_CEP );
+gate_assert( 'no padrão só quem tem o mínimo de caixas cobre o CEP', 1 === count( $cobertura_padrao ) );
+gate_assert( 'e é o vendor com três caixas', in_array( GATE_TEST_ELIGIBLE_VENDOR_ID, $cobertura_padrao, true ) );
+
+echo "Scenario 2b: desligar segue sendo o freio de mão, sem deploy\n";
+gate_set_enabled( false );
 $cobertura_desligada = papelito_matching_vendor_ids( GATE_TEST_CEP );
 gate_assert( 'com o gate desligado ninguém some da cobertura', 3 === count( $cobertura_desligada ) );
-gate_assert( 'vendor sem caixa nenhuma continua vendendo', in_array( GATE_TEST_EMPTY_VENDOR_ID, $cobertura_desligada, true ) );
+gate_assert( 'vendor sem caixa nenhuma volta a vender', in_array( GATE_TEST_EMPTY_VENDOR_ID, $cobertura_desligada, true ) );
 
 echo "Scenario 3: ligado, o gate tira da cobertura quem está abaixo do mínimo\n";
 gate_set_enabled( true );
