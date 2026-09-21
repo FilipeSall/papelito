@@ -1212,21 +1212,22 @@ function papelito_send_vendor_packaging_profiles_pending_email( int $vendor_user
  * @return array<string,mixed> View do aviso transacional.
  */
 function papelito_vendor_packaging_profiles_email_view( int $vendor_user_id ): array {
-	$ativas = function_exists( 'papelito_packaging_active_profile_count' ) ? papelito_packaging_active_profile_count( $vendor_user_id ) : 0;
-	$minimo = PAPELITO_PACKAGING_MIN_ACTIVE_PROFILES;
-	$faltam = max( 0, $minimo - $ativas );
+	$ativas      = function_exists( 'papelito_packaging_active_profile_count' ) ? papelito_packaging_active_profile_count( $vendor_user_id ) : 0;
+	$minimo      = papelito_vendor_minimum_boxes();
+	$recomendado = papelito_vendor_recommended_boxes();
+	$faltam      = max( 0, $minimo - $ativas );
 
 	return array(
 		'kicker'       => 'Embalagem',
-		'preheader'    => sprintf( 'Faltam %d caixas para seus produtos voltarem a aparecer.', $faltam ),
+		'preheader'    => sprintf( 'Falta %s para seus produtos voltarem a aparecer.', papelito_packaging_caixas_label( $faltam ) ),
 		'headline'     => 'Cadastre suas caixas de envio.',
 		'lead'         => sprintf(
-			'Para calcular o frete, precisamos saber em qual caixa o pedido vai. Enquanto você não tiver %d caixas cadastradas, seus produtos não aparecem para os clientes.',
-			$minimo
+			'Para calcular o frete, precisamos saber em qual caixa o pedido vai. Enquanto você não tiver %s cadastradas, seus produtos não aparecem para os clientes.',
+			papelito_packaging_caixas_label( $minimo )
 		),
 		'facts'        => array(
 			'Caixas cadastradas' => sprintf( '%d de %d', $ativas, $minimo ),
-			'Faltam'             => sprintf( '%d caixas', $faltam ),
+			'Faltam'             => papelito_packaging_caixas_label( $faltam ),
 		),
 		'cta'          => array(
 			'label' => 'Cadastrar caixas',
@@ -1235,9 +1236,26 @@ function papelito_vendor_packaging_profiles_email_view( int $vendor_user_id ): a
 		'notes'        => array(
 			'Sua conta e seu painel continuam funcionando normalmente. Só a vitrine deixa de mostrar seus produtos, como acontece quando falta estoque.',
 			'Assim que a última caixa entrar, seus produtos voltam sozinhos.',
+			sprintf(
+				'Recomendamos cadastrar pelo menos %s para ter folga no cálculo e no envio dos pedidos. Acima do mínimo isso é recomendação, não exigência.',
+				papelito_packaging_caixas_label( $recomendado )
+			),
 		),
 		'footer_lines' => array( 'Se você já cadastrou suas caixas, pode ignorar este e-mail.' ),
 	);
+}
+
+/**
+ * Escreve uma quantidade de caixas concordando com o número.
+ *
+ * O mínimo virou configurável e passou a valer 2, então "faltam 1 caixas" deixou de ser um
+ * caso hipotético do texto.
+ *
+ * @param int $quantidade Quantidade de caixas.
+ * @return string Texto com o número e o substantivo concordados.
+ */
+function papelito_packaging_caixas_label( int $quantidade ): string {
+	return sprintf( 1 === $quantidade ? '%d caixa' : '%d caixas', $quantidade );
 }
 
 /**

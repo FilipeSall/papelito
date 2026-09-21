@@ -17,7 +17,6 @@ defined('ABSPATH') || exit;
 const PAPELITO_PACKAGING_DEFAULT_USABLE_FACTOR = 0.75;
 
 const PAPELITO_PACKAGING_SNAPSHOT_SCHEMA_VERSION = 1;
-const PAPELITO_PACKAGING_MIN_ACTIVE_PROFILES     = 3;
 const PAPELITO_PACKAGING_MEASUREMENT_PROFILE     = 'profile';
 const PAPELITO_PACKAGING_MEASUREMENT_LEGACY      = 'legacy_synthetic';
 
@@ -2207,7 +2206,8 @@ function papelito_packaging_announce_profiles_changed(int $vendor_id): void
  *
  * O mínimo é gate de ativação comercial, não exigência do algoritmo: a escolha
  * da caixa funciona com qualquer quantidade. Cair abaixo dele devolve o vendor
- * à inelegibilidade no mesmo instante.
+ * à inelegibilidade no mesmo instante. O número vem de
+ * `papelito_vendor_minimum_boxes()`, configurável pela administração.
  *
  * @param int $vendor_id Vendor consultado.
  * @return bool Se o vendor atinge o mínimo de caixas ativas.
@@ -2218,7 +2218,7 @@ function papelito_packaging_vendor_is_eligible(int $vendor_id): bool
 		return false;
 	}
 
-	return papelito_packaging_active_profile_count($vendor_id) >= PAPELITO_PACKAGING_MIN_ACTIVE_PROFILES;
+	return papelito_packaging_active_profile_count($vendor_id) >= papelito_vendor_minimum_boxes();
 }
 
 /**

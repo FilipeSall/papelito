@@ -67,6 +67,7 @@ $GLOBALS['packnotif_rows']       = array();
 $GLOBALS['packnotif_queries']    = array();
 $GLOBALS['packnotif_mail']       = array();
 $GLOBALS['packnotif_profiles']   = 0;
+$GLOBALS['packnotif_options']    = array();
 
 /**
  * Banco falso com índice único de dedupe e contagem de caixas ativas.
@@ -200,6 +201,7 @@ require_once __DIR__ . '/support/email_presentation_boot.php';
 require_once dirname( __DIR__ ) . '/includes/notification_emails.php';
 require_once dirname( __DIR__ ) . '/includes/notifications.php';
 require_once dirname( __DIR__ ) . '/includes/packaging.php';
+require_once dirname( __DIR__ ) . '/includes/vendor_eligibility.php';
 
 $failures = 0;
 
@@ -251,8 +253,10 @@ $email = $GLOBALS['packnotif_mail'][0] ?? array( 'subject' => '', 'body' => '' )
 packnotif_assert( 'o assunto identifica o produto', str_contains( (string) $email['subject'], 'Papelito' ) );
 packnotif_assert( 'o assunto fala de caixas', false !== stripos( (string) $email['subject'], 'caixa' ) );
 packnotif_assert( 'o corpo leva para a página de cubagem', str_contains( (string) $email['body'], PACKNOTIF_TEST_CUBAGEM_URL ) );
-packnotif_assert( 'o corpo informa quantas caixas já existem contra o mínimo', str_contains( (string) $email['body'], sprintf( '1 de %d', PAPELITO_PACKAGING_MIN_ACTIVE_PROFILES ) ) );
-packnotif_assert( 'o corpo diz quantas faltam', str_contains( (string) $email['body'], sprintf( '%d caixas', PAPELITO_PACKAGING_MIN_ACTIVE_PROFILES - 1 ) ) );
+packnotif_assert( 'o corpo informa quantas caixas já existem contra o mínimo', str_contains( (string) $email['body'], sprintf( '1 de %d', papelito_vendor_minimum_boxes() ) ) );
+packnotif_assert( 'o corpo diz quantas faltam, concordando o plural', str_contains( (string) $email['body'], '1 caixa' ) && ! str_contains( (string) $email['body'], '1 caixas' ) );
+packnotif_assert( 'o corpo recomenda o número maior sem exigir', str_contains( (string) $email['body'], sprintf( 'pelo menos %d caixas', papelito_vendor_recommended_boxes() ) ) );
+packnotif_assert( 'e deixa claro que a recomendação não é exigência', false !== stripos( (string) $email['body'], 'recomenda' ) );
 packnotif_assert( 'o texto do e-mail está acentuado corretamente', str_contains( (string) $email['body'], 'voc&#234;' ) || str_contains( (string) $email['body'], 'você' ) );
 packnotif_assert( 'o corpo diz que a loja sai da vitrine, não que foi bloqueada', false === stripos( (string) $email['body'], 'bloquead' ) );
 
@@ -263,7 +267,7 @@ packnotif_assert( 'o e-mail continua único', 1 === count( $GLOBALS['packnotif_m
 
 echo "Scenario 5: atingir o mínimo arquiva o aviso e não manda e-mail\n";
 packnotif_reset();
-$GLOBALS['packnotif_profiles'] = PAPELITO_PACKAGING_MIN_ACTIVE_PROFILES;
+$GLOBALS['packnotif_profiles'] = papelito_vendor_minimum_boxes();
 papelito_handle_vendor_packaging_profiles_notification( PACKNOTIF_TEST_VENDOR_ID );
 packnotif_assert( 'vendor elegível não gera notificação nova', 0 === count( packnotif_notifications() ) );
 packnotif_assert( 'vendor elegível não recebe e-mail', 0 === count( $GLOBALS['packnotif_mail'] ) );

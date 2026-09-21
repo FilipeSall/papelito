@@ -69,31 +69,13 @@ function papelito_catalog_filter_cep()
 }
 
 /**
- * Diz se o vendor passa no gate de embalagem cadastrada.
- *
- * Sem o mínimo de caixas ativas o vendor some da cobertura como quem está sem
- * estoque — mantém conta, login e painel para resolver. O gate nasce desligado
- * e só vale depois do aviso e do prazo previstos na BRASPRESS-003.
- *
- * @param int $vendor_id Vendor avaliado.
- * @return bool Se o vendor pode aparecer na cobertura.
- */
-function papelito_vendor_meets_packaging_gate(int $vendor_id): bool
-{
-    if (! function_exists('papelito_packaging_profile_gate_enabled') || ! papelito_packaging_profile_gate_enabled()) {
-        return true;
-    }
-
-    return ! function_exists('papelito_packaging_vendor_is_eligible') || papelito_packaging_vendor_is_eligible($vendor_id);
-}
-
-/**
  * Find sellers that match a given CEP.
  *
- * Vender exige dupla aprovacao: faixa de CEP que cubra o destino E recebedor Pagar.me `active`.
- * Este e o unico ponto que alimenta a cobertura regional, a vitrine e a resolucao de vendor do
- * carrinho, entao a segunda metade da regra mora aqui. Sem ela o produto de um vendor sem
- * recebedor aparecia disponivel e so falhava em `place-order`, depois do cartao digitado.
+ * Vender exige faixa de CEP que cubra o destino E elegibilidade operacional. Este é o único
+ * ponto que alimenta a cobertura regional, a vitrine e a resolução de vendor do carrinho; a
+ * segunda metade da regra é `papelito_vendor_is_eligible_to_sell()`, a mesma que o painel do
+ * vendor exibe como lista de pendências. Sem ela o produto de um vendor sem recebedor aparecia
+ * disponível e só falhava em `place-order`, depois do cartão digitado.
  *
  * @param int $user_cep CEP normalized to digits.
  * @return int[]
@@ -108,17 +90,9 @@ function papelito_matching_vendor_ids($user_cep)
     $vendors_ids = array();
 
     foreach ($vendors as $vendor) {
-		if ( function_exists( 'papelito_vendor_can_receive_payments' ) && ! papelito_vendor_can_receive_payments( (int) $vendor->ID ) ) {
-			continue;
-		}
-
-		// Vendor suspenso sai da cobertura, da vitrine e do roteamento no mesmo instante. Os
-		// pedidos que ele ja vendeu continuam sendo despachados por ele.
-		if ( function_exists( 'papelito_account_is_suspended' ) && papelito_account_is_suspended( (int) $vendor->ID ) ) {
-			continue;
-		}
-
-		if ( ! papelito_vendor_meets_packaging_gate( (int) $vendor->ID ) ) {
+		// Recebedor Pagar.me, conta suspensa e mínimo de caixas: os três moram no avaliador de
+		// elegibilidade, e os pedidos já vendidos continuam sendo despachados por quem os vendeu.
+		if ( function_exists( 'papelito_vendor_is_eligible_to_sell' ) && ! papelito_vendor_is_eligible_to_sell( (int) $vendor->ID ) ) {
 			continue;
 		}
 

@@ -91,8 +91,27 @@ function get_user_meta( mixed $user_id, mixed $key, mixed $single = false ): mix
 	return 'min_cep' === $key ? array( GATE_TEST_MIN_CEP ) : array( GATE_TEST_MAX_CEP );
 }
 
-/** Todos os vendors sintéticos podem receber, menos o marcado no cenário. */
-function papelito_vendor_can_receive_payments( int $vendor_id ): bool { return GATE_TEST_UNPAID_VENDOR_ID !== $vendor_id; }
+/** Todos os vendors sintéticos têm recebedor ativo, menos o marcado no cenário. */
+function papelito_pagarme_get_vendor_recipient_state( int $user_id ): array {
+	return array(
+		'recipient_id'      => GATE_TEST_UNPAID_VENDOR_ID === $user_id ? '' : 're_gate_test',
+		'status'            => GATE_TEST_UNPAID_VENDOR_ID === $user_id ? '' : 'active',
+		'kyc_status'        => '',
+		'kyc_status_reason' => '',
+		'last_sync_at'      => '2026-09-17 12:00:00',
+		'last_error'        => '',
+		'last_error_code'   => '',
+	);
+}
+
+/** Nenhum cenário deste arquivo exercita o KYC da Pagar.me. */
+function papelito_pagarme_kyc_action_required( string $recipient_status, string $kyc_status, string $kyc_status_reason ): bool { return false; }
+
+/** A elegibilidade lê a configuração de caixas por option. */
+function get_option( mixed $name, mixed $default_value = false ): mixed { return $GLOBALS['gate_test_options'][ (string) $name ] ?? $default_value; }
+
+/** Grava a configuração sintética de caixas. */
+function update_option( mixed $name, mixed $value, mixed $autoload = null ): bool { $GLOBALS['gate_test_options'][ (string) $name ] = $value; return true; }
 
 /** Nenhum vendor sintético está suspenso. */
 function papelito_account_is_suspended( int $vendor_id ): bool { return false; }
@@ -214,9 +233,11 @@ $GLOBALS['gate_test_actions']  = array();
 $GLOBALS['gate_test_rows']     = array();
 $GLOBALS['gate_test_queries']  = array();
 $GLOBALS['gate_test_emails']   = array();
+$GLOBALS['gate_test_options']  = array();
 $GLOBALS['wpdb']               = new Gate_Test_WPDB();
 
 require_once dirname( __DIR__ ) . '/includes/packaging.php';
+require_once dirname( __DIR__ ) . '/includes/vendor_eligibility.php';
 require_once dirname( __DIR__ ) . '/includes/products_filter.php';
 
 $failures = 0;
@@ -243,20 +264,24 @@ function gate_set_users( array $ids ): void {
 /** Liga ou desliga o gate pelo filtro de configuração. */
 function gate_set_enabled( bool $enabled ): void { $GLOBALS['gate_test_enabled'] = $enabled; }
 
-echo "Scenario 1: elegibilidade é a contagem de caixas ativas contra o mínimo\n";
-gate_set_profiles( array( GATE_TEST_ELIGIBLE_VENDOR_ID => 3, GATE_TEST_SHORT_VENDOR_ID => 2, GATE_TEST_EMPTY_VENDOR_ID => 0 ) );
-gate_assert( 'o mínimo do marketplace é três caixas', 3 === PAPELITO_PACKAGING_MIN_ACTIVE_PROFILES );
+echo "Scenario 1: elegibilidade é a contagem de caixas ativas contra o mínimo configurado\n";
+gate_set_profiles( array( GATE_TEST_ELIGIBLE_VENDOR_ID => 3, GATE_TEST_SHORT_VENDOR_ID => 1, GATE_TEST_EMPTY_VENDOR_ID => 0 ) );
+gate_assert( 'o mínimo padrão do marketplace é duas caixas', 2 === papelito_vendor_minimum_boxes() );
+gate_assert( 'e o recomendado padrão é três', 3 === papelito_vendor_recommended_boxes() );
 gate_assert( 'vendor com três caixas é elegível', papelito_packaging_vendor_is_eligible( GATE_TEST_ELIGIBLE_VENDOR_ID ) );
-gate_assert( 'vendor com duas caixas não é elegível', ! papelito_packaging_vendor_is_eligible( GATE_TEST_SHORT_VENDOR_ID ) );
+gate_assert( 'vendor com uma caixa não é elegível', ! papelito_packaging_vendor_is_eligible( GATE_TEST_SHORT_VENDOR_ID ) );
 gate_assert( 'vendor sem caixa não é elegível', ! papelito_packaging_vendor_is_eligible( GATE_TEST_EMPTY_VENDOR_ID ) );
-gate_assert( 'a contagem devolve inteiro', 2 === papelito_packaging_active_profile_count( GATE_TEST_SHORT_VENDOR_ID ) );
+gate_assert( 'a contagem devolve inteiro', 1 === papelito_packaging_active_profile_count( GATE_TEST_SHORT_VENDOR_ID ) );
+gate_set_profiles( array( GATE_TEST_ELIGIBLE_VENDOR_ID => 3, GATE_TEST_SHORT_VENDOR_ID => 2, GATE_TEST_EMPTY_VENDOR_ID => 0 ) );
+gate_assert( 'duas caixas já bastam para o mínimo padrão', papelito_packaging_vendor_is_eligible( GATE_TEST_SHORT_VENDOR_ID ) );
+gate_set_profiles( array( GATE_TEST_ELIGIBLE_VENDOR_ID => 3, GATE_TEST_SHORT_VENDOR_ID => 1, GATE_TEST_EMPTY_VENDOR_ID => 0 ) );
 
 echo "Scenario 2: o gate nasce ligado\n";
 gate_assert( 'sem configuração explícita o gate está ligado', papelito_packaging_profile_gate_enabled() );
 gate_set_users( array( GATE_TEST_ELIGIBLE_VENDOR_ID, GATE_TEST_SHORT_VENDOR_ID, GATE_TEST_EMPTY_VENDOR_ID ) );
 $cobertura_padrao = papelito_matching_vendor_ids( GATE_TEST_CEP );
 gate_assert( 'no padrão só quem tem o mínimo de caixas cobre o CEP', 1 === count( $cobertura_padrao ) );
-gate_assert( 'e é o vendor com três caixas', in_array( GATE_TEST_ELIGIBLE_VENDOR_ID, $cobertura_padrao, true ) );
+gate_assert( 'e é o vendor acima do mínimo', in_array( GATE_TEST_ELIGIBLE_VENDOR_ID, $cobertura_padrao, true ) );
 
 echo "Scenario 2b: desligar segue sendo o freio de mão, sem deploy\n";
 gate_set_enabled( false );
@@ -269,13 +294,19 @@ gate_set_enabled( true );
 gate_assert( 'o gate lê a configuração ligada', papelito_packaging_profile_gate_enabled() );
 $cobertura_ligada = papelito_matching_vendor_ids( GATE_TEST_CEP );
 gate_assert( 'vendor com três caixas permanece na cobertura', in_array( GATE_TEST_ELIGIBLE_VENDOR_ID, $cobertura_ligada, true ) );
-gate_assert( 'vendor com duas caixas sai da cobertura', ! in_array( GATE_TEST_SHORT_VENDOR_ID, $cobertura_ligada, true ) );
+gate_assert( 'vendor com uma caixa sai da cobertura', ! in_array( GATE_TEST_SHORT_VENDOR_ID, $cobertura_ligada, true ) );
 gate_assert( 'vendor sem caixa sai da cobertura', ! in_array( GATE_TEST_EMPTY_VENDOR_ID, $cobertura_ligada, true ) );
 
-echo "Scenario 4: cair de três para dois devolve à inelegibilidade no mesmo instante\n";
-gate_set_profiles( array( GATE_TEST_ELIGIBLE_VENDOR_ID => 2, GATE_TEST_SHORT_VENDOR_ID => 2, GATE_TEST_EMPTY_VENDOR_ID => 0 ) );
-gate_assert( 'desativar uma caixa remove o vendor da cobertura', ! in_array( GATE_TEST_ELIGIBLE_VENDOR_ID, papelito_matching_vendor_ids( GATE_TEST_CEP ), true ) );
-gate_set_profiles( array( GATE_TEST_ELIGIBLE_VENDOR_ID => 3, GATE_TEST_SHORT_VENDOR_ID => 2, GATE_TEST_EMPTY_VENDOR_ID => 0 ) );
+echo "Scenario 4: cair abaixo do mínimo devolve à inelegibilidade no mesmo instante\n";
+gate_set_profiles( array( GATE_TEST_ELIGIBLE_VENDOR_ID => 1, GATE_TEST_SHORT_VENDOR_ID => 1, GATE_TEST_EMPTY_VENDOR_ID => 0 ) );
+gate_assert( 'desativar caixa até cruzar o mínimo remove o vendor da cobertura', ! in_array( GATE_TEST_ELIGIBLE_VENDOR_ID, papelito_matching_vendor_ids( GATE_TEST_CEP ), true ) );
+gate_set_profiles( array( GATE_TEST_ELIGIBLE_VENDOR_ID => 3, GATE_TEST_SHORT_VENDOR_ID => 1, GATE_TEST_EMPTY_VENDOR_ID => 0 ) );
+
+echo "Scenario 4b: subir o mínimo pela configuração tira vendor que estava dentro\n";
+update_option( PAPELITO_VENDOR_ELIGIBILITY_OPTION, array( 'minimum_boxes' => 4, 'recommended_boxes' => 5 ), false );
+gate_assert( 'com mínimo 4 o vendor de três caixas sai da cobertura', ! in_array( GATE_TEST_ELIGIBLE_VENDOR_ID, papelito_matching_vendor_ids( GATE_TEST_CEP ), true ) );
+update_option( PAPELITO_VENDOR_ELIGIBILITY_OPTION, array( 'minimum_boxes' => 2, 'recommended_boxes' => 3 ), false );
+gate_assert( 'e volta quando o mínimo desce', in_array( GATE_TEST_ELIGIBLE_VENDOR_ID, papelito_matching_vendor_ids( GATE_TEST_CEP ), true ) );
 
 echo "Scenario 5: o gate não substitui as guardas que já existiam\n";
 gate_set_users( array( GATE_TEST_ELIGIBLE_VENDOR_ID, GATE_TEST_UNPAID_VENDOR_ID ) );
@@ -286,7 +317,7 @@ gate_assert( 'vendor apto continua dentro', in_array( GATE_TEST_ELIGIBLE_VENDOR_
 
 echo "Scenario 6: a varredura acha quem nunca cadastrou nada\n";
 gate_set_users( array( GATE_TEST_ELIGIBLE_VENDOR_ID, GATE_TEST_SHORT_VENDOR_ID, GATE_TEST_EMPTY_VENDOR_ID ) );
-gate_set_profiles( array( GATE_TEST_ELIGIBLE_VENDOR_ID => 3, GATE_TEST_SHORT_VENDOR_ID => 2, GATE_TEST_EMPTY_VENDOR_ID => 0 ) );
+gate_set_profiles( array( GATE_TEST_ELIGIBLE_VENDOR_ID => 3, GATE_TEST_SHORT_VENDOR_ID => 1, GATE_TEST_EMPTY_VENDOR_ID => 0 ) );
 $GLOBALS['gate_test_actions'] = array();
 $simulacao = papelito_packaging_sweep_vendor_eligibility( true );
 gate_assert( 'a simulação avalia todos os vendors', 3 === $simulacao['vendors'] );

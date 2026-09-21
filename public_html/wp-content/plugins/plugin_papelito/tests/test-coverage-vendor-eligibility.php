@@ -2,9 +2,10 @@
 /**
  * Standalone regression test for the double approval rule of regional coverage.
  *
- * Vender exige as duas coisas: faixa de CEP que cubra o destino E recebedor Pagar.me `active`.
- * Sem a segunda, o produto aparecia disponivel e comprável na vitrine e o comprador só descobria
- * o problema no ultimo clique do checkout, com o cartao ja digitado.
+ * Vender exige as duas coisas: faixa de CEP que cubra o destino E elegibilidade operacional,
+ * cujo primeiro requisito é o recebedor Pagar.me `active`. Sem a segunda, o produto aparecia
+ * disponivel e comprável na vitrine e o comprador só descobria o problema no ultimo clique do
+ * checkout, com o cartao ja digitado.
  *
  * Usage: php tests/test-coverage-vendor-eligibility.php
  *
@@ -61,12 +62,39 @@ function papelito_pagarme_get_vendor_recipient_status( int $user_id ): string {
 	return sanitize_key( (string) get_user_meta( $user_id, 'papelito_pagarme_recipient_status', true ) );
 }
 
-function papelito_pagarme_vendor_recipient_is_active( int $user_id ): bool {
-	return 'active' === papelito_pagarme_get_vendor_recipient_status( $user_id );
+function papelito_pagarme_get_vendor_recipient_state( int $user_id ): array {
+	$status = papelito_pagarme_get_vendor_recipient_status( $user_id );
+
+	return array(
+		'recipient_id'      => '' === $status ? '' : 're_qa_' . $user_id,
+		'status'            => $status,
+		'kyc_status'        => '',
+		'kyc_status_reason' => '',
+		'last_sync_at'      => '2026-09-21 09:00:00',
+		'last_error'        => '',
+		'last_error_code'   => '',
+	);
 }
 
-function papelito_vendor_can_receive_payments( int $vendor_id ): bool {
-	return papelito_pagarme_vendor_recipient_is_active( $vendor_id );
+function papelito_pagarme_kyc_action_required( string $recipient_status, string $kyc_status, string $kyc_status_reason ): bool {
+	return false;
+}
+
+function papelito_account_is_suspended( int $user_id ): bool {
+	return false;
+}
+
+/** Todo vendor deste cenário tem caixa de sobra: o seam sob teste é o recebedor. */
+function papelito_packaging_active_profile_count( int $vendor_id ): int {
+	return 6;
+}
+
+function papelito_packaging_profile_gate_enabled(): bool {
+	return true;
+}
+
+function get_option( $name, $default_value = false ) {
+	return $default_value;
 }
 
 function qa_add_vendor( int $id, array $ranges, string $recipient_status ): void {
@@ -82,6 +110,7 @@ function qa_add_vendor( int $id, array $ranges, string $recipient_status ): void
 	);
 }
 
+require __DIR__ . '/../includes/vendor_eligibility.php';
 require __DIR__ . '/../includes/products_filter.php';
 
 $failures = 0;
