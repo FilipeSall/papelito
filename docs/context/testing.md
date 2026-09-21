@@ -4,7 +4,7 @@
 
 **Não existe harness PHPUnit no `plugin_papelito`.** Não há `phpunit.xml`, nem `require-dev`, nem `bin/install-wp-tests.sh`, nem PSR-4 de teste. Quem procurar por isso não vai achar.
 
-O que existe: **180 scripts PHP standalone** em `public_html/wp-content/plugins/plugin_papelito/tests/`, mais um na raiz do repositório (`tests/test-company-purchase-gate.php`). Cada script:
+O que existe: **185 scripts PHP standalone** em `public_html/wp-content/plugins/plugin_papelito/tests/`, mais um na raiz do repositório (`tests/test-company-purchase-gate.php`). Cada script:
 
 - declara `ABSPATH` por conta própria;
 - stuba inline as funções do WordPress que o código sob teste chama (`add_filter`, `register_rest_route`, `get_user_meta`, ...);
@@ -33,6 +33,7 @@ Vantagem: roda sem subir WordPress, sem banco, sem dependência nova de produç�
 | Pagamento | `test-pagarme-*.php`, incluindo `test-pagarme-simulator.php` e `test-pagarme-bank-account-payload.php` (titular da conta sempre `company` com o CNPJ do recebedor) |
 | Cadastro do vendor | `test-vendor-pending-required-fields.php` (pendências, conta bancária fora do CNPJ, validador estrito, criação pelo admin e bloqueio antes da Pagar.me — usa `mb_strlen`, então rode no container: `docker compose exec -T web php wp-content/plugins/plugin_papelito/tests/<arquivo>`) |
 | Correios | `test-correios-prepostage.php`, `test-correios-idempotency.php`, `test-correios-reconciliation.php`, `test-correios-tracking-map.php` |
+| Multicarrier no painel do vendor | `test-vendor-status-transportadora-copy.php` (as duas recusas de `papelito_vendor_dashboard_update_order_status()` não podem prometer Correios em pedido Braspress, e a **fila** de pedidos carrega `shipping_provider` como o detalhe — pedido sem provider é lido como Correios) |
 | Pedido | `test-order-receipt-pdf.php`, `test-receipts-snapshot.php`, `test-receipts-backfill.php`, `test-receipt-email-attachment.php` (**estrutural**: o envio do recibo roda em REST e não pode chamar função que só existe em `wp-admin/includes/file.php`) |
 | Analytics | `test-analytics-ga4.php` (validação estrita dos ids do navegador, payload do Measurement Protocol, idempotência do webhook reemitido) |
 | Documento fiscal | `test-fiscal-documents.php` (política do arquivo), `test-fiscal-documents-db.php` (substituição, remoção e varredura — `wp eval-file`) |
