@@ -330,6 +330,10 @@ function papelito_vendor_dashboard_customer_label( $order ): string {
  * serializer em modo detalhe: ligar o recibo aqui custaria uma consulta por
  * pedido da lista.
  *
+ * `shipping_provider` fica no payload base, e nao so no detalhe: a fila de
+ * pedidos tambem diz ao vendor quem esta com a encomenda, e sem o campo ela
+ * prometia Correios em pedido Braspress.
+ *
  * @param object $order Pedido WooCommerce.
  * @return array<string,mixed>
  */
@@ -343,16 +347,17 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
 	$vendor_name = sanitize_text_field( (string) $order->get_meta( '_papelito_vendor_name', true ) );
 
 	$result = array(
-		'id'             => (int) $order->get_id(),
-		'order_number'   => (string) $order->get_order_number(),
-		'created_at'     => $created_at ? $created_at->date_i18n( 'Y-m-d H:i:s' ) : '',
-		'customer_name'  => papelito_vendor_dashboard_customer_label( $order ),
-		'total'          => (float) $order->get_total(),
-		'items_count'    => array_sum( array_map( static fn( array $item ): int => (int) $item['qty'], $items ) ),
-		'items_label'    => implode( ', ', array_slice( array_column( $items, 'name' ), 0, 2 ) ),
-		'vendor_name'    => $vendor_name,
-		'vendor_status'  => papelito_vendor_dashboard_order_status( $order ),
-		'payment_method' => sanitize_text_field( (string) $order->get_payment_method_title() ),
+		'id'                => (int) $order->get_id(),
+		'order_number'      => (string) $order->get_order_number(),
+		'created_at'        => $created_at ? $created_at->date_i18n( 'Y-m-d H:i:s' ) : '',
+		'customer_name'     => papelito_vendor_dashboard_customer_label( $order ),
+		'total'             => (float) $order->get_total(),
+		'items_count'       => array_sum( array_map( static fn( array $item ): int => (int) $item['qty'], $items ) ),
+		'items_label'       => implode( ', ', array_slice( array_column( $items, 'name' ), 0, 2 ) ),
+		'vendor_name'       => $vendor_name,
+		'vendor_status'     => papelito_vendor_dashboard_order_status( $order ),
+		'payment_method'    => sanitize_text_field( (string) $order->get_payment_method_title() ),
+		'shipping_provider' => sanitize_key( (string) $order->get_meta( '_papelito_shipping_provider', true ) ),
 	);
 
 	if ( ! $detail ) {
@@ -385,7 +390,6 @@ function papelito_vendor_dashboard_map_order_detail( $order, ?int $vendor_id, bo
 		'postcode'  => sanitize_text_field( (string) $order->get_shipping_postcode() ),
 	);
 	$result['shipping_service'] = sanitize_text_field( (string) $order->get_meta( '_papelito_shipping_service_name', true ) );
-	$result['shipping_provider'] = sanitize_key( (string) $order->get_meta( '_papelito_shipping_provider', true ) );
 	$result['delivery_time_days'] = absint( $order->get_meta( '_papelito_shipping_delivery_time', true ) );
 	$paid_at             = $order->get_date_paid();
 	$result['paid_at']   = $paid_at ? $paid_at->date_i18n( 'Y-m-d H:i:s' ) : '';
@@ -953,6 +957,27 @@ function papelito_vendor_dashboard_can_cancel( string $current, bool $administra
 }
 
 /**
+ * Explica a recusa do cancelamento na transportadora que o pedido tem.
+ *
+ * Pré-postagem existe só nos Correios, emitida pela Papelito e cancelável lá;
+ * na Braspress o que existe é o número de pedido que o vendor acertou fora da
+ * plataforma. Prometer pré-postagem num pedido Braspress mandaria o suporte
+ * cancelar um documento que nunca foi emitido. Pedido gravado antes do
+ * contrato multicarrier não traz provider e só pode ser dos Correios.
+ *
+ * @param object $order Pedido WooCommerce, já validado pelo chamador.
+ */
+function papelito_vendor_dashboard_shipment_cancel_message( $order ): string {
+	$provider = sanitize_key( (string) $order->get_meta( '_papelito_shipping_provider', true ) );
+
+	if ( 'braspress' === $provider ) {
+		return 'Este pedido já possui um envio registrado na Braspress. Solicite o cancelamento administrativo para encerrá-lo.';
+	}
+
+	return 'Este pedido já possui uma pre-postagem. Solicite o cancelamento administrativo para cancelar também nos Correios.';
+}
+
+/**
  * Persist a valid operational transition for a seller-owned order.
  *
  * @param int    $order_id       Order id.
@@ -975,7 +1000,7 @@ function papelito_vendor_dashboard_update_order_status( int $order_id, int $vend
 	if ( in_array( $next, array( PAPELITO_VENDOR_STATUS_SHIPPED, PAPELITO_VENDOR_STATUS_DELIVERED ), true ) ) {
 		return new WP_Error(
 			'papelito_vendor_logistics_status_protected',
-			'Este status so pode ser confirmado automaticamente pela API Rastro dos Correios.',
+			'Este status so pode ser confirmado automaticamente pelo rastreamento da transportadora.',
 			array( 'status' => 403 )
 		);
 	}
@@ -1001,7 +1026,7 @@ function papelito_vendor_dashboard_update_order_status( int $order_id, int $vend
 	if ( PAPELITO_VENDOR_STATUS_CANCELLED === $next && ! $administrative && function_exists( 'papelito_tracking_order_shipments' ) && ! empty( papelito_tracking_order_shipments( $order_id ) ) ) {
 		return new WP_Error(
 			'papelito_vendor_shipment_cancel_requires_review',
-			'Este pedido já possui uma pre-postagem. Solicite o cancelamento administrativo para cancelar também nos Correios.',
+			papelito_vendor_dashboard_shipment_cancel_message( $order ),
 			array( 'status' => 409 )
 		);
 	}
