@@ -429,11 +429,12 @@ function papelito_braspress_tracking_poll_shipment( array $shipment ): void {
 		papelito_tracking_ingest_event(
 			$shipment,
 			array(
-				'codigo'     => $event['codigo'],
-				'tipo'       => $event['tipo'],
-				'descricao'  => $event['descricao'],
-				'dtHrCriado' => (string) $event['event_at'],
-				'event_at'   => $event['event_at'],
+				'codigo'       => $event['codigo'],
+				'tipo'         => $event['tipo'],
+				'descricao'    => $event['descricao'],
+				'dtHrCriado'   => (string) $event['event_at'],
+				'event_at'     => $event['event_at'],
+				'conhecimento' => $event['conhecimento'] ?? '',
 			),
 			PAPELITO_BRASPRESS_TRACKING_SOURCE
 		);

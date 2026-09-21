@@ -260,7 +260,7 @@ Quatro tabelas. **Brinde não é produto WooCommerce**: não tem preço, SKU, es
 ### Logística
 
 - **`wp_papelito_shipments`** — associação **imutável** entre pedido, vendor, pré-postagem e código S10. Colunas de tentativa: `generation_status`, `idempotency_key`, `active`, `last_error_code`, `creation_outcome` (`not_created|created|uncertain`), `manual_fallback_eligible` (`0|1`, default `0`), `manual_fallback_consumed_at`, `is_test` (`0|1`, default `0`, **marca imutável** de remessa sem validade postal).
-- **`wp_papelito_tracking_events`** — evento bruto, origem e **fingerprint idempotente**; duplicatas recusadas por chave única.
+- **`wp_papelito_tracking_events`** — evento bruto, origem e **fingerprint idempotente**; duplicatas recusadas por chave única. `carrier_reference` guarda o documento de transporte de onde a ocorrência veio — o `conhecimento` da Braspress —, com índice `(shipment_id, carrier_reference)`. Ele é **do evento, não da remessa**: uma remessa pode render vários conhecimentos, e isso são linhas, não colunas. O campo entra no fingerprint **só quando existe**, senão a chave de todo evento já gravado mudaria e o próximo poll reinseriria o histórico inteiro como novidade.
 
 Registros anteriores à migração recebem `manual_fallback_eligible=0` — **nenhuma falha histórica se torna elegível por inferência**.
 

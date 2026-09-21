@@ -121,11 +121,13 @@ function papelito_tracking_install_tables(): void {
   event_at DATETIME NULL DEFAULT NULL,
   description TEXT NULL,
   location VARCHAR(255) NULL DEFAULT NULL,
+  carrier_reference VARCHAR(64) NULL DEFAULT NULL,
   raw_payload LONGTEXT NOT NULL,
   received_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY  (id),
   UNIQUE KEY uq_event_key (event_key),
   KEY idx_shipment_event (shipment_id, event_at),
+  KEY idx_shipment_carrier_reference (shipment_id, carrier_reference),
   KEY idx_received (received_at)
 ) {$charset_collate};";
 
@@ -391,6 +393,21 @@ function papelito_tracking_event_location( array $event ): string {
 }
 
 /** Produz uma chave idempotente estavel para um evento. */
+/**
+ * Documento de transporte de onde a ocorrencia veio, quando o provider informa.
+ *
+ * A Braspress devolve `conhecimentos[]` e cada ocorrencia pertence a um deles.
+ * Os Correios nao tem equivalente e devolvem string vazia — e e por isso que o
+ * campo entra na impressao digital so quando existe: acrescenta-lo sempre
+ * mudaria a chave de todo evento ja gravado, e o proximo poll reinseriria o
+ * historico inteiro como novidade.
+ *
+ * @param array<string,mixed> $event Evento cru do provider.
+ */
+function papelito_tracking_event_carrier_reference( array $event ): string {
+	return sanitize_text_field( (string) ( $event['conhecimento'] ?? '' ) );
+}
+
 function papelito_tracking_event_key( int $shipment_id, array $event ): string {
 	$data = array(
 		$shipment_id,
@@ -400,6 +417,13 @@ function papelito_tracking_event_key( int $shipment_id, array $event ): string {
 		sanitize_text_field( (string) ( $event['descricao'] ?? '' ) ),
 		papelito_tracking_event_location( $event ),
 	);
+
+	$carrier_reference = papelito_tracking_event_carrier_reference( $event );
+
+	if ( '' !== $carrier_reference ) {
+		$data[] = $carrier_reference;
+	}
+
 	return hash( 'sha256', implode( '|', $data ) );
 }
 
@@ -1765,18 +1789,19 @@ function papelito_tracking_insert_event( int $shipment_id, string $event_key, st
 	$inserted = $wpdb->insert(
 		papelito_tracking_events_table_name(),
 		array(
-			'shipment_id' => $shipment_id,
-			'event_key'   => $event_key,
-			'source'      => sanitize_key( $source ),
-			'event_code'  => $fields['code'],
-			'event_type'  => $fields['type'],
-			'event_at'    => $fields['event_at'],
-			'description' => sanitize_textarea_field( (string) ( $event['descricao'] ?? '' ) ),
-			'location'    => papelito_tracking_event_location( $event ),
-			'raw_payload' => false === $raw ? '{}' : $raw,
-			'received_at' => current_time( 'mysql', true ),
+			'shipment_id'       => $shipment_id,
+			'event_key'         => $event_key,
+			'source'            => sanitize_key( $source ),
+			'event_code'        => $fields['code'],
+			'event_type'        => $fields['type'],
+			'event_at'          => $fields['event_at'],
+			'description'       => sanitize_textarea_field( (string) ( $event['descricao'] ?? '' ) ),
+			'location'          => papelito_tracking_event_location( $event ),
+			'carrier_reference' => papelito_tracking_event_carrier_reference( $event ),
+			'raw_payload'       => false === $raw ? '{}' : $raw,
+			'received_at'       => current_time( 'mysql', true ),
 		),
-		array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' )
+		array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' )
 	);
 	return false !== $inserted;
 }

@@ -61,6 +61,48 @@ papelito_tracking_assert( 'same event has same fingerprint', $first, papelito_tr
 $event['dtHrCriado'] = '2026-07-16T10:31:00';
 papelito_tracking_assert( 'different timestamp has different fingerprint', false, $first === papelito_tracking_event_key( 10, $event ) );
 
+echo "Scenario 3b: o conhecimento separa ocorrencias identicas de volumes diferentes\n";
+// A impressao dos Correios e literal de proposito: evento ja ingerido nao pode
+// mudar de chave, senao o polling reinsere o historico inteiro como novidade.
+papelito_tracking_assert(
+	'evento sem conhecimento mantem a impressao ja gravada em producao',
+	'849f649468e5027aab4e3e3e8513df5a0da6e1446c54fdc09706adeeae65b005',
+	papelito_tracking_event_key(
+		10,
+		array(
+			'codigo'     => 'BDE',
+			'tipo'       => '01',
+			'dtHrCriado' => '2026-07-16T10:30:00',
+			'descricao'  => 'Objeto entregue ao destinatario',
+			'unidade'    => array( 'endereco' => array( 'cidade' => 'Brasilia', 'uf' => 'DF' ) ),
+		)
+	)
+);
+
+$ocorrencia            = array(
+	'codigo'     => 'BRASPRESS',
+	'tipo'       => 'OCOR',
+	'dtHrCriado' => '2026-09-21 22:40:00',
+	'descricao'  => 'Em transito para filial',
+);
+$primeiro_conhecimento = papelito_tracking_event_key( 10, array_merge( $ocorrencia, array( 'conhecimento' => '111222' ) ) );
+$segundo_conhecimento  = papelito_tracking_event_key( 10, array_merge( $ocorrencia, array( 'conhecimento' => '333444' ) ) );
+papelito_tracking_assert(
+	'duas caixas com a mesma ocorrencia no mesmo minuto nao colapsam',
+	false,
+	$primeiro_conhecimento === $segundo_conhecimento
+);
+papelito_tracking_assert(
+	'o mesmo conhecimento continua idempotente',
+	$primeiro_conhecimento,
+	papelito_tracking_event_key( 10, array_merge( $ocorrencia, array( 'conhecimento' => '111222' ) ) )
+);
+papelito_tracking_assert(
+	'conhecimento vazio e o mesmo que nao ter conhecimento',
+	papelito_tracking_event_key( 10, $ocorrencia ),
+	papelito_tracking_event_key( 10, array_merge( $ocorrencia, array( 'conhecimento' => '' ) ) )
+);
+
 class Papelito_Tracking_Test_Wpdb {
 	public $prefix = 'wp_';
 	public $last_error = '';
