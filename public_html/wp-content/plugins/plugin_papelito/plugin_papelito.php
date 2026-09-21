@@ -114,7 +114,7 @@ require_once __DIR__ . '/includes/account_admin_endpoints.php';
 require_once __DIR__ . '/includes/packaging.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.52.0' );
+	define( 'PAPELITO_DB_VERSION', '1.53.0' );
 }
 
 /**

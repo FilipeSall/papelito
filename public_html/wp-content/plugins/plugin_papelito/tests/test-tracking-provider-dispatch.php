@@ -313,6 +313,18 @@ papelito_assert( 'the internal error code stays internal', false, array_key_exis
 papelito_assert( 'the prepostage id stays internal', false, array_key_exists( 'prepost_id', $customer ) );
 papelito_assert( 'the last occurrence still reaches the customer', 'Mercadoria coletada', $customer['last_event_description'] ?? null );
 
+$com_previsao = papelito_tracking_customer_shipment(
+	array(
+		'id'                    => 8,
+		'provider'              => 'braspress',
+		'status'                => 'in_transit',
+		'estimated_delivery_at' => '2026-09-28 21:00:00',
+		'carrier_issued_at'     => '2026-09-21 03:00:00',
+	)
+);
+papelito_assert( 'a previsao da transportadora chega ao comprador', '2026-09-28 21:00:00', $com_previsao['estimated_delivery_at'] ?? null );
+papelito_assert( 'a emissao do conhecimento e operacional e fica interna', false, array_key_exists( 'carrier_issued_at', $com_previsao ) );
+
 $legacy_customer = papelito_tracking_customer_shipment(
 	array(
 		'id'            => 9,

@@ -94,6 +94,8 @@ function papelito_tracking_install_tables(): void {
   last_event_description TEXT NULL,
   last_event_location VARCHAR(255) NULL DEFAULT NULL,
   delivered_at DATETIME NULL DEFAULT NULL,
+  estimated_delivery_at DATETIME NULL DEFAULT NULL,
+  carrier_issued_at DATETIME NULL DEFAULT NULL,
   next_poll_at DATETIME NULL DEFAULT NULL,
   poll_attempts SMALLINT UNSIGNED NOT NULL DEFAULT 0,
   last_error_code VARCHAR(64) NULL DEFAULT NULL,
@@ -498,6 +500,7 @@ function papelito_tracking_customer_shipment( array $shipment ): array {
 		'last_event_description',
 		'last_event_location',
 		'delivered_at',
+		'estimated_delivery_at',
 	);
 
 	$customer             = array_intersect_key( $shipment, array_flip( $allowed ) );

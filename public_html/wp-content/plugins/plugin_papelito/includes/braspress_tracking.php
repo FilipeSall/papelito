@@ -17,6 +17,9 @@ require_once __DIR__ . '/braspress.php';
 const PAPELITO_BRASPRESS_TRACKING_PATH   = 'v3/tracking/byNumPedido';
 const PAPELITO_BRASPRESS_TRACKING_SOURCE = 'braspress_poll';
 
+/** A v3 responde os ultimos 90 dias contados da emissao do conhecimento. */
+const PAPELITO_BRASPRESS_TRACKING_WINDOW_DAYS = 90;
+
 /**
  * Normaliza o número de pedido externo, separado do ID interno e do S10.
  *
@@ -256,6 +259,107 @@ function papelito_braspress_tracking_read_occurrence( array $entry ): ?array {
 }
 
 /**
+ * Lê uma data do conhecimento tentando os nomes que a documentação não fixa.
+ *
+ * Mesmo recurso da leitura de ocorrência: a documentação garante que a previsão
+ * e a emissão vêm, mas não publica o nome do campo, e nenhuma resposta real
+ * existiu para conferir. Nome desconhecido devolve `null` e o chamador segue
+ * como seguia antes — o palpite nunca vira dado inventado.
+ *
+ * @param array<string,mixed> $conhecimento Conhecimento cru da resposta v3.
+ * @param array<int,string>   $fields Nomes candidatos, na ordem de preferência.
+ * @return string|null Data em UTC `Y-m-d H:i:s`, ou nulo.
+ */
+function papelito_braspress_tracking_read_conhecimento_date( array $conhecimento, array $fields ): ?string {
+	foreach ( $fields as $field ) {
+		if ( ! isset( $conhecimento[ $field ] ) || ! is_scalar( $conhecimento[ $field ] ) ) {
+			continue;
+		}
+
+		$parsed = papelito_braspress_tracking_parse_datetime( $conhecimento[ $field ] );
+
+		if ( null !== $parsed ) {
+			return $parsed;
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Diz se o conhecimento saiu da janela que a Braspress responde.
+ *
+ * A v3 limita a consulta aos últimos 90 dias contados da **emissão do
+ * conhecimento**, não da postagem nem da criação da remessa. Sem emissão
+ * conhecida a função devolve `false` de propósito: parar de consultar por um
+ * palpite perderia rastreio vivo, e insistir só custa uma chamada.
+ *
+ * @param string|null $issued_at Emissão mais recente, em UTC.
+ * @param string      $now Instante de referência, em UTC.
+ */
+function papelito_braspress_tracking_window_expired( ?string $issued_at, string $now ): bool {
+	if ( null === $issued_at || '' === $issued_at ) {
+		return false;
+	}
+
+	$emitido = strtotime( $issued_at . ' UTC' );
+	$agora   = strtotime( $now . ' UTC' );
+
+	if ( false === $emitido || false === $agora ) {
+		return false;
+	}
+
+	return ( $agora - $emitido ) > PAPELITO_BRASPRESS_TRACKING_WINDOW_DAYS * DAY_IN_SECONDS;
+}
+
+/** Devolve a maior das duas datas, ignorando nulo. */
+function papelito_braspress_tracking_later_date( ?string $current, ?string $candidate ): ?string {
+	if ( null === $candidate ) {
+		return $current;
+	}
+
+	return null === $current || $candidate > $current ? $candidate : $current;
+}
+
+/**
+ * Resume as datas da remessa a partir de todos os conhecimentos.
+ *
+ * A remessa só termina quando o último conhecimento chega, então a previsão da
+ * remessa é a **mais distante**. Já a janela de 90 dias da Braspress conta da
+ * emissão, e enquanto o conhecimento mais **recente** couber na janela ainda há
+ * o que consultar. As duas agregações são máximos, por razões diferentes.
+ *
+ * @param array<string,mixed> $response Resposta v3 completa.
+ * @return array{estimated_delivery_at:?string,issued_at:?string} Datas em UTC.
+ */
+function papelito_braspress_tracking_conhecimento_dates( array $response ): array {
+	$resumo = array(
+		'estimated_delivery_at' => null,
+		'issued_at'             => null,
+	);
+
+	foreach ( (array) ( $response['conhecimentos'] ?? array() ) as $conhecimento ) {
+		if ( ! is_array( $conhecimento ) ) {
+			continue;
+		}
+
+		$previsao = papelito_braspress_tracking_read_conhecimento_date(
+			$conhecimento,
+			array( 'previsaoEntrega', 'previsao', 'dataPrevisaoEntrega', 'dtPrevisaoEntrega' )
+		);
+		$emissao  = papelito_braspress_tracking_read_conhecimento_date(
+			$conhecimento,
+			array( 'dataEmissao', 'emissao', 'dtEmissao', 'dataEmissaoConhecimento' )
+		);
+
+		$resumo['estimated_delivery_at'] = papelito_braspress_tracking_later_date( $resumo['estimated_delivery_at'], $previsao );
+		$resumo['issued_at']             = papelito_braspress_tracking_later_date( $resumo['issued_at'], $emissao );
+	}
+
+	return $resumo;
+}
+
+/**
  * Reduz a resposta v3 inteira a uma linha do tempo, em ordem cronológica.
  *
  * Um pedido pode viajar em vários conhecimentos, e ler só o primeiro perderia
@@ -400,6 +504,11 @@ function papelito_braspress_tracking_poll_shipment( array $shipment ): void {
 		return;
 	}
 
+	if ( papelito_braspress_tracking_window_expired( $shipment['carrier_issued_at'] ?? null, current_time( 'mysql', true ) ) ) {
+		papelito_tracking_schedule_next_poll( $shipment_id, true, 'braspress_tracking_window_expired' );
+		return;
+	}
+
 	$response = papelito_braspress_tracking_by_order( $integration, $reference );
 	if ( is_wp_error( $response ) ) {
 		papelito_tracking_schedule_next_poll( $shipment_id, true, $response->get_error_code() );
@@ -413,6 +522,7 @@ function papelito_braspress_tracking_poll_shipment( array $shipment ): void {
 
 	$external_status = papelito_braspress_tracking_external_status( $response );
 	$events          = papelito_braspress_tracking_events( $response );
+	$datas           = papelito_braspress_tracking_conhecimento_dates( $response );
 
 	if ( empty( $events ) ) {
 		$events = array(
@@ -442,12 +552,14 @@ function papelito_braspress_tracking_poll_shipment( array $shipment ): void {
 	$wpdb->update(
 		papelito_tracking_shipments_table_name(),
 		array(
-			'external_status' => $external_status,
-			'last_error_code' => null,
-			'updated_at'      => current_time( 'mysql', true ),
+			'external_status'       => $external_status,
+			'estimated_delivery_at' => $datas['estimated_delivery_at'],
+			'carrier_issued_at'     => $datas['issued_at'],
+			'last_error_code'       => null,
+			'updated_at'            => current_time( 'mysql', true ),
 		),
 		array( 'id' => $shipment_id ),
-		array( '%s', '%s', '%s' ),
+		array( '%s', '%s', '%s', '%s', '%s' ),
 		array( '%d' )
 	);
 	papelito_tracking_schedule_next_poll( $shipment_id, false );

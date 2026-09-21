@@ -14,6 +14,10 @@
  */
 
 define( 'ABSPATH', __DIR__ . '/' );
+define( 'DAY_IN_SECONDS', 86400 );
+
+/** Instante de referencia da janela de 90 dias, repetido em cada cenario. */
+const BRASPRESS_TIMELINE_TEST_NOW = '2026-09-21 10:00:00';
 
 date_default_timezone_set( 'UTC' ); // phpcs:ignore WordPress.DateTime.RestrictedFunctions.timezone_change_date_default_timezone_set -- O teste prova independência do fuso global do processo CLI.
 
@@ -181,6 +185,68 @@ papelito_assert( 'only entries with a description survive', 2, count( $messy_eve
 papelito_assert( 'a dated event comes before an undated one', '2026-09-22 10:00:00', $messy_events[0]['event_at'] );
 papelito_assert( 'an unreadable date keeps the event without a date', null, $messy_events[1]['event_at'] );
 papelito_assert( 'the undated event is still the delivery text', 'Entregue ao destinatario', $messy_events[1]['descricao'] );
+
+echo "Scenario 10: as datas do conhecimento sao lidas com os mesmos nomes candidatos\n";
+$com_datas = array(
+	'conhecimentos' => array(
+		array(
+			'numero'          => '111222',
+			'previsaoEntrega' => '25/09/2026',
+			'dataEmissao'     => '20/09/2026',
+			'ocorrencias'     => array(
+				array(
+					'descricao' => 'Coletado',
+					'data'      => '20/09/2026 11:15',
+				),
+			),
+		),
+		array(
+			'numero'      => '333444',
+			'previsao'    => '28/09/2026 18:00',
+			'emissao'     => '21/09/2026',
+			'ocorrencias' => array(
+				array(
+					'descricao' => 'Coletado',
+					'data'      => '21/09/2026 09:00',
+				),
+			),
+		),
+	),
+);
+$datas     = papelito_braspress_tracking_conhecimento_dates( $com_datas );
+papelito_assert( 'a previsao da remessa e a mais distante entre os conhecimentos', '2026-09-28 21:00:00', $datas['estimated_delivery_at'] );
+papelito_assert( 'a emissao da remessa e a mais recente, que manda na janela de 90 dias', '2026-09-21 03:00:00', $datas['issued_at'] );
+
+papelito_assert(
+	'resposta sem as datas nao inventa nenhuma',
+	array(
+		'estimated_delivery_at' => null,
+		'issued_at'             => null,
+	),
+	papelito_braspress_tracking_conhecimento_dates( array( 'conhecimentos' => array( array( 'numero' => '999' ) ) ) )
+);
+
+echo "Scenario 11: a janela de 90 dias conta da emissao do conhecimento\n";
+papelito_assert(
+	'conhecimento emitido ontem segue consultavel',
+	false,
+	papelito_braspress_tracking_window_expired( '2026-09-20 10:00:00', BRASPRESS_TIMELINE_TEST_NOW )
+);
+papelito_assert(
+	'conhecimento emitido ha 91 dias saiu da janela',
+	true,
+	papelito_braspress_tracking_window_expired( '2026-06-22 10:00:00', BRASPRESS_TIMELINE_TEST_NOW )
+);
+papelito_assert(
+	'exatamente 90 dias ainda esta dentro',
+	false,
+	papelito_braspress_tracking_window_expired( '2026-06-23 10:00:00', BRASPRESS_TIMELINE_TEST_NOW )
+);
+papelito_assert(
+	'sem emissao conhecida nao se decide nada, e a consulta continua',
+	false,
+	papelito_braspress_tracking_window_expired( null, BRASPRESS_TIMELINE_TEST_NOW )
+);
 
 echo "Scenario 9: nothing to reconcile yields nothing\n";
 papelito_assert( 'an empty answer has no events', array(), papelito_braspress_tracking_events( array( 'conhecimentos' => array() ) ) );
