@@ -56,8 +56,18 @@ function update_option( mixed $option, mixed $value, mixed $autoload = null ): b
 	return true;
 }
 
-/** Remove a option do armazenamento em memória do teste. */
+/**
+ * Remove a option e diz se **esta** chamada removeu.
+ *
+ * O `delete_option` do WordPress devolve falso quando não havia linha, e é essa
+ * resposta que distingue quem tirou a sonda velha de quem chegou depois. Um
+ * stub que devolve verdadeiro sempre apagaria a corrida do teste.
+ */
 function delete_option( mixed $option ): bool {
+	if ( ! array_key_exists( (string) $option, $GLOBALS['breaker_test_options'] ) ) {
+		return false;
+	}
+
 	unset( $GLOBALS['breaker_test_options'][ (string) $option ] );
 
 	return true;
@@ -79,6 +89,49 @@ function add_option( mixed $option, mixed $value = '', mixed $deprecated = '', m
 
 	return true;
 }
+
+/** O cache de options não é exercitado; a invalidação só não pode explodir. */
+function wp_cache_delete( mixed $key, mixed $group = '' ): bool { return true; }
+
+/**
+ * `$wpdb` que honra o `WHERE` do CAS da sonda.
+ *
+ * A troca atômica é `UPDATE ... WHERE option_name = X AND option_value = Z`, e é
+ * justamente o segundo termo que decide a corrida: quem leu o carimbo velho e
+ * chegou depois não encontra mais aquele valor e sai com zero linhas. Um stub
+ * que ignorasse o `WHERE` apagaria a corrida do teste, que é o contrário do que
+ * ele existe para medir. A leitura vai ao armazenamento **vivo**, e não ao
+ * congelado: congelar representa o `get_option()` de quem já tinha lido.
+ */
+class Papelito_Breaker_Test_Wpdb {
+	public string $options = 'wp_options';
+
+	public function prepare( mixed $query, mixed ...$args ): string {
+		$sql = (string) $query;
+		foreach ( $args as $arg ) {
+			$sql = (string) preg_replace( '/%[ds]/', "'" . (string) $arg . "'", $sql, 1 );
+		}
+
+		return $sql;
+	}
+
+	public function query( mixed $sql ): int {
+		if ( ! preg_match( "/SET option_value = '([^']*)' WHERE option_name = '([^']*)' AND option_value = '([^']*)'/", (string) $sql, $m ) ) {
+			return 0;
+		}
+
+		$store = $GLOBALS['breaker_test_options'];
+		if ( ! array_key_exists( $m[2], $store ) || (string) $store[ $m[2] ] !== $m[3] ) {
+			return 0;
+		}
+
+		$GLOBALS['breaker_test_options'][ $m[2] ] = $m[1];
+
+		return 1;
+	}
+}
+
+$GLOBALS['wpdb'] = new Papelito_Breaker_Test_Wpdb();
 
 require_once dirname( __DIR__ ) . '/includes/shipping_breaker.php';
 
@@ -286,6 +339,27 @@ breaker_assert(
 	'Passado um descanso sem desfecho, outra sonda é liberada',
 	papelito_shipping_breaker_allows( BREAKER_TEST_BRASPRESS, BREAKER_TEST_VENDOR_ID, $abandoned )
 );
+
+echo "\nCenário 11: dois checkouts sobre uma sonda expirada rendem uma sonda só\n";
+breaker_reset();
+breaker_record_many( 'timeout', PAPELITO_SHIPPING_BREAKER_THRESHOLD, BREAKER_TEST_START );
+
+$abandonada = BREAKER_TEST_START + PAPELITO_SHIPPING_BREAKER_COOLDOWN;
+papelito_shipping_breaker_allows( BREAKER_TEST_BRASPRESS, BREAKER_TEST_VENDOR_ID, $abandonada );
+
+$expirada                       = $abandonada + PAPELITO_SHIPPING_BREAKER_COOLDOWN;
+$GLOBALS['breaker_test_frozen'] = $GLOBALS['breaker_test_options'];
+
+$retomadas = 0;
+for ( $attempt = 0; $attempt < 6; $attempt++ ) {
+	if ( papelito_shipping_breaker_allows( BREAKER_TEST_BRASPRESS, BREAKER_TEST_VENDOR_ID, $expirada ) ) {
+		++$retomadas;
+	}
+}
+
+$GLOBALS['breaker_test_frozen'] = null;
+
+breaker_assert( 'Seis chegadas sobre a sonda abandonada rendem uma retomada', 1 === $retomadas );
 
 echo "\n";
 echo 0 === $failures ? "OK\n" : "FALHAS: {$failures}\n";

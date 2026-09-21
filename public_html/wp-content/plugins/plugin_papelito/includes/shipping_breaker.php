@@ -81,7 +81,7 @@ function papelito_shipping_breaker_option_key( string $provider, int $vendor_id 
  *
  * @param string $provider Provider já saneado.
  * @param int    $vendor_id ID interno do vendor.
- * @return array{failures:int,opened_at:int,probing:bool} Estado do disjuntor.
+ * @return array{failures:int,opened_at:int} Estado do disjuntor.
  */
 function papelito_shipping_breaker_read( string $provider, int $vendor_id ): array {
 	$stored = get_option( papelito_shipping_breaker_option_key( $provider, $vendor_id ), null );
@@ -90,7 +90,6 @@ function papelito_shipping_breaker_read( string $provider, int $vendor_id ): arr
 	return array(
 		'failures'  => absint( $stored['failures'] ?? 0 ),
 		'opened_at' => absint( $stored['opened_at'] ?? 0 ),
-		'probing'   => ! empty( $stored['probing'] ),
 	);
 }
 
@@ -101,9 +100,9 @@ function papelito_shipping_breaker_read( string $provider, int $vendor_id ): arr
  * passar: o custo de uma cotação a mais é latência, e o de recusar cotação por
  * defeito de armazenamento é venda perdida.
  *
- * @param string                                         $provider Provider já saneado.
- * @param int                                            $vendor_id ID interno do vendor.
- * @param array{failures:int,opened_at:int,probing:bool} $state Estado a gravar.
+ * @param string                            $provider Provider já saneado.
+ * @param int                               $vendor_id ID interno do vendor.
+ * @param array{failures:int,opened_at:int} $state Estado a gravar.
  * @return void
  */
 function papelito_shipping_breaker_write( string $provider, int $vendor_id, array $state ): void {
@@ -192,6 +191,9 @@ function papelito_shipping_breaker_probe_key( string $provider, int $vendor_id )
  * tomar a sonda e reportar o desfecho deixaria a Braspress fora do checkout para
  * sempre, sem nada no estado que explicasse por quê.
  *
+ * Sonda sem dono e sonda abandonada são tomadas por caminhos diferentes, cada um
+ * com a sua primitiva atômica, porque `add_option()` só protege a primeira.
+ *
  * @param string $provider Provider já saneado.
  * @param int    $vendor_id ID interno do vendor.
  * @param int    $now Instante Unix da tentativa.
@@ -201,19 +203,80 @@ function papelito_shipping_breaker_claim_probe( string $provider, int $vendor_id
 	$option = papelito_shipping_breaker_probe_key( $provider, $vendor_id );
 	$held   = get_option( $option, null );
 
+	if ( null === $held ) {
+		return papelito_shipping_breaker_insert_probe( $option, $now );
+	}
+
 	if ( is_numeric( $held ) && $now - (int) $held < PAPELITO_SHIPPING_BREAKER_COOLDOWN ) {
 		return false;
 	}
 
-	try {
-		if ( null !== $held ) {
-			delete_option( $option );
-		}
+	return papelito_shipping_breaker_take_expired_probe( $option, (string) $held, $now );
+}
 
+/**
+ * Cria a sonda quando não há dono, e devolve se esta chamada foi quem criou.
+ *
+ * @param string $option Nome da option da sonda.
+ * @param int    $now Instante Unix da tentativa.
+ * @return bool Se esta chamada é a dona.
+ */
+function papelito_shipping_breaker_insert_probe( string $option, int $now ): bool {
+	try {
 		return (bool) add_option( $option, $now, '', false );
 	} catch ( Throwable $error ) {
 		return false;
 	}
+}
+
+/**
+ * Retoma a sonda abandonada num passo só, e devolve se esta chamada a retomou.
+ *
+ * Apagar e reinserir não serve: dois processos que leram a mesma sonda velha
+ * apagam e inserem em sequência, cada um por cima do outro, e os dois saem
+ * donos. Conferir o retorno do `delete_option()` também não resolve, porque o
+ * `DELETE` não olha o valor e o segundo processo apaga a linha que o primeiro
+ * acabou de criar.
+ *
+ * O `UPDATE` condicionado ao carimbo velho é a troca atômica que falta. Aqui,
+ * diferente do que acontece na saúde da integração, zero linha afetada **não é
+ * ambíguo**: o valor novo é o instante atual e o velho está a pelo menos um
+ * descanso de distância, então nunca são iguais — zero significa que outro
+ * processo chegou antes, e nunca "já estava assim".
+ *
+ * @param string $option Nome da option da sonda.
+ * @param string $held Carimbo da sonda abandonada, como está gravado.
+ * @param int    $now Instante Unix da tentativa.
+ * @return bool Se esta chamada é a dona.
+ */
+function papelito_shipping_breaker_take_expired_probe( string $option, string $held, int $now ): bool {
+	global $wpdb;
+
+	if ( ! is_object( $wpdb ) ) {
+		return false;
+	}
+
+	try {
+		$taken = $wpdb->query(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- Table name derives exclusively from $wpdb.
+				"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+				(string) $now,
+				$option,
+				$held
+			)
+		);
+	} catch ( Throwable $error ) {
+		return false;
+	}
+
+	if ( 1 !== (int) $taken ) {
+		return false;
+	}
+
+	wp_cache_delete( $option, 'options' );
+
+	return true;
 }
 
 /**
@@ -295,24 +358,10 @@ function papelito_shipping_breaker_count_failure( string $provider, int $vendor_
 			array(
 				'failures'  => PAPELITO_SHIPPING_BREAKER_THRESHOLD,
 				'opened_at' => $now,
-				'probing'   => false,
 			)
 		);
 		return;
 	}
-	if ( $state['probing'] ) {
-		papelito_shipping_breaker_write(
-			$provider,
-			$vendor_id,
-			array(
-				'failures'  => PAPELITO_SHIPPING_BREAKER_THRESHOLD,
-				'opened_at' => $now,
-				'probing'   => false,
-			)
-		);
-		return;
-	}
-
 	$failures = $state['failures'] + 1;
 	$opened   = $failures >= PAPELITO_SHIPPING_BREAKER_THRESHOLD ? $now : 0;
 
@@ -322,7 +371,6 @@ function papelito_shipping_breaker_count_failure( string $provider, int $vendor_
 		array(
 			'failures'  => $failures,
 			'opened_at' => $opened,
-			'probing'   => false,
 		)
 	);
 }

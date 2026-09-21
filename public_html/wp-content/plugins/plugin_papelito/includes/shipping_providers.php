@@ -700,6 +700,24 @@ function papelito_shipping_braspress_package_is_approved( int $vendor_id, array 
 }
 
 /**
+ * Descarta cedo o vendor cujo disjuntor está aberto, sem encostar na sonda.
+ *
+ * Deliberadamente separado de `papelito_shipping_breaker_allows()`, que **toma**
+ * a sonda da meia-abertura: gastá-la antes dos gates de elegibilidade deixava a
+ * Braspress fora do checkout por mais um descanso inteiro sempre que um carrinho
+ * sem embalagem aprovada chegasse primeiro, e nenhum desfecho era reportado para
+ * devolvê-la. Aqui só se lê o estado, para não pagar resolução de integração e
+ * montagem de pacote por um provider que já se sabe fora.
+ *
+ * @param int $vendor_id ID do vendor.
+ * @return bool Se a Braspress está bloqueada para este vendor agora.
+ */
+function papelito_shipping_braspress_breaker_is_open( int $vendor_id ): bool {
+	return function_exists( 'papelito_shipping_breaker_state' )
+		&& PAPELITO_SHIPPING_BREAKER_OPEN === papelito_shipping_breaker_state( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $vendor_id );
+}
+
+/**
  * Cota Braspress somente quando todos os gates independentes passam.
  *
  * Erros reais da Braspress propagam para a agregação; nulo é somente pulo de elegibilidade.
@@ -715,7 +733,7 @@ function papelito_shipping_quote_braspress( int $vendor_id, string $destination_
 		return null;
 	}
 
-	if ( function_exists( 'papelito_shipping_breaker_allows' ) && ! papelito_shipping_breaker_allows( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $vendor_id ) ) {
+	if ( papelito_shipping_braspress_breaker_is_open( $vendor_id ) ) {
 		return null;
 	}
 
@@ -735,6 +753,10 @@ function papelito_shipping_quote_braspress( int $vendor_id, string $destination_
 	$recipient_cnpj          = papelito_vendor_integration_normalize_document( $context['recipient_cnpj'] ?? '' );
 	$merchandise_value_cents = isset( $context['merchandise_value_cents'] ) ? (int) $context['merchandise_value_cents'] : 0;
 	if ( 14 !== strlen( $recipient_cnpj ) || $merchandise_value_cents <= 0 || ! function_exists( 'papelito_braspress_quote' ) ) {
+		return null;
+	}
+
+	if ( function_exists( 'papelito_shipping_breaker_allows' ) && ! papelito_shipping_breaker_allows( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $vendor_id ) ) {
 		return null;
 	}
 
