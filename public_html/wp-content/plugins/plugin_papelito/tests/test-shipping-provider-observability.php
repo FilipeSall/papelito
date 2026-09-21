@@ -493,6 +493,46 @@ obs_assert(
 	&& 0 === ( $report['quote'][ OBS_TEST_BRASPRESS ]['failures'] ?? null )
 );
 
+echo "\nCenário 10: cache hit conta como sucesso mas não entra no histograma de latência\n";
+obs_reset();
+
+do_action( 'papelito_braspress_quote_cache_result', OBS_TEST_VENDOR_ID, 'miss' );
+obs_publish( OBS_TEST_BRASPRESS, obs_success_result(), 4200 );
+
+do_action( 'papelito_braspress_quote_cache_result', OBS_TEST_VENDOR_ID, 'hit' );
+obs_publish( OBS_TEST_BRASPRESS, obs_success_result(), 1 );
+
+$report  = papelito_shipping_provider_metrics_report();
+$quote   = $report['quote'][ OBS_TEST_BRASPRESS ] ?? array();
+$latency = $quote['latency'] ?? array();
+
+obs_assert(
+	'As duas cotações contam como sucesso para o comprador',
+	2 === ( $quote['outcomes']['success'] ?? null )
+);
+obs_assert(
+	'Só a que falou com a Braspress entra na latência',
+	1 === ( $latency['count'] ?? null ) && 4200 === ( $latency['total_ms'] ?? null )
+);
+obs_assert(
+	'E o cache não puxa a média para baixo',
+	4200 === ( $latency['average_ms'] ?? null )
+);
+
+echo "\nCenário 11: a marca de cache não vaza para a cotação seguinte\n";
+obs_reset();
+
+do_action( 'papelito_braspress_quote_cache_result', OBS_TEST_VENDOR_ID, 'hit' );
+obs_publish( OBS_TEST_BRASPRESS, obs_success_result(), 5 );
+obs_publish( OBS_TEST_BRASPRESS, obs_success_result(), 900 );
+
+$latency = papelito_shipping_provider_metrics_report()['quote'][ OBS_TEST_BRASPRESS ]['latency'] ?? array();
+
+obs_assert(
+	'A cotação seguinte volta a ser medida',
+	1 === ( $latency['count'] ?? null ) && 900 === ( $latency['total_ms'] ?? null )
+);
+
 echo "\n";
 echo 0 === $failures ? "OK\n" : "FALHAS: {$failures}\n";
 exit( 0 === $failures ? 0 : 1 );

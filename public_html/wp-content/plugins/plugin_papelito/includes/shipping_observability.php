@@ -368,17 +368,63 @@ function papelito_shipping_provider_metrics_increment( string $provider, string 
  * @return void
  */
 function papelito_shipping_provider_metrics_record( mixed $provider, mixed $result, mixed $duration_ms = 0 ): void {
+	$from_cache = papelito_shipping_provider_metrics_cache_mark();
 	$normalized = papelito_shipping_provider_metrics_normalize_provider( $provider );
 	if ( '' === $normalized ) {
 		return;
 	}
 
-	$outcome  = papelito_shipping_provider_metrics_classify( $normalized, $result );
-	$measured = PAPELITO_PROVIDER_METRICS_SKIPPED === $outcome
+	$outcome      = papelito_shipping_provider_metrics_classify( $normalized, $result );
+	$unmeasurable = $from_cache || PAPELITO_PROVIDER_METRICS_SKIPPED === $outcome;
+	$measured     = $unmeasurable
 		? -1
 		: min( PAPELITO_PROVIDER_METRICS_LATENCY_MAX, max( 0, (int) $duration_ms ) );
 
 	papelito_shipping_provider_metrics_increment( $normalized, PAPELITO_PROVIDER_METRICS_QUOTE, $outcome, $measured );
+}
+
+/**
+ * Marca — ou consome — a informação de que a cotação medida saiu do cache.
+ *
+ * A pergunta que a latência existe para responder é quantas cotações passaram
+ * de cinco segundos **na transportadora**. Um acerto de cache volta em zero e
+ * nunca encostou na Braspress; sob repetição de `/cart/pricing` os acertos
+ * dominam a amostra e afundam a média de uma chamada que não aconteceu. O
+ * desfecho continua `success`, porque o comprador de fato recebeu a opção — o
+ * que sai é só a medida de tempo, pelo mesmo caminho que `skipped` já usava.
+ *
+ * A leitura é destrutiva de propósito: zerar ao consumir impede que a cotação
+ * seguinte herde a marca da anterior. A ordem é determinística — o adapter
+ * publica o desfecho do cache antes de a orquestração publicar o da tentativa,
+ * e a orquestração cota um vendor por vez.
+ *
+ * @param bool|null $mark Verdadeiro marca cache; nulo consome a marca.
+ * @return bool Se a cotação medida agora veio do cache.
+ */
+function papelito_shipping_provider_metrics_cache_mark( ?bool $mark = null ): bool {
+	static $from_cache = false;
+
+	if ( null !== $mark ) {
+		$from_cache = $mark;
+
+		return $from_cache;
+	}
+
+	$consumed   = $from_cache;
+	$from_cache = false;
+
+	return $consumed;
+}
+
+/**
+ * Anota o desfecho do cache publicado pelo adapter da Braspress.
+ *
+ * @param mixed $vendor_id ID do vendor, não usado pelo contador agregado.
+ * @param mixed $outcome `hit` ou `miss`.
+ * @return void
+ */
+function papelito_shipping_provider_metrics_note_cache( mixed $vendor_id, mixed $outcome = '' ): void {
+	papelito_shipping_provider_metrics_cache_mark( 'hit' === sanitize_key( (string) $outcome ) );
 }
 
 /**
@@ -636,4 +682,5 @@ function papelito_shipping_provider_alert( string $provider, string $state, arra
 }
 
 add_action( 'papelito_shipping_provider_quote_result', 'papelito_shipping_provider_metrics_record', 10, 3 );
+add_action( 'papelito_braspress_quote_cache_result', 'papelito_shipping_provider_metrics_note_cache', 10, 2 );
 add_action( 'papelito_tracking_poll_result', 'papelito_shipping_provider_metrics_record_tracking', 10, 3 );
