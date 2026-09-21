@@ -129,6 +129,50 @@ add_action( 'rest_api_init', static function (): void { // NOSONAR -- bloco decl
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 201 );
 	} ) );
 
+	// Os tres baldes abaixo levam identidade de proposito. Sem o quarto argumento a chave cai em
+	// `ip:REMOTE_ADDR`, e como quem fala com o WordPress e o proxy Next, esse IP e o mesmo para o
+	// marketplace inteiro: um punhado de tentativas de qualquer pessoa fecharia o fluxo para todas
+	// as outras. Mesmo criterio de /auth/forgot-password, /auth/resend-verification e /auth/google.
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/company-applications/verify-email', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+		$data  = (array) $request->get_json_params();
+		$token = sanitize_text_field( (string) ( $data['token'] ?? '' ) );
+		if ( ! papelito_auth_rate_limit( 'pre_account_verify_email', 10, 60, $token ) ) {
+			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+		}
+		$result = papelito_pre_account_application_confirm_email( $token );
+		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+	} ) );
+
+	// Aceita o token de retomada (quem esta na propria aba do cadastro) ou so o e-mail (quem abriu
+	// um link vencido em outro aparelho e nao tem cookie). A resposta e sempre a mesma: distinguir
+	// "reenviado" de "nao existe candidatura" transformaria a rota em sonda de cadastro.
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/company-applications/resend-verification', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+		$data     = (array) $request->get_json_params();
+		$token    = sanitize_text_field( (string) $request->get_header( 'X-Papelito-Application-Token' ) );
+		$email    = strtolower( trim( sanitize_email( (string) ( $data['email'] ?? '' ) ) ) );
+		$asked_by = '' !== $token ? $token : $email;
+		if ( ! papelito_auth_rate_limit( 'pre_account_resend_verification', 5, 300, $asked_by ) ) {
+			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+		}
+		$application = '' !== $token
+			? papelito_pre_account_application_authorize( $token )
+			: papelito_pre_account_application_find_open_by_email( $email );
+		if ( is_array( $application ) ) {
+			papelito_pre_account_application_resend_email_verification( $application );
+		}
+		return new WP_REST_Response( array( 'ok' => true ), 200 );
+	} ) );
+
+	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/company-applications/resume', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+		$data  = (array) $request->get_json_params();
+		$email = strtolower( trim( sanitize_email( (string) ( $data['email'] ?? '' ) ) ) );
+		if ( ! papelito_auth_rate_limit( 'pre_account_resume', 5, 300, $email ) ) {
+			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+		}
+		$result = papelito_pre_account_application_resume_by_credentials( $email, (string) ( $data['password'] ?? '' ) );
+		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 200 );
+	} ) );
+
 	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/companies/validate-cnpj', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
 		$data = (array) $request->get_json_params();
 		$cnpj = isset( $data['cnpj'] ) ? (string) $data['cnpj'] : '';

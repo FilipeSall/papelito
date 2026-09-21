@@ -22,6 +22,18 @@ if ( ! defined( 'PAPELITO_PRE_ACCOUNT_SQL_START_TRANSACTION' ) ) {
 	define( 'PAPELITO_PRE_ACCOUNT_SQL_START_TRANSACTION', 'START TRANSACTION' );
 }
 
+if ( ! defined( 'PAPELITO_PRE_ACCOUNT_STATUS_PENDING_EMAIL' ) ) {
+	define( 'PAPELITO_PRE_ACCOUNT_STATUS_PENDING_EMAIL', 'pending_email_verification' );
+}
+
+if ( ! defined( 'PAPELITO_PRE_ACCOUNT_EMAIL_UNCONFIRMED_MESSAGE' ) ) {
+	define( 'PAPELITO_PRE_ACCOUNT_EMAIL_UNCONFIRMED_MESSAGE', 'Confirme seu e-mail para continuar a candidatura.' );
+}
+
+if ( ! defined( 'PAPELITO_PRE_ACCOUNT_EMAIL_SEND_FAILED_MESSAGE' ) ) {
+	define( 'PAPELITO_PRE_ACCOUNT_EMAIL_SEND_FAILED_MESSAGE', 'Não foi possível enviar o e-mail de confirmação. Tente novamente em alguns instantes.' );
+}
+
 if ( ! defined( 'PAPELITO_PRE_ACCOUNT_DOCUMENT_PURGE_HOOK' ) ) {
 	define( 'PAPELITO_PRE_ACCOUNT_DOCUMENT_PURGE_HOOK', 'papelito_pre_account_application_purge_document' );
 }
@@ -108,7 +120,8 @@ function papelito_pre_account_application_view( array $application ): array {
 		'applicationId' => papelito_pre_account_application_external_id( (int) $application['id'] ),
 		'status'        => (string) $application['application_status'],
 		'reviewPath'    => $application['review_path'] ?? null,
-		'canUpload'     => 'document_required' === (string) $application['application_status'],
+		'canUpload'     => 'document_required' === (string) $application['application_status'] && papelito_pre_account_application_email_is_verified( $application ),
+		'emailVerified' => papelito_pre_account_application_email_is_verified( $application ),
 		'expiresAt'     => $application['expires_at'] ?? null,
 	);
 }
@@ -185,6 +198,347 @@ function papelito_pre_account_application_backfill_pending_notifications(): int 
 	}
 
 	return $backfilled;
+}
+
+/**
+ * Carimba como confirmadas as candidaturas anteriores ao gate de e-mail.
+ *
+ * O fluxo antigo nunca pediu confirmacao, entao sem este carimbo quem candidatou antes
+ * da migracao ficaria com o upload travado por um passo que nao existia. A option trava
+ * a execucao unica: a lista de migracoes roda inteira a cada bump de schema, e um bump
+ * futuro nao pode carimbar candidatura nascida ja sob o gate.
+ */
+function papelito_pre_account_application_backfill_email_verification(): void {
+	if ( '1' === get_option( 'papelito_pre_account_email_verification_backfill_v1', '0' ) ) {
+		return;
+	}
+
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$wpdb->query( "UPDATE {$tables['pre_account_applications']} SET email_verified_at = created_at WHERE email_verified_at IS NULL" ); // phpcs:ignore WordPress.DB
+
+	update_option( 'papelito_pre_account_email_verification_backfill_v1', '1', false );
+}
+
+/**
+ * Localiza a candidatura pelo token de confirmacao de e-mail.
+ *
+ * @param string $token Token em claro, como veio do link.
+ * @return array<string,mixed>|null
+ */
+function papelito_pre_account_application_by_email_token( string $token ): ?array {
+	if ( '' === $token ) {
+		return null;
+	}
+
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$row    = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tables['pre_account_applications']} WHERE email_verification_token_hash = %s", papelito_pre_account_application_token_hash( $token ) ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+	return is_array( $row ) ? $row : null;
+}
+
+/**
+ * Diz se a candidatura ja provou posse da caixa de e-mail.
+ *
+ * E esta resposta — nao o `application_status` — que libera o upload do documento.
+ *
+ * @param array<string,mixed> $application Candidatura persistida.
+ */
+function papelito_pre_account_application_email_is_verified( array $application ): bool {
+	return ! empty( $application['email_verified_at'] );
+}
+
+/**
+ * Gera o token de confirmacao e guarda apenas o hash na linha da candidatura.
+ *
+ * Espelha `papelito_auth_prepare_email_verification_token()`, mas mora na candidatura
+ * porque aqui ainda nao existe `wp_user` onde pendurar usermeta.
+ *
+ * @param int $application_id Id interno da candidatura.
+ * @return string|WP_Error Token em claro, que so pode sair daqui dentro do e-mail.
+ */
+function papelito_pre_account_application_prepare_email_token( int $application_id ): string|WP_Error {
+	$token = papelito_pre_account_application_new_token();
+
+	global $wpdb;
+	$tables  = papelito_company_table_names();
+	$updated = $wpdb->update(
+		$tables['pre_account_applications'],
+		array(
+			'email_verification_token_hash'       => papelito_pre_account_application_token_hash( $token ),
+			'email_verification_token_expires_at' => gmdate( 'Y-m-d H:i:s', time() + DAY_IN_SECONDS ),
+			'updated_at'                          => current_time( 'mysql', true ),
+		),
+		array( 'id' => $application_id )
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	if ( false === $updated ) {
+		return new WP_Error( 'papelito_pre_account_email_token_failed', PAPELITO_PRE_ACCOUNT_EMAIL_SEND_FAILED_MESSAGE, array( 'status' => 500 ) );
+	}
+
+	return $token;
+}
+
+/**
+ * Monta e envia o e-mail de confirmacao da candidatura.
+ *
+ * O link leva e-mail e token no fragmento, como o da conta: GTM, GA4 e access log
+ * registram a query, nunca o que vem depois do `#`. O `scope` diz ao frontend que o
+ * token e de candidatura, e nao de uma conta ja existente.
+ *
+ * @param array<string,mixed> $application Candidatura persistida.
+ * @param string              $token       Token em claro.
+ */
+function papelito_pre_account_application_send_verification_email( array $application, string $token ): bool {
+	$email = papelito_pii_decrypt( (string) ( $application['contact_email_ciphertext'] ?? '' ) );
+	$email = is_string( $email ) ? sanitize_email( $email ) : '';
+	if ( '' === $email ) {
+		return false;
+	}
+
+	$link = papelito_frontend_link( sprintf( 'confirmar-email#scope=candidatura&email=%s&token=%s', rawurlencode( $email ), rawurlencode( $token ) ) );
+	if ( is_wp_error( $link ) ) {
+		return false;
+	}
+
+	$name     = papelito_pii_decrypt( (string) ( $application['full_name_ciphertext'] ?? '' ) );
+	$parts    = preg_split( '/\s+/', trim( is_string( $name ) ? $name : '' ), 2 );
+	$greeting = is_array( $parts ) && '' !== (string) ( $parts[0] ?? '' ) ? (string) $parts[0] : $email;
+	$view     = array(
+		'kicker'       => 'Confirmação de e-mail',
+		'headline'     => 'Confirme seu e-mail.',
+		'lead'         => sprintf(
+			'Olá %s, recebemos a sua candidatura empresarial na Papelito. Confirme seu e-mail para que ela siga para análise.',
+			$greeting
+		),
+		'cta'          => array(
+			'label' => 'Confirmar e-mail',
+			'url'   => (string) $link,
+		),
+		'notes'        => array( 'Este link expira em 24 horas.' ),
+		'footer_lines' => array( 'Se você não fez essa candidatura, ignore esta mensagem.' ),
+	);
+
+	return papelito_email_send(
+		$email,
+		'Confirme seu e-mail - Papelito',
+		papelito_email_notice_html( $view ),
+		papelito_email_notice_text( $view )
+	);
+}
+
+/**
+ * Rotaciona o token e dispara o e-mail de confirmacao da candidatura.
+ *
+ * Melhor esforco de proposito: falha de envio nao desfaz a candidatura, porque o
+ * `resume_token` ja voltou na resposta e o reenvio cobre o caso.
+ *
+ * @param array<string,mixed> $application Candidatura persistida.
+ */
+function papelito_pre_account_application_dispatch_email_verification( array $application ): bool {
+	$application_id = (int) $application['id'];
+	$token          = papelito_pre_account_application_prepare_email_token( $application_id );
+	if ( is_wp_error( $token ) || ! papelito_pre_account_application_send_verification_email( $application, $token ) ) {
+		return false;
+	}
+
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$wpdb->update( $tables['pre_account_applications'], array( 'email_verification_sent_at' => current_time( 'mysql', true ) ), array( 'id' => $application_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	return true;
+}
+
+/**
+ * Estado para o qual a candidatura anda depois de confirmado o e-mail.
+ *
+ * @param array<string,mixed> $application Candidatura persistida.
+ */
+function papelito_pre_account_application_status_after_email( array $application ): string {
+	return 'document_required' === (string) ( $application['review_path'] ?? '' ) ? 'document_required' : 'pending_manual_review';
+}
+
+/**
+ * Consome o token de confirmacao e empurra a candidatura para a etapa seguinte.
+ *
+ * E esta funcao, e nao a criacao, que notifica o administrador: candidatura sem posse
+ * de caixa comprovada nunca chega a fila de analise. A notificacao e melhor esforco —
+ * falhar nela nao pode invalidar um link que a pessoa clicou corretamente, e
+ * `papelito_pre_account_application_backfill_pending_notifications()` e a rede de
+ * seguranca que reenvia o que ficou para tras.
+ *
+ * Devolve um `resume_token` novo junto com a visao: quem confirma pode estar em outro
+ * aparelho, sem o cookie da candidatura, e sem ele a etapa 3 diria "nenhuma candidatura
+ * encontrada". O link de e-mail ja e prova de posse, e o token antigo deixa de valer.
+ *
+ * @param string $token Token em claro, como veio do link.
+ * @return array<string,mixed>|WP_Error Visao publica da candidatura mais o `resume_token`.
+ */
+function papelito_pre_account_application_confirm_email( string $token ): array|WP_Error {
+	$application = papelito_pre_account_application_assert_open( papelito_pre_account_application_by_email_token( $token ) );
+	if ( is_wp_error( $application ) ) {
+		return $application;
+	}
+
+	if ( papelito_pre_account_application_email_is_verified( $application ) ) {
+		return new WP_Error( 'papelito_pre_account_email_already_confirmed', 'Este e-mail já foi confirmado.', array( 'status' => 409 ) );
+	}
+
+	$expires_at = (string) ( $application['email_verification_token_expires_at'] ?? '' );
+	if ( '' === $expires_at || strtotime( $expires_at ) < time() ) {
+		return new WP_Error( 'papelito_pre_account_email_token_expired', 'Link de confirmação expirado. Solicite um novo e-mail para continuar.', array( 'status' => 410 ) );
+	}
+
+	$application_id = (int) $application['id'];
+	$now            = current_time( 'mysql', true );
+	$next_status    = papelito_pre_account_application_status_after_email( $application );
+	$resume_token   = papelito_pre_account_application_new_token();
+
+	global $wpdb;
+	$tables  = papelito_company_table_names();
+	$updated = $wpdb->update(
+		$tables['pre_account_applications'],
+		array(
+			'application_status'                  => $next_status,
+			'email_verified_at'                   => $now,
+			'email_verification_token_hash'       => null,
+			'email_verification_token_expires_at' => null,
+			'resume_token_hash'                   => papelito_pre_account_application_token_hash( $resume_token ),
+			'resume_token_expires_at'             => papelito_pre_account_application_expires_at(),
+			'updated_at'                          => $now,
+		),
+		array(
+			'id'                 => $application_id,
+			'application_status' => PAPELITO_PRE_ACCOUNT_STATUS_PENDING_EMAIL,
+		)
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	if ( ! $updated ) {
+		return new WP_Error( 'papelito_pre_account_email_confirm_conflict', PAPELITO_PRE_ACCOUNT_DECISION_CONFLICT_MESSAGE, array( 'status' => 409 ) );
+	}
+
+	$application['application_status'] = $next_status;
+	$application['email_verified_at']  = $now;
+
+	if ( 'pending_manual_review' === $next_status ) {
+		papelito_pre_account_application_notify_pending( $application );
+	}
+
+	return array(
+		'application'  => papelito_pre_account_application_view( $application ),
+		'resume_token' => $resume_token,
+	);
+}
+
+/**
+ * Reenvia o link de confirmacao respeitando o mesmo intervalo de um minuto da conta.
+ *
+ * Devolve `true` tambem quando nada foi enviado (ja confirmada ou dentro do intervalo):
+ * a resposta ao candidato e deliberadamente indistinguivel, para nao virar sonda.
+ *
+ * @param array<string,mixed> $application Candidatura persistida.
+ * @return true|WP_Error
+ */
+function papelito_pre_account_application_resend_email_verification( array $application ): true|WP_Error {
+	if ( papelito_pre_account_application_email_is_verified( $application ) ) {
+		return true;
+	}
+
+	$last_sent_at = (string) ( $application['email_verification_sent_at'] ?? '' );
+	$last_sent_ts = '' !== $last_sent_at ? strtotime( $last_sent_at ) : false;
+	if ( false !== $last_sent_ts && ( time() - $last_sent_ts ) < MINUTE_IN_SECONDS ) {
+		return true;
+	}
+
+	if ( ! papelito_pre_account_application_dispatch_email_verification( $application ) ) {
+		return new WP_Error( 'papelito_pre_account_email_send_failed', PAPELITO_PRE_ACCOUNT_EMAIL_SEND_FAILED_MESSAGE, array( 'status' => 500 ) );
+	}
+
+	return true;
+}
+
+/**
+ * Localiza a candidatura aberta de um e-mail.
+ *
+ * Nao autoriza nada sozinha: quem chama ou ja provou posse por outro meio (token de retomada,
+ * senha) ou responde de forma neutra, para a busca nao virar sonda de cadastro.
+ *
+ * @param string $email E-mail informado.
+ * @return array<string,mixed>|null
+ */
+function papelito_pre_account_application_find_open_by_email( string $email ): ?array {
+	$email = sanitize_email( $email );
+	if ( '' === $email ) {
+		return null;
+	}
+
+	$hmac = papelito_pii_hmac( strtolower( trim( $email ) ) );
+	if ( is_wp_error( $hmac ) ) {
+		return null;
+	}
+
+	global $wpdb;
+	$tables = papelito_company_table_names();
+	$row    = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$tables['pre_account_applications']} WHERE contact_email_hmac = %s AND is_open = 1 ORDER BY id DESC LIMIT 1", $hmac ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+	return is_array( $row ) ? $row : null;
+}
+
+/**
+ * Retoma a candidatura aberta a partir do par e-mail + senha escolhido na etapa 2.
+ *
+ * Existe para quem tenta entrar pelo login antes de a conta existir. So quem acerta a
+ * senha recebe resposta diferente, entao nao abre enumeracao: senha errada e
+ * candidatura inexistente devolvem exatamente o mesmo erro.
+ *
+ * @param string $email    E-mail informado no login.
+ * @param string $password Senha em claro informada no login.
+ * @return array<string,mixed>|WP_Error Visao publica mais o `resume_token` novo.
+ */
+function papelito_pre_account_application_resume_by_credentials( string $email, string $password ): array|WP_Error {
+	$generic = new WP_Error( 'papelito_pre_account_application_not_found', PAPELITO_PRE_ACCOUNT_APPLICATION_NOT_FOUND_MESSAGE, array( 'status' => 404 ) );
+	$email   = sanitize_email( $email );
+	if ( '' === $email || '' === $password ) {
+		return $generic;
+	}
+
+	$application = papelito_pre_account_application_find_open_by_email( $email );
+	if ( ! is_array( $application ) || empty( $application['password_hash'] ) ) {
+		return $generic;
+	}
+
+	global $wpdb;
+	$tables = papelito_company_table_names();
+
+	if ( ! wp_check_password( $password, (string) $application['password_hash'] ) ) {
+		return $generic;
+	}
+
+	$authorized = papelito_pre_account_application_assert_open( $application );
+	if ( is_wp_error( $authorized ) ) {
+		return $generic;
+	}
+
+	$token   = papelito_pre_account_application_new_token();
+	$updated = $wpdb->update(
+		$tables['pre_account_applications'],
+		array(
+			'resume_token_hash'       => papelito_pre_account_application_token_hash( $token ),
+			'resume_token_expires_at' => papelito_pre_account_application_expires_at(),
+			'updated_at'              => current_time( 'mysql', true ),
+		),
+		array( 'id' => (int) $application['id'] )
+	); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	if ( false === $updated ) {
+		return $generic;
+	}
+
+	return array(
+		'application'  => papelito_pre_account_application_view( $application ),
+		'resume_token' => $token,
+	);
 }
 
 function papelito_pre_account_application_identity( array $input ): array|WP_Error {
@@ -340,7 +694,7 @@ function papelito_pre_account_application_persist( array $prepared ): array|WP_E
 			'canonical_cnpj'           => $identity['cnpj'],
 			'legal_name_ciphertext'    => $sealed['legal_name'],
 			'review_path'              => $path,
-			'application_status'       => 'document_required' === $path ? 'document_required' : 'pending_manual_review',
+			'application_status'       => PAPELITO_PRE_ACCOUNT_STATUS_PENDING_EMAIL,
 			'is_open'                  => 1,
 			'resume_token_hash'        => papelito_pre_account_application_token_hash( $token ),
 			'resume_token_expires_at'  => $expires_at,
@@ -362,11 +716,9 @@ function papelito_pre_account_application_persist( array $prepared ): array|WP_E
 		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		return new WP_Error( 'papelito_pre_account_persist_failed', PAPELITO_PRE_ACCOUNT_APPLICATION_UNAVAILABLE_MESSAGE, array( 'status' => 500 ) );
 	}
-	if ( 'pending_manual_review' === (string) $application['application_status'] && ! papelito_pre_account_application_notify_pending( $application ) ) {
-		$wpdb->query( 'ROLLBACK' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-		return new WP_Error( 'papelito_pre_account_notification_failed', 'Não foi possível encaminhar a candidatura para análise.', array( 'status' => 500 ) );
-	}
 	$wpdb->query( 'COMMIT' ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+
+	papelito_pre_account_application_dispatch_email_verification( $application );
 
 	return array(
 		'application'  => papelito_pre_account_application_view( $application ),
@@ -398,6 +750,9 @@ function papelito_pre_account_application_upload_authorized( array|WP_Error $app
 	if ( is_wp_error( $application ) ) {
 		return $application;
 	}
+	if ( ! papelito_pre_account_application_email_is_verified( $application ) ) {
+		return new WP_Error( 'papelito_pre_account_email_unconfirmed', PAPELITO_PRE_ACCOUNT_EMAIL_UNCONFIRMED_MESSAGE, array( 'status' => 409 ) );
+	}
 	if ( 'document_required' !== (string) $application['application_status'] || empty( $application['is_open'] ) || ! empty( $application['document_storage_key'] ) ) {
 		return new WP_Error( 'papelito_pre_account_upload_not_allowed', 'Esta candidatura não aceita um novo documento.', array( 'status' => 409 ) );
 	}
@@ -417,7 +772,7 @@ function papelito_pre_account_application_upload_authorized( array|WP_Error $app
 			$wpdb->prepare( "SELECT * FROM {$tables['pre_account_applications']} WHERE id = %d FOR UPDATE", (int) $application['id'] ),
 			ARRAY_A
 		); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		if ( ! is_array( $locked ) || 'document_required' !== (string) $locked['application_status'] || empty( $locked['is_open'] ) || ! empty( $locked['document_storage_key'] ) ) {
+		if ( ! is_array( $locked ) || 'document_required' !== (string) $locked['application_status'] || empty( $locked['is_open'] ) || ! empty( $locked['document_storage_key'] ) || ! papelito_pre_account_application_email_is_verified( $locked ) ) {
 			throw new DomainException( 'application_not_uploadable' );
 		}
 
@@ -783,7 +1138,7 @@ function papelito_pre_account_application_reject_open_for_vendor( string $email,
 
 	$applications = $wpdb->get_results(
 		$wpdb->prepare(
-			"SELECT id FROM {$tables['pre_account_applications']} WHERE contact_email_hmac = %s AND is_open = 1 AND application_status IN ('document_required', 'pending_manual_review') FOR UPDATE",
+			"SELECT id FROM {$tables['pre_account_applications']} WHERE contact_email_hmac = %s AND is_open = 1 AND application_status IN ('pending_email_verification', 'document_required', 'pending_manual_review') FOR UPDATE",
 			$hmac
 		),
 		ARRAY_A
@@ -840,8 +1195,8 @@ function papelito_pre_account_application_send_decision_email( array $applicatio
 		$view    = array(
 			'kicker'   => 'Cadastro empresarial',
 			'headline' => 'Seu cadastro empresarial foi aprovado.',
-			'lead'     => 'Sua conta já foi criada.',
-			'notes'    => array( 'Enviamos, em outra mensagem, um link para confirmar este endereço de e-mail — ele libera as compras e passa a receber os documentos fiscais dos pedidos.' ),
+			'lead'     => 'Sua conta já foi criada e você pode entrar com o e-mail e a senha que cadastrou.',
+			'notes'    => array( 'Este endereço já está confirmado e passa a receber os documentos fiscais dos pedidos.' ),
 		);
 	} else {
 		$subject = 'Cadastro empresarial não aprovado - Papelito';
@@ -859,30 +1214,6 @@ function papelito_pre_account_application_send_decision_email( array $applicatio
 		papelito_email_notice_html( $view ),
 		papelito_email_notice_text( $view )
 	);
-}
-
-/**
- * Envia o link de confirmacao do e-mail principal da conta recem-provisionada.
- *
- * Best-effort e sempre depois do COMMIT: uma aprovacao revertida nao pode ter mandado e-mail, e
- * uma falha de SMTP nao pode desfazer a aprovacao. Sem o link o comprador nao fica preso — o
- * fluxo de reenvio em /auth/resend-verification continua disponivel.
- *
- * @param int $user_id Conta criada pela aprovacao.
- * @return void
- */
-function papelito_pre_account_application_dispatch_verification( int $user_id ): void {
-	$user = get_userdata( $user_id );
-
-	if ( ! $user instanceof WP_User ) {
-		return;
-	}
-
-	$dispatched = papelito_auth_dispatch_verification_email( $user );
-
-	if ( is_wp_error( $dispatched ) ) {
-		error_log( 'papelito: pre-conta aprovada sem e-mail de confirmacao (' . $dispatched->get_error_code() . ').' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-	}
 }
 
 /**
@@ -1032,9 +1363,11 @@ function papelito_pre_account_application_approve( array $application, int $acto
 	update_user_meta( $user_id, 'papelito_account_state', 'active' );
 	papelito_pre_account_application_purge_document( $application_id );
 
-	// Depois do COMMIT de proposito: aprovacao revertida nao pode ter mandado e-mail. Best-effort —
-	// falha de SMTP nao desfaz a aprovacao, o usuario reobtem o link por /auth/resend-verification.
-	papelito_pre_account_application_dispatch_verification( $user_id );
+	// Depois do COMMIT de proposito: `papelito_email_verified` dispara
+	// `papelito_billing_email_sync_for_user()`, que precisa enxergar a empresa ja gravada para
+	// confirmar o e-mail de faturamento em cascata. A posse da caixa foi comprovada na
+	// candidatura, entao a conta nao pede uma segunda confirmacao.
+	papelito_auth_mark_email_verified( $user_id );
 
 	return papelito_pre_account_application_view( papelito_pre_account_application_get( $application_id ) ?: $application );
 }

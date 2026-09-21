@@ -115,7 +115,7 @@ require_once __DIR__ . '/includes/packaging.php';
 require_once __DIR__ . '/includes/vendor_eligibility.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.53.0' );
+	define( 'PAPELITO_DB_VERSION', '1.54.0' );
 }
 
 /**
@@ -165,6 +165,7 @@ function papelito_maybe_migrate_db() {
 				'papelito_vendor_interests_backfill_legacy',
 				'papelito_company_install_tables',
 				'papelito_company_migrate_cpf_required_memberships',
+				'papelito_pre_account_application_backfill_email_verification',
 				'papelito_pre_account_application_backfill_pending_notifications',
 				'papelito_receipts_install_tables',
 				'papelito_fiscal_documents_drop_legacy',

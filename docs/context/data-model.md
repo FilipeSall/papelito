@@ -439,17 +439,22 @@ permanece só no log.
 
 `papelito_company_pre_account_applications` é a tabela do cadastro empresarial vigente. Ela existe porque **a candidatura não pode criar conta**: antes da aprovação administrativa não há `wp_user`, empresa, membership nem sessão para o candidato.
 
-Guarda os dados pessoais cifrados necessários à análise (contato, nome, telefone, CPF, **data de nascimento**, endereço, razão social), os HMAC determinísticos de e-mail e CPF, o hash da senha escolhida no cadastro, a evidência mínima do provedor (**sem QSA bruto**), os metadados do arquivo privado e a decisão administrativa.
+Guarda os dados pessoais cifrados necessários à análise (contato, nome, telefone, CPF, **data de nascimento**, endereço, razão social), os HMAC determinísticos de e-mail e CPF, o hash da senha escolhida no cadastro, a evidência mínima do provedor (**sem QSA bruto**), os metadados do arquivo privado, o estado da confirmação de e-mail e a decisão administrativa.
+
+**Confirmação de e-mail na própria linha.** `email_verification_token_hash`, `email_verification_token_expires_at`, `email_verification_sent_at` e `email_verified_at` existem aqui, e não em `wp_usermeta`, porque no momento da confirmação **ainda não há `wp_user`** onde pendurar meta. O token guarda só o SHA-256, expira em 24 horas e é anulado no uso; `email_verification_sent_at` sustenta o intervalo de um minuto do reenvio. `email_verified_at` é a autoridade sobre a posse comprovada — é ele, e não o `application_status`, que libera o upload do documento.
 
 `created_user_id`, `created_company_id` e `created_membership_id` só são preenchidos na aprovação, que é quem cria esses recursos. Candidatura `document_required` ou `pending_manual_review` nunca referencia nenhum deles.
 
-**Estados**: `document_required` → `pending_manual_review` → `approved` | `rejected`, mais `expired` pela varredura de retenção.
+**Estados**: `pending_email_verification` → (`document_required` →) `pending_manual_review` → `approved` | `rejected`, mais `expired` pela varredura de retenção. A candidatura **nasce** em `pending_email_verification` e só sai dele pela confirmação do e-mail, que é quem decide entre `document_required` e `pending_manual_review` conforme o `review_path` gravado na submissão — e quem notifica o administrador. Nenhuma fila administrativa aceita `pending_email_verification`.
 
 **Restrições que carregam a lógica:**
 
 - `uniq_open_cnpj (canonical_cnpj, is_open)` garante **uma candidatura aberta por CNPJ**. O truque é `is_open` ser `1` enquanto aberta e **`NULL` quando fechada**: em MySQL, valores `NULL` não colidem em índice único, então candidaturas encerradas não impedem uma recandidatura para o mesmo CNPJ. Não troque `NULL` por `0`.
-- `idx_resume_token (resume_token_hash)` — a retomada é por token opaco de 32 bytes guardado em cookie `__Host-`, nunca por sessão.
+- `idx_resume_token (resume_token_hash)` — a retomada é por token opaco de 32 bytes guardado em cookie `__Host-`, nunca por sessão. O token é rotacionado na confirmação do e-mail (quem clica pode estar em outro aparelho) e na retomada por e-mail + senha, feita quando alguém tenta entrar pelo login antes de a conta existir.
+- `idx_email_verification (email_verification_token_hash)` — o link de confirmação encontra a candidatura por aqui, sem passar pelo `resume_token`.
 - `idx_status_expires (application_status, expires_at)` serve à varredura de retenção.
+
+**Migração.** O gate de confirmação chegou em `PAPELITO_DB_VERSION` `1.54.0`. `papelito_pre_account_application_backfill_email_verification()` carimba `email_verified_at = created_at` nas linhas anteriores — sem isso, quem se candidatou antes ficaria com o upload travado por um passo que não existia no fluxo dele. O backfill é guardado pela option `papelito_pre_account_email_verification_backfill_v1`, porque a lista de migrações roda inteira a cada bump e um bump futuro não pode carimbar candidatura nascida já sob o gate.
 
 **Retenção.** `papelito_pre_account_applications_sweep()` roda de hora em hora: fecha as abertas vencidas (`expired`) e, passado o TTL de `PAPELITO_PRE_ACCOUNT_APPLICATION_TTL_DAYS`, apaga o documento e zera toda a PII reversível — colunas cifradas, `password_hash`, `resume_token_hash` e `evidence_json`. Sobra um registro auditável sem dado pessoal: CNPJ, decisão, administrador e IDs criados. O documento também é apagado **na decisão**, sem esperar o TTL. Colunas cifradas são `NOT NULL`: o purge grava string vazia, não `NULL`, e usa `password_hash IS NULL` como sentinela de "já purgada".
 

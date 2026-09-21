@@ -8,9 +8,14 @@
  * indistinguivel de uma legada: o e-mail entra como confirmado sem ninguem ter aberto nada, e o
  * e-mail de faturamento da empresa herda essa confirmacao inexistente.
  *
- * Era o caso da aprovacao de pre-conta (que nem envia e-mail: o `resume_token` volta na resposta) e
- * do provisionamento de vendor. Este teste e estrutural de proposito: o que precisa ser garantido e
- * que NENHUM `wp_insert_user()` do plugin fique sem gravar a meta, inclusive os que vierem depois.
+ * Era o caso da aprovacao de pre-conta e do provisionamento de vendor. Este teste e estrutural de
+ * proposito: o que precisa ser garantido e que NENHUM `wp_insert_user()` do plugin fique sem gravar
+ * a meta, inclusive os que vierem depois.
+ *
+ * A pre-conta hoje prova a posse ANTES da analise: a candidatura nasce em
+ * `pending_email_verification` e so chega ao administrador depois do clique no link. Por isso a
+ * conta aprovada nasce verificada — e as assercoes abaixo travam essa ordem, para ninguem
+ * reintroduzir a confirmacao dupla nem devolver a candidatura crua para a fila.
  *
  * Usage: php tests/test-pre-account-email-verification.php
  *
@@ -124,15 +129,37 @@ papelito_assert(
 	str_contains( $pre_account, "'billing_email_verified_at' => papelito_billing_email_account_is_verified" )
 );
 papelito_assert(
-	'aprovacao dispara o e-mail de confirmacao',
+	'aprovacao herda a posse ja comprovada na candidatura',
 	true,
-	str_contains( $pre_account, 'papelito_pre_account_application_dispatch_verification( $user_id );' )
+	str_contains( $pre_account, 'papelito_auth_mark_email_verified( $user_id );' )
+);
+papelito_assert(
+	'aprovacao nao pede uma segunda confirmacao',
+	false,
+	str_contains( $pre_account, 'papelito_auth_dispatch_verification_email' )
 );
 
-/* --- e o envio acontece depois do COMMIT, nunca antes --- */
+/* --- e a marcacao acontece depois do COMMIT, senao a cascata nao acha a empresa --- */
 $commit   = strpos( $pre_account, "\$wpdb->query( 'COMMIT' )" );
-$dispatch = strpos( $pre_account, 'papelito_pre_account_application_dispatch_verification( $user_id );' );
-papelito_assert( 'envio fica depois do COMMIT', true, false !== $commit && false !== $dispatch && $dispatch > $commit );
+$verified = strpos( $pre_account, 'papelito_auth_mark_email_verified( $user_id );' );
+papelito_assert( 'marcacao fica depois do COMMIT', true, false !== $commit && false !== $verified && $verified > $commit );
+
+/* --- e a candidatura so vai ao admin depois de o e-mail ser confirmado --- */
+papelito_assert(
+	'candidatura nasce pendente de confirmacao de e-mail',
+	true,
+	str_contains( $pre_account, "'application_status'       => PAPELITO_PRE_ACCOUNT_STATUS_PENDING_EMAIL," )
+);
+papelito_assert(
+	'quem notifica o admin e a confirmacao, nao a criacao',
+	true,
+	strpos( $pre_account, 'function papelito_pre_account_application_confirm_email' ) < strpos( $pre_account, 'papelito_pre_account_application_notify_pending( $application );' )
+);
+papelito_assert(
+	'upload exige posse da caixa comprovada',
+	true,
+	str_contains( $pre_account, "return new WP_Error( 'papelito_pre_account_email_unconfirmed'" )
+);
 
 /* --- a cascata que confirma a empresa segue ligada ao hook de verificacao --- */
 $sync = (string) file_get_contents( $root . '/includes/billing_email_sync.php' );

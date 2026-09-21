@@ -341,6 +341,10 @@ function papelito_company_applications_schema_sql( array $tables, string $charse
   is_open TINYINT UNSIGNED NULL DEFAULT NULL,
   resume_token_hash CHAR(64) NOT NULL,
   resume_token_expires_at DATETIME NOT NULL,
+  email_verification_token_hash CHAR(64) NULL DEFAULT NULL,
+  email_verification_token_expires_at DATETIME NULL DEFAULT NULL,
+  email_verification_sent_at DATETIME NULL DEFAULT NULL,
+  email_verified_at DATETIME NULL DEFAULT NULL,
   evidence_json LONGTEXT NULL DEFAULT NULL,
   provider_source VARCHAR(32) NULL DEFAULT NULL,
   provider_checked_at DATETIME NULL DEFAULT NULL,
@@ -365,6 +369,7 @@ function papelito_company_applications_schema_sql( array $tables, string $charse
   UNIQUE KEY uniq_open_cnpj (canonical_cnpj, is_open),
   KEY idx_contact_status (contact_email_hmac, application_status),
   KEY idx_resume_token (resume_token_hash),
+  KEY idx_email_verification (email_verification_token_hash),
   KEY idx_status_expires (application_status, expires_at)
 ) {$charset_collate};";
 

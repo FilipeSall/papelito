@@ -58,6 +58,7 @@ function username_exists( string $login ): bool { return false; }
 function wp_insert_user( array $data ): int { return 4242; }
 function wp_generate_password( int $length = 12, bool $special = true, bool $extra = false ): string { return str_repeat( 'x', $length ); }
 function papelito_auth_mark_email_pending( int $user_id ): void { /* stub: verificação de e-mail não faz parte deste caso. */ }
+function papelito_auth_mark_email_verified( int $user_id ): void { $GLOBALS['papelito_marked_verified'][] = $user_id; }
 function clean_user_cache( int $user_id ): void { /* stub: sem cache de usuário fora do WordPress. */ }
 function update_user_meta( int $user_id, string $key, mixed $value ): bool { return true; }
 function get_userdata( int $user_id ): ?WP_User { return null; }
