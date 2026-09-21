@@ -83,6 +83,16 @@ function papelito_db_migration_record( string $migration, string $outcome, strin
 /**
  * Executa uma migração isolada, sem deixar a falha dela alcançar as seguintes.
  *
+ * Exceção não é o único sinal de fracasso, e é o mais raro: `dbDelta()` não
+ * lança, o `wpdb` suprime erro de SQL por padrão e `$wpdb->query()` devolve
+ * `false` para um `ALTER TABLE` recusado por permissão, lock ou tabela grande.
+ * Quem só observa exceção registra `ok` para migração que não rodou.
+ *
+ * A armadilha de quem escreve callback novo: só `false` explícito conta como
+ * fracasso. A maioria das migrações é `void` e devolve `null`, que é sucesso —
+ * tratar `null` como falha marcaria o plugin inteiro como quebrado. Callback
+ * que quiser aparecer como `failed` precisa declarar retorno e devolver `false`.
+ *
  * @param string $callback Nome do callback de migração.
  * @return void
  */
@@ -93,8 +103,9 @@ function papelito_run_db_migration( string $callback ): void {
 	}
 
 	try {
-		$callback();
-		papelito_db_migration_record( $callback, PAPELITO_DB_MIGRATION_OK );
+		$reported = $callback();
+		$outcome  = false === $reported ? PAPELITO_DB_MIGRATION_FAILED : PAPELITO_DB_MIGRATION_OK;
+		papelito_db_migration_record( $callback, $outcome );
 	} catch ( Throwable $error ) {
 		papelito_db_migration_record( $callback, PAPELITO_DB_MIGRATION_FAILED, get_class( $error ) );
 		error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
