@@ -56,7 +56,7 @@ class WP_User {
 
 class WP_REST_Request {}
 class WP_REST_Response {}
-class WP_REST_Server { const READABLE = 'GET'; const EDITABLE = 'POST, PUT, PATCH'; const DELETABLE = 'DELETE'; }
+class WP_REST_Server { const READABLE = 'GET'; const EDITABLE = 'POST, PUT, PATCH'; const DELETABLE = 'DELETE'; const CREATABLE = 'POST'; }
 
 /** `$wpdb` mínimo, que guarda a trilha e honra a remoção por idade. */
 class Papelito_Hardening_Wpdb {
@@ -159,6 +159,12 @@ function get_transient( mixed $key ): mixed { return $GLOBALS['hard_transients']
 /** Grava o transient em memória. */
 function set_transient( mixed $key, mixed $value, mixed $ttl = 0 ): bool {
 	$GLOBALS['hard_transients'][ (string) $key ] = $value;
+
+	return true;
+}
+/** Apaga o transient em memória; é por aqui que o tíquete de reautenticação é queimado. */
+function delete_transient( mixed $key ): bool {
+	unset( $GLOBALS['hard_transients'][ (string) $key ] );
 
 	return true;
 }

@@ -144,6 +144,12 @@ function set_transient( mixed $key, mixed $value, mixed $ttl = 0 ): bool {
 
 	return true;
 }
+/** Apaga o transient em memória; é por aqui que o tíquete de reautenticação é queimado. */
+function delete_transient( mixed $key ): bool {
+	unset( $GLOBALS['audit_test_transients'][ (string) $key ] );
+
+	return true;
+}
 /** Limite de escrita controlado pela fixture. */
 function papelito_auth_rate_limit( mixed ...$args ): bool { return (bool) $GLOBALS['audit_test_rate_ok']; }
 /** O cofre de PII não deve mais ser usado para credencial de transportadora. */

@@ -79,6 +79,7 @@ class WP_REST_Server {
 	const READABLE  = 'GET';
 	const EDITABLE  = 'POST, PUT, PATCH';
 	const DELETABLE = 'DELETE';
+	const CREATABLE = 'POST';
 }
 
 /**
@@ -255,6 +256,12 @@ function get_transient( mixed $key ): mixed { return $GLOBALS['rest_test_transie
 /** Grava o transient em memória. */
 function set_transient( mixed $key, mixed $value, mixed $ttl = 0 ): bool {
 	$GLOBALS['rest_test_transients'][ (string) $key ] = $value;
+
+	return true;
+}
+/** Apaga o transient em memória; é por aqui que o tíquete de reautenticação é queimado. */
+function delete_transient( mixed $key ): bool {
+	unset( $GLOBALS['rest_test_transients'][ (string) $key ] );
 
 	return true;
 }

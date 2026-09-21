@@ -62,6 +62,18 @@ const PAPELITO_BRASPRESS_CONTRACT_MODAL        = 'R';
 const PAPELITO_BRASPRESS_CONTRACT_FREIGHT_TYPE = '1';
 
 /**
+ * Prova de reautenticação que sobrevive ao fechamento do modal de senha.
+ *
+ * O vendor confirma a senha da conta uma vez, recebe um tíquete opaco e o
+ * apresenta na mutação seguinte. Sem ele o formulário teria de guardar a senha
+ * do sistema no navegador até o envio — exatamente o que a confirmação existe
+ * para evitar. A janela é curta porque o tíquete vale o que a senha valeria.
+ */
+const PAPELITO_VENDOR_INTEGRATION_REAUTH_TTL    = 300;
+const PAPELITO_VENDOR_INTEGRATION_REAUTH_PREFIX = 'papelito_vi_reauth_';
+const PAPELITO_VENDOR_INTEGRATION_REAUTH_ACTION = 'reauth';
+
+/**
  * Retorna o nome da tabela principal de integrações por vendor.
  *
  * @return string Nome com prefixo WordPress.
@@ -733,6 +745,103 @@ function papelito_vendor_integration_verify_current_password( array $payload, in
 }
 
 /**
+ * Nome do transient que guarda o tíquete vigente daquele vendor.
+ *
+ * @param int $vendor_id ID do vendor.
+ * @return string Nome do transient.
+ */
+function papelito_vendor_integration_reauth_key( int $vendor_id ): string {
+	return PAPELITO_VENDOR_INTEGRATION_REAUTH_PREFIX . $vendor_id;
+}
+
+/**
+ * Emite um tíquete novo e invalida o anterior daquele vendor.
+ *
+ * O transient guarda só o HMAC: quem ler a tabela de opções não sai de lá com um
+ * tíquete utilizável. O valor em claro existe uma única vez, na resposta.
+ *
+ * @param int $vendor_id ID do vendor já reautenticado.
+ * @return string Tíquete em claro.
+ */
+function papelito_vendor_integration_reauth_issue( int $vendor_id ): string {
+	$ticket = wp_generate_password( 48, false, false );
+
+	set_transient(
+		papelito_vendor_integration_reauth_key( $vendor_id ),
+		hash_hmac( 'sha256', $ticket, wp_salt( 'auth' ) ),
+		PAPELITO_VENDOR_INTEGRATION_REAUTH_TTL
+	);
+
+	return $ticket;
+}
+
+/**
+ * Lê o tíquete declarado no corpo, sem convertê-lo a texto.
+ *
+ * @param array<string,mixed> $payload Corpo da requisição.
+ * @return mixed Valor bruto do campo.
+ */
+function papelito_vendor_integration_reauth_declared( array $payload ): mixed {
+	return $payload['reauthTicket'] ?? $payload['reauth_ticket'] ?? null;
+}
+
+/**
+ * Diz se o corpo apresenta o tíquete vigente daquele vendor.
+ *
+ * Não apaga nada: quem queima o tíquete é a mutação que gravou, em
+ * `papelito_vendor_integration_reauth_forget()`. Assim um CEP inválido recusado
+ * no meio do caminho não obriga o vendor a confirmar a senha de novo.
+ *
+ * @param array<string,mixed> $payload Corpo da requisição.
+ * @param int                 $vendor_id ID do vendor.
+ * @return bool Se o tíquete confere.
+ */
+function papelito_vendor_integration_reauth_matches( array $payload, int $vendor_id ): bool {
+	$ticket = papelito_vendor_integration_reauth_declared( $payload );
+	if ( ! papelito_vendor_integration_declares_text( $ticket ) ) {
+		return false;
+	}
+
+	$stored = get_transient( papelito_vendor_integration_reauth_key( $vendor_id ) );
+
+	return is_string( $stored ) && hash_equals( $stored, hash_hmac( 'sha256', (string) $ticket, wp_salt( 'auth' ) ) );
+}
+
+/**
+ * Descarta o tíquete vigente daquele vendor.
+ *
+ * @param int $vendor_id ID do vendor.
+ * @return void
+ */
+function papelito_vendor_integration_reauth_forget( int $vendor_id ): void {
+	delete_transient( papelito_vendor_integration_reauth_key( $vendor_id ) );
+}
+
+/**
+ * Porteiro único do step-up das mutações sensíveis.
+ *
+ * Aceita as duas provas de identidade: o tíquete emitido pelo modal de senha e a
+ * senha crua no corpo, que continua valendo para quem chama a rota direto. Corpo
+ * que não declara tíquete nenhum cai na senha, para o erro devolvido continuar
+ * sendo o que o vendor sabe corrigir.
+ *
+ * @param array<string,mixed> $payload Corpo da requisição.
+ * @param int                 $vendor_id ID do vendor.
+ * @return true|WP_Error Resultado da reautenticação.
+ */
+function papelito_vendor_integration_require_reauth( array $payload, int $vendor_id ) {
+	if ( papelito_vendor_integration_reauth_matches( $payload, $vendor_id ) ) {
+		return true;
+	}
+
+	if ( papelito_vendor_integration_declares_text( papelito_vendor_integration_reauth_declared( $payload ) ) ) {
+		return new WP_Error( 'papelito_vendor_integration_reauth_ticket_invalid', 'A confirmação de senha não vale mais.', array( 'status' => 403 ) );
+	}
+
+	return papelito_vendor_integration_verify_current_password( $payload, $vendor_id );
+}
+
+/**
  * Salva parâmetros e, opcionalmente, substitui a credencial write-only.
  *
  * @param int                 $vendor_id ID do vendor.
@@ -767,6 +876,12 @@ function papelito_vendor_integration_saved_action( bool $credentials_changed, bo
 /**
  * Executa a gravação da configuração, sem se ocupar da auditoria da tentativa.
  *
+ * O step-up de identidade é exigido pela intenção do corpo, não por todo `PUT`:
+ * substituir ou apagar a credencial write-only precisa de prova, mudar o CEP de
+ * origem ou o interruptor da integração não. Os dois primeiros trocam um segredo
+ * que a leitura nunca devolve e que o titular não tem como conferir depois; os
+ * dois últimos são reversíveis, auditados e visíveis na própria tela.
+ *
  * @param int                 $vendor_id ID do vendor.
  * @param array<string,mixed> $payload Corpo autenticado da requisição.
  * @param int                 $actor_user_id ID do autor autenticado.
@@ -783,9 +898,11 @@ function papelito_vendor_integration_apply_braspress_save( int $vendor_id, array
 		return new WP_Error( 'papelito_vendor_integration_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 	}
 
-	$password_check = papelito_vendor_integration_verify_current_password( $payload, $vendor_id );
-	if ( is_wp_error( $password_check ) ) {
-		return $password_check;
+	if ( 'configuration_saved' !== papelito_vendor_integration_intended_action( $payload ) ) {
+		$reauth = papelito_vendor_integration_require_reauth( $payload, $vendor_id );
+		if ( is_wp_error( $reauth ) ) {
+			return $reauth;
+		}
 	}
 
 	$origin_cep = papelito_vendor_integration_normalize_origin_cep( $payload['origin_cep'] ?? $payload['originCep'] ?? '' );
@@ -874,6 +991,10 @@ function papelito_vendor_integration_apply_braspress_save( int $vendor_id, array
 		return new WP_Error( 'papelito_vendor_integration_save_failed', 'Não foi possível salvar a integração.', array( 'status' => 500 ) );
 	}
 
+	if ( $credentials_changed ) {
+		papelito_vendor_integration_reauth_forget( $vendor_id );
+	}
+
 	$action = papelito_vendor_integration_saved_action( $credentials_changed, empty( $secret_envelope ) );
 	papelito_vendor_integration_announce_health_change(
 		$vendor_id,
@@ -923,9 +1044,9 @@ function papelito_vendor_integration_apply_braspress_delete( int $vendor_id, arr
 		return new WP_Error( 'papelito_vendor_integration_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 	}
 
-	$password_check = papelito_vendor_integration_verify_current_password( $payload, $vendor_id );
-	if ( is_wp_error( $password_check ) ) {
-		return $password_check;
+	$reauth = papelito_vendor_integration_require_reauth( $payload, $vendor_id );
+	if ( is_wp_error( $reauth ) ) {
+		return $reauth;
 	}
 
 	$row      = papelito_vendor_integration_find_row( $vendor_id );
@@ -944,6 +1065,7 @@ function papelito_vendor_integration_apply_braspress_delete( int $vendor_id, arr
 		return new WP_Error( 'papelito_vendor_integration_delete_failed', 'Não foi possível remover a integração.', array( 'status' => 500 ) );
 	}
 
+	papelito_vendor_integration_reauth_forget( $vendor_id );
 	papelito_vendor_integration_forget_braspress_health( $vendor_id, $previous );
 	papelito_vendor_integration_audit( $vendor_id, PAPELITO_VENDOR_INTEGRATION_PROVIDER, $actor_user_id, 'removed', PAPELITO_VENDOR_INTEGRATION_AUDIT_SUCCESS );
 	papelito_vendor_integration_security_event( $vendor_id, 'removed' );
@@ -1051,6 +1173,52 @@ function papelito_vendor_integration_handle_delete_braspress( WP_REST_Request $r
 }
 
 /**
+ * Confirma a senha da conta e devolve o tíquete que libera a mutação seguinte.
+ *
+ * Existe para a tela de credencial não precisar guardar a senha do sistema no
+ * navegador entre a confirmação e o envio. O limite tem balde próprio de
+ * propósito: confirmar a senha não pode consumir as escritas da integração, e
+ * gastar escrita seria a forma barata de impedir o vendor de se reautenticar.
+ * Toda tentativa entra na trilha — sem isso a rota seria um oráculo de senha
+ * sem rastro.
+ *
+ * @param WP_REST_Request $request Requisição REST autenticada.
+ * @return WP_REST_Response|WP_Error Tíquete ou erro.
+ */
+function papelito_vendor_integration_handle_reauth_braspress( WP_REST_Request $request ) {
+	$vendor_id = get_current_user_id();
+
+	if ( ! papelito_auth_rate_limit( 'vendor_braspress_reauth', 5, 300, 'user:' . $vendor_id ) ) {
+		return new WP_Error( 'papelito_vendor_integration_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+	}
+
+	$payload = $request->get_json_params();
+	$checked = papelito_vendor_integration_verify_current_password( is_array( $payload ) ? $payload : array(), $vendor_id );
+
+	if ( is_wp_error( $checked ) ) {
+		papelito_vendor_integration_audit(
+			$vendor_id,
+			PAPELITO_VENDOR_INTEGRATION_PROVIDER,
+			$vendor_id,
+			PAPELITO_VENDOR_INTEGRATION_REAUTH_ACTION,
+			PAPELITO_VENDOR_INTEGRATION_AUDIT_DENIED
+		);
+
+		return $checked;
+	}
+
+	papelito_vendor_integration_audit( $vendor_id, PAPELITO_VENDOR_INTEGRATION_PROVIDER, $vendor_id, PAPELITO_VENDOR_INTEGRATION_REAUTH_ACTION );
+
+	return new WP_REST_Response(
+		array(
+			'ticket'     => papelito_vendor_integration_reauth_issue( $vendor_id ),
+			'expires_in' => PAPELITO_VENDOR_INTEGRATION_REAUTH_TTL,
+		),
+		200
+	);
+}
+
+/**
  * Audita a recusa do porteiro e devolve o resultado intocado.
  *
  * O porteiro decide **antes** do callback, então toda tentativa barrada por
@@ -1104,6 +1272,19 @@ function papelito_vendor_integration_permission_write(): mixed {
 }
 
 /**
+ * Porteiro da confirmação de senha, com rastro na recusa.
+ *
+ * É o mesmo da escrita: quem não pode trocar a credencial não tem por que provar
+ * identidade para trocá-la. Só a ação auditada muda, para a recusa aparecer na
+ * trilha como tentativa de reautenticação e não como tentativa de gravação.
+ *
+ * @return true|WP_Error Resultado do porteiro.
+ */
+function papelito_vendor_integration_permission_reauth(): mixed {
+	return papelito_vendor_integration_audit_permission( papelito_vendor_dashboard_permission_seller_commercial(), PAPELITO_VENDOR_INTEGRATION_REAUTH_ACTION );
+}
+
+/**
  * Registra as rotas REST autenticadas da integração Braspress.
  *
  * @return void
@@ -1128,6 +1309,16 @@ function papelito_vendor_integration_register_routes(): void {
 				'permission_callback' => 'papelito_vendor_integration_permission_write',
 				'callback'            => 'papelito_vendor_integration_handle_delete_braspress',
 			),
+		)
+	);
+
+	register_rest_route(
+		PAPELITO_REST_NAMESPACE,
+		'/vendor/me/integrations/braspress/reauth',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'permission_callback' => 'papelito_vendor_integration_permission_reauth',
+			'callback'            => 'papelito_vendor_integration_handle_reauth_braspress',
 		)
 	);
 }
