@@ -612,6 +612,27 @@ function papelito_pre_account_application_admin_person( array|WP_Error $values )
 	);
 }
 
+/**
+ * Ciclo de vida do arquivo privado da candidatura, no mesmo vocabulário das candidaturas de titular.
+ *
+ * A tabela de pré-conta não tem coluna `document_purge_status`, então o estado é derivado. O valor
+ * `not_applicable` é o que distingue "nunca houve documento" (revisão pelo QSA) de "o arquivo foi
+ * eliminado após a decisão" — a tela admin decide a mensagem por ele, não pela ausência do arquivo.
+ *
+ * @param array<string,mixed> $application Candidatura persistida.
+ */
+function papelito_pre_account_application_document_purge_status( array $application ): string {
+	if ( ! empty( $application['document_storage_key'] ) ) {
+		return 'retained';
+	}
+
+	if ( ! empty( $application['document_deleted_at'] ) || ! empty( $application['document_uploaded_at'] ) ) {
+		return 'deleted';
+	}
+
+	return 'not_applicable';
+}
+
 function papelito_pre_account_application_admin_detail( int $application_id ): array|WP_Error {
 	$application = papelito_pre_account_application_get( $application_id );
 	if ( ! $application ) {
@@ -637,7 +658,7 @@ function papelito_pre_account_application_admin_detail( int $application_id ): a
 			'documentMime'       => $application['document_mime'] ?? null,
 			'documentSize'       => isset( $application['document_size'] ) ? (int) $application['document_size'] : null,
 			'documentAvailable'  => 'pending_manual_review' === (string) $application['application_status'] && ! empty( $application['document_storage_key'] ),
-			'documentPurgeStatus'=> empty( $application['document_storage_key'] ) && ! empty( $application['document_deleted_at'] ) ? 'deleted' : 'retained',
+			'documentPurgeStatus'=> papelito_pre_account_application_document_purge_status( $application ),
 			'rejectionReason'    => $application['rejection_reason'] ?? null,
 			'decidedByUserId'    => ! empty( $application['decided_by_user_id'] ) ? (int) $application['decided_by_user_id'] : null,
 		),

@@ -207,4 +207,81 @@ admin_review_assert( 'candidatura aparece na tabela administrativa sem usuario',
 admin_review_assert( 'linha pre-conta informa status sob analise', 'Sob análise', $snapshot['rows'][0]['accountStatusLabel'] ?? null );
 admin_review_assert( 'candidatura conta na paginacao administrativa', 1, $snapshot['totalRows'] ?? null );
 
+const PURGE_TEST_RETAINED       = 'retained';
+const PURGE_TEST_DELETED        = 'deleted';
+const PURGE_TEST_NOT_APPLICABLE = 'not_applicable';
+const PURGE_TEST_STORAGE_KEY    = '5f3c9a1b7d2e4086.pdf';
+const PURGE_TEST_TIMESTAMP      = '2026-08-01 12:00:00';
+
+admin_review_assert(
+	'candidatura aprovada pelo qsa nunca teve arquivo a eliminar',
+	PURGE_TEST_NOT_APPLICABLE,
+	papelito_pre_account_application_document_purge_status(
+		array(
+			'application_status'   => 'approved',
+			'review_path'          => 'qsa_review',
+			'document_storage_key' => null,
+			'document_uploaded_at' => null,
+			'document_deleted_at'  => null,
+		)
+	)
+);
+admin_review_assert(
+	'candidatura sob analise com arquivo em disco mantem o arquivo',
+	PURGE_TEST_RETAINED,
+	papelito_pre_account_application_document_purge_status(
+		array(
+			'application_status'   => 'pending_manual_review',
+			'review_path'          => 'document_required',
+			'document_storage_key' => PURGE_TEST_STORAGE_KEY,
+			'document_uploaded_at' => PURGE_TEST_TIMESTAMP,
+			'document_deleted_at'  => null,
+		)
+	)
+);
+admin_review_assert(
+	'arquivo eliminado apos a decisao continua sendo eliminado',
+	PURGE_TEST_DELETED,
+	papelito_pre_account_application_document_purge_status(
+		array(
+			'application_status'   => 'approved',
+			'review_path'          => 'document_required',
+			'document_storage_key' => null,
+			'document_uploaded_at' => PURGE_TEST_TIMESTAMP,
+			'document_deleted_at'  => PURGE_TEST_TIMESTAMP,
+		)
+	)
+);
+admin_review_assert(
+	'upload registrado sem data de exclusao ainda conta como eliminado',
+	PURGE_TEST_DELETED,
+	papelito_pre_account_application_document_purge_status(
+		array(
+			'application_status'   => 'rejected',
+			'review_path'          => 'document_required',
+			'document_storage_key' => null,
+			'document_uploaded_at' => PURGE_TEST_TIMESTAMP,
+			'document_deleted_at'  => null,
+		)
+	)
+);
+admin_review_assert(
+	'candidatura reprovada pelo qsa nao anuncia arquivo eliminado',
+	PURGE_TEST_NOT_APPLICABLE,
+	papelito_pre_account_application_document_purge_status(
+		array(
+			'application_status'   => 'rejected',
+			'review_path'          => 'qsa_review',
+			'document_storage_key' => '',
+			'document_uploaded_at' => '',
+			'document_deleted_at'  => '',
+		)
+	)
+);
+admin_review_assert(
+	'detalhe administrativo do qsa nao informa arquivo eliminado',
+	PURGE_TEST_NOT_APPLICABLE,
+	papelito_pre_account_application_document_purge_status( array() )
+);
+
 exit( $failures > 0 ? 1 : 0 );
