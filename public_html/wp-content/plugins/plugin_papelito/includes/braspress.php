@@ -770,12 +770,16 @@ function papelito_braspress_handle_transport_error( array $integration, WP_Error
 /**
  * Solicita uma cotação Braspress uma única vez no backend.
  *
+ * `null` não é erro nem sucesso: é a cotação descartada porque a configuração da
+ * integração mudou enquanto a Braspress respondia. Quem chamar precisa tratar os
+ * três retornos — testar `is_wp_error()` e sair não basta.
+ *
  * @param array<string,mixed> $integration Integração resolvida para o vendor.
  * @param string              $recipient_cnpj CNPJ do destinatário autorizado.
  * @param string              $destination_cep CEP de destino.
  * @param array<string,mixed> $package Pacote físico aprovado.
  * @param int                 $merchandise_value_cents Valor mercantil em centavos.
- * @return array<string,mixed>|WP_Error Cotação normalizável ou erro redigido.
+ * @return array<string,mixed>|WP_Error|null Cotação normalizável, erro redigido, ou `null` para cotação obsoleta.
  */
 function papelito_braspress_quote( array $integration, string $recipient_cnpj, string $destination_cep, array $package, int $merchandise_value_cents ) {
 	return papelito_braspress_quote_at( $integration, $recipient_cnpj, $destination_cep, $package, $merchandise_value_cents );
@@ -784,13 +788,17 @@ function papelito_braspress_quote( array $integration, string $recipient_cnpj, s
 /**
  * Solicita uma cotação com relógio opcional para testar a fronteira de validade.
  *
+ * `null` não é erro nem sucesso: é a cotação descartada porque a configuração da
+ * integração mudou enquanto a Braspress respondia. Quem chamar precisa tratar os
+ * três retornos — testar `is_wp_error()` e sair não basta.
+ *
  * @param array<string,mixed>    $integration Integração resolvida para o vendor.
  * @param string                 $recipient_cnpj CNPJ do destinatário autorizado.
  * @param string                 $destination_cep CEP de destino.
  * @param array<string,mixed>    $package Pacote físico aprovado.
  * @param int                    $merchandise_value_cents Valor mercantil em centavos.
  * @param DateTimeInterface|null $quoted_at Instante UTC da cotação.
- * @return array<string,mixed>|WP_Error Cotação normalizável ou erro redigido.
+ * @return array<string,mixed>|WP_Error|null Cotação normalizável, erro redigido, ou `null` para cotação obsoleta.
  */
 function papelito_braspress_quote_at( array $integration, string $recipient_cnpj, string $destination_cep, array $package, int $merchandise_value_cents, ?DateTimeInterface $quoted_at = null ) {
 	$payload = papelito_braspress_build_quote_payload( $integration, $recipient_cnpj, $destination_cep, $package, $merchandise_value_cents );
