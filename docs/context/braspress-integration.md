@@ -113,6 +113,18 @@ Usuário e senha pertencem à integração Braspress do vendor e chegam ao trans
 
 O header Basic é montado apenas no transporte. Logs guardam vendor, operação, duração, status do provider, categoria, `traceId` e mensagens do provider em quantidade/tamanho limitados; sequências numéricas de oito ou mais dígitos são mascaradas. Header, usuário, senha, payload e corpo bruto nunca são registrados.
 
+## Quem configura a integração
+
+A integração é do vendor, mas dois painéis escrevem nela. O vendor configura em `/vendor/configuracoes` por `GET|PUT|DELETE /vendor/me/integrations/braspress`, com step-up de senha para tocar na credencial. O administrador configura pela aba **Integrações** de `/admin/contas/{id}`, por `GET /admin/vendors/{id}/integrations` e `PUT|DELETE /admin/vendors/{id}/integrations/braspress` — existe porque boa parte dos vendors não quer fazer esse cadastro, e a operação faz por eles.
+
+Os dois caminhos convergem em `papelito_vendor_integration_write_braspress()` e `papelito_vendor_integration_erase_braspress()`, que são a única escrita da integração. O que muda antes delas é só a autorização: titularidade, limite por vendor e reautenticação de um lado (`papelito_vendor_integration_guard_braspress_save()`); `manage_options` e limite por administrador do outro (`includes/admin_vendor_integrations.php`). A rota administrativa **não pede nem aceita a senha do vendor** — a capability é a autorização.
+
+Não existe estado "desligado pela Papelito". Admin e vendor escrevem a mesma coluna `enabled`, e é ela que `papelito_vendor_integration_resolve_braspress()` já consultava: com a integração desligada o adapter não resolve, e a Braspress some da cotação, do checkout, do registro de remessa nova e do polling de tracking — que reagenda com `braspress_integration_unavailable` em vez de perder a remessa em trânsito. A credencial cifrada continua guardada, então religar não exige cadastrá-la de novo.
+
+Nos dois painéis o interruptor grava sozinho, sem confirmação de senha: `papelito_vendor_integration_intended_action()` classifica um corpo sem `username`/`password`/`removeCredentials` como `configuration_saved`, e só as outras duas intenções passam pelo step-up. Trocar ou remover credencial continua exigindo a senha da conta no painel do vendor.
+
+A trilha em `papelito_vendor_integration_audit` distingue os dois pelo prefixo da ação: `credentials_saved` é do vendor, `admin_credentials_saved` é da operação. O prefixo é aplicado por `papelito_vendor_integration_audited_action()` quando o ator não é o dono da integração, e o aviso por e-mail ao titular continua saindo em toda troca ou remoção de credencial.
+
 ## Operação segura
 
 O runtime desta fase aponta somente para a API oficial de produção. Não há configuração ou credencial de homologação; uma futura habilitação exigirá mudança explícita da allowlist e documentação própria.

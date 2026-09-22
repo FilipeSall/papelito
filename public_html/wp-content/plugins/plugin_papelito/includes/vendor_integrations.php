@@ -166,15 +166,29 @@ function papelito_vendor_integration_empty_config(): array {
 }
 
 /**
+ * Descarta tudo que não for dígito de um valor de formulário ou de meta.
+ *
+ * Documento e CEP chegam formatados de origens diferentes e a API só aceita
+ * dígitos. Quem chama continua usando o normalizador do seu domínio, para a
+ * intenção não se perder na chamada.
+ *
+ * @param mixed $value Valor a normalizar.
+ * @return string Valor somente com dígitos.
+ */
+function papelito_vendor_integration_digits( $value ): string {
+	$digits = preg_replace( PAPELITO_DIGITS_REGEX, '', (string) $value );
+
+	return is_string( $digits ) ? $digits : '';
+}
+
+/**
  * Mantém somente os dígitos de CPF/CNPJ usados pela API.
  *
  * @param mixed $value Documento a normalizar.
  * @return string Documento numérico.
  */
 function papelito_vendor_integration_normalize_document( $value ): string {
-	$digits = preg_replace( PAPELITO_DIGITS_REGEX, '', (string) $value );
-
-	return is_string( $digits ) ? $digits : '';
+	return papelito_vendor_integration_digits( $value );
 }
 
 /**
@@ -184,9 +198,7 @@ function papelito_vendor_integration_normalize_document( $value ): string {
  * @return string CEP numérico.
  */
 function papelito_vendor_integration_normalize_cep( $value ): string {
-	$digits = preg_replace( PAPELITO_DIGITS_REGEX, '', (string) $value );
-
-	return is_string( $digits ) ? $digits : '';
+	return papelito_vendor_integration_digits( $value );
 }
 
 /**
@@ -874,6 +886,23 @@ function papelito_vendor_integration_saved_action( bool $credentials_changed, bo
 }
 
 /**
+ * Marca na trilha quando quem gravou não foi o próprio vendor.
+ *
+ * O `actor_user_id` sozinho já diferencia os dois caminhos, mas exige cruzar a
+ * tabela de usuários para ler a trilha. O prefixo responde à pergunta "quem
+ * mexeu nesta integração" direto na linha, que é como a auditoria é consultada
+ * durante um incidente.
+ *
+ * @param string $action Ação do vocabulário do vendor.
+ * @param int    $vendor_id ID do vendor dono da integração.
+ * @param int    $actor_user_id ID de quem assinou a gravação.
+ * @return string Ação auditável, prefixada quando a gravação é administrativa.
+ */
+function papelito_vendor_integration_audited_action( string $action, int $vendor_id, int $actor_user_id ): string {
+	return $vendor_id === $actor_user_id ? $action : 'admin_' . $action;
+}
+
+/**
  * Executa a gravação da configuração, sem se ocupar da auditoria da tentativa.
  *
  * O step-up de identidade é exigido pela intenção do corpo, não por todo `PUT`:
@@ -888,23 +917,31 @@ function papelito_vendor_integration_saved_action( bool $credentials_changed, bo
  * @return array<string,mixed>|WP_Error Estado público ou erro.
  */
 function papelito_vendor_integration_apply_braspress_save( int $vendor_id, array $payload, int $actor_user_id ) {
-	global $wpdb;
-
-	if ( $vendor_id <= 0 || $vendor_id !== $actor_user_id ) {
-		return new WP_Error( 'papelito_vendor_integration_forbidden', 'Ação não permitida.', array( 'status' => 403 ) );
+	$guard = papelito_vendor_integration_guard_braspress_save( $vendor_id, $payload, $actor_user_id );
+	if ( is_wp_error( $guard ) ) {
+		return $guard;
 	}
 
-	if ( ! papelito_auth_rate_limit( 'vendor_braspress_write', 5, 300, 'user:' . $vendor_id ) ) {
-		return new WP_Error( 'papelito_vendor_integration_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
-	}
+	return papelito_vendor_integration_write_braspress( $vendor_id, $payload, $actor_user_id );
+}
 
-	if ( 'configuration_saved' !== papelito_vendor_integration_intended_action( $payload ) ) {
-		$reauth = papelito_vendor_integration_require_reauth( $payload, $vendor_id );
-		if ( is_wp_error( $reauth ) ) {
-			return $reauth;
-		}
-	}
-
+/**
+ * Grava a configuração já autorizada, sem decidir quem pode gravá-la.
+ *
+ * Esta é a única escrita da integração, e os dois painéis chegam nela por
+ * portas diferentes: o do vendor passa antes por
+ * `papelito_vendor_integration_guard_braspress_save()`, que cobra titularidade,
+ * limite e step-up de identidade; o administrativo passa pela capability em
+ * `papelito_admin_vendor_integration_save_braspress()`. Quem chama daqui já
+ * respondeu à pergunta da autorização — a função não a repete, e por isso não
+ * deve ser exposta diretamente a nenhuma rota.
+ *
+ * @param int                 $vendor_id ID do vendor dono da integração.
+ * @param array<string,mixed> $payload Corpo já autorizado da requisição.
+ * @param int                 $actor_user_id ID de quem assina a gravação na trilha.
+ * @return array<string,mixed>|WP_Error Estado público ou erro.
+ */
+function papelito_vendor_integration_write_braspress( int $vendor_id, array $payload, int $actor_user_id ) {
 	$origin_cep = papelito_vendor_integration_normalize_origin_cep( $payload['origin_cep'] ?? $payload['originCep'] ?? '' );
 	if ( null === $origin_cep ) {
 		return new WP_Error( 'papelito_vendor_integration_invalid_origin_cep', 'Informe um CEP de origem com 8 dígitos.', array( 'status' => 422 ) );
@@ -922,72 +959,34 @@ function papelito_vendor_integration_apply_braspress_save( int $vendor_id, array
 		);
 	}
 
-	$username = sanitize_text_field( (string) ( $payload['username'] ?? '' ) );
-	$secret   = (string) ( $payload['password'] ?? '' );
 	$row      = papelito_vendor_integration_find_row( $vendor_id );
 	$existing = is_array( $row ) ? $row : array();
 
-	if ( ( '' === $username ) !== ( '' === $secret ) ) {
-		return new WP_Error( 'papelito_vendor_integration_credentials_incomplete', 'Informe usuário e senha juntos.', array( 'status' => 422 ) );
+	$credentials = papelito_vendor_integration_resolve_secret_envelope( $payload, $existing );
+	if ( is_wp_error( $credentials ) ) {
+		return $credentials;
 	}
 
-	$secret_envelope     = $existing['secret_envelope'] ?? null;
-	$credentials_changed = '' !== $username;
-	if ( $credentials_changed ) {
-		$secret_envelope = papelito_vendor_secret_encrypt(
-			wp_json_encode(
-				array(
-					'username' => $username,
-					'password' => $secret,
-				)
-			)
-		);
-		if ( is_wp_error( $secret_envelope ) ) {
-			return new WP_Error( 'papelito_vendor_integration_encrypt_failed', 'Não foi possível proteger a credencial.', array( 'status' => 500 ) );
-		}
-	}
-
-	if ( ! empty( $payload['removeCredentials'] ) || ! empty( $payload['remove_credentials'] ) ) {
-		$secret_envelope     = null;
-		$credentials_changed = true;
-	}
+	$secret_envelope     = $credentials['envelope'];
+	$credentials_changed = $credentials['changed'];
 
 	$stored_origin  = papelito_vendor_integration_braspress_config( $vendor_id, $existing['config_json'] ?? '' );
 	$origin_changed = ( $stored_origin['origin_cep'] ?? '' ) !== ( $config['origin_cep'] ?? '' );
-	$status         = sanitize_key( (string) ( $existing['status'] ?? PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED ) );
-	if ( ! $complete || empty( $secret_envelope ) ) {
-		$status = PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED;
-	} elseif ( $credentials_changed || ( $origin_changed && PAPELITO_VENDOR_INTEGRATION_INVALID !== $status ) ) {
-		$status = PAPELITO_VENDOR_INTEGRATION_READY;
-	}
+	$previous       = sanitize_key( (string) ( $existing['status'] ?? PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED ) );
+	$status         = papelito_vendor_integration_next_status( $previous, $complete, $secret_envelope, $credentials_changed, $origin_changed );
 
-	$now     = current_time( 'mysql', true );
-	$version = max( 0, (int) ( $existing['configuration_version'] ?? 0 ) ) + 1;
-	$data    = array(
+	$now  = current_time( 'mysql', true );
+	$data = array(
 		'config_json'           => wp_json_encode( array( 'origin_cep' => $origin_cep ) ),
 		'secret_envelope'       => $secret_envelope,
-		'configuration_version' => $version,
+		'configuration_version' => max( 0, (int) ( $existing['configuration_version'] ?? 0 ) ) + 1,
 		'enabled'               => $enabled ? 1 : 0,
 		'status'                => $status,
 		'updated_at'            => $now,
 		'updated_by'            => $actor_user_id,
 	);
 
-	if ( empty( $existing ) ) {
-		$data['vendor_id']  = $vendor_id;
-		$data['provider']   = PAPELITO_VENDOR_INTEGRATION_PROVIDER;
-		$data['created_at'] = $now;
-		$data['created_by'] = $actor_user_id;
-		$written            = $wpdb->insert( papelito_vendor_integrations_table_name(), $data );
-	} else {
-		$written = $wpdb->update(
-			papelito_vendor_integrations_table_name(),
-			$data,
-			array( 'id' => (int) $existing['id'] )
-		);
-	}
-
-	if ( false === $written ) {
+	if ( ! papelito_vendor_integration_write_row( $vendor_id, $data, $existing, $actor_user_id ) ) {
 		return new WP_Error( 'papelito_vendor_integration_save_failed', 'Não foi possível salvar a integração.', array( 'status' => 500 ) );
 	}
 
@@ -996,16 +995,152 @@ function papelito_vendor_integration_apply_braspress_save( int $vendor_id, array
 	}
 
 	$action = papelito_vendor_integration_saved_action( $credentials_changed, empty( $secret_envelope ) );
-	papelito_vendor_integration_announce_health_change(
+	papelito_vendor_integration_announce_health_change( $vendor_id, $previous, $status, '' );
+	papelito_vendor_integration_audit(
 		$vendor_id,
-		sanitize_key( (string) ( $existing['status'] ?? PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED ) ),
-		$status,
-		''
+		PAPELITO_VENDOR_INTEGRATION_PROVIDER,
+		$actor_user_id,
+		papelito_vendor_integration_audited_action( $action, $vendor_id, $actor_user_id ),
+		PAPELITO_VENDOR_INTEGRATION_AUDIT_SUCCESS
 	);
-	papelito_vendor_integration_audit( $vendor_id, PAPELITO_VENDOR_INTEGRATION_PROVIDER, $actor_user_id, $action, PAPELITO_VENDOR_INTEGRATION_AUDIT_SUCCESS );
 	papelito_vendor_integration_security_event( $vendor_id, $action );
 
 	return papelito_vendor_integration_public_record( papelito_vendor_integration_find_row( $vendor_id ) );
+}
+
+/**
+ * Barra a gravação que não pode sequer ser tentada.
+ *
+ * Reúne titularidade, limite de tentativas e o step-up de identidade exigido
+ * por intenção do corpo, para a gravação em si só tratar de dados válidos.
+ *
+ * @param int                 $vendor_id ID do vendor.
+ * @param array<string,mixed> $payload Corpo autenticado da requisição.
+ * @param int                 $actor_user_id ID do autor autenticado.
+ * @return WP_Error|null Erro que interrompe a gravação ou nulo quando liberada.
+ */
+function papelito_vendor_integration_guard_braspress_save( int $vendor_id, array $payload, int $actor_user_id ) {
+	if ( $vendor_id <= 0 || $vendor_id !== $actor_user_id ) {
+		return new WP_Error( 'papelito_vendor_integration_forbidden', 'Ação não permitida.', array( 'status' => 403 ) );
+	}
+
+	if ( ! papelito_auth_rate_limit( 'vendor_braspress_write', 5, 300, 'user:' . $vendor_id ) ) {
+		return new WP_Error( 'papelito_vendor_integration_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+	}
+
+	if ( 'configuration_saved' === papelito_vendor_integration_intended_action( $payload ) ) {
+		return null;
+	}
+
+	$reauth = papelito_vendor_integration_require_reauth( $payload, $vendor_id );
+
+	return is_wp_error( $reauth ) ? $reauth : null;
+}
+
+/**
+ * Decide qual envelope de credencial vai para o banco nesta gravação.
+ *
+ * Manter o envelope atual, substituí-lo pelo par recém-informado ou apagá-lo
+ * são os três desfechos possíveis, e só o próprio corpo da requisição diz qual
+ * deles vale. Usuário e senha andam juntos: um sem o outro é erro do cliente.
+ *
+ * @param array<string,mixed> $payload Corpo autenticado da requisição.
+ * @param array<string,mixed> $existing Linha já gravada, quando existe.
+ * @return array{changed: bool, envelope: string|null}|WP_Error Envelope a gravar ou erro.
+ */
+function papelito_vendor_integration_resolve_secret_envelope( array $payload, array $existing ) {
+	$username = sanitize_text_field( (string) ( $payload['username'] ?? '' ) );
+	$secret   = (string) ( $payload['password'] ?? '' );
+
+	if ( ( '' === $username ) !== ( '' === $secret ) ) {
+		return new WP_Error( 'papelito_vendor_integration_credentials_incomplete', 'Informe usuário e senha juntos.', array( 'status' => 422 ) );
+	}
+
+	if ( ! empty( $payload['removeCredentials'] ) || ! empty( $payload['remove_credentials'] ) ) {
+		return array(
+			'changed'  => true,
+			'envelope' => null,
+		);
+	}
+
+	if ( '' === $username ) {
+		return array(
+			'changed'  => false,
+			'envelope' => $existing['secret_envelope'] ?? null,
+		);
+	}
+
+	$envelope = papelito_vendor_secret_encrypt(
+		wp_json_encode(
+			array(
+				'username' => $username,
+				'password' => $secret,
+			)
+		)
+	);
+
+	if ( is_wp_error( $envelope ) ) {
+		return new WP_Error( 'papelito_vendor_integration_encrypt_failed', 'Não foi possível proteger a credencial.', array( 'status' => 500 ) );
+	}
+
+	return array(
+		'changed'  => true,
+		'envelope' => $envelope,
+	);
+}
+
+/**
+ * Calcula o status da integração depois da gravação.
+ *
+ * Perfil incompleto ou sem credencial derruba para `unconfigured`. Credencial
+ * nova, ou origem trocada sem erro pendente da transportadora, devolve o vendor
+ * para `ready`; fora isso o status anterior continua valendo.
+ *
+ * @param string      $previous Status gravado antes desta requisição.
+ * @param bool        $complete Se o perfil tem CEP de origem e CNPJ.
+ * @param string|null $secret_envelope Envelope que será gravado.
+ * @param bool        $credentials_changed Se a credencial foi trocada ou apagada.
+ * @param bool        $origin_changed Se o CEP de origem mudou.
+ * @return string Status a gravar.
+ */
+function papelito_vendor_integration_next_status( string $previous, bool $complete, $secret_envelope, bool $credentials_changed, bool $origin_changed ): string {
+	if ( ! $complete || empty( $secret_envelope ) ) {
+		return PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED;
+	}
+
+	if ( $credentials_changed || ( $origin_changed && PAPELITO_VENDOR_INTEGRATION_INVALID !== $previous ) ) {
+		return PAPELITO_VENDOR_INTEGRATION_READY;
+	}
+
+	return $previous;
+}
+
+/**
+ * Grava a linha da integração, criando-a quando o vendor ainda não tem uma.
+ *
+ * @param int                 $vendor_id ID do vendor.
+ * @param array<string,mixed> $data Colunas já montadas pela gravação.
+ * @param array<string,mixed> $existing Linha já gravada, quando existe.
+ * @param int                 $actor_user_id ID do autor autenticado.
+ * @return bool Se o banco aceitou a escrita.
+ */
+function papelito_vendor_integration_write_row( int $vendor_id, array $data, array $existing, int $actor_user_id ): bool {
+	global $wpdb;
+
+	if ( empty( $existing ) ) {
+		$data['vendor_id']  = $vendor_id;
+		$data['provider']   = PAPELITO_VENDOR_INTEGRATION_PROVIDER;
+		$data['created_at'] = $data['updated_at'];
+		$data['created_by'] = $actor_user_id;
+
+		return false !== $wpdb->insert( papelito_vendor_integrations_table_name(), $data );
+	}
+
+	return false !== $wpdb->update(
+		papelito_vendor_integrations_table_name(),
+		$data,
+		array( 'id' => (int) $existing['id'] )
+	);
 }
 
 /**
@@ -1034,8 +1169,6 @@ function papelito_vendor_integration_delete_braspress( int $vendor_id, array $pa
  * @return array<string,mixed>|WP_Error Estado vazio ou erro.
  */
 function papelito_vendor_integration_apply_braspress_delete( int $vendor_id, array $payload, int $actor_user_id ) {
-	global $wpdb;
-
 	if ( $vendor_id <= 0 || $vendor_id !== $actor_user_id ) {
 		return new WP_Error( 'papelito_vendor_integration_forbidden', 'Ação não permitida.', array( 'status' => 403 ) );
 	}
@@ -1048,6 +1181,24 @@ function papelito_vendor_integration_apply_braspress_delete( int $vendor_id, arr
 	if ( is_wp_error( $reauth ) ) {
 		return $reauth;
 	}
+
+	return papelito_vendor_integration_erase_braspress( $vendor_id, $actor_user_id );
+}
+
+/**
+ * Apaga a linha e o envelope cifrado de uma integração já autorizada.
+ *
+ * Vale aqui a mesma divisão de `papelito_vendor_integration_write_braspress()`:
+ * a remoção é destrutiva e irreversível, mas quem decide se ela pode acontecer
+ * é o chamador — o painel do vendor pela reautenticação, o administrativo pela
+ * capability. Não exponha esta função a nenhuma rota direta.
+ *
+ * @param int $vendor_id ID do vendor dono da integração.
+ * @param int $actor_user_id ID de quem assina a remoção na trilha.
+ * @return array<string,mixed>|WP_Error Estado vazio ou erro.
+ */
+function papelito_vendor_integration_erase_braspress( int $vendor_id, int $actor_user_id ) {
+	global $wpdb;
 
 	$row      = papelito_vendor_integration_find_row( $vendor_id );
 	$previous = sanitize_key( (string) ( $row['status'] ?? PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED ) );
@@ -1067,7 +1218,13 @@ function papelito_vendor_integration_apply_braspress_delete( int $vendor_id, arr
 
 	papelito_vendor_integration_reauth_forget( $vendor_id );
 	papelito_vendor_integration_forget_braspress_health( $vendor_id, $previous );
-	papelito_vendor_integration_audit( $vendor_id, PAPELITO_VENDOR_INTEGRATION_PROVIDER, $actor_user_id, 'removed', PAPELITO_VENDOR_INTEGRATION_AUDIT_SUCCESS );
+	papelito_vendor_integration_audit(
+		$vendor_id,
+		PAPELITO_VENDOR_INTEGRATION_PROVIDER,
+		$actor_user_id,
+		papelito_vendor_integration_audited_action( 'removed', $vendor_id, $actor_user_id ),
+		PAPELITO_VENDOR_INTEGRATION_AUDIT_SUCCESS
+	);
 	papelito_vendor_integration_security_event( $vendor_id, 'removed' );
 
 	return papelito_vendor_integration_public_record( null, $vendor_id );
