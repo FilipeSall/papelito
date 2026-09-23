@@ -537,27 +537,21 @@ $other = admin_int_braspress_item( admin_int_list( ADMIN_INT_TEST_OTHER_ID ) );
 admin_int_assert( 'o outro vendor continua sem credencial', false === ( $other['credentials_configured'] ?? true ) );
 admin_int_assert( 'o outro vendor continua desligado', false === ( $other['enabled'] ?? true ) );
 
-echo "Scenario 13: o caminho do vendor continua exigindo prova de identidade\n";
+echo "Scenario 13: o caminho do vendor grava a própria loja, e só ela\n";
 admin_int_reset();
 admin_int_login( ADMIN_INT_TEST_VENDOR_ID );
-$without_proof = papelito_vendor_integration_save_braspress(
+$own = papelito_vendor_integration_save_braspress(
 	ADMIN_INT_TEST_VENDOR_ID,
 	admin_int_credential_payload(),
 	ADMIN_INT_TEST_VENDOR_ID
 );
-admin_int_assert( 'o vendor não troca credencial sem confirmar a senha', is_wp_error( $without_proof ) );
+admin_int_assert( 'o vendor troca a própria credencial sem confirmar a senha', ! is_wp_error( $own ) );
 $foreign = papelito_vendor_integration_save_braspress(
 	ADMIN_INT_TEST_OTHER_ID,
 	admin_int_credential_payload(),
 	ADMIN_INT_TEST_VENDOR_ID
 );
 admin_int_assert( 'o vendor não escreve na integração de outro', is_wp_error( $foreign ) && 'papelito_vendor_integration_forbidden' === $foreign->get_error_code() );
-$with_password = papelito_vendor_integration_save_braspress(
-	ADMIN_INT_TEST_VENDOR_ID,
-	array_merge( admin_int_credential_payload(), array( 'currentPassword' => 'senha' ) ),
-	ADMIN_INT_TEST_VENDOR_ID
-);
-admin_int_assert( 'com a senha confirmada o vendor grava normalmente', ! is_wp_error( $with_password ) );
 admin_int_assert( 'a gravação do vendor não é marcada como administrativa', in_array( 'credentials_saved', array_column( $GLOBALS['wpdb']->audit, 'action' ), true ) );
 
 echo "Scenario 14: o limite de escrita administrativa é aplicado\n";

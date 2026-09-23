@@ -534,11 +534,10 @@ $half_result     = rest_put( $half_credential );
 rest_assert( 'Usuário sem senha é recusado', 'papelito_vendor_integration_credentials_incomplete' === rest_error_code( $half_result ) );
 rest_assert( 'Credencial pela metade não altera a configuração anterior', rest_row( REST_TEST_VENDOR_A_ID ) === $before_a );
 
-$wrong_password                    = rest_payload( REST_TEST_USERNAME_A, REST_TEST_SECRET_A, REST_TEST_VENDOR_A_CEP );
-$wrong_password['currentPassword'] = 'senha-errada';
-$reauth_result                     = rest_put( $wrong_password );
-rest_assert( 'Reautenticação errada é recusada', 'papelito_vendor_integration_current_password_invalid' === rest_error_code( $reauth_result ) );
-rest_assert( 'Reautenticação errada não altera a configuração anterior', rest_row( REST_TEST_VENDOR_A_ID ) === $before_a );
+$GLOBALS['rest_test_envelope'] = REST_TEST_ENVELOPE_B;
+$saved_no_proof                = rest_put( rest_payload( REST_TEST_USERNAME_B, REST_TEST_SECRET_B, REST_TEST_VENDOR_A_CEP ) );
+rest_assert( 'Trocar a credencial não pede confirmação de senha', ! is_wp_error( $saved_no_proof ) );
+rest_assert( 'A credencial nova substitui a anterior', rest_row( REST_TEST_VENDOR_A_ID )['secret_envelope'] !== ( $before_a['secret_envelope'] ?? null ) );
 
 echo "\nCenário 7: habilitar sem CNPJ no cadastro explica o que falta\n";
 rest_reset();

@@ -905,11 +905,10 @@ function papelito_vendor_integration_audited_action( string $action, int $vendor
 /**
  * Executa a gravação da configuração, sem se ocupar da auditoria da tentativa.
  *
- * O step-up de identidade é exigido pela intenção do corpo, não por todo `PUT`:
- * substituir ou apagar a credencial write-only precisa de prova, mudar o CEP de
- * origem ou o interruptor da integração não. Os dois primeiros trocam um segredo
- * que a leitura nunca devolve e que o titular não tem como conferir depois; os
- * dois últimos são reversíveis, auditados e visíveis na própria tela.
+ * Nenhuma variação do `PUT` pede step-up de identidade: cadastrar, substituir ou
+ * apagar a credencial write-only, mudar o CEP de origem e ligar o interruptor
+ * são todos corrigíveis pela própria tela e ficam na trilha de auditoria. Só a
+ * remoção da integração, que é destrutiva, continua exigindo a senha da conta.
  *
  * @param int                 $vendor_id ID do vendor.
  * @param array<string,mixed> $payload Corpo autenticado da requisição.
@@ -930,8 +929,8 @@ function papelito_vendor_integration_apply_braspress_save( int $vendor_id, array
  *
  * Esta é a única escrita da integração, e os dois painéis chegam nela por
  * portas diferentes: o do vendor passa antes por
- * `papelito_vendor_integration_guard_braspress_save()`, que cobra titularidade,
- * limite e step-up de identidade; o administrativo passa pela capability em
+ * `papelito_vendor_integration_guard_braspress_save()`, que cobra titularidade e
+ * limite de tentativas; o administrativo passa pela capability em
  * `papelito_admin_vendor_integration_save_braspress()`. Quem chama daqui já
  * respondeu à pergunta da autorização — a função não a repete, e por isso não
  * deve ser exposta diretamente a nenhuma rota.
@@ -1011,8 +1010,10 @@ function papelito_vendor_integration_write_braspress( int $vendor_id, array $pay
 /**
  * Barra a gravação que não pode sequer ser tentada.
  *
- * Reúne titularidade, limite de tentativas e o step-up de identidade exigido
- * por intenção do corpo, para a gravação em si só tratar de dados válidos.
+ * Reúne titularidade e limite de tentativas, para a gravação em si só tratar de
+ * dados válidos. Gravar credencial **não** exige step-up de identidade: o par é
+ * write-only e uma troca indevida se corrige cadastrando o par certo. Só a
+ * remoção, que apaga o envelope cifrado sem volta, continua pedindo a senha.
  *
  * @param int                 $vendor_id ID do vendor.
  * @param array<string,mixed> $payload Corpo autenticado da requisição.
@@ -1028,13 +1029,7 @@ function papelito_vendor_integration_guard_braspress_save( int $vendor_id, array
 		return new WP_Error( 'papelito_vendor_integration_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 	}
 
-	if ( 'configuration_saved' === papelito_vendor_integration_intended_action( $payload ) ) {
-		return null;
-	}
-
-	$reauth = papelito_vendor_integration_require_reauth( $payload, $vendor_id );
-
-	return is_wp_error( $reauth ) ? $reauth : null;
+	return null;
 }
 
 /**

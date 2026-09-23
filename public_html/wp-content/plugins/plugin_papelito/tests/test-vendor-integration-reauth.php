@@ -3,11 +3,11 @@
 /**
  * Tíquete de reautenticação da integração Braspress do vendor.
  *
- * Fixa o contrato do step-up depois que o campo de senha saiu do formulário e
- * foi para um modal: que confirmar a senha emite uma prova de curta duração em
- * vez de deixar a senha no navegador, que a prova é do dono e morre com o uso,
- * que um erro de formulário no meio do caminho não a queima, e que trocar o CEP
- * de origem — reversível e visível na tela — deixou de exigir prova nenhuma.
+ * Fixa o contrato do step-up que restou na remoção da integração: que confirmar
+ * a senha emite uma prova de curta duração em vez de deixar a senha no
+ * navegador, que a prova é do dono e morre com o uso, e que **nenhuma gravação**
+ * — nem cadastrar, nem substituir, nem apagar a credencial write-only — exige
+ * prova, porque todas são corrigíveis pela própria tela.
  *
  * Usage: php tests/test-vendor-integration-reauth.php
  *
@@ -289,40 +289,27 @@ reauth_assert( 'A senha errada é recusada', REAUTH_TEST_PASSWORD_COD === reauth
 reauth_assert( 'A senha errada não deixa prova para trás', array() === $GLOBALS['reauth_transients'] );
 reauth_assert( 'A senha errada entra na trilha como recusa', in_array( 'reauth:denied', reauth_audited(), true ) );
 
-echo "\nCenário 2: a prova é do dono e substitui a senha no corpo\n";
-reauth_reset();
-$ticket = reauth_request_ticket( REAUTH_TEST_PASSWORD )->get_data()['ticket'];
-$saved  = papelito_vendor_integration_save_braspress( REAUTH_TEST_VENDOR_ID, reauth_credential_payload( array( 'reauthTicket' => $ticket ) ), REAUTH_TEST_VENDOR_ID );
-reauth_assert( 'O tíquete autoriza a troca de credencial sem a senha no corpo', ! is_wp_error( $saved ) && true === $saved['credentials_configured'] );
-
+echo "\nCenário 2: a prova é do dono da loja\n";
 reauth_reset();
 $GLOBALS['reauth_current'] = REAUTH_TEST_VENDOR_ID;
 $mine                      = reauth_request_ticket( REAUTH_TEST_PASSWORD )->get_data()['ticket'];
-$stolen                    = papelito_vendor_integration_save_braspress( REAUTH_TEST_NEIGHBOUR_ID, reauth_credential_payload( array( 'reauthTicket' => $mine ) ), REAUTH_TEST_NEIGHBOUR_ID );
+$stolen                    = papelito_vendor_integration_delete_braspress( REAUTH_TEST_NEIGHBOUR_ID, array( 'reauthTicket' => $mine ), REAUTH_TEST_NEIGHBOUR_ID );
 reauth_assert( 'A prova de um vendor não autoriza a loja do vizinho', REAUTH_TEST_TICKET_CODE === reauth_code( $stolen ) );
-reauth_assert( 'A tentativa com prova alheia não grava nada', null === $GLOBALS['reauth_row'] );
 
 echo "\nCenário 3: a prova expira e morre com o uso\n";
 reauth_reset();
 $expiring                = reauth_request_ticket( REAUTH_TEST_PASSWORD )->get_data()['ticket'];
 $GLOBALS['reauth_clock'] = PAPELITO_VENDOR_INTEGRATION_REAUTH_TTL + 1;
-$late                    = papelito_vendor_integration_save_braspress( REAUTH_TEST_VENDOR_ID, reauth_credential_payload( array( 'reauthTicket' => $expiring ) ), REAUTH_TEST_VENDOR_ID );
+$late                    = papelito_vendor_integration_delete_braspress( REAUTH_TEST_VENDOR_ID, array( 'reauthTicket' => $expiring ), REAUTH_TEST_VENDOR_ID );
 reauth_assert( 'Prova vencida é recusada', REAUTH_TEST_TICKET_CODE === reauth_code( $late ) );
 
 reauth_reset();
-$once  = reauth_request_ticket( REAUTH_TEST_PASSWORD )->get_data()['ticket'];
-papelito_vendor_integration_save_braspress( REAUTH_TEST_VENDOR_ID, reauth_credential_payload( array( 'reauthTicket' => $once ) ), REAUTH_TEST_VENDOR_ID );
-$replay = papelito_vendor_integration_save_braspress( REAUTH_TEST_VENDOR_ID, reauth_credential_payload( array( 'reauthTicket' => $once ) ), REAUTH_TEST_VENDOR_ID );
+$once = reauth_request_ticket( REAUTH_TEST_PASSWORD )->get_data()['ticket'];
+papelito_vendor_integration_delete_braspress( REAUTH_TEST_VENDOR_ID, array( 'reauthTicket' => $once ), REAUTH_TEST_VENDOR_ID );
+$replay = papelito_vendor_integration_delete_braspress( REAUTH_TEST_VENDOR_ID, array( 'reauthTicket' => $once ), REAUTH_TEST_VENDOR_ID );
 reauth_assert( 'A prova usada com sucesso não serve de novo', REAUTH_TEST_TICKET_CODE === reauth_code( $replay ) );
 
-reauth_reset();
-$kept    = reauth_request_ticket( REAUTH_TEST_PASSWORD )->get_data()['ticket'];
-$refused = papelito_vendor_integration_save_braspress( REAUTH_TEST_VENDOR_ID, reauth_credential_payload( array( 'reauthTicket' => $kept ), REAUTH_TEST_SHORT_CEP ), REAUTH_TEST_VENDOR_ID );
-reauth_assert( 'Erro de formulário é recusado depois da prova', 'papelito_vendor_integration_invalid_origin_cep' === reauth_code( $refused ) );
-$retry = papelito_vendor_integration_save_braspress( REAUTH_TEST_VENDOR_ID, reauth_credential_payload( array( 'reauthTicket' => $kept ) ), REAUTH_TEST_VENDOR_ID );
-reauth_assert( 'Erro de formulário não queima a prova nem pede a senha de novo', ! is_wp_error( $retry ) );
-
-echo "\nCenário 4: o step-up segue a intenção do corpo, não o método\n";
+echo "\nCenário 4: nenhuma gravação exige prova, qualquer que seja a intenção do corpo\n";
 reauth_reset();
 $plain = papelito_vendor_integration_save_braspress( REAUTH_TEST_VENDOR_ID, reauth_config_payload( REAUTH_TEST_OTHER_CEP ), REAUTH_TEST_VENDOR_ID );
 reauth_assert( 'Trocar só o CEP de origem não exige prova nenhuma', ! is_wp_error( $plain ) );
@@ -331,12 +318,17 @@ reauth_assert( 'Gravação sem credencial continua auditada', in_array( 'configu
 
 reauth_reset();
 $naked = papelito_vendor_integration_save_braspress( REAUTH_TEST_VENDOR_ID, reauth_credential_payload( array() ), REAUTH_TEST_VENDOR_ID );
-reauth_assert( 'Trocar a credencial sem prova alguma é recusado', REAUTH_TEST_PASSWORD_COD === reauth_code( $naked ) );
-reauth_assert( 'A recusa preserva a loja', null === $GLOBALS['reauth_row'] );
+reauth_assert( 'Trocar a credencial sem prova alguma é aceito', ! is_wp_error( $naked ) && true === $naked['credentials_configured'] );
+reauth_assert( 'A troca sem prova continua auditada', in_array( 'credentials_saved:success', reauth_audited(), true ) );
 
 reauth_reset();
 $purge = papelito_vendor_integration_save_braspress( REAUTH_TEST_VENDOR_ID, array( 'enabled' => false, 'originCep' => REAUTH_TEST_CEP, 'removeCredentials' => true ), REAUTH_TEST_VENDOR_ID );
-reauth_assert( 'Apagar a credencial pelo save também exige prova', REAUTH_TEST_PASSWORD_COD === reauth_code( $purge ) );
+reauth_assert( 'Apagar a credencial pelo save também dispensa prova', ! is_wp_error( $purge ) && false === $purge['credentials_configured'] );
+
+reauth_reset();
+$short = papelito_vendor_integration_save_braspress( REAUTH_TEST_VENDOR_ID, reauth_credential_payload( array(), REAUTH_TEST_SHORT_CEP ), REAUTH_TEST_VENDOR_ID );
+reauth_assert( 'Erro de formulário continua sendo recusado na gravação', 'papelito_vendor_integration_invalid_origin_cep' === reauth_code( $short ) );
+reauth_assert( 'A recusa de formulário preserva a loja', null === $GLOBALS['reauth_row'] );
 
 echo "\nCenário 5: a remoção exige prova sempre\n";
 reauth_reset();

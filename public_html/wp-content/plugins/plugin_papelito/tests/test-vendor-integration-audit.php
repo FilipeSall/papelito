@@ -234,16 +234,17 @@ audit_assert( 'O status distingue recusa de sucesso', 'denied' === ( $row['statu
 audit_assert( 'O ator registrado é quem tentou, não o dono da loja', AUDIT_TEST_INTRUDER_ID === ( $row['actor_user_id'] ?? null ) );
 audit_assert( 'O vendor registrado é a loja alvo', AUDIT_TEST_VENDOR_ID === ( $row['vendor_id'] ?? null ) );
 
-echo "\nCenário 3: senha da conta errada não passa despercebida\n";
+echo "\nCenário 3: trocar a credencial não exige a senha da conta\n";
 audit_reset();
 
 $payload                    = audit_credential_payload();
 $payload['currentPassword'] = 'senha-errada';
-papelito_vendor_integration_save_braspress( AUDIT_TEST_VENDOR_ID, $payload, AUDIT_TEST_VENDOR_ID );
-$row = audit_last_row();
+$saved = papelito_vendor_integration_save_braspress( AUDIT_TEST_VENDOR_ID, $payload, AUDIT_TEST_VENDOR_ID );
+$row   = audit_last_row();
 
-audit_assert( 'A reautenticação recusada é auditada', 1 === count( $GLOBALS['audit_test_rows'] ) );
-audit_assert( 'Reautenticação recusada é recusa, não falha do sistema', 'denied' === ( $row['status'] ?? null ) );
+audit_assert( 'Senha da conta no corpo não impede a gravação', ! is_wp_error( $saved ) );
+audit_assert( 'A troca de credencial é auditada', 1 === count( $GLOBALS['audit_test_rows'] ) );
+audit_assert( 'A gravação aceita é registrada como sucesso', 'success' === ( $row['status'] ?? null ) );
 audit_assert( 'A ação registrada é a que foi tentada', 'credentials_saved' === ( $row['action'] ?? null ) );
 
 echo "\nCenário 4: o limite de escrita e a validação têm status próprios\n";
