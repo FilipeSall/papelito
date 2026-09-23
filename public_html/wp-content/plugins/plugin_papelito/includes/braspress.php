@@ -13,6 +13,7 @@ const PAPELITO_BRASPRESS_QUOTE_TIMEZONE      = 'America/Sao_Paulo';
 const PAPELITO_BRASPRESS_LIMIT_RESPONSE_SIZE = 1048576;
 const PAPELITO_BRASPRESS_QUOTE_CACHE_PREFIX  = 'papelito_braspress_quote_v1_';
 const PAPELITO_BRASPRESS_QUOTE_CACHE_MAX_TTL = 600;
+const PAPELITO_BRASPRESS_PROBE_VALUE_CENTS   = 10000;
 
 /**
  * Código estável da opção de frete por modal contratado.
@@ -722,6 +723,73 @@ function papelito_braspress_apply_failure_health( array $integration, string $ca
 		$category,
 		(int) ( $integration['configuration_version'] ?? 0 )
 	);
+}
+
+/**
+ * Pacote sintético mínimo que a sondagem de credencial envia à Braspress.
+ *
+ * Não representa carga real: existe para o corpo passar na validação local e a
+ * requisição chegar autenticada, que é a única parte que a sondagem observa.
+ *
+ * @return array<string,mixed> Pacote válido para `papelito_braspress_build_quote_payload()`.
+ */
+function papelito_braspress_credential_probe_package(): array {
+	return array(
+		'weight_kg'     => 1.0,
+		'volumes'       => 1,
+		'cubagem'       => array(
+			array(
+				'length_m' => 0.2,
+				'width_m'  => 0.2,
+				'height_m' => 0.2,
+				'volumes'  => 1,
+			),
+		),
+		'physical_hash' => '',
+	);
+}
+
+/**
+ * Pergunta à Braspress se a credencial recém-gravada é aceita.
+ *
+ * A Braspress não tem endpoint de login: a autenticação é `Basic` na própria
+ * cotação, e o `401` chega antes de qualquer validação de carga. Por isso a
+ * sondagem cota um pacote sintético e olha só a categoria da falha — recusa de
+ * credencial e conta bloqueada degradam o estado pela mesma política de uma
+ * cotação real; indisponibilidade da transportadora não degrada nada.
+ *
+ * @param int $vendor_id Vendor dono da integração.
+ * @return string Categoria que degradou a conta, ou vazio quando não há o que degradar.
+ */
+function papelito_braspress_probe_credentials( int $vendor_id ): string {
+	$integration = papelito_vendor_integration_resolve_braspress( $vendor_id );
+	if ( ! is_array( $integration ) ) {
+		return '';
+	}
+
+	$config  = is_array( $integration['config'] ?? null ) ? $integration['config'] : array();
+	$payload = papelito_braspress_build_quote_payload(
+		$integration,
+		(string) ( $config['sender_cnpj'] ?? '' ),
+		(string) ( $config['origin_cep'] ?? '' ),
+		papelito_braspress_credential_probe_package(),
+		PAPELITO_BRASPRESS_PROBE_VALUE_CENTS
+	);
+	if ( is_wp_error( $payload ) ) {
+		return '';
+	}
+
+	$started  = microtime( true );
+	$response = papelito_braspress_http_request( $integration, 'POST', PAPELITO_BRASPRESS_QUOTE_PATH, wp_json_encode( $payload ) );
+	if ( ! is_wp_error( $response ) ) {
+		return '';
+	}
+
+	$duration = (int) round( ( microtime( true ) - $started ) * 1000 );
+	$handled  = papelito_braspress_handle_transport_error( $integration, $response, 'credential_check', $duration );
+	$category = papelito_braspress_error_metadata( $handled )['category'];
+
+	return in_array( $category, array( PAPELITO_BRASPRESS_ERROR_AUTHENTICATION, PAPELITO_BRASPRESS_ERROR_ACCOUNT_BLOCKED ), true ) ? $category : '';
 }
 
 /**

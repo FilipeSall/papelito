@@ -43,6 +43,7 @@ function vendor_integration_assert( string $label, bool $condition ): void {
 	}
 }
 
+const VENDOR_TEST_ID          = 2163;
 const VENDOR_TEST_CNPJ_DIGITS = '20024291000165';
 const VENDOR_TEST_CEP_DIGITS  = '14711142';
 
@@ -92,6 +93,28 @@ vendor_integration_assert( 'leitura pública nunca inclui senha', ! array_key_ex
 vendor_integration_assert( 'leitura pública devolve a origem para pré-preencher o formulário', VENDOR_TEST_CEP_DIGITS === $public['config']['origin_cep'] );
 
 vendor_integration_assert( 'existe estado próprio para conta bloqueada na Braspress', 'provider_blocked' === PAPELITO_VENDOR_INTEGRATION_BLOCKED );
+
+$GLOBALS['probe_calls'] = array();
+
+/**
+ * Registra a sondagem que o gate da gravação deixou passar.
+ *
+ * @param int $vendor_id Vendor sondado.
+ * @return string Categoria degradante, sempre vazia neste fixture.
+ */
+function papelito_braspress_probe_credentials( int $vendor_id ): string {
+	$GLOBALS['probe_calls'][] = $vendor_id;
+
+	return '';
+}
+
+papelito_vendor_integration_probe_braspress_credentials( VENDOR_TEST_ID, true, PAPELITO_VENDOR_INTEGRATION_READY );
+vendor_integration_assert( 'integração habilitada e pronta sonda a credencial ao salvar', array( VENDOR_TEST_ID ) === $GLOBALS['probe_calls'] );
+
+papelito_vendor_integration_probe_braspress_credentials( VENDOR_TEST_ID, false, PAPELITO_VENDOR_INTEGRATION_READY );
+papelito_vendor_integration_probe_braspress_credentials( VENDOR_TEST_ID, true, PAPELITO_VENDOR_INTEGRATION_ACTIVE );
+papelito_vendor_integration_probe_braspress_credentials( VENDOR_TEST_ID, true, PAPELITO_VENDOR_INTEGRATION_INVALID );
+vendor_integration_assert( 'desabilitada, já ativa ou já recusada não gastam sondagem', array( VENDOR_TEST_ID ) === $GLOBALS['probe_calls'] );
 
 echo $failures > 0 ? "FAILED: {$failures}\n" : "OK\n";
 exit( $failures > 0 ? 1 : 0 );

@@ -1003,8 +1003,35 @@ function papelito_vendor_integration_write_braspress( int $vendor_id, array $pay
 		PAPELITO_VENDOR_INTEGRATION_AUDIT_SUCCESS
 	);
 	papelito_vendor_integration_security_event( $vendor_id, $action );
+	papelito_vendor_integration_probe_braspress_credentials( $vendor_id, $enabled, $status );
 
 	return papelito_vendor_integration_public_record( papelito_vendor_integration_find_row( $vendor_id ) );
+}
+
+/**
+ * Confere na Braspress a credencial que acabou de ser gravada.
+ *
+ * Sem isto o vendor habilita a integração com usuário e senha errados e só
+ * descobre quando um comprador tenta cotar, porque nada é enviado à
+ * transportadora ao salvar. A sondagem só faz sentido sobre uma integração
+ * habilitada e completa que ainda não provou a credencial: `active` já provou,
+ * e `invalid_credentials` continua marcada até o par ser substituído.
+ *
+ * @param int    $vendor_id ID do vendor dono da integração.
+ * @param bool   $enabled Se a integração ficou habilitada nesta gravação.
+ * @param string $status Estado gravado nesta escrita.
+ * @return void
+ */
+function papelito_vendor_integration_probe_braspress_credentials( int $vendor_id, bool $enabled, string $status ): void {
+	if ( ! $enabled || PAPELITO_VENDOR_INTEGRATION_READY !== $status ) {
+		return;
+	}
+
+	if ( ! function_exists( 'papelito_braspress_probe_credentials' ) ) {
+		return;
+	}
+
+	papelito_braspress_probe_credentials( $vendor_id );
 }
 
 /**
