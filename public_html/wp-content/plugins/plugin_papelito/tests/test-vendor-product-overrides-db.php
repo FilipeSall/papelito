@@ -201,10 +201,7 @@ try {
 	$product->set_description( '<p>Canônico V2.</p>' );
 	$product->save();
 	papelito_customization_db_check( 'igual ao canônico continua override', $before, papelito_vendor_product_customization_get( $product_id )['effective_description'] );
-	$restored = papelito_vendor_product_customization_restore( $product_id );
-	papelito_customization_db_check( 'restaura canônico atual', '<p>Canônico V2.</p>', $restored['effective_description'] );
-	papelito_customization_db_check( 'restaurado sem linha', null, $restored['vendor_description'] );
-	papelito_customization_db_check( 'DELETE idempotente', 'papelito', papelito_vendor_product_customization_restore( $product_id )['description_source'] );
+	papelito_customization_db_check( 'restauração descomissionada', false, function_exists( 'papelito_vendor_product_customization_restore' ) );
 
 	papelito_vendor_product_customization_save( $product_id, array( 'description' => 'Dormente' ) );
 	$summary_before = papelito_vendor_stock_summary( $users[0] );

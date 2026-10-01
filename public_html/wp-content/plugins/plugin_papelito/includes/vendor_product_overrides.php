@@ -146,27 +146,6 @@ function papelito_vendor_product_override_upsert( int $vendor_id, int $product_i
 	return false === $wpdb->query( $sql ) ? papelito_vendor_product_overrides_error() : true;
 }
 
-/**
- * Restaura o campo pela remoção do override; DELETE sem linha também tem sucesso.
- *
- * @return true|WP_Error
- */
-function papelito_vendor_product_override_delete( int $vendor_id, int $product_id ): bool|WP_Error {
-	global $wpdb;
-	if ( ! papelito_vendor_product_overrides_schema_ready() ) {
-		return papelito_vendor_product_overrides_error();
-	}
-	$result = $wpdb->delete(
-		papelito_vendor_product_overrides_table_name(),
-		array(
-			'vendor_id'  => $vendor_id,
-			'product_id' => $product_id,
-		),
-		array( '%d', '%d' )
-	);
-	return false === $result ? papelito_vendor_product_overrides_error() : true;
-}
-
 /** Apaga dependentes somente na exclusão definitiva do produto canônico. */
 function papelito_vendor_product_overrides_delete_product( int $product_id ): void {
 	global $wpdb;

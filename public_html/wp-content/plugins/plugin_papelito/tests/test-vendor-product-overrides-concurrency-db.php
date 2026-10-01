@@ -61,9 +61,12 @@ $customization_product_id = (int) $customization_fixture['product'];
 
 if ( 'worker' === $customization_mode ) {
 	for ( $customization_iteration = 0; $customization_iteration < 40; ++$customization_iteration ) {
-		$customization_result = 0 === $customization_iteration % 3
-			? papelito_vendor_product_override_delete( $customization_vendor, $customization_product_id )
-			: papelito_vendor_product_override_upsert( $customization_vendor, $customization_product_id, '<p>Worker ' . getmypid() . ':' . $customization_iteration . '.</p>' );
+		$customization_result = papelito_vendor_product_override_upsert(
+			$customization_vendor,
+			$customization_product_id,
+			'<p>Worker ' . getmypid() . ':' . $customization_iteration . '.</p>',
+			0 !== $customization_iteration % 3
+		);
 		if ( is_wp_error( $customization_result ) ) {
 			WP_CLI::error( $customization_result );
 		}

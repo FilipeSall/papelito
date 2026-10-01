@@ -69,7 +69,7 @@ try {
 	$public       = '/products/' . $product_id . '/presentation';
 
 	wp_set_current_user( 0 );
-	foreach ( array( 'GET', 'PUT', 'DELETE' ) as $method ) {
+	foreach ( array( 'GET', 'PUT' ) as $method ) {
 		papelito_customization_api_check( 'anônimo ' . $method, 401, papelito_customization_api_request( $method, $fixture_path, array( 'description' => 'X' ) )->get_status() );
 	}
 	foreach ( array_slice( $users, 2 ) as $fixture_id ) {
@@ -95,7 +95,7 @@ try {
 			)
 		)->get_status()
 	);
-	papelito_customization_api_check( 'DELETE não aceita identidade', 422, papelito_customization_api_request( 'DELETE', $fixture_path, array( 'vendor_id' => $users[1] ) )->get_status() );
+	papelito_customization_api_check( 'DELETE descomissionado', 404, papelito_customization_api_request( 'DELETE', $fixture_path )->get_status() );
 	wp_set_current_user( $users[1] );
 	papelito_customization_api_check( 'B não lê gestão de A', null, papelito_customization_api_request( 'GET', $fixture_path )->get_data()['vendor_description'] );
 	papelito_customization_api_request( 'PUT', $fixture_path, array( 'description' => '<p>Vendor B.</p>' ) );
@@ -133,14 +133,12 @@ try {
 	papelito_customization_api_check( 'suspenso lê', 200, papelito_customization_api_request( 'GET', $fixture_path )->get_status() );
 	papelito_customization_api_check( 'suspenso can_edit false', false, papelito_customization_api_request( 'GET', $fixture_path )->get_data()['can_edit'] );
 	papelito_customization_api_check( 'suspenso PUT', 403, papelito_customization_api_request( 'PUT', $fixture_path, array( 'description' => 'X' ) )->get_status() );
-	papelito_customization_api_check( 'suspenso DELETE', 403, papelito_customization_api_request( 'DELETE', $fixture_path )->get_status() );
 	papelito_customization_api_check( 'suspenso não expõe', 403, papelito_customization_api_request( 'GET', $public, null, array( 'vendor_id' => $users[0] ) )->get_status() );
 	update_user_meta( $users[0], PAPELITO_ACCOUNT_STATUS_META, 'active' );
 
 	$bucket = 'papelito_rl_vendor_product_customization_' . md5( 'user:' . $users[0] );
 	set_transient( $bucket, 30, 60 );
 	papelito_customization_api_check( 'rate limit PUT', 429, papelito_customization_api_request( 'PUT', $fixture_path, array( 'description' => 'X' ) )->get_status() );
-	papelito_customization_api_check( 'rate limit DELETE compartilha', 429, papelito_customization_api_request( 'DELETE', $fixture_path )->get_status() );
 	wp_set_current_user( $users[1] );
 	papelito_customization_api_check( 'rate limit individual', 200, papelito_customization_api_request( 'PUT', $fixture_path, array( 'description' => '<p>B atualizado.</p>' ) )->get_status() );
 	delete_transient( $bucket );
@@ -185,7 +183,7 @@ try {
 		$product = wc_get_product( $product_id );
 		$product->set_status( $fixture_status );
 		$product->save();
-		foreach ( array( 'GET', 'PUT', 'DELETE' ) as $method ) {
+		foreach ( array( 'GET', 'PUT' ) as $method ) {
 			papelito_customization_api_check( $fixture_status . ' ' . $method, 404, papelito_customization_api_request( $method, $fixture_path, 'PUT' === $method ? array( 'description' => 'X' ) : null )->get_status() );
 		}
 	}

@@ -672,6 +672,6 @@ CREATE TABLE wp_papelito_vendor_product_overrides (
 );
 ```
 
-O prefixo real vem de `$wpdb->prefix`. Relações lógicas com `wp_users.ID` e `wp_posts.ID`, sem FK física. Produto é o pai publicado da variação ou produto comercial do kit. Datas em UTC; UPSERT atômico preserva `created_at`. Tabela inicialmente vazia: ausência/NULL herda canônico. `description_enabled = 0` guarda o texto do vendor sem exibi-lo (a apresentação e o indicador de estoque herdam o canônico); apagar o texto exclui a linha. Não há snapshots, estoque, revisão ou histórico.
+O prefixo real vem de `$wpdb->prefix`. Relações lógicas com `wp_users.ID` e `wp_posts.ID`, sem FK física. Produto é o pai publicado da variação ou produto comercial do kit. Datas em UTC; UPSERT atômico preserva `created_at`. Tabela inicialmente vazia: ausência/NULL herda canônico. `description_enabled = 0` guarda o texto do vendor sem exibi-lo (a apresentação e o indicador de estoque herdam o canônico); a linha só sai com a exclusão definitiva do produto ou do vendor (não há restauração pela API). Não há snapshots, estoque, revisão ou histórico.
 
 Instalador registrado em `papelito_maybe_migrate_db()`; versão corrente apenas em `plugin_papelito.php`. Confere tabela, colunas necessárias e índices antes de reportar sucesso. `before_delete_post` limpa produtos excluídos permanentemente; `deleted_user` limpa vendedores. Rascunho/lixeira/suspensão/estoque zero preservam conteúdo dormente. Schema ausente não bloqueia a consulta de estoque: indicador null; leitura contextual/gestão retornam erro.

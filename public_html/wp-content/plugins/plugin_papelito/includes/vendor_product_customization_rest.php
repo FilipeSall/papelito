@@ -44,15 +44,6 @@ function papelito_vendor_product_customization_put_endpoint( WP_REST_Request $re
 	);
 }
 
-/** Restauração explícita, com representação canônica atual na resposta. */
-function papelito_vendor_product_customization_delete_endpoint( WP_REST_Request $request ): WP_REST_Response|WP_Error {
-	$body = $request->get_json_params();
-	if ( ! empty( $body ) ) {
-		return new WP_Error( 'papelito_customization_invalid_body', 'A restauração não aceita campos no corpo.', array( 'status' => 422 ) );
-	}
-	return papelito_vendor_product_customization_response( papelito_vendor_product_customization_restore( (int) $request->get_url_params()['product_id'] ) );
-}
-
 /** Leitura pública; vendor inválido não vira ausência de override silenciosa. */
 function papelito_product_presentation_endpoint( WP_REST_Request $request ): WP_REST_Response|WP_Error {
 	$vendor_id = $request->get_query_params()['vendor_id'] ?? null;
@@ -61,7 +52,7 @@ function papelito_product_presentation_endpoint( WP_REST_Request $request ): WP_
 	);
 }
 
-/** Registra as quatro operações com IDs positivos e permissões explícitas. */
+/** Registra as três operações com IDs positivos e permissões explícitas. */
 function papelito_vendor_product_customization_register_routes(): void {
 	$product_args = array(
 		'product_id' => array(
@@ -83,12 +74,6 @@ function papelito_vendor_product_customization_register_routes(): void {
 			array(
 				'methods'             => 'PUT',
 				'callback'            => 'papelito_vendor_product_customization_put_endpoint',
-				'permission_callback' => 'papelito_vendor_product_customization_write_permission',
-				'args'                => $product_args,
-			),
-			array(
-				'methods'             => 'DELETE',
-				'callback'            => 'papelito_vendor_product_customization_delete_endpoint',
 				'permission_callback' => 'papelito_vendor_product_customization_write_permission',
 				'args'                => $product_args,
 			),

@@ -170,7 +170,7 @@ function papelito_vendor_product_customization_get( int $product_id ): array|WP_
 }
 
 /**
- * Guarda comum às mutações, por usuário e compartilhada entre PUT e DELETE.
+ * Limite das gravações de descrição, por usuário.
  *
  * @return true|WP_Error
  */
@@ -205,26 +205,4 @@ function papelito_vendor_product_customization_save( int $product_id, mixed $pay
 	}
 	$saved = papelito_vendor_product_override_upsert( (int) $user->ID, $product->get_id(), $input['description'], $input['enabled'] );
 	return is_wp_error( $saved ) ? $saved : papelito_vendor_product_customization_view( $product, $user );
-}
-
-/**
- * Restaura por DELETE do par; não grava uma cópia da descrição original.
- *
- * @return array<string,mixed>|WP_Error
- */
-function papelito_vendor_product_customization_restore( int $product_id ): array|WP_Error {
-	$user = papelito_vendor_product_customization_require_seller( true );
-	if ( is_wp_error( $user ) ) {
-		return $user;
-	}
-	$product = papelito_vendor_product_customization_product( $product_id );
-	if ( is_wp_error( $product ) ) {
-		return $product;
-	}
-	$limit = papelito_vendor_product_customization_rate_limit( (int) $user->ID );
-	if ( is_wp_error( $limit ) ) {
-		return $limit;
-	}
-	$deleted = papelito_vendor_product_override_delete( (int) $user->ID, $product->get_id() );
-	return is_wp_error( $deleted ) ? $deleted : papelito_vendor_product_customization_view( $product, $user );
 }
