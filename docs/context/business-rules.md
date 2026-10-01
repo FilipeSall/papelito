@@ -206,6 +206,10 @@ Além disso: a query parte de `FROM wp_posts p LEFT JOIN papelito_vendor_stock v
 
 69. Erros retornam `WP_Error` com código `papelito_*` e o status HTTP em `get_error_data()['status']`. Teste deve afirmar `get_error_code()` **e** o status. Catálogo em [`../../../docs/integration-contracts.md`](../../../docs/integration-contracts.md#catálogo-de-erros-papelito_).
 
+## Agendamentos (WP-Cron)
+
+70. **Agendador que roda no `init` consulta `wp_next_scheduled()` com os mesmos args com que agenda.** O WP-Cron identifica o evento por hook + args, e a consulta sem args nunca acha um evento agendado com args. `papelito_legacy_schedule_email_cron()` caiu nisso e criava um evento por requisição: chegou a 35 mil eventos, uma option `cron` de 7,9 MB em autoload e ~1,5 s a mais em **toda** chamada ao WordPress. Os args vivem numa função (`papelito_legacy_email_cron_args()`), e a limpeza é `papelito_legacy_prune_email_cron()`, que usa `wp_unschedule_hook()` (uma só gravação da option, em vez de uma por evento). Sintoma para reconhecer: até um 401 anônimo demorando mais de 1 s.
+
 ## Ao refatorar
 
 Duas regras que evitaram estrago antes:

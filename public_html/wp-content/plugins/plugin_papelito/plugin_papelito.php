@@ -120,7 +120,7 @@ require_once __DIR__ . '/includes/packaging.php';
 require_once __DIR__ . '/includes/vendor_eligibility.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.55.0' );
+	define( 'PAPELITO_DB_VERSION', '1.56.0' );
 }
 
 /**
@@ -185,6 +185,7 @@ function papelito_maybe_migrate_db() {
 				'papelito_account_status_install_tables',
 				'papelito_order_refund_install_tables',
 				'papelito_pagarme_install_kyc_link_limits_table',
+				'papelito_legacy_prune_email_cron',
 			)
 		);
 

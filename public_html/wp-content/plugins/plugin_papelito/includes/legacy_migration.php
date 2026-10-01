@@ -417,12 +417,46 @@ function papelito_legacy_send_campaign_batch( string $campaign = 'initial_notice
 }
 add_action( PAPELITO_B2B_LEGACY_EMAIL_HOOK, 'papelito_legacy_send_campaign_batch', 10, 2 );
 
+/**
+ * Argumentos do lote horário da campanha legada.
+ *
+ * O WP-Cron identifica o evento pelo par hook + args: consultar o hook sem estes
+ * mesmos args nunca encontra o agendado, e cada requisição criava mais um evento.
+ *
+ * @return array{0:string,1:int} Campanha e tamanho do lote.
+ */
+function papelito_legacy_email_cron_args(): array {
+	return array( 'initial_notice', 25 );
+}
+
+/**
+ * Garante um único evento horário do lote legado, consultando com os mesmos args do agendamento.
+ *
+ * @return void
+ */
 function papelito_legacy_schedule_email_cron(): void {
-	if ( ! wp_next_scheduled( PAPELITO_B2B_LEGACY_EMAIL_HOOK ) ) {
-		wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', PAPELITO_B2B_LEGACY_EMAIL_HOOK, array( 'initial_notice', 25 ) );
+	$args = papelito_legacy_email_cron_args();
+	if ( ! wp_next_scheduled( PAPELITO_B2B_LEGACY_EMAIL_HOOK, $args ) ) {
+		wp_schedule_event( time() + HOUR_IN_SECONDS, 'hourly', PAPELITO_B2B_LEGACY_EMAIL_HOOK, $args );
 	}
 }
 add_action( 'init', 'papelito_legacy_schedule_email_cron' );
+
+/**
+ * Migração: apaga os eventos duplicados do lote legado e deixa exatamente um.
+ *
+ * `wp_unschedule_hook()` remove todas as variantes de args numa única gravação da
+ * option `cron`; desagendar evento a evento reescreveria vários MB por item.
+ *
+ * @return bool Se a option `cron` terminou com o evento esperado agendado.
+ */
+function papelito_legacy_prune_email_cron(): bool {
+	if ( is_wp_error( wp_unschedule_hook( PAPELITO_B2B_LEGACY_EMAIL_HOOK, true ) ) ) {
+		return false;
+	}
+	papelito_legacy_schedule_email_cron();
+	return false !== wp_next_scheduled( PAPELITO_B2B_LEGACY_EMAIL_HOOK, papelito_legacy_email_cron_args() );
+}
 
 function papelito_legacy_admin_capability(): bool {
 	return current_user_can( 'papelito_manage_companies' );
