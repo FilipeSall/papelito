@@ -35,7 +35,7 @@ function papelito_vendor_product_overrides_schema_ready( bool $refresh = false )
 	}
 
 	$columns = $wpdb->get_col( $wpdb->prepare( 'SHOW COLUMNS FROM %i', $table ) );
-	$needed  = array( 'vendor_id', 'product_id', 'description', 'created_at', 'updated_at' );
+	$needed  = array( 'vendor_id', 'product_id', 'description', 'description_enabled', 'created_at', 'updated_at' );
 	if ( array_diff( $needed, $columns ) ) {
 		return false;
 	}
@@ -64,6 +64,7 @@ function papelito_vendor_product_overrides_install_table(): bool {
   vendor_id bigint(20) unsigned NOT NULL,
   product_id bigint(20) unsigned NOT NULL,
   description LONGTEXT NULL,
+  description_enabled TINYINT(1) NOT NULL DEFAULT 1,
   created_at DATETIME NOT NULL,
   updated_at DATETIME NOT NULL,
   PRIMARY KEY  (vendor_id,product_id),
@@ -98,7 +99,7 @@ function papelito_vendor_product_overrides_get_many( int $vendor_id, array $prod
 	$params       = array_merge( array( $table, $vendor_id ), $ids );
 	$rows         = $wpdb->get_results(
 		// phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- IN contém apenas placeholders gerados; parâmetros são enviados como array.
-		$wpdb->prepare( "SELECT product_id, description, created_at, updated_at FROM %i WHERE vendor_id = %d AND product_id IN ({$placeholders})", $params ),
+		$wpdb->prepare( "SELECT product_id, description, description_enabled, created_at, updated_at FROM %i WHERE vendor_id = %d AND product_id IN ({$placeholders})", $params ),
 		ARRAY_A
 	);
 	if ( '' !== $wpdb->last_error ) {
@@ -106,29 +107,38 @@ function papelito_vendor_product_overrides_get_many( int $vendor_id, array $prod
 	}
 	$result = array();
 	foreach ( $rows as $row ) {
+		$row['description_enabled']         = '1' === (string) $row['description_enabled'];
 		$result[ (int) $row['product_id'] ] = $row;
 	}
 	return $result;
 }
 
 /**
- * Substitui atomicamente o texto do par, preservando a data de criação.
+ * Substitui atomicamente o texto do par e a escolha de exibi-lo, preservando a data de criação.
+ *
+ * Com `$enabled` falso o texto fica guardado e a loja mostra a descrição da Papelito.
+ *
+ * @param int    $vendor_id   Seller dono do texto.
+ * @param int    $product_id  Produto pai publicado ou produto comercial do kit.
+ * @param string $description Texto já sanitizado.
+ * @param bool   $enabled     Se a loja exibe o texto do vendor.
  *
  * @return true|WP_Error
  */
-function papelito_vendor_product_override_upsert( int $vendor_id, int $product_id, string $description ): bool|WP_Error {
+function papelito_vendor_product_override_upsert( int $vendor_id, int $product_id, string $description, bool $enabled = true ): bool|WP_Error {
 	global $wpdb;
 	if ( ! papelito_vendor_product_overrides_schema_ready() ) {
 		return papelito_vendor_product_overrides_error();
 	}
 	$now = current_time( 'mysql', true );
 	$sql = $wpdb->prepare(
-		'INSERT INTO %i (vendor_id, product_id, description, created_at, updated_at) VALUES (%d, %d, %s, %s, %s)
-		ON DUPLICATE KEY UPDATE description = VALUES(description), updated_at = VALUES(updated_at)',
+		'INSERT INTO %i (vendor_id, product_id, description, description_enabled, created_at, updated_at) VALUES (%d, %d, %s, %d, %s, %s)
+		ON DUPLICATE KEY UPDATE description = VALUES(description), description_enabled = VALUES(description_enabled), updated_at = VALUES(updated_at)',
 		papelito_vendor_product_overrides_table_name(),
 		$vendor_id,
 		$product_id,
 		$description,
+		$enabled ? 1 : 0,
 		$now,
 		$now
 	);

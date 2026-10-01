@@ -1507,7 +1507,7 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	if ( function_exists( 'papelito_vendor_product_overrides_schema_ready' ) && papelito_vendor_product_overrides_schema_ready() ) {
 		$override_table  = papelito_vendor_product_overrides_table_name();
 		$override_join   = "LEFT JOIN {$override_table} description_override ON description_override.product_id = {$effective_id} AND description_override.vendor_id = %d";
-		$override_select = '(description_override.description IS NOT NULL)';
+		$override_select = '(description_override.description IS NOT NULL AND description_override.description_enabled = 1)';
 		$override_params = array( $vendor_id );
 	}
 

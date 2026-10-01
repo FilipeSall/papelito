@@ -120,7 +120,7 @@ require_once __DIR__ . '/includes/packaging.php';
 require_once __DIR__ . '/includes/vendor_eligibility.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.56.0' );
+	define( 'PAPELITO_DB_VERSION', '1.57.0' );
 }
 
 /**

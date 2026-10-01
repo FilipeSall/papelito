@@ -13,10 +13,14 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Compõe os campos efetivos; o chamador já validou produto e contexto.
  *
+ * Texto do vendor desativado (`description_enabled` falso) fica guardado, mas a
+ * descrição efetiva volta a ser a canônica.
+ *
  * @return array<string,mixed>
  */
 function papelito_product_presentation_compose( WC_Product $product, ?int $vendor_id, ?array $override ): array {
-	$vendor_description = $override['description'] ?? null;
+	$vendor_enabled     = false !== ( $override['description_enabled'] ?? true );
+	$vendor_description = $vendor_enabled ? ( $override['description'] ?? null ) : null;
 	$description        = $vendor_description ?? $product->get_description( 'edit' );
 	$short_description  = $product->get_short_description( 'edit' );
 	return array(

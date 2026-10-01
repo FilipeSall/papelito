@@ -80,12 +80,29 @@ function papelito_vendor_product_customization_text_length( string $description 
 }
 
 /**
- * Aceita somente a descrição e limita o texto sanitizado, sem contar HTML nem truncar.
+ * Confere o formato do corpo: `description` obrigatória e `use_vendor_description` opcional, nada além.
  *
- * @return string|WP_Error
+ * @param mixed $payload Corpo JSON já decodificado.
  */
-function papelito_vendor_product_customization_validate( mixed $payload ): string|WP_Error {
-	if ( ! is_array( $payload ) || array( 'description' ) !== array_keys( $payload ) || ! is_string( $payload['description'] ) ) {
+function papelito_vendor_product_customization_payload_shape_ok( mixed $payload ): bool {
+	if ( ! is_array( $payload ) || ! isset( $payload['description'] ) || ! is_string( $payload['description'] ) ) {
+		return false;
+	}
+	if ( array_diff( array_keys( $payload ), array( 'description', 'use_vendor_description' ) ) ) {
+		return false;
+	}
+	return ! array_key_exists( 'use_vendor_description', $payload ) || is_bool( $payload['use_vendor_description'] );
+}
+
+/**
+ * Aceita a descrição e a escolha de exibi-la, limitando o texto sanitizado sem contar HTML nem truncar.
+ *
+ * Sem `use_vendor_description`, o texto salvo passa a ser exibido, como antes do campo existir.
+ *
+ * @return array{description:string,enabled:bool}|WP_Error
+ */
+function papelito_vendor_product_customization_validate( mixed $payload ): array|WP_Error {
+	if ( ! papelito_vendor_product_customization_payload_shape_ok( $payload ) ) {
 		return new WP_Error( 'papelito_customization_invalid_description', 'Envie somente uma descrição em texto.', array( 'status' => 422 ) );
 	}
 	$raw = $payload['description'];
@@ -105,9 +122,12 @@ function papelito_vendor_product_customization_validate( mixed $payload ): strin
 		return new WP_Error( 'papelito_customization_invalid_description', 'A descrição deve ter no máximo 20.000 caracteres.', array( 'status' => 422 ) );
 	}
 	if ( ! papelito_vendor_product_customization_has_text( $description ) ) {
-		return new WP_Error( 'papelito_customization_invalid_description', 'Preencha uma descrição. Para usar a original, restaure a descrição da Papelito.', array( 'status' => 422 ) );
+		return new WP_Error( 'papelito_customization_invalid_description', 'Preencha uma descrição. Para usar a original, escolha a descrição da Papelito.', array( 'status' => 422 ) );
 	}
-	return $description;
+	return array(
+		'description' => $description,
+		'enabled'     => $payload['use_vendor_description'] ?? true,
+	);
 }
 
 /**
@@ -123,14 +143,15 @@ function papelito_vendor_product_customization_view( WC_Product $product, WP_Use
 	$row          = $rows[ $product->get_id() ] ?? null;
 	$presentation = papelito_product_presentation_compose( $product, (int) $user->ID, $row );
 	return array(
-		'product_id'            => $product->get_id(),
-		'vendor_id'             => (int) $user->ID,
-		'canonical_description' => $product->get_description( 'edit' ),
-		'vendor_description'    => $row['description'] ?? null,
-		'effective_description' => $presentation['description'],
-		'description_source'    => $presentation['description_source'],
-		'can_edit'              => ! papelito_account_is_suspended( (int) $user->ID ),
-		'updated_at'            => $row['updated_at'] ?? null,
+		'product_id'                 => $product->get_id(),
+		'vendor_id'                  => (int) $user->ID,
+		'canonical_description'      => $product->get_description( 'edit' ),
+		'vendor_description'         => $row['description'] ?? null,
+		'vendor_description_enabled' => null !== $row && true === $row['description_enabled'],
+		'effective_description'      => $presentation['description'],
+		'description_source'         => $presentation['description_source'],
+		'can_edit'                   => ! papelito_account_is_suspended( (int) $user->ID ),
+		'updated_at'                 => $row['updated_at'] ?? null,
 	);
 }
 
@@ -178,11 +199,11 @@ function papelito_vendor_product_customization_save( int $product_id, mixed $pay
 	if ( is_wp_error( $limit ) ) {
 		return $limit;
 	}
-	$description = papelito_vendor_product_customization_validate( $payload );
-	if ( is_wp_error( $description ) ) {
-		return $description;
+	$input = papelito_vendor_product_customization_validate( $payload );
+	if ( is_wp_error( $input ) ) {
+		return $input;
 	}
-	$saved = papelito_vendor_product_override_upsert( (int) $user->ID, $product->get_id(), $description );
+	$saved = papelito_vendor_product_override_upsert( (int) $user->ID, $product->get_id(), $input['description'], $input['enabled'] );
 	return is_wp_error( $saved ) ? $saved : papelito_vendor_product_customization_view( $product, $user );
 }
 

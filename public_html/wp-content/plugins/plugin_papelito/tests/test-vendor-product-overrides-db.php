@@ -126,6 +126,50 @@ try {
 		papelito_customization_db_check( 'listagem sem descrição', false, isset( $item['description'] ) );
 	}
 
+	$kept = papelito_vendor_product_customization_save(
+		$product_id,
+		array(
+			'description'            => '<p>Vendor A guardado.</p>',
+			'use_vendor_description' => false,
+		)
+	);
+	papelito_customization_db_check( 'desligado guarda o texto', '<p>Vendor A guardado.</p>', $kept['vendor_description'] );
+	papelito_customization_db_check( 'desligado expõe a escolha', false, $kept['vendor_description_enabled'] );
+	papelito_customization_db_check( 'desligado volta à Papelito', 'papelito', $kept['description_source'] );
+	papelito_customization_db_check( 'desligado mostra o canônico', $before, $kept['effective_description'] );
+	$disabled_stock = papelito_vendor_stock_query(
+		$users[0],
+		array(
+			'search'   => $product->get_name(),
+			'per_page' => 100,
+		)
+	);
+	foreach ( $disabled_stock['items'] as $item ) {
+		papelito_customization_db_check( 'indicador some com texto desligado', false, $item['has_description_override'] ?? null );
+	}
+	$enabled = papelito_vendor_product_customization_save(
+		$product_id,
+		array(
+			'description'            => '<p>Vendor A.</p>',
+			'use_vendor_description' => true,
+		)
+	);
+	papelito_customization_db_check( 'religado volta ao vendor', 'vendor', $enabled['description_source'] );
+	papelito_customization_db_check( 'religado expõe a escolha', true, $enabled['vendor_description_enabled'] );
+	foreach ( array( 'sim', 1, null ) as $invalid_choice ) {
+		papelito_customization_db_error(
+			'escolha não booleana',
+			422,
+			papelito_vendor_product_customization_save(
+				$product_id,
+				array(
+					'description'            => '<p>X</p>',
+					'use_vendor_description' => $invalid_choice,
+				)
+			)
+		);
+	}
+
 	foreach ( array( '', '   ', null, '<p></p>', '<p>&nbsp;</p>', '<p>&#160;</p>', "<p>\u{200B}</p>", str_repeat( 'á', 20001 ) ) as $invalid ) {
 		papelito_customization_db_error( 'texto inválido', 422, papelito_vendor_product_customization_save( $product_id, array( 'description' => $invalid ) ) );
 	}

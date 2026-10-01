@@ -145,6 +145,16 @@ papelito_customization_unit_check( 'override', '<p>Vendor.</p>', $override['desc
 papelito_customization_unit_check( 'origem vendor', 'vendor', $override['description_source'] );
 papelito_customization_unit_check( 'resumo separado', '<p>Resumo.</p>', $override['summary'] );
 papelito_customization_unit_check( 'NULL herda', 'papelito', papelito_product_presentation_compose( $product, 45, array( 'description' => null ) )['description_source'] );
+$disabled = papelito_product_presentation_compose(
+	$product,
+	45,
+	array(
+		'description'         => '<p>Guardado.</p>',
+		'description_enabled' => false,
+	)
+);
+papelito_customization_unit_check( 'texto desligado não aparece', $product->description, $disabled['description'] );
+papelito_customization_unit_check( 'texto desligado é origem Papelito', 'papelito', $disabled['description_source'] );
 papelito_customization_unit_check( 'igual permanece override', 'vendor', papelito_product_presentation_compose( $product, 45, array( 'description' => $product->description ) )['description_source'] );
 papelito_customization_unit_check( 'variação normaliza', 1, papelito_vendor_product_customization_product( 2 )->get_id() );
 $product->status = 'draft';
