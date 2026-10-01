@@ -1376,16 +1376,16 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 		$type = 'products';
 	}
 
-	$tables                 = papelito_vendor_stock_table_names();
-	$posts                  = $wpdb->posts;
-	$postmeta               = $wpdb->postmeta;
+	$tables                  = papelito_vendor_stock_table_names();
+	$posts                   = $wpdb->posts;
+	$postmeta                = $wpdb->postmeta;
 	$kit_availability_sql    = 'COALESCE(vs.qty, 0)';
 	$kit_availability_params = array();
 
 	if ( function_exists( 'papelito_kits_table_names' ) ) {
-		$kits_tables          = papelito_kits_table_names();
-		$kit_exists           = "EXISTS ( SELECT 1 FROM {$kits_tables['kits']} papelito_stock_kit WHERE papelito_stock_kit.product_id = p.ID )";
-		$kit_availability_sql = "CASE WHEN {$kit_exists} THEN COALESCE((SELECT MIN(FLOOR(COALESCE(papelito_stock_component.qty, 0) / papelito_stock_item.quantity)) FROM {$kits_tables['items']} papelito_stock_item LEFT JOIN {$tables['stock']} papelito_stock_component ON papelito_stock_component.product_id = papelito_stock_item.product_id AND papelito_stock_component.vendor_id = %d WHERE papelito_stock_item.kit_id = (SELECT id FROM {$kits_tables['kits']} papelito_stock_kit_id WHERE papelito_stock_kit_id.product_id = p.ID LIMIT 1) AND papelito_stock_item.quantity > 0), 0) ELSE COALESCE(vs.qty, 0) END";
+		$kits_tables             = papelito_kits_table_names();
+		$kit_exists              = "EXISTS ( SELECT 1 FROM {$kits_tables['kits']} papelito_stock_kit WHERE papelito_stock_kit.product_id = p.ID )";
+		$kit_availability_sql    = "CASE WHEN {$kit_exists} THEN COALESCE((SELECT MIN(FLOOR(COALESCE(papelito_stock_component.qty, 0) / papelito_stock_item.quantity)) FROM {$kits_tables['items']} papelito_stock_item LEFT JOIN {$tables['stock']} papelito_stock_component ON papelito_stock_component.product_id = papelito_stock_item.product_id AND papelito_stock_component.vendor_id = %d WHERE papelito_stock_item.kit_id = (SELECT id FROM {$kits_tables['kits']} papelito_stock_kit_id WHERE papelito_stock_kit_id.product_id = p.ID LIMIT 1) AND papelito_stock_item.quantity > 0), 0) ELSE COALESCE(vs.qty, 0) END";
 		$kit_availability_params = array( $vendor_id );
 	}
 
@@ -1501,17 +1501,29 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 		$sort_params = $kit_availability_params;
 	}
 
+	$override_join   = '';
+	$override_select = 'NULL';
+	$override_params = array();
+	if ( function_exists( 'papelito_vendor_product_overrides_schema_ready' ) && papelito_vendor_product_overrides_schema_ready() ) {
+		$override_table  = papelito_vendor_product_overrides_table_name();
+		$override_join   = "LEFT JOIN {$override_table} description_override ON description_override.product_id = {$effective_id} AND description_override.vendor_id = %d";
+		$override_select = '(description_override.description IS NOT NULL)';
+		$override_params = array( $vendor_id );
+	}
+
 	$select_sql = "SELECT p.ID AS product_id, COALESCE(vs.qty, 0) AS qty, vs.updated_at, vs.notified_zero_at,
-				p.post_title AS product_name, sku.meta_value AS sku, {$effective_id} AS effective_id
+				p.post_title AS product_name, sku.meta_value AS sku, {$effective_id} AS effective_id,
+				{$override_select} AS has_description_override
 			FROM {$posts} p
 			LEFT JOIN {$tables['stock']} vs ON vs.product_id = p.ID AND vs.vendor_id = %d
+			{$override_join}
 			{$join_sku}
 			{$tax_joins}
 			WHERE {$where_sql}
 			{$group_sql}
 			ORDER BY {$sort_sql}";
 
-	$select_params = array_merge( array( $vendor_id ), $tax_params, $params, $sort_params );
+	$select_params = array_merge( array( $vendor_id ), $override_params, $tax_params, $params, $sort_params );
 
 	if ( $paginate ) {
 		$offset          = ( $page - 1 ) * $per_page;
@@ -1543,24 +1555,25 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 		$audit           = papelito_vendor_stock_product_audit( $effective, '' !== $image_url );
 		$qty             = (int) ( $row['qty'] ?? 0 );
 		$items[]         = array(
-			'product_id'           => $product_id,
-			'public_product_id'    => $effective,
-			'is_publicly_viewable' => $audit['publicly_viewable'],
-			'missing_fields'       => $audit['missing'],
-			'product_name'         => (string) ( $row['product_name'] ?? '' ),
-			'sku'                  => (string) ( $row['sku'] ?? '' ),
-			'qty'                  => $qty,
-			'updated_at'           => (string) ( $row['updated_at'] ?? '' ),
-			'is_zeroed'            => 0 === $qty,
+			'product_id'               => $product_id,
+			'public_product_id'        => $effective,
+			'has_description_override' => isset( $row['has_description_override'] ) ? (bool) $row['has_description_override'] : null,
+			'is_publicly_viewable'     => $audit['publicly_viewable'],
+			'missing_fields'           => $audit['missing'],
+			'product_name'             => (string) ( $row['product_name'] ?? '' ),
+			'sku'                      => (string) ( $row['sku'] ?? '' ),
+			'qty'                      => $qty,
+			'updated_at'               => (string) ( $row['updated_at'] ?? '' ),
+			'is_zeroed'                => 0 === $qty,
 			// `null` no join e ausencia de linha: o vendor nunca lancou saldo desse produto.
-			'is_unconfigured'      => null === ( $row['qty'] ?? null ),
-			'image_url'            => $image_url,
-			'history'              => array(),
-			'effective_id'         => $effective,
-			'categories'           => array(),
-			'subcategories'        => array(),
-			'tags'                 => array(),
-			'kit'                  => null,
+			'is_unconfigured'          => null === ( $row['qty'] ?? null ),
+			'image_url'                => $image_url,
+			'history'                  => array(),
+			'effective_id'             => $effective,
+			'categories'               => array(),
+			'subcategories'            => array(),
+			'tags'                     => array(),
+			'kit'                      => null,
 		);
 	}
 

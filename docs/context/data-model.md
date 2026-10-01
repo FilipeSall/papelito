@@ -656,3 +656,21 @@ versão viaja no envelope e a chave anterior ainda resolve.
 > antes de todos os vendors terem salvado de novo torna a integração deles
 > irrecuperável — e o sintoma é `papelito_vendor_integration_secret_unavailable`
 > no checkout, não um erro no painel.
+
+### `wp_papelito_vendor_product_overrides`
+
+```sql
+CREATE TABLE wp_papelito_vendor_product_overrides (
+  vendor_id BIGINT(20) UNSIGNED NOT NULL,
+  product_id BIGINT(20) UNSIGNED NOT NULL,
+  description LONGTEXT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (vendor_id, product_id),
+  KEY idx_product (product_id)
+);
+```
+
+O prefixo real vem de `$wpdb->prefix`. Relações lógicas com `wp_users.ID` e `wp_posts.ID`, sem FK física. Produto é o pai publicado da variação ou produto comercial do kit. Datas em UTC; UPSERT atômico preserva `created_at`. Tabela inicialmente vazia: ausência/NULL herda canônico; restauração na V1 exclui a linha. Não há snapshots, estoque, flag ativa, revisão ou histórico.
+
+Instalador registrado em `papelito_maybe_migrate_db()`; versão corrente apenas em `plugin_papelito.php`. Confere tabela, colunas necessárias e índices antes de reportar sucesso. `before_delete_post` limpa produtos excluídos permanentemente; `deleted_user` limpa vendedores. Rascunho/lixeira/suspensão/estoque zero preservam conteúdo dormente. Schema ausente não bloqueia a consulta de estoque: indicador null; leitura contextual/gestão retornam erro.
