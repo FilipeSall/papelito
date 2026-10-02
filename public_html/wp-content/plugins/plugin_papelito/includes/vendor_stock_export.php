@@ -2,10 +2,10 @@
 /**
  * Exportação do estoque do vendor para conciliar com o ERP ou a planilha dele.
  *
- * Uma linha por item vendável do catálogo, inclusive os nunca configurados,
- * com SKU da Papelito e código do vendor lado a lado. Kits ficam de fora: não
- * têm saldo próprio. Códigos e SKUs saem sempre como texto, preservando zeros
- * à esquerda.
+ * Uma linha por item vendável do catálogo, inclusive os nunca configurados.
+ * A coluna SKU é a que o vendor vê na tela: o código dele quando existe, senão
+ * o SKU da Papelito — sem coluna separada para os dois. Kits ficam de fora: não
+ * têm saldo próprio. O SKU sai sempre como texto, preservando zeros à esquerda.
  *
  * @package Papelito
  */
@@ -18,14 +18,14 @@ defined( 'ABSPATH' ) || exit;
  * @return string[]
  */
 function papelito_vendor_stock_export_header(): array {
-	return array( 'SKU Papelito', 'Seu código', 'Produto', 'Quantidade', 'Atualizado em' );
+	return array( 'SKU', 'Produto', 'Quantidade', 'Atualizado em' );
 }
 
 /**
  * Linhas do catálogo inteiro do vendor, ordenadas por nome.
  *
  * @param int $vendor_id Vendor autenticado.
- * @return array<int,array{sku:string,vendor_code:string,product_name:string,qty:int,updated_at:string}>
+ * @return array<int,array{sku:string,product_name:string,qty:int,updated_at:string}>
  */
 function papelito_vendor_stock_export_rows( int $vendor_id ): array {
 	$snapshot = papelito_vendor_stock_query(
@@ -38,8 +38,7 @@ function papelito_vendor_stock_export_rows( int $vendor_id ): array {
 	);
 	return array_map(
 		static fn( array $item ): array => array(
-			'sku'          => (string) $item['sku'],
-			'vendor_code'  => (string) ( $item['vendor_code'] ?? '' ),
+			'sku'          => (string) ( $item['vendor_code'] ?? $item['sku'] ),
 			'product_name' => papelito_admin_reports_normalize_export_text( $item['product_name'] ),
 			'qty'          => (int) $item['qty'],
 			'updated_at'   => (string) $item['updated_at'],
@@ -70,7 +69,7 @@ function papelito_vendor_stock_export_csv( array $rows ): string {
 }
 
 /**
- * Escreve uma linha na planilha com SKU e código forçados como texto.
+ * Escreve uma linha na planilha com o SKU forçado como texto.
  *
  * @param object                   $sheet     Planilha ativa do PhpSpreadsheet.
  * @param array<string,string|int> $row       Linha exportada.
@@ -79,10 +78,9 @@ function papelito_vendor_stock_export_csv( array $rows ): string {
 function papelito_vendor_stock_export_xlsx_row( object $sheet, array $row, int $row_index ): void {
 	$text = \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING;
 	$sheet->setCellValueExplicit( 'A' . $row_index, $row['sku'], $text );
-	$sheet->setCellValueExplicit( 'B' . $row_index, $row['vendor_code'], $text );
-	$sheet->setCellValueExplicit( 'C' . $row_index, $row['product_name'], $text );
-	$sheet->setCellValue( 'D' . $row_index, $row['qty'] );
-	$sheet->setCellValueExplicit( 'E' . $row_index, $row['updated_at'], $text );
+	$sheet->setCellValueExplicit( 'B' . $row_index, $row['product_name'], $text );
+	$sheet->setCellValue( 'C' . $row_index, $row['qty'] );
+	$sheet->setCellValueExplicit( 'D' . $row_index, $row['updated_at'], $text );
 }
 
 /**
@@ -104,7 +102,7 @@ function papelito_vendor_stock_export_xlsx( array $rows ): string|WP_Error {
 		foreach ( array_values( $rows ) as $offset => $row ) {
 			papelito_vendor_stock_export_xlsx_row( $sheet, $row, $offset + 2 );
 		}
-		foreach ( range( 'A', 'E' ) as $column ) {
+		foreach ( range( 'A', 'D' ) as $column ) {
 			$sheet->getColumnDimension( $column )->setAutoSize( true );
 		}
 		$writer = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx( $spreadsheet );

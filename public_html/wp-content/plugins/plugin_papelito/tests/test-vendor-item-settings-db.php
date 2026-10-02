@@ -135,6 +135,12 @@ try {
 	$variation_id = $variation->save();
 	$products[]   = $variation_id;
 
+	$plain = new WC_Product_Simple();
+	$plain->set_name( ITEM_SETTINGS_TEST_FIXTURE_LOGIN . wp_generate_uuid4() );
+	$plain->set_status( 'publish' );
+	$plain_id   = $plain->save();
+	$products[] = $plain_id;
+
 	$draft = new WC_Product_Simple();
 	$draft->set_name( ITEM_SETTINGS_TEST_FIXTURE_LOGIN . wp_generate_uuid4() );
 	$draft->set_status( 'draft' );
@@ -212,9 +218,10 @@ try {
 	papelito_item_settings_db_check( 'envelope sinaliza disponibilidade', true, papelito_vendor_stock_query( $vendor_a, array( 'per_page' => 1 ) )['vendor_code_available'] );
 
 	$export = array_column( papelito_vendor_stock_export_rows( $vendor_a ), null, 'product_name' );
-	papelito_item_settings_db_check( 'export traz o código', ITEM_SETTINGS_TEST_CODE_A, $export[ $simple->get_name() ]['vendor_code'] ?? null );
-	papelito_item_settings_db_check( 'export traz o SKU', $sku_before, $export[ $simple->get_name() ]['sku'] ?? null );
-	papelito_item_settings_db_check( 'CSV mantém zeros à esquerda', true, str_contains( papelito_vendor_stock_export_csv( array_values( $export ) ), ';' . ITEM_SETTINGS_TEST_CODE_A . ';' ) );
+	papelito_item_settings_db_check( 'export mostra o código do vendor como SKU', ITEM_SETTINGS_TEST_CODE_A, $export[ $simple->get_name() ]['sku'] ?? null );
+	papelito_item_settings_db_check( 'export sem coluna do SKU da Papelito', false, isset( $export[ $simple->get_name() ]['vendor_code'] ) );
+	papelito_item_settings_db_check( 'export cai no SKU da Papelito sem código', (string) get_post_meta( $plain_id, '_sku', true ), $export[ $plain->get_name() ]['sku'] ?? null );
+	papelito_item_settings_db_check( 'CSV mantém zeros à esquerda', true, str_contains( papelito_vendor_stock_export_csv( array_values( $export ) ), "\n" . ITEM_SETTINGS_TEST_CODE_A . ';' ) );
 
 	$route    = '/vendor/me/products/' . $simple_id . '/settings';
 	$response = papelito_item_settings_db_request( 'PATCH', $route, array( 'vendor_code' => '' ) );
