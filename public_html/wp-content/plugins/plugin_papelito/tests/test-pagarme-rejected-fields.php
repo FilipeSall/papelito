@@ -13,8 +13,11 @@
 
 define( 'ABSPATH', __DIR__ );
 
-const REJ_TEST_VENDOR_ID   = 8120;
-const REJ_TEST_HOLDER_LIMIT = 'Bank account holder name must be lower than 30 characters.';
+const REJ_TEST_VENDOR_ID         = 8120;
+const REJ_TEST_HOLDER_LIMIT       = 'Bank account holder name must be lower than 30 characters.';
+const REJ_TEST_HOLDER_LIMIT_PT    = 'O nome do titular da conta precisa ter menos de 30 caracteres.';
+const REJ_TEST_HOLDER_SUMMARY     = 'A Pagar.me recusou o cadastro do recebedor. Revise: Nome do titular da conta.';
+const REJ_TEST_REQUEST_FAILED     = 'papelito_pagarme_request_failed';
 
 /**
  * Erro sintético do WordPress.
@@ -140,7 +143,7 @@ function rej_error( array $details ): WP_Error {
 /** Monta o WP_Error de uma recusa que veio só como frase, sem mapa de campos. */
 function rej_message_error( string $message ): WP_Error {
 	return new WP_Error(
-		'papelito_pagarme_request_failed',
+		REJ_TEST_REQUEST_FAILED,
 		$message,
 		array( 'status' => 422, 'pagarme_body' => array( 'message' => $message ) )
 	);
@@ -151,7 +154,7 @@ $agencia = rej_first( 'default_bank_account.branch_number: The branch_number fie
 rej_assert( 'a agência é reconhecida', 'bank_account.branch_number' === ( $agencia['field'] ?? '' ) );
 rej_assert( 'com rótulo legível e acentuado', 'Agência' === ( $agencia['label'] ?? '' ) );
 rej_assert( 'e orientação do que fazer', str_contains( (string) ( $agencia['hint'] ?? '' ), 'quatro dígitos' ) );
-rej_assert( 'preservando a frase da Pagar.me', str_contains( (string) ( $agencia['detail'] ?? '' ), 'branch_number field is invalid' ) );
+rej_assert( 'com a frase da Pagar.me traduzida', 'Valor inválido.' === ( $agencia['detail'] ?? '' ) );
 
 echo "Scenario 2: o campo citado só na mensagem também é reconhecido\n";
 rej_assert( 'agência longa demais', 'bank_account.branch_number' === ( rej_first( 'invalid_parameter: agencia | Value too long' )['field'] ?? '' ) );
@@ -162,7 +165,7 @@ echo "Scenario 3: o titular da conta ganha a orientação do CNPJ e do limite de
 $titular = rej_first( 'default_bank_account.holder_document: holder_document must match the recipient document' );
 rej_assert( 'documento do titular vence documento da empresa', 'bank_account.holder_document' === ( $titular['field'] ?? '' ) );
 rej_assert( 'e explica que a conta tem de ser PJ', str_contains( (string) ( $titular['hint'] ?? '' ), 'CNPJ da empresa' ) );
-rej_assert( 'nome do titular cita o limite de 30 caracteres', str_contains( (string) ( rej_first( 'default_bank_account.holder_name: must have 30 characters or fewer' )['hint'] ?? '' ), '30 caracteres' ) );
+rej_assert( 'nome do titular cita o limite de 29 caracteres', str_contains( (string) ( rej_first( 'default_bank_account.holder_name: must have 30 characters or fewer' )['hint'] ?? '' ), '29 caracteres' ) );
 
 echo "Scenario 4: o índice do sócio não atrapalha o reconhecimento\n";
 $socio = rej_first( 'register_information.managing_partners[0].document: The document field is invalid' );
@@ -214,7 +217,7 @@ echo "Scenario 10: recusa que vem só como frase também nomeia o campo\n";
 $frase = papelito_pagarme_rejected_fields_from_error( rej_message_error( REJ_TEST_HOLDER_LIMIT ) );
 rej_assert( 'o caso real do titular longo demais vira uma linha', 1 === count( $frase ) );
 rej_assert( 'apontando o nome do titular', 'bank_account.holder_name' === ( $frase[0]['field'] ?? '' ) );
-rej_assert( 'com a frase original preservada', REJ_TEST_HOLDER_LIMIT === ( $frase[0]['detail'] ?? '' ) );
+rej_assert( 'com a frase da Pagar.me em portugues', REJ_TEST_HOLDER_LIMIT_PT === ( $frase[0]['detail'] ?? '' ) );
 rej_assert( 'frase genérica não vira linha', 0 === count( papelito_pagarme_rejected_fields_from_error( rej_message_error( 'The request is invalid.' ) ) ) );
 rej_assert( 'sem corpo nenhum também não vira linha', 0 === count( papelito_pagarme_rejected_fields_from_error( new WP_Error( 'x', 'y', array( 'status' => 500 ) ) ) ) );
 rej_assert( 'details continua tendo precedência sobre message', 'bank_account.branch_number' === ( papelito_pagarme_rejected_fields_from_error( rej_error( array( 'default_bank_account.branch_number: required' ) ) )[0]['field'] ?? '' ) );
@@ -222,12 +225,13 @@ rej_assert( 'details continua tendo precedência sobre message', 'bank_account.b
 echo "Scenario 11: vendor travado antes da tradução não precisa de nova tentativa\n";
 $GLOBALS['rej_test_meta'] = array(
 	PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META        => REJ_TEST_HOLDER_LIMIT,
-	PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META   => 'papelito_pagarme_request_failed',
+	PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META   => REJ_TEST_REQUEST_FAILED,
 	PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META => wp_json_encode( array( 'message' => REJ_TEST_HOLDER_LIMIT ) ),
 );
 $legado = papelito_pagarme_get_vendor_rejected_fields( REJ_TEST_VENDOR_ID );
 rej_assert( 'o diagnóstico antigo vira campo recusado', 1 === count( $legado ) );
 rej_assert( 'apontando o nome do titular', 'bank_account.holder_name' === ( $legado[0]['field'] ?? '' ) );
+rej_assert( 'e a frase em inglês gravada antes é lida em português', REJ_TEST_HOLDER_SUMMARY === papelito_pagarme_get_vendor_recipient_state( REJ_TEST_VENDOR_ID )['last_error'] );
 $GLOBALS['rej_test_meta'][ PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META ] = wp_json_encode(
 	array( 'message' => 'The request is invalid.', 'details' => array( 'register_information.managing_partners[0].document: invalid' ) )
 );
@@ -242,6 +246,17 @@ papelito_pagarme_save_vendor_recipient_state( REJ_TEST_VENDOR_ID, array( 'id' =>
 $limpo = papelito_pagarme_get_vendor_recipient_state( REJ_TEST_VENDOR_ID );
 rej_assert( 'nenhum campo recusado sobra', 0 === count( $limpo['last_error_fields'] ) );
 rej_assert( 'e o estado fica ativo', 'active' === $limpo['status'] );
+
+echo "Scenario 13: a mensagem guardada para o vendor sai em português\n";
+papelito_pagarme_save_vendor_recipient_error( REJ_TEST_VENDOR_ID, rej_message_error( REJ_TEST_HOLDER_LIMIT ) );
+rej_assert( 'a recusa da Pagar.me vira frase em português', REJ_TEST_HOLDER_SUMMARY === $GLOBALS['rej_test_meta'][ PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META ] );
+rej_assert( 'o diagnóstico cru continua guardado para o suporte', str_contains( (string) $GLOBALS['rej_test_meta'][ PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META ], REJ_TEST_HOLDER_LIMIT ) );
+papelito_pagarme_save_vendor_recipient_error( REJ_TEST_VENDOR_ID, rej_message_error( 'The request is invalid.' ) );
+rej_assert( 'recusa sem campo pede ajuda em português', str_starts_with( (string) $GLOBALS['rej_test_meta'][ PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META ], 'A Pagar.me recusou o cadastro do recebedor sem apontar o campo' ) );
+papelito_pagarme_save_vendor_recipient_error( REJ_TEST_VENDOR_ID, new WP_Error( 'papelito_pagarme_invalid_holder_name', 'Mensagem local.', array( 'status' => 422 ) ) );
+rej_assert( 'erro gerado pela Papelito passa intacto', 'Mensagem local.' === $GLOBALS['rej_test_meta'][ PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META ] );
+rej_assert( 'frase sem tradução conhecida passa como veio', 'the flux capacitor is misaligned' === papelito_pagarme_translate_detail( 'the flux capacitor is misaligned' ) );
+$GLOBALS['rej_test_meta'] = array();
 
 echo "\n";
 echo 0 === $failures ? "OK: campos recusados pela Pagar.me\n" : "FAIL: {$failures} verificações\n";

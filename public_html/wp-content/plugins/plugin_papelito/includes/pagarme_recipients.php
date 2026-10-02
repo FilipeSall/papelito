@@ -136,7 +136,7 @@ function papelito_pagarme_rejected_bank_fields(): array {
 			'field' => 'bank_account.holder_name',
 			'group' => 'bank_account',
 			'label' => 'Nome do titular da conta',
-			'hint'  => 'Use a razão social como aparece no banco, com no máximo 30 caracteres.',
+			'hint'  => 'Use a razão social como aparece no banco, com no máximo 29 caracteres. Abrevie se precisar.',
 		),
 		array(
 			'match' => array( 'branch_check_digit', 'agencia_dv' ),
@@ -406,11 +406,78 @@ function papelito_pagarme_rejected_fields_from_details( array $details ): array 
 			'group'  => null === $entry ? 'outros' : (string) $entry['group'],
 			'label'  => null === $entry ? 'Outro dado do cadastro' : (string) $entry['label'],
 			'hint'   => null === $entry ? 'A Pagar.me recusou um dado que a Papelito ainda não sabe nomear. Envie esta mensagem ao suporte.' : (string) $entry['hint'],
-			'detail' => papelito_pagarme_trim_detail( $text ),
+			'detail' => papelito_pagarme_trim_detail( papelito_pagarme_translate_detail( $text ) ),
 		);
 	}
 
 	return array_values( $fields );
+}
+
+/**
+ * Frases de validacao da Pagar.me com traducao conhecida, da mais especifica para a mais generica.
+ *
+ * Cada par e expressao regular e frase em portugues; o primeiro grupo capturado, quando existe,
+ * entra no `%s` da frase.
+ *
+ * @return array<int,array{0:string,1:string}>
+ */
+function papelito_pagarme_detail_translations(): array {
+	return array(
+		array( '/holder name must be lower than (\d+) characters/i', 'O nome do titular da conta precisa ter menos de %s caracteres.' ),
+		array( '/must be lower than (\d+) characters/i', 'O valor precisa ter menos de %s caracteres.' ),
+		array( '/must have (\d+) characters or fewer/i', 'O valor pode ter no máximo %s caracteres.' ),
+		array( '/must be greater than (\d+)/i', 'O valor precisa ser maior que %s.' ),
+		array( '/value too long/i', 'Valor longo demais.' ),
+		array( '/value too short/i', 'Valor curto demais.' ),
+		array( '/invalid format/i', 'Formato inválido.' ),
+		array( '/\bis invalid\b/i', 'Valor inválido.' ),
+		array( '/\brequired\b/i', 'Campo obrigatório.' ),
+	);
+}
+
+/**
+ * Traduz para portugues a frase de validacao que a Pagar.me devolve em ingles.
+ *
+ * So a frase exibida muda: a busca no catalogo continua sobre o texto cru, e o original segue em
+ * `last_error_detail` para o suporte. Frase sem traducao conhecida passa como veio, para o vendor
+ * nao perder a unica pista do que foi recusado.
+ *
+ * @param string $detail Detalhe sanitizado.
+ * @return string Frase em portugues, ou a original.
+ */
+function papelito_pagarme_translate_detail( string $detail ): string {
+	foreach ( papelito_pagarme_detail_translations() as list( $pattern, $translation ) ) {
+		if ( 1 === preg_match( $pattern, $detail, $matches ) ) {
+			return sprintf( $translation, $matches[1] ?? '' );
+		}
+	}
+
+	return $detail;
+}
+
+/**
+ * Frase em portugues que vai para `last_error` quando a Pagar.me recusa o cadastro.
+ *
+ * O cliente HTTP repassa a mensagem da Pagar.me como veio, quase sempre em ingles, e era ela que
+ * o vendor lia. A recusa de validacao vira uma frase que nomeia os campos a revisar; erro gerado
+ * pela propria Papelito ja nasce em portugues e passa intacto. Aplicada tambem na leitura, cobre
+ * o vendor que ficou com a frase em ingles gravada antes desta traducao.
+ *
+ * @param string                          $code    Codigo estavel do erro.
+ * @param string                          $message Mensagem original.
+ * @param array<int,array<string,string>> $fields  Campos recusados ja traduzidos.
+ * @return string
+ */
+function papelito_pagarme_recipient_error_summary( string $code, string $message, array $fields ): string {
+	if ( 'papelito_pagarme_request_failed' !== $code ) {
+		return $message;
+	}
+
+	if ( empty( $fields ) ) {
+		return 'A Pagar.me recusou o cadastro do recebedor sem apontar o campo. Fale com a Papelito para revisar os dados.';
+	}
+
+	return 'A Pagar.me recusou o cadastro do recebedor. Revise: ' . implode( ', ', array_column( $fields, 'label' ) ) . '.';
 }
 
 /**
@@ -560,15 +627,17 @@ function papelito_pagarme_rejected_fields_from_legacy_detail( int $user_id ): ar
  * @param WP_Error|string $error   Erro ou mensagem.
  */
 function papelito_pagarme_save_vendor_recipient_error( int $user_id, $error ): void {
-	$message = $error instanceof WP_Error ? $error->get_error_message() : (string) $error;
+	$code    = $error instanceof WP_Error ? sanitize_key( (string) $error->get_error_code() ) : '';
+	$fields  = papelito_pagarme_rejected_fields_from_error( $error );
+	$message = papelito_pagarme_recipient_error_summary(
+		$code,
+		$error instanceof WP_Error ? $error->get_error_message() : (string) $error,
+		$fields
+	);
 
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, papelito_current_utc_mysql() );
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, sanitize_text_field( $message ) );
-	update_user_meta(
-		$user_id,
-		PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META,
-		$error instanceof WP_Error ? sanitize_key( (string) $error->get_error_code() ) : ''
-	);
+	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META, $code );
 
 	$detail = '';
 
@@ -583,7 +652,6 @@ function papelito_pagarme_save_vendor_recipient_error( int $user_id, $error ): v
 
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_DETAIL_META, $detail );
 
-	$fields  = papelito_pagarme_rejected_fields_from_error( $error );
 	$encoded = empty( $fields ) ? '' : wp_json_encode( $fields, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 
 	update_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_FIELDS_META, is_string( $encoded ) ? $encoded : '' );
@@ -624,15 +692,19 @@ function papelito_pagarme_recipient_error_response( WP_Error $error ): WP_Error 
  * @return array<string,mixed>
  */
 function papelito_pagarme_get_vendor_recipient_state( int $user_id ): array {
+	$last_error        = sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, true ) );
+	$last_error_code   = sanitize_key( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META, true ) );
+	$last_error_fields = papelito_pagarme_get_vendor_rejected_fields( $user_id );
+
 	return array(
 		'recipient_id'      => papelito_pagarme_get_vendor_recipient_id( $user_id ),
 		'status'            => papelito_pagarme_get_vendor_recipient_status( $user_id ),
 		'kyc_status'        => sanitize_key( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_STATUS_META, true ) ),
 		'kyc_status_reason' => sanitize_key( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_KYC_STATUS_REASON_META, true ) ),
 		'last_sync_at'      => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_SYNC_META, true ) ),
-		'last_error'        => sanitize_text_field( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_META, true ) ),
-		'last_error_code'   => sanitize_key( (string) get_user_meta( $user_id, PAPELITO_PAGARME_RECIPIENT_LAST_ERROR_CODE_META, true ) ),
-		'last_error_fields' => papelito_pagarme_get_vendor_rejected_fields( $user_id ),
+		'last_error'        => '' === $last_error ? '' : papelito_pagarme_recipient_error_summary( $last_error_code, $last_error, $last_error_fields ),
+		'last_error_code'   => $last_error_code,
+		'last_error_fields' => $last_error_fields,
 	);
 }
 
@@ -976,7 +1048,31 @@ function papelito_pagarme_validate_recipient_context( array $context ) {
 		);
 	}
 
-	return null;
+	return papelito_pagarme_holder_name_error( $context['bank_account'], (string) $context['store_name'] );
+}
+
+/**
+ * Recusa, antes de chamar a Pagar.me, o titular que ela rejeitaria por tamanho.
+ *
+ * Confere o mesmo nome que `papelito_pagarme_bank_account_payload()` envia, inclusive o
+ * `store_name` usado quando o draft nao traz `holderName`.
+ *
+ * @param array<string,mixed> $bank_account Conta bancaria do draft.
+ * @param string              $store_name   Nome da loja, usado na falta do titular.
+ * @return WP_Error|null `papelito_pagarme_invalid_holder_name` (422), ou nulo quando cabe.
+ */
+function papelito_pagarme_holder_name_error( array $bank_account, string $store_name ): ?WP_Error {
+	$holder_name = sanitize_text_field( (string) ( $bank_account['holderName'] ?? $store_name ) );
+
+	if ( ! papelito_vendor_bank_holder_name_is_too_long( $holder_name ) ) {
+		return null;
+	}
+
+	return new WP_Error(
+		'papelito_pagarme_invalid_holder_name',
+		PAPELITO_VENDOR_BANK_HOLDER_NAME_TOO_LONG_MESSAGE,
+		array( 'status' => 422 )
+	);
 }
 
 /**
@@ -1113,6 +1209,12 @@ function papelito_pagarme_build_recipient_bank_account_payload( int $user_id ) {
 			'A conta bancária do recebedor precisa estar no CNPJ da empresa (conta PJ).',
 			array( 'status' => 422 )
 		);
+	}
+
+	$holder_name_error = papelito_pagarme_holder_name_error( $bank_account, $store_name );
+
+	if ( $holder_name_error instanceof WP_Error ) {
+		return $holder_name_error;
 	}
 
 	return papelito_pagarme_bank_account_payload( $bank_account, $store_name, $cnpj );

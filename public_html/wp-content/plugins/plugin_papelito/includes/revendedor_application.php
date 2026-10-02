@@ -37,6 +37,8 @@ const PAPELITO_VENDOR_BANK_CODE_PATTERN                   = '/^\d{3}$/';
 const PAPELITO_VENDOR_DIGITS_PATTERN                      = '/^\d+$/';
 const PAPELITO_VENDOR_ACCOUNT_CHECK_DIGIT_PATTERN         = '/^[0-9A-Za-z]+$/';
 const PAPELITO_VENDOR_BANK_HOLDER_MISMATCH_MESSAGE       = 'A conta bancária precisa estar no CNPJ da empresa (conta PJ).';
+const PAPELITO_VENDOR_BANK_HOLDER_NAME_MAX_LENGTH        = 29;
+const PAPELITO_VENDOR_BANK_HOLDER_NAME_TOO_LONG_MESSAGE  = 'O nome do titular da conta pode ter no máximo 29 caracteres. Abrevie a razão social como ela aparece no banco.';
 const PAPELITO_VENDOR_MISSING_STORE_NAME_MESSAGE         = 'Informe o nome da loja.';
 const PAPELITO_VENDOR_UNAUTHENTICATED_MESSAGE            = 'Usuario nao autenticado.';
 const PAPELITO_VENDOR_INVALID_PAYLOAD_MESSAGE            = 'Payload invalido.';
@@ -605,6 +607,20 @@ function papelito_vendor_bank_holder_matches_recipient( array $bank_account, str
 }
 
 /**
+ * Indica se o nome do titular passa do limite que a Pagar.me aceita em `holder_name`.
+ *
+ * A Pagar.me recusa o recebedor inteiro com "Bank account holder name must be lower than 30
+ * characters."; checar aqui devolve o motivo em portugues antes de qualquer chamada. Conta em
+ * caracteres, nao em bytes: razao social acentuada nao pode estourar antes da hora.
+ *
+ * @param string $holder_name Nome do titular como esta no draft.
+ * @return bool
+ */
+function papelito_vendor_bank_holder_name_is_too_long( string $holder_name ): bool {
+	return mb_strlen( trim( $holder_name ), 'UTF-8' ) > PAPELITO_VENDOR_BANK_HOLDER_NAME_MAX_LENGTH;
+}
+
+/**
  * Coleta campos bancarios pendentes do step 3.
  *
  * @param array  $step3 Dados do step 3.
@@ -615,8 +631,9 @@ function papelito_collect_vendor_pending_bank_fields( array $step3, string $cnpj
 	$pending         = array();
 	$bank_account    = isset( $step3['bankAccount'] ) && is_array( $step3['bankAccount'] ) ? $step3['bankAccount'] : array();
 	$holder_document = (string) ( $bank_account['holderDocument'] ?? '' );
+	$holder_name     = sanitize_text_field( (string) ( $bank_account['holderName'] ?? '' ) );
 
-	if ( '' === sanitize_text_field( (string) ( $bank_account['holderName'] ?? '' ) ) ) {
+	if ( '' === $holder_name || papelito_vendor_bank_holder_name_is_too_long( $holder_name ) ) {
 		$pending[] = 'bankAccount.holderName';
 	}
 	if ( ! papelito_revendedor_validate_cnpj( $holder_document ) || ! papelito_vendor_bank_holder_matches_recipient( $bank_account, $cnpj ) ) {
@@ -1347,8 +1364,11 @@ function papelito_validate_vendor_pagarme_partner_fields( array $step3, WP_Error
 function papelito_validate_vendor_pagarme_bank_fields( array $step3, WP_Error $errors ): void {
 	$bank_account = isset( $step3['bankAccount'] ) && is_array( $step3['bankAccount'] ) ? $step3['bankAccount'] : array();
 	$holder_type  = sanitize_text_field( (string) ( $bank_account['holderType'] ?? '' ) );
-	if ( '' === sanitize_text_field( (string) ( $bank_account['holderName'] ?? '' ) ) ) {
+	$holder_name  = sanitize_text_field( (string) ( $bank_account['holderName'] ?? '' ) );
+	if ( '' === $holder_name ) {
 		$errors->add( 'bankHolderName', 'Informe o titular da conta.' );
+	} elseif ( papelito_vendor_bank_holder_name_is_too_long( $holder_name ) ) {
+		$errors->add( 'bankHolderName', PAPELITO_VENDOR_BANK_HOLDER_NAME_TOO_LONG_MESSAGE );
 	}
 
 	$holder_document = (string) ( $bank_account['holderDocument'] ?? '' );
@@ -2315,6 +2335,8 @@ function papelito_admin_vendors_normalize_bank_account( $bank_account ) {
 
 	if ( '' === $normalized['holderName'] ) {
 		$errors->add( 'bankHolderName', 'Informe o titular da conta.' );
+	} elseif ( papelito_vendor_bank_holder_name_is_too_long( $normalized['holderName'] ) ) {
+		$errors->add( 'bankHolderName', PAPELITO_VENDOR_BANK_HOLDER_NAME_TOO_LONG_MESSAGE );
 	}
 
 	if ( 'company' !== $holder_type ) {

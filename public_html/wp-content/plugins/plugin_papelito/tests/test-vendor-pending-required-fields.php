@@ -20,6 +20,8 @@
 define( 'ABSPATH', __DIR__ );
 define( 'PAPELITO_TEST_PARTNER_NAME', 'Ana Souza' );
 define( 'PAPELITO_TEST_PARTNER_MOTHER_NAME', 'Maria Souza' );
+define( 'PAPELITO_TEST_LONG_HOLDER_NAME', 'Cifal Comercial de Tabacos Ltda' );
+define( 'PAPELITO_TEST_ACCENTED_HOLDER_NAME', 'Distribuidora São João Ltda M' );
 
 /**
  * Stub inerte do registrador de acoes.
@@ -256,7 +258,7 @@ function papelito_test_complete_draft(): array {
 			),
 		),
 		'bankAccount'      => array(
-			'holderName'        => 'Cifal Comercial de Tabacos Ltda',
+			'holderName'        => 'Cifal Com de Tabacos Ltda',
 			'holderType'        => 'company',
 			'holderDocument'    => '11.444.777/0001-61',
 			'bankCode'          => '341',
@@ -386,6 +388,56 @@ papelito_assert(
 	null,
 	papelito_pagarme_validate_recipient_context( $recipient_context )
 );
+
+echo "\nNome do titular respeita o limite de caracteres da Pagar.me\n";
+
+$titular_longo                              = papelito_test_complete_draft();
+$titular_longo['bankAccount']['holderName'] = PAPELITO_TEST_LONG_HOLDER_NAME;
+
+papelito_assert(
+	'titular com 31 caracteres deixa o nome do titular pendente',
+	array( 'bankAccount.holderName' ),
+	papelito_collect_vendor_pending_registration_fields( $titular_longo, $valid_phone, $vendor_cnpj )
+);
+
+$titular_acentuado                              = papelito_test_complete_draft();
+$titular_acentuado['bankAccount']['holderName'] = PAPELITO_TEST_ACCENTED_HOLDER_NAME;
+
+papelito_assert(
+	'titular acentuado com 29 caracteres e contado por caractere, nao por byte',
+	array(),
+	papelito_collect_vendor_pending_registration_fields( $titular_acentuado, $valid_phone, $vendor_cnpj )
+);
+
+$titular_errors = papelito_validate_vendor_pagarme_step3( $titular_longo );
+papelito_assert(
+	'o validador estrito recusa o titular longo',
+	true,
+	$titular_errors instanceof WP_Error && in_array( 'bankHolderName', $titular_errors->codes, true )
+);
+
+papelito_assert(
+	'a recusa explica o limite em portugues',
+	true,
+	str_contains( PAPELITO_VENDOR_BANK_HOLDER_NAME_TOO_LONG_MESSAGE, 'no máximo 29 caracteres' )
+);
+
+$admin_titular = papelito_admin_vendors_normalize_bank_account( $titular_longo['bankAccount'] );
+papelito_assert(
+	'o admin nao grava conta com titular longo demais',
+	true,
+	$admin_titular instanceof WP_Error && in_array( 'bankHolderName', $admin_titular->codes, true )
+);
+
+$recipient_context['bank_account'] = $titular_longo['bankAccount'];
+$holder_too_long                   = papelito_pagarme_validate_recipient_context( $recipient_context );
+papelito_assert(
+	'a Pagar.me nao e chamada com titular longo demais',
+	'papelito_pagarme_invalid_holder_name',
+	$holder_too_long instanceof WP_Error ? $holder_too_long->get_error_code() : 'sem erro'
+);
+
+$recipient_context['bank_account'] = papelito_test_complete_draft()['bankAccount'];
 
 echo "\nTelefone passou a ser obrigatorio\n";
 
