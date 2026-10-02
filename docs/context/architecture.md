@@ -94,6 +94,8 @@ O chamador passa um spec (`code_prefix`, `max_bytes`, `formats`, `fallback_basen
 | `products_filter.php` | filtro de produtos por CEP |
 | `vendor_geo.php` | geocodificação de CEP e haversine |
 | `vendor_stock.php` | estoque por vendor, log e a query do painel |
+| `vendor_item_settings.php` / `vendor_item_settings_rest.php` | código do ERP do vendor por item (tabela `papelito_vendor_item_settings`) e a rota `/vendor/me/products/{id}/settings` |
+| `vendor_stock_export.php` | planilha de estoque do vendor (`/vendor/me/stock/export`), com SKU e código como texto |
 | `active_vendor.php` | vendor ativo do comprador |
 | `favorites.php` | favoritos |
 | `flash_sale.php` | campanha de flash sale |

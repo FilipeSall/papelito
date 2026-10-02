@@ -675,3 +675,31 @@ CREATE TABLE wp_papelito_vendor_product_overrides (
 O prefixo real vem de `$wpdb->prefix`. Relações lógicas com `wp_users.ID` e `wp_posts.ID`, sem FK física. Produto é o pai publicado da variação ou produto comercial do kit. Datas em UTC; UPSERT atômico preserva `created_at`. Tabela inicialmente vazia: ausência/NULL herda canônico. `description_enabled = 0` guarda o texto do vendor sem exibi-lo (a apresentação e o indicador de estoque herdam o canônico); a linha só sai com a exclusão definitiva do produto ou do vendor (não há restauração pela API). Não há snapshots, estoque, revisão ou histórico.
 
 Instalador registrado em `papelito_maybe_migrate_db()`; versão corrente apenas em `plugin_papelito.php`. Confere tabela, colunas necessárias e índices antes de reportar sucesso. `before_delete_post` limpa produtos excluídos permanentemente; `deleted_user` limpa vendedores. Rascunho/lixeira/suspensão/estoque zero preservam conteúdo dormente. Schema ausente não bloqueia a consulta de estoque: indicador null; leitura contextual/gestão retornam erro.
+
+### `wp_papelito_vendor_item_settings`
+
+```sql
+CREATE TABLE wp_papelito_vendor_item_settings (
+  vendor_id BIGINT(20) UNSIGNED NOT NULL,
+  product_id BIGINT(20) UNSIGNED NOT NULL,
+  vendor_code VARCHAR(60) NULL DEFAULT NULL,
+  created_at DATETIME NOT NULL,
+  updated_at DATETIME NOT NULL,
+  PRIMARY KEY (vendor_id, product_id),
+  KEY idx_vendor_code (vendor_id, vendor_code),
+  KEY idx_product (product_id)
+);
+```
+
+Atributos do vendor por **item vendável** que não são quantidade. Hoje só `vendor_code`, o código do ERP do vendor para o item. `product_id` é o produto simples, o produto comercial do kit ou a **variação** — nunca sobe para o pai. Escrita em `includes/vendor_item_settings.php`: UPSERT preservando `created_at`; apagar grava `NULL` e remove a linha quando nenhum atributo sobra (`papelito_vendor_item_settings_clear_code()`). `before_delete_post` (produto ou variação) e `deleted_user` limpam. Charset do banco, sem `ascii_bin`.
+
+Por que três tabelas vendor × produto, e não uma:
+
+| Tabela | Grão | Papel |
+|---|---|---|
+| `papelito_vendor_stock` | item | quantidade. Travada (`FOR UPDATE`) a cada pedido; **ausência da linha = "não configurado"** |
+| `papelito_vendor_item_settings` | item | atributos do vendor que não são quantidade |
+| `papelito_vendor_product_overrides` | produto pai | conteúdo (descrição) |
+
+Unificar quebraria duas coisas: a descrição é do pai e o resto é por variação, e qualquer atributo na linha de estoque disputa a trava do pedido e cria a linha que hoje significa "não configurado". **Regra de entrada da tabela nova:** só atributo do vendor, por item, que não seja quantidade; cada um em coluna explícita (nada de chave/valor); nada que a baixa de estoque precise ler. Coluna nova entra no `CREATE TABLE`, na checagem de `papelito_vendor_item_settings_inspect_schema()` e na condição de remoção de `papelito_vendor_item_settings_clear_code()`.
+

@@ -56,6 +56,9 @@ require_once __DIR__ . '/includes/vendor_product_overrides.php';
 require_once __DIR__ . '/includes/vendor_product_customization.php';
 require_once __DIR__ . '/includes/product_presentation.php';
 require_once __DIR__ . '/includes/vendor_product_customization_rest.php';
+require_once __DIR__ . '/includes/vendor_item_settings.php';
+require_once __DIR__ . '/includes/vendor_item_settings_rest.php';
+require_once __DIR__ . '/includes/vendor_stock_export.php';
 require_once __DIR__ . '/includes/merchandise.php';
 require_once __DIR__ . '/includes/kits.php';
 require_once __DIR__ . '/includes/notification_emails.php';
@@ -120,7 +123,7 @@ require_once __DIR__ . '/includes/packaging.php';
 require_once __DIR__ . '/includes/vendor_eligibility.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.57.0' );
+	define( 'PAPELITO_DB_VERSION', '1.58.0' );
 }
 
 /**
@@ -157,6 +160,7 @@ function papelito_maybe_migrate_db() {
 			array(
 				'papelito_vendor_stock_install_tables',
 				'papelito_vendor_product_overrides_install_table',
+				'papelito_vendor_item_settings_install_table',
 				'papelito_merchandise_install_tables',
 				'papelito_kits_install_tables',
 				'papelito_kits_normalize_legacy_images',

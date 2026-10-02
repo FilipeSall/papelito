@@ -1301,11 +1301,48 @@ function papelito_vendor_stock_kit_compositions( int $vendor_id, array $product_
 }
 
 /**
+ * Peças de SQL do código do vendor na listagem de estoque.
+ *
+ * Sem o schema de `papelito_vendor_item_settings`, a listagem segue sem código:
+ * busca só por nome e SKU, `vendor_code` nulo e o filtro de ausência ignorado.
+ *
+ * @param int  $vendor_id    Vendor da listagem, amarrado no JOIN.
+ * @param bool $missing_only Restringe aos itens sem código do vendor.
+ * @return array{available:bool,join:string,join_params:int[],select:string,search:string,search_terms:int,where:string[]}
+ */
+function papelito_vendor_stock_item_settings_sql( int $vendor_id, bool $missing_only ): array {
+	$search = 'p.post_title LIKE %s OR sku.meta_value LIKE %s';
+	if ( ! function_exists( 'papelito_vendor_item_settings_schema_ready' ) || ! papelito_vendor_item_settings_schema_ready() ) {
+		return array(
+			'available'    => false,
+			'join'         => '',
+			'join_params'  => array(),
+			'select'       => 'NULL',
+			'search'       => "({$search})",
+			'search_terms' => 2,
+			'where'        => array(),
+		);
+	}
+	$table = papelito_vendor_item_settings_table_name();
+	return array(
+		'available'    => true,
+		'join'         => "LEFT JOIN {$table} item_settings ON item_settings.product_id = p.ID AND item_settings.vendor_id = %d",
+		'join_params'  => array( $vendor_id ),
+		'select'       => 'item_settings.vendor_code',
+		'search'       => "({$search} OR item_settings.vendor_code LIKE %s)",
+		'search_terms' => 3,
+		'where'        => $missing_only ? array( 'item_settings.vendor_code IS NULL' ) : array(),
+	);
+}
+
+/**
  * Lista paginada de estoque de um vendor com busca opcional por nome/SKU.
  *
  * @param int   $vendor_id Vendor alvo.
  * @param array $args      Argumentos: page (>=1), per_page (1-100),
- *                         search (string), filter (all|with_stock|zeroed_only),
+ *                         search (string: nome, SKU ou código do vendor),
+ *                         filter (all|with_stock|zeroed_only),
+ *                         vendor_code (missing: só itens sem código do vendor),
  *                         sort (name_asc|name_desc|qty_desc|qty_asc|updated_desc),
  *                         category (int: term_id com a flag off, id da categoria
  *                         Papelito com ela ligada), subcategories (csv|array de
@@ -1324,6 +1361,8 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	$filter    = (string) ( $args['filter'] ?? 'all' );
 	$paginate  = ! isset( $args['paginate'] ) || (bool) $args['paginate'];
 	$history   = ! empty( $args['include_history'] );
+
+	$item_settings = papelito_vendor_stock_item_settings_sql( $vendor_id, 'missing' === ( $args['vendor_code'] ?? '' ) );
 
 	$sort     = (string) ( $args['sort'] ?? 'name_asc' );
 	$sort_map = array(
@@ -1411,11 +1450,12 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	}
 
 	if ( '' !== $search ) {
-		$like     = '%' . $wpdb->esc_like( $search ) . '%';
-		$where[]  = '(p.post_title LIKE %s OR sku.meta_value LIKE %s)';
-		$params[] = $like;
-		$params[] = $like;
+		$like    = '%' . $wpdb->esc_like( $search ) . '%';
+		$where[] = $item_settings['search'];
+		$params  = array_merge( $params, array_fill( 0, $item_settings['search_terms'], $like ) );
 	}
+
+	$where = array_merge( $where, $item_settings['where'] );
 
 	$where_sql = implode( ' AND ', $where );
 
@@ -1484,11 +1524,12 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 
 	$count_sql = "SELECT COUNT(DISTINCT p.ID) FROM {$posts} p
 		LEFT JOIN {$tables['stock']} vs ON vs.product_id = p.ID AND vs.vendor_id = %d
+		{$item_settings['join']}
 		{$join_sku}
 		{$tax_joins}
 		WHERE {$where_sql}";
 
-	$count_params = array_merge( array( $vendor_id ), $tax_params, $params );
+	$count_params = array_merge( array( $vendor_id ), $item_settings['join_params'], $tax_params, $params );
 
 	$total = (int) $wpdb->get_var( $wpdb->prepare( $count_sql, $count_params ) );
 
@@ -1513,17 +1554,18 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 
 	$select_sql = "SELECT p.ID AS product_id, COALESCE(vs.qty, 0) AS qty, vs.updated_at, vs.notified_zero_at,
 				p.post_title AS product_name, sku.meta_value AS sku, {$effective_id} AS effective_id,
-				{$override_select} AS has_description_override
+				{$override_select} AS has_description_override, {$item_settings['select']} AS vendor_code
 			FROM {$posts} p
 			LEFT JOIN {$tables['stock']} vs ON vs.product_id = p.ID AND vs.vendor_id = %d
 			{$override_join}
+			{$item_settings['join']}
 			{$join_sku}
 			{$tax_joins}
 			WHERE {$where_sql}
 			{$group_sql}
 			ORDER BY {$sort_sql}";
 
-	$select_params = array_merge( array( $vendor_id ), $override_params, $tax_params, $params, $sort_params );
+	$select_params = array_merge( array( $vendor_id ), $override_params, $item_settings['join_params'], $tax_params, $params, $sort_params );
 
 	if ( $paginate ) {
 		$offset          = ( $page - 1 ) * $per_page;
@@ -1562,6 +1604,7 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 			'missing_fields'           => $audit['missing'],
 			'product_name'             => (string) ( $row['product_name'] ?? '' ),
 			'sku'                      => (string) ( $row['sku'] ?? '' ),
+			'vendor_code'              => $row['vendor_code'] ?? null,
 			'qty'                      => $qty,
 			'updated_at'               => (string) ( $row['updated_at'] ?? '' ),
 			'is_zeroed'                => 0 === $qty,
@@ -1652,11 +1695,12 @@ function papelito_vendor_stock_query( $vendor_id, $args ) {
 	}
 
 	return array(
-		'items'               => $items,
-		'total'               => $total,
-		'page'                => $page,
-		'per_page'            => $paginate ? $per_page : max( 1, $total ),
-		'low_stock_threshold' => papelito_vendor_stock_low_threshold(),
+		'items'                 => $items,
+		'total'                 => $total,
+		'page'                  => $page,
+		'per_page'              => $paginate ? $per_page : max( 1, $total ),
+		'low_stock_threshold'   => papelito_vendor_stock_low_threshold(),
+		'vendor_code_available' => $item_settings['available'],
 	);
 }
 
@@ -1896,6 +1940,13 @@ add_action(
 						'type'    => 'string',
 						'default' => 'name_asc',
 					),
+					'vendor_code'   => array(
+						'type'              => 'string',
+						'default'           => '',
+						'sanitize_callback' => static function ( $value ) {
+							return 'missing' === $value ? 'missing' : '';
+						},
+					),
 				),
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$user = wp_get_current_user();
@@ -1914,6 +1965,7 @@ add_action(
 							'collection'    => (string) $request->get_param( 'collection' ),
 							'type'          => (string) $request->get_param( 'type' ),
 							'sort'          => (string) $request->get_param( 'sort' ),
+							'vendor_code'   => (string) $request->get_param( 'vendor_code' ),
 						)
 					);
 
@@ -2187,6 +2239,13 @@ add_action(
 						'type'    => 'string',
 						'default' => 'name_asc',
 					),
+					'vendor_code'   => array(
+						'type'              => 'string',
+						'default'           => '',
+						'sanitize_callback' => static function ( $value ) {
+							return 'missing' === $value ? 'missing' : '';
+						},
+					),
 				),
 				'callback'            => static function ( WP_REST_Request $request ) {
 					$vendor_id = (int) $request->get_param( 'id' );
@@ -2210,6 +2269,7 @@ add_action(
 							'collection'      => (string) $request->get_param( 'collection' ),
 							'type'            => (string) $request->get_param( 'type' ),
 							'sort'            => (string) $request->get_param( 'sort' ),
+							'vendor_code'     => (string) $request->get_param( 'vendor_code' ),
 							'include_history' => true,
 						)
 					);
