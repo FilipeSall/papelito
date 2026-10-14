@@ -152,8 +152,12 @@ function wp_check_password( mixed $password, mixed $hash, mixed $user_id = '' ):
 function is_email( mixed $value ): bool { return str_contains( (string) $value, '@' ); }
 /** Nenhum e-mail é enviado. */
 function wp_mail( mixed ...$args ): bool { return true; }
-/** Limite de escrita controlado pela fixture. */
-function papelito_auth_rate_limit( mixed ...$args ): bool { return (bool) $GLOBALS['hard_rate_ok']; }
+/** Limite de escrita controlado pela fixture; registra o balde e a cota pedidos. */
+function papelito_auth_rate_limit( mixed ...$args ): bool {
+	$GLOBALS['hard_rate_calls'][] = $args;
+
+	return (bool) $GLOBALS['hard_rate_ok'];
+}
 /** Transients em memória, para o teste medir a deduplicação. */
 function get_transient( mixed $key ): mixed { return $GLOBALS['hard_transients'][ (string) $key ] ?? false; }
 /** Grava o transient em memória. */
@@ -218,6 +222,7 @@ function hard_reset( ?array $row = null ): void {
 	$GLOBALS['hard_row']        = $row;
 	$GLOBALS['hard_audit']      = array();
 	$GLOBALS['hard_rate_ok']    = true;
+	$GLOBALS['hard_rate_calls'] = array();
 	$GLOBALS['hard_transients'] = array();
 	$GLOBALS['hard_alerts']     = array();
 	$GLOBALS['hard_deleted']    = array();
@@ -378,6 +383,27 @@ hard_reset();
 $acao = papelito_vendor_integration_intended_action( array( 'username' => array( 'x' ), 'password' => null ) );
 
 hard_assert( 'A ação pretendida é deduzida sem converter array em texto', 'configuration_saved' === $acao );
+
+echo "\nCenário 12: ligar e desligar não gasta a cota da credencial\n";
+hard_reset();
+
+papelito_vendor_integration_save_braspress(
+	HARDENING_TEST_VENDOR_ID,
+	array(
+		'origin_cep' => HARDENING_TEST_CEP,
+		'enabled'    => false,
+	),
+	HARDENING_TEST_VENDOR_ID
+);
+papelito_vendor_integration_save_braspress( HARDENING_TEST_VENDOR_ID, hard_payload(), HARDENING_TEST_VENDOR_ID );
+
+$interruptor = $GLOBALS['hard_rate_calls'][0] ?? array();
+$credencial  = $GLOBALS['hard_rate_calls'][1] ?? array();
+
+hard_assert( 'Só o interruptor usa o balde de configuração', 'vendor_braspress_config' === ( $interruptor[0] ?? null ) );
+hard_assert( 'E o balde de configuração é mais folgado', 20 === ( $interruptor[1] ?? null ) );
+hard_assert( 'A credencial nova continua no balde curto', 'vendor_braspress_write' === ( $credencial[0] ?? null ) );
+hard_assert( 'Com cinco escritas na janela', 5 === ( $credencial[1] ?? null ) );
 
 echo "\n";
 echo 0 === $failures ? "OK\n" : "FALHAS: {$failures}\n";

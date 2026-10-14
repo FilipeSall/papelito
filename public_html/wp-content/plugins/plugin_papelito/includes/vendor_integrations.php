@@ -1052,11 +1052,31 @@ function papelito_vendor_integration_guard_braspress_save( int $vendor_id, array
 		return new WP_Error( 'papelito_vendor_integration_forbidden', 'Ação não permitida.', array( 'status' => 403 ) );
 	}
 
-	if ( ! papelito_auth_rate_limit( 'vendor_braspress_write', 5, 300, 'user:' . $vendor_id ) ) {
+	list( $bucket, $max_writes ) = papelito_vendor_integration_braspress_write_quota( $payload );
+	if ( ! papelito_auth_rate_limit( $bucket, $max_writes, 300, 'user:' . $vendor_id ) ) {
 		return new WP_Error( 'papelito_vendor_integration_rate_limited', PAPELITO_AUTH_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 	}
 
 	return null;
+}
+
+/**
+ * Escolhe a cota de escrita da Braspress pelo que a requisição pretende mudar.
+ *
+ * Credencial nova ou removida é onde mora a tentativa de adivinhar senha e a
+ * sondagem na transportadora, então fica na cota curta. Ligar, desligar ou
+ * trocar o CEP não toca no cofre e ganha balde próprio, mais folgado: sem isso
+ * o interruptor esgota a cota de quem ainda vai cadastrar o par.
+ *
+ * @param array<string,mixed> $payload Corpo autenticado da requisição.
+ * @return array{0:string,1:int} Balde e máximo de escritas em 300 s.
+ */
+function papelito_vendor_integration_braspress_write_quota( array $payload ): array {
+	if ( 'configuration_saved' === papelito_vendor_integration_intended_action( $payload ) ) {
+		return array( 'vendor_braspress_config', 20 );
+	}
+
+	return array( 'vendor_braspress_write', 5 );
 }
 
 /**
