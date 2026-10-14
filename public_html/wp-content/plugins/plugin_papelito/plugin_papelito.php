@@ -91,6 +91,7 @@ require_once __DIR__ . '/includes/customer_identity.php';
 require_once __DIR__ . '/includes/integration_secrets.php';
 require_once __DIR__ . '/includes/vendor_secrets.php';
 require_once __DIR__ . '/includes/vendor_integrations.php';
+require_once __DIR__ . '/includes/vendor_carriers.php';
 require_once __DIR__ . '/includes/admin_vendor_integrations.php';
 require_once __DIR__ . '/includes/braspress.php';
 require_once __DIR__ . '/includes/shipping_providers.php';

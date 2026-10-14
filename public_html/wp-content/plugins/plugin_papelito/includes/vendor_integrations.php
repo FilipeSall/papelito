@@ -283,19 +283,45 @@ function papelito_vendor_integration_config_complete( array $config ): bool {
  * @return array<string,mixed> Estado seguro para REST.
  */
 function papelito_vendor_integration_public_record( ?array $row = null, int $vendor_id = 0 ): array {
-	$row    = is_array( $row ) ? $row : array();
-	$config = papelito_vendor_integration_braspress_config( (int) ( $row['vendor_id'] ?? $vendor_id ), $row['config_json'] ?? '' );
+	$row       = is_array( $row ) ? $row : array();
+	$vendor_id = (int) ( $row['vendor_id'] ?? $vendor_id );
+	$config    = papelito_vendor_integration_braspress_config( $vendor_id, $row['config_json'] ?? '' );
+
+	return array_merge(
+		array(
+			'provider'                 => PAPELITO_VENDOR_INTEGRATION_PROVIDER,
+			'enabled'                  => ! empty( $row['enabled'] ),
+			'status'                   => sanitize_key( (string) ( $row['status'] ?? PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED ) ),
+			'configuration_version'    => max( 0, (int) ( $row['configuration_version'] ?? 0 ) ),
+			'configured'               => papelito_vendor_integration_config_complete( $config ),
+			'credentials_configured'   => ! empty( $row['secret_envelope'] ),
+			'config'                   => $config,
+			'last_successful_quote_at' => $row['last_successful_quote_at'] ?? null,
+			'last_error_category'      => $row['last_error_category'] ?? null,
+		),
+		papelito_vendor_integration_correios_fields( $vendor_id )
+	);
+}
+
+/**
+ * Acrescenta ao estado da Braspress o efeito que ele tem sobre os Correios.
+ *
+ * Viaja junto porque toda escrita da Braspress pode trancar ou destrancar o
+ * interruptor dos Correios, e a tela precisa saber disso pela mesma resposta.
+ *
+ * @param int $vendor_id ID do vendor.
+ * @return array<string,bool> Campos `correios_enabled` e `correios_locked`, ou vazio sem o módulo.
+ */
+function papelito_vendor_integration_correios_fields( int $vendor_id ): array {
+	if ( $vendor_id <= 0 || ! function_exists( 'papelito_vendor_carriers_correios_state' ) ) {
+		return array();
+	}
+
+	$state = papelito_vendor_carriers_correios_state( $vendor_id );
 
 	return array(
-		'provider'                 => PAPELITO_VENDOR_INTEGRATION_PROVIDER,
-		'enabled'                  => ! empty( $row['enabled'] ),
-		'status'                   => sanitize_key( (string) ( $row['status'] ?? PAPELITO_VENDOR_INTEGRATION_UNCONFIGURED ) ),
-		'configuration_version'    => max( 0, (int) ( $row['configuration_version'] ?? 0 ) ),
-		'configured'               => papelito_vendor_integration_config_complete( $config ),
-		'credentials_configured'   => ! empty( $row['secret_envelope'] ),
-		'config'                   => $config,
-		'last_successful_quote_at' => $row['last_successful_quote_at'] ?? null,
-		'last_error_category'      => $row['last_error_category'] ?? null,
+		'correios_enabled' => $state['enabled'],
+		'correios_locked'  => $state['locked'],
 	);
 }
 

@@ -55,9 +55,33 @@ class WP_Error {
 	public function get_error_data() { return $this->data; }
 }
 function is_wp_error( $thing ) { return $thing instanceof WP_Error; }
+function get_current_user_id(): int { return (int) ( $GLOBALS['pap_current_user'] ?? 0 ); }
+
+class WP_REST_Request {
+	private array $params;
+
+	public function __construct( array $params = array() ) {
+		$this->params = $params;
+	}
+
+	public function get_param( string $key ): mixed {
+		return $this->params[ $key ] ?? null;
+	}
+}
+
+class WP_REST_Response {
+	public mixed $data;
+	public int $status;
+
+	public function __construct( mixed $data = null, int $status = 200 ) {
+		$this->data   = $data;
+		$this->status = $status;
+	}
+}
 
 require __DIR__ . '/../includes/pagarme_recipients.php';
 require __DIR__ . '/../includes/vendor_dashboard.php';
+require_once __DIR__ . '/../includes/vendor_carriers.php';
 
 $failures = 0;
 function papelito_assert( string $label, $expected, $actual ): void {
@@ -110,6 +134,38 @@ update_user_meta( 9, 'shipping_lead_time_days', 99 );
 $settings = papelito_vendor_dashboard_settings( 9 );
 papelito_assert( 'prazo fora da faixa volta ao padrao', 2, $settings['shipping_lead_time_days'] );
 papelito_assert( 'prazo fora da faixa nao conta como configurado', false, $settings['shipping_lead_time_configured'] );
+
+echo "\nCorreios: estado efetivo exposto nas configuracoes\n";
+
+/* --- caso 7: sem Braspress configurada os Correios ficam ligados e travados --- */
+update_user_meta( 9, 'papelito_correios_disabled', '1' );
+$settings = papelito_vendor_dashboard_settings( 9 );
+papelito_assert( 'sem Braspress os Correios aparecem ligados', true, $settings['correios_enabled'] );
+papelito_assert( 'sem Braspress o interruptor dos Correios fica travado', true, $settings['correios_locked'] );
+papelito_assert( 'a preferencia de desligado sem Braspress e esquecida', '', get_user_meta( 9, 'papelito_correios_disabled', true ) );
+
+echo "\nPUT /vendor/me/settings: atualizacao parcial\n";
+
+$GLOBALS['pap_current_user'] = 9;
+update_user_meta( 9, 'shipping_lead_time_days', 4 );
+
+/* --- caso 8: corpo vazio e recusado --- */
+$empty = papelito_vendor_dashboard_handle_update_settings( new WP_REST_Request() );
+papelito_assert( 'corpo sem campo conhecido e recusado', 'papelito_vendor_settings_empty', is_wp_error( $empty ) ? $empty->get_error_code() : null );
+
+/* --- caso 9: desligar Correios sem Braspress e recusado sem gravar o prazo junto --- */
+$locked = papelito_vendor_dashboard_handle_update_settings( new WP_REST_Request( array( 'correios_enabled' => false, 'shipping_lead_time_days' => 7 ) ) );
+papelito_assert( 'desligar Correios sem Braspress devolve o erro da regra', 'papelito_vendor_correios_locked', is_wp_error( $locked ) ? $locked->get_error_code() : null );
+papelito_assert( 'a recusa nao grava o prazo enviado no mesmo corpo', 4, get_user_meta( 9, 'shipping_lead_time_days', true ) );
+
+/* --- caso 10: valor ambiguo para Correios nao vira desligado --- */
+$ambiguous = papelito_vendor_dashboard_handle_update_settings( new WP_REST_Request( array( 'correios_enabled' => 'off' ) ) );
+papelito_assert( 'valor ambiguo para Correios e recusado', 'papelito_vendor_invalid_correios', is_wp_error( $ambiguous ) ? $ambiguous->get_error_code() : null );
+
+/* --- caso 11: so o prazo continua funcionando como antes --- */
+$lead = papelito_vendor_dashboard_handle_update_settings( new WP_REST_Request( array( 'shipping_lead_time_days' => 5 ) ) );
+papelito_assert( 'prazo sozinho e gravado', 5, $lead instanceof WP_REST_Response ? $lead->data['shipping_lead_time_days'] : null );
+papelito_assert( 'resposta do prazo traz o estado dos Correios', true, $lead instanceof WP_REST_Response ? $lead->data['correios_enabled'] : null );
 
 echo "\n";
 if ( $failures > 0 ) {

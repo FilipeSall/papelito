@@ -15,6 +15,18 @@ const PAPELITO_SHIPPING_FAILURE_CATEGORIES  = array( 'configuration_error', 'val
 const PAPELITO_SHIPPING_LOCAL_VALIDATION_CODES = array( 'papelito_shipping_package_exceeds_limits', 'papelito_shipping_product_dimensions_missing', 'papelito_shipping_kit_package_not_supported', 'papelito_kit_package_dimensions_missing' );
 
 /**
+ * Falhas da Braspress que acionam os Correios como contingência.
+ *
+ * Só falha técnica entra: a cotação não aconteceu por causa do caminho até a
+ * Braspress. Rota não atendida, carga recusada, credencial inválida e conta
+ * bloqueada são respostas válidas sobre aquela entrega ou aquela conta, e não
+ * fazem os Correios reaparecerem para quem os desligou.
+ */
+const PAPELITO_SHIPPING_CORREIOS_FALLBACK_FAILURES = array( 'timeout', 'network_error', 'rate_limited', 'provider_5xx', 'invalid_response', 'configuration_error' );
+const PAPELITO_SHIPPING_CORREIOS_FALLBACK_CIRCUIT  = 'circuit_open';
+const PAPELITO_SHIPPING_CORREIOS_FALLBACK_STATE    = 'fallback_engaged';
+
+/**
  * Cria a chave estável e namespaced de uma opção de frete.
  *
  * @param string $provider Identificador do provider.
@@ -807,7 +819,121 @@ function papelito_shipping_observe_provider_quote( string $provider, int $vendor
 }
 
 /**
+ * Informa se os Correios entram na cotação regular do vendor.
+ *
+ * Sem o módulo de transportadoras carregado vale o comportamento anterior à
+ * escolha do vendor: Correios sempre ligados.
+ *
+ * @param int $vendor_id ID do vendor.
+ * @return bool Se os Correios são cotados sem depender da Braspress falhar.
+ */
+function papelito_shipping_correios_is_regular( int $vendor_id ): bool {
+	return ! function_exists( 'papelito_vendor_carriers_correios_enabled' ) || papelito_vendor_carriers_correios_enabled( $vendor_id );
+}
+
+/**
+ * Reduz a falha da Braspress à categoria que o disjuntor também enxerga.
+ *
+ * A classificação da observabilidade lê primeiro a categoria declarada pelo
+ * adapter, que separa credencial recusada e rota não atendida de falha de
+ * transporte; o código público sozinho funde esses casos.
+ *
+ * @param WP_Error $error Falha devolvida pela tentativa Braspress.
+ * @return string Categoria interna.
+ */
+function papelito_shipping_braspress_failure_kind( WP_Error $error ): string {
+	if ( function_exists( 'papelito_shipping_provider_metrics_classify' ) ) {
+		return papelito_shipping_provider_metrics_classify( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $error );
+	}
+
+	return papelito_shipping_failure_category( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $error->get_error_code() );
+}
+
+/**
+ * Informa se a Braspress só ficou fora da cotação porque o disjuntor a segurou.
+ *
+ * Disjuntor aberto devolve o mesmo nulo de um vendor sem integração, então o
+ * estado é conferido junto com os demais gates: só conta como indisponibilidade
+ * quando a Braspress teria sido chamada para esta carga se estivesse no ar.
+ *
+ * @param int                            $vendor_id ID do vendor.
+ * @param array<int,array<string,mixed>> $items Itens resolvidos.
+ * @return bool Se a Braspress está fora por indisponibilidade.
+ */
+function papelito_shipping_braspress_held_by_breaker( int $vendor_id, array $items ): bool {
+	if ( ! function_exists( 'papelito_shipping_breaker_state' ) || PAPELITO_SHIPPING_BREAKER_CLOSED === papelito_shipping_breaker_state( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $vendor_id ) ) {
+		return false;
+	}
+
+	return papelito_shipping_feature_enabled( PAPELITO_SHIPPING_PROVIDER_BRASPRESS )
+		&& papelito_shipping_provider_vendor_allowed( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $vendor_id )
+		&& is_array( papelito_vendor_integration_resolve_braspress( $vendor_id ) )
+		&& papelito_shipping_braspress_package_is_approved( $vendor_id, $items );
+}
+
+/**
+ * Diz por que a Braspress autoriza a contingência dos Correios, ou vazio.
+ *
+ * @param int                            $vendor_id ID do vendor.
+ * @param array<int,array<string,mixed>> $items Itens resolvidos.
+ * @param mixed                          $braspress Resultado bruto da tentativa Braspress.
+ * @return string Categoria técnica, `circuit_open` ou vazio quando não há contingência.
+ */
+function papelito_shipping_correios_fallback_reason( int $vendor_id, array $items, mixed $braspress ): string {
+	if ( is_wp_error( $braspress ) ) {
+		$kind = papelito_shipping_braspress_failure_kind( $braspress );
+
+		return in_array( $kind, PAPELITO_SHIPPING_CORREIOS_FALLBACK_FAILURES, true ) ? $kind : '';
+	}
+
+	if ( null === $braspress && papelito_shipping_braspress_held_by_breaker( $vendor_id, $items ) ) {
+		return PAPELITO_SHIPPING_CORREIOS_FALLBACK_CIRCUIT;
+	}
+
+	return '';
+}
+
+/**
+ * Cota os Correios desligados somente quando a Braspress falhou tecnicamente.
+ *
+ * É uma tentativa só, depois da Braspress e nunca o contrário, então não há
+ * laço entre as duas. O acionamento é registrado pelo alerta de provider, com
+ * vendor e motivo, e não muda a preferência gravada: na próxima cotação com a
+ * Braspress de pé os Correios voltam a ficar de fora.
+ *
+ * @param int                            $vendor_id ID do vendor.
+ * @param array<int,array<string,mixed>> $items Itens resolvidos.
+ * @param mixed                          $braspress Resultado bruto da tentativa Braspress.
+ * @param callable                       $quote_correios Tentativa Correios já fechada sobre seus argumentos.
+ * @return mixed Resultado bruto dos Correios, ou nulo quando não há contingência.
+ */
+function papelito_shipping_correios_fallback( int $vendor_id, array $items, mixed $braspress, callable $quote_correios ) {
+	$reason = papelito_shipping_correios_fallback_reason( $vendor_id, $items, $braspress );
+	if ( '' === $reason ) {
+		return null;
+	}
+
+	if ( function_exists( 'papelito_shipping_provider_alert' ) ) {
+		papelito_shipping_provider_alert(
+			PAPELITO_SHIPPING_PROVIDER_CORREIOS,
+			PAPELITO_SHIPPING_CORREIOS_FALLBACK_STATE,
+			array(
+				'vendor_id'      => $vendor_id,
+				'error_category' => $reason,
+			)
+		);
+	}
+
+	return papelito_shipping_observe_provider_quote( PAPELITO_SHIPPING_PROVIDER_CORREIOS, $vendor_id, $quote_correios );
+}
+
+/**
  * Cota cada provider de modo isolado e combina apenas opções válidas.
+ *
+ * Com os Correios desligados pelo vendor a Braspress é cotada sozinha, e os
+ * Correios só entram como contingência de falha técnica dela. O `place-order`
+ * recota por aqui, então a regra vale igual para a vitrine de frete e para o
+ * fechamento do pedido.
  *
  * @param int                      $vendor_id ID do vendor.
  * @param string                   $destination_cep CEP de destino.
@@ -816,21 +942,20 @@ function papelito_shipping_observe_provider_quote( string $provider, int $vendor
  * @return array<string,mixed>|WP_Error Resultado de cotação ou indisponibilidade total.
  */
 function papelito_shipping_quote_all_providers( int $vendor_id, string $destination_cep, array $items, array $context = array() ) {
-	$correios = papelito_shipping_observe_provider_quote(
-		PAPELITO_SHIPPING_PROVIDER_CORREIOS,
-		$vendor_id,
-		static function () use ( $vendor_id, $destination_cep, $items ) {
-			return papelito_correios_quote( $vendor_id, $destination_cep, $items );
-		}
-	);
+	$quote_correios  = static function () use ( $vendor_id, $destination_cep, $items ) {
+		return papelito_correios_quote( $vendor_id, $destination_cep, $items );
+	};
+	$quote_braspress = static function () use ( $vendor_id, $destination_cep, $items, $context ) {
+		return papelito_shipping_quote_braspress( $vendor_id, $destination_cep, $items, $context );
+	};
 
-	$braspress = papelito_shipping_observe_provider_quote(
-		PAPELITO_SHIPPING_PROVIDER_BRASPRESS,
-		$vendor_id,
-		static function () use ( $vendor_id, $destination_cep, $items, $context ) {
-			return papelito_shipping_quote_braspress( $vendor_id, $destination_cep, $items, $context );
-		}
-	);
+	if ( papelito_shipping_correios_is_regular( $vendor_id ) ) {
+		$correios  = papelito_shipping_observe_provider_quote( PAPELITO_SHIPPING_PROVIDER_CORREIOS, $vendor_id, $quote_correios );
+		$braspress = papelito_shipping_observe_provider_quote( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $vendor_id, $quote_braspress );
+	} else {
+		$braspress = papelito_shipping_observe_provider_quote( PAPELITO_SHIPPING_PROVIDER_BRASPRESS, $vendor_id, $quote_braspress );
+		$correios  = papelito_shipping_correios_fallback( $vendor_id, $items, $braspress, $quote_correios );
+	}
 
 	$quoted_at = current_time( 'mysql', true );
 

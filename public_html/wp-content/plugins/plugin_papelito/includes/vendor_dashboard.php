@@ -1266,16 +1266,23 @@ function papelito_vendor_dashboard_admin_vendor_user( int $vendor_id ) {
 /**
  * Read seller operational settings.
  *
- * @return array{shipping_lead_time_days:int,shipping_lead_time_configured:bool}
+ * Os Correios saem do estado efetivo de `papelito_vendor_carriers_correios_state()`,
+ * que já aplica a dependência da Braspress — nunca da preferência crua.
+ *
+ * @return array{shipping_lead_time_days:int,shipping_lead_time_configured:bool,correios_enabled:bool,correios_locked:bool,braspress_enabled:bool}
  */
 function papelito_vendor_dashboard_settings( int $vendor_id ): array {
 	$stored     = get_user_meta( $vendor_id, 'shipping_lead_time_days', true );
 	$lead_time  = (int) $stored;
 	$configured = '' !== $stored && $lead_time >= 1 && $lead_time <= 30;
+	$correios   = papelito_vendor_carriers_correios_state( $vendor_id );
 
 	return array(
 		'shipping_lead_time_days'       => $configured ? $lead_time : PAPELITO_VENDOR_DEFAULT_LEAD_TIME_DAYS,
 		'shipping_lead_time_configured' => $configured,
+		'correios_enabled'              => $correios['enabled'],
+		'correios_locked'               => $correios['locked'],
+		'braspress_enabled'             => $correios['braspress_enabled'],
 	);
 }
 
@@ -1609,19 +1616,105 @@ function papelito_vendor_dashboard_handle_get_settings() {
 }
 
 /**
- * REST callback for updating vendor settings.
+ * Valida o prazo de despacho declarado pelo vendor.
+ *
+ * @param mixed $raw Valor recebido.
+ * @return int|WP_Error Prazo inteiro entre 1 e 30 ou erro.
  */
-function papelito_vendor_dashboard_handle_update_settings( WP_REST_Request $request ) {
-	$raw       = $request->get_param( 'shipping_lead_time_days' );
+function papelito_vendor_dashboard_parse_lead_time( mixed $raw ) {
 	$lead_time = is_numeric( $raw ) ? (float) $raw : 0.0;
 
 	if ( floor( $lead_time ) !== $lead_time || $lead_time < 1 || $lead_time > 30 ) {
 		return new WP_Error( 'papelito_vendor_invalid_lead_time', 'Informe um prazo inteiro entre 1 e 30 dias uteis.', array( 'status' => 422 ) );
 	}
 
-	update_user_meta( get_current_user_id(), 'shipping_lead_time_days', (int) $lead_time );
+	return (int) $lead_time;
+}
 
-	return new WP_REST_Response( papelito_vendor_dashboard_settings( get_current_user_id() ), 200 );
+/**
+ * Lê do corpo só os campos de configuração enviados, já validados.
+ *
+ * A atualização é parcial: o prazo e os Correios são gravados por telas
+ * diferentes, e exigir os dois faria uma sobrescrever a outra.
+ *
+ * @param WP_REST_Request $request Requisição REST.
+ * @return array<string,int|bool>|WP_Error Campos a gravar ou erro de validação.
+ */
+function papelito_vendor_dashboard_settings_changes( WP_REST_Request $request ) {
+	$changes      = array();
+	$raw_lead     = $request->get_param( 'shipping_lead_time_days' );
+	$raw_correios = $request->get_param( 'correios_enabled' );
+
+	if ( null !== $raw_lead ) {
+		$lead_time = papelito_vendor_dashboard_parse_lead_time( $raw_lead );
+		if ( is_wp_error( $lead_time ) ) {
+			return $lead_time;
+		}
+		$changes['shipping_lead_time_days'] = $lead_time;
+	}
+
+	if ( null !== $raw_correios ) {
+		$correios = papelito_vendor_carriers_parse_enabled( $raw_correios );
+		if ( null === $correios ) {
+			return new WP_Error( 'papelito_vendor_invalid_correios', 'Informe se os Correios ficam habilitados.', array( 'status' => 422 ) );
+		}
+		$changes['correios_enabled'] = $correios;
+	}
+
+	if ( empty( $changes ) ) {
+		return new WP_Error( 'papelito_vendor_settings_empty', 'Nenhuma configuração foi enviada.', array( 'status' => 422 ) );
+	}
+
+	return $changes;
+}
+
+/**
+ * REST callback for updating vendor settings.
+ *
+ * Os Correios são gravados antes do prazo porque são a única escrita que pode
+ * ser recusada pela regra de negócio; assim uma recusa não deixa meia gravação.
+ */
+function papelito_vendor_dashboard_handle_update_settings( WP_REST_Request $request ) {
+	$vendor_id = get_current_user_id();
+	$changes   = papelito_vendor_dashboard_settings_changes( $request );
+	if ( is_wp_error( $changes ) ) {
+		return $changes;
+	}
+
+	if ( array_key_exists( 'correios_enabled', $changes ) ) {
+		$correios = papelito_vendor_carriers_set_correios_enabled( $vendor_id, $changes['correios_enabled'], $vendor_id );
+		if ( is_wp_error( $correios ) ) {
+			return $correios;
+		}
+	}
+
+	if ( array_key_exists( 'shipping_lead_time_days', $changes ) ) {
+		update_user_meta( $vendor_id, 'shipping_lead_time_days', $changes['shipping_lead_time_days'] );
+	}
+
+	return new WP_REST_Response( papelito_vendor_dashboard_settings_write_response( $vendor_id, $changes ), 200 );
+}
+
+/**
+ * Resposta da gravação de configurações, com a Braspress quando os Correios mudaram.
+ *
+ * Desligar os Correios pode ligar a Braspress e sondar a credencial, que volta
+ * `active`, `invalid_credentials` ou `provider_blocked`. Só `braspress_enabled`
+ * deixaria a tela mostrando o estado anterior; a integração pública viaja junto
+ * para o painel adotar a recusa na mesma resposta.
+ *
+ * @param int                    $vendor_id ID do vendor.
+ * @param array<string,int|bool> $changes Campos gravados nesta requisição.
+ * @return array<string,mixed> Configurações efetivas e, se for o caso, a Braspress.
+ */
+function papelito_vendor_dashboard_settings_write_response( int $vendor_id, array $changes ): array {
+	$response = papelito_vendor_dashboard_settings( $vendor_id );
+
+	if ( array_key_exists( 'correios_enabled', $changes ) && function_exists( 'papelito_vendor_integration_public_record' ) ) {
+		$response['braspress'] = papelito_vendor_integration_public_record( papelito_vendor_integration_find_row( $vendor_id ), $vendor_id );
+	}
+
+	return $response;
 }
 
 /**
