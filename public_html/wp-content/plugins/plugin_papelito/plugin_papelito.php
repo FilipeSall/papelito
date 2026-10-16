@@ -72,6 +72,9 @@ require_once __DIR__ . '/includes/correios_tracking.php';
 require_once __DIR__ . '/includes/active_vendor.php';
 require_once __DIR__ . '/includes/coupons.php';
 require_once __DIR__ . '/includes/pricing.php';
+require_once __DIR__ . '/includes/payment_providers.php';
+require_once __DIR__ . '/includes/payment_attempts.php';
+require_once __DIR__ . '/includes/payment_attempts_repository.php';
 require_once __DIR__ . '/includes/pagarme_client.php';
 require_once __DIR__ . '/includes/pagarme_recipients.php';
 require_once __DIR__ . '/includes/pagarme_payments.php';
@@ -107,6 +110,28 @@ require_once __DIR__ . '/includes/company_schema.php';
 require_once __DIR__ . '/includes/company_onboarding.php';
 require_once __DIR__ . '/includes/company_repository.php';
 require_once __DIR__ . '/includes/cnpj_providers.php';
+require_once __DIR__ . '/includes/vendor_cnae.php';
+require_once __DIR__ . '/includes/vendor_payment_policy.php';
+require_once __DIR__ . '/includes/vendor_financial_profile.php';
+require_once __DIR__ . '/includes/pagarme_financial_profile.php';
+require_once __DIR__ . '/includes/mercadopago_client.php';
+require_once __DIR__ . '/includes/vendor_payment_accounts.php';
+require_once __DIR__ . '/includes/mercadopago_oauth.php';
+require_once __DIR__ . '/includes/payment_gateway_health.php';
+require_once __DIR__ . '/includes/mercadopago_token_refresh.php';
+require_once __DIR__ . '/includes/payment_fallback_policy.php';
+require_once __DIR__ . '/includes/payment_gateway_resolver.php';
+require_once __DIR__ . '/includes/vendor_payment_rest.php';
+require_once __DIR__ . '/includes/payment_context_rest.php';
+require_once __DIR__ . '/includes/mercadopago_payments.php';
+require_once __DIR__ . '/includes/payment_checkout.php';
+require_once __DIR__ . '/includes/payment_order_state.php';
+require_once __DIR__ . '/includes/mercadopago_reconciliation.php';
+require_once __DIR__ . '/includes/mercadopago_webhook.php';
+require_once __DIR__ . '/includes/payment_reconciliation.php';
+require_once __DIR__ . '/includes/mercadopago_refunds.php';
+require_once __DIR__ . '/includes/payment_observability.php';
+require_once __DIR__ . '/includes/payment_gateway_migration_cli.php';
 require_once __DIR__ . '/includes/cnpj_dev_fixtures.php';
 require_once __DIR__ . '/includes/company_idempotency.php';
 require_once __DIR__ . '/includes/company_authz.php';
@@ -129,7 +154,7 @@ require_once __DIR__ . '/includes/packaging.php';
 require_once __DIR__ . '/includes/vendor_eligibility.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.59.0' );
+	define( 'PAPELITO_DB_VERSION', '1.60.0' );
 }
 
 /**
@@ -195,6 +220,8 @@ function papelito_maybe_migrate_db() {
 				'papelito_account_status_install_tables',
 				'papelito_order_refund_install_tables',
 				'papelito_pagarme_install_kyc_link_limits_table',
+				'papelito_payment_attempts_install_table',
+				'papelito_vendor_payment_accounts_install_table',
 				'papelito_legacy_prune_email_cron',
 			)
 		);

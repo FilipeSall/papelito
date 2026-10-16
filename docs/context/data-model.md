@@ -306,6 +306,13 @@ Cinco tabelas, instaladas por `papelito_order_refund_install_tables()`. Fluxo em
 - **`wp_papelito_order_refund_sequences`** — sequência anual do recibo de estorno, separada da `PPL`, alocada com `FOR UPDATE` dentro da transação de conclusão.
 - **`wp_papelito_refund_pix_keys`** — chave PIX de reembolso por usuário (`PRIMARY KEY user_id`): `key_type`, `key_ciphertext` (envelope de `papelito_pii_encrypt()`), `key_hint` e `holder_name`. Fica fora de `papelito_customer_profiles` porque aquela tabela exige CPF.
 
+### Gateways de pagamento (Mercado Pago e Pagar.me)
+
+Duas tabelas aditivas, instaladas por `papelito_payment_attempts_install_table()` e `papelito_vendor_payment_accounts_install_table()`. Regras no [plano canônico](../../../docs/mercadopago-migration.md); operação no [runbook](../operations/mercadopago-rollout.md).
+
+- **`wp_papelito_payment_attempts`** — uma linha por tentativa de cobrança, gravada **antes** da chamada remota: `attempt_ref` (32 hex, `UNIQUE`, vai na `notification_url` e só escolhe a conta candidata do webhook), `order_id`, `checkout_attempt_id`, comprador/empresa/vendor, `provider`, `environment` (`test|live`), `account_id`/`account_ref` (conta MP ou recebedor Pagar.me **histórico**), `external_reference` (`ppl-<pedido>-<tentativa>`), `remote_id` (preferência MP ou pedido Pagar.me), `remote_payment_ids` (JSON), `amount_cents`, `state` (`not_started|awaiting_payment_input|creating|unknown|pending|paid|failed|expired|refunded`), `flow`, `payment_method`, `fallback_reason`, `configuration_version`, `commercial_hash`, `redirect_url`, `expires_at`, `last_error_code`, `next_reconcile_at`/`reconcile_failures` (agenda da reconciliação), `incident` (ex.: `multiple_approved`) e `lock_version`. Toda transição é compare-and-set por `state`; a máquina é monotônica (`unknown` nunca volta a `not_started`; `paid` só sai para `refunded`).
+- **`wp_papelito_vendor_payment_accounts`** — contas de gateway por vendor/provider/ambiente, versionadas. `current_key` (`UNIQUE`, `NULL` fora da vigência) garante uma conta vigente; `collector_key` (`UNIQUE`) impede o mesmo collector vigente em dois vendors no mesmo ambiente. Tokens só em envelopes de `papelito_vendor_secret_encrypt()` (`access_token_envelope`, `refresh_token_envelope`), com `token_expires_at` vindo do `expires_in` e `token_version` para a rotação compare-and-set. `identity_status` (`verification_pending|verified|mismatch`) registra a conferência administrativa de titularidade, com `identity_evidence` (referência curta, nunca documento). Status: `active`, `superseded` (trocada por outra; continua endereçável para cobrança antiga), `revoked` (refresh recusado) e `disconnected` (credenciais apagadas).
+
 ### Nunca criada
 
 `wp_papelito_invoices` foi projetada para armazenar NF-e por pedido/vendor e **nunca foi criada** — a fundação acima a substituiu, com nome e modelo diferentes.
@@ -483,6 +490,8 @@ Ao aprovar, confira em qual fila a candidatura está: os IDs não são intercamb
 
 O rascunho financeiro do recebedor fica em `papelito_pagarme_recipient_draft` (JSON com `companyName`, `tradingName`, `annualRevenue`, `managingPartners[]`, `bankAccount`, `transfer`) e `papelito_pagarme_recipient_draft_updated_at`. Em `bankAccount`, `holderType`/`holderDocument` só são válidos como `company` + CNPJ do vendor, exigência da Pagar.me. Drafts antigos em pessoa física continuam gravados como estão — não há migração — e aparecem como pendência `bankAccount.holderDocument`. Regra completa em [`../../../docs/pagarme-integration.md`](../../../docs/pagarme-integration.md#titularidade-da-conta-bancária).
 
+**Vendor — gateways de pagamento**: `papelito_vendor_payment_policy_enforced` (data do ingresso na política financeira; **permanente**, não é limpo por flag nem rollback), `papelito_vendor_preferred_payment_provider` (`{ provider, version, updated_at }`), `papelito_vendor_cnae_evidence` (evidência BrasilAPI: `fingerprint` HMAC do CNPJ, `primary`, `secondary`, `status`, `checked_at`, `valid_until`, `last_attempt_*`; sem QSA nem CNPJ em claro), `papelito_vendor_payment_policy_state` e `papelito_vendor_payment_policy_audit` (anel de 20 transições da política CNAE), `papelito_vendor_financial_profile` (perfil comum versionado: `data` no formato do draft, `sensitive` com CPF/nascimento em envelopes de `papelito_pii_encrypt()`, `cnpjFingerprint`, `source`, `legacyHash`) e `papelito_payment_gateway_health_snapshot` (última aptidão por gateway, para invalidar a cobertura só na transição).
+
 ### Quota de link KYC
 
 `papelito_pagarme_kyc_link_limits` reserva a quota de geração de link por `vendor_id`. A chave primária é o próprio vendor; `attempts`, `window_started_at` e `expires_at` formam a janela de 20 minutos. A reserva usa um único `INSERT ... ON DUPLICATE KEY UPDATE`, portanto requisições concorrentes não conseguem ultrapassar o teto antes de chamar a Pagar.me. Não guarda URL, documento ou outro dado de KYC.
@@ -511,10 +520,13 @@ O snapshot fiscal B2B (22 chaves canônicas) está em [`../../../docs/flows/cart
 | `_papelito_pagarme_anomaly_chargeback` / `_papelito_pagarme_anomaly_partial_refund` | dedupe da nota de chargeback e de estorno parcial reportados pela Pagar.me |
 | `_papelito_pagarme_unexpected_state` | dedupe da nota de estado terminal em cobrança já paga |
 | `_papelito_shipping_neighborhood` | bairro de destino, **só em pedidos novos** — antes era validado na cotação e nunca gravado |
+| `_papelito_payment_provider` / `_papelito_payment_environment` / `_papelito_payment_account_id` / `_papelito_payment_account_ref` / `_papelito_payment_attempt_id` | snapshot do gateway que cobrou o pedido, gravado antes da chamada remota; estorno, webhook e reconciliação usam isto, nunca a preferência atual. Pedido sem snapshot é Pagar.me se tiver id da Pagar.me |
+| `_papelito_checkout_attempt_commercial_hash` / `_papelito_checkout_address` | fingerprint comercial (sem pagamento) e endereço normalizado, para a continuação do pagamento na mesma tentativa |
+| `_papelito_mercadopago_approved_payment_ids` / `_papelito_mercadopago_payment_method` / `_papelito_payment_fulfillment_released` | pagamentos MP aprovados (o segundo vira incidente), meio do primeiro e marcador de liberação única para envio |
 | `_papelito_import_todo` | pendências por produto deixadas pela importação de catálogo |
 | `_correios_tracking_code` | **legado**, do plugin Correios for WooCommerce 4.2.5 |
 
-Options relevantes: `papelito_catalog_pdf_id` (override do catálogo em PDF), `papelito_coverage_cache_version` (versão do cache de cobertura), `papelito_shipping_free_shipping_minimum_cents` (mínimo do pedido para o cupom manual de frete grátis, em centavos, default `9900`).
+Options relevantes: `papelito_payment_metrics` (contadores diários dos gateways, 14 dias), `papelito_catalog_pdf_id` (override do catálogo em PDF), `papelito_coverage_cache_version` (versão do cache de cobertura), `papelito_shipping_free_shipping_minimum_cents` (mínimo do pedido para o cupom manual de frete grátis, em centavos, default `9900`).
 
 `papelito_home_promo_marquee` e `papelito_home_features` guardam, além do texto puro, o conteúdo estruturado das faixas (`content` / `subtitleContent`): lista plana de nós `text`/`token`, sem HTML. O texto puro é derivado dos nós de texto e serve de fallback de leitura.
 

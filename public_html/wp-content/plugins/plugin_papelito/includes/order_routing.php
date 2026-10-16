@@ -31,6 +31,9 @@ if ( ! defined( 'PAPELITO_CHECKOUT_ATTEMPT_COMPANY_META' ) ) {
 if ( ! defined( 'PAPELITO_CHECKOUT_ATTEMPT_HASH_META' ) ) {
 	define( 'PAPELITO_CHECKOUT_ATTEMPT_HASH_META', '_papelito_checkout_attempt_request_hash' );
 }
+if ( ! defined( 'PAPELITO_CHECKOUT_ATTEMPT_COMMERCIAL_HASH_META' ) ) {
+	define( 'PAPELITO_CHECKOUT_ATTEMPT_COMMERCIAL_HASH_META', '_papelito_checkout_attempt_commercial_hash' );
+}
 if ( ! defined( 'PAPELITO_B2B_SNAPSHOT_VERSION' ) ) {
 	define( 'PAPELITO_B2B_SNAPSHOT_VERSION', '1' );
 }
@@ -55,6 +58,22 @@ function papelito_order_routing_checkout_request_hash( array $payload ): string 
 	if ( isset( $normalized['payment']['card_token_id'] ) ) {
 		$normalized['payment']['card_token_id'] = hash_hmac( 'sha256', (string) $normalized['payment']['card_token_id'], wp_salt( 'papelito_checkout_attempt' ) );
 	}
+	return hash_hmac( 'sha256', (string) wp_json_encode( papelito_order_routing_sort_payload( $normalized ) ), wp_salt( 'papelito_checkout_attempt' ) );
+}
+
+/**
+ * Impressão digital comercial da tentativa: empresa, itens, endereço, frete, cupom — sem pagamento.
+ *
+ * É o que uma continuação de pagamento não pode alterar. Trocar método ou token na mesma tentativa
+ * mantém este hash; mudar qualquer coisa que altere o pedido ou seus totais muda.
+ *
+ * @param array<string,mixed> $payload Payload cru do checkout.
+ * @return string
+ */
+function papelito_order_routing_commercial_request_hash( array $payload ): string {
+	$normalized = $payload;
+	unset( $normalized['analytics'], $normalized['payment'] );
+
 	return hash_hmac( 'sha256', (string) wp_json_encode( papelito_order_routing_sort_payload( $normalized ) ), wp_salt( 'papelito_checkout_attempt' ) );
 }
 
@@ -217,25 +236,12 @@ function papelito_order_routing_find_order_by_attempt( int $user_id, string $att
 }
 
 /**
- * Monta a resposta de um pedido ja existente para retry idempotente.
+ * Totais autoritativos de um pedido já criado, no formato da resposta do checkout.
+ *
+ * @param object $order Pedido WooCommerce.
+ * @return array<string,int>|null Nulo para pedido sem total autoritativo gravado.
  */
-function papelito_order_routing_existing_order_response( object $order ) {
-	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
-		return null;
-	}
-
-	$pagarme_order_id = method_exists( $order, 'get_meta' ) && defined( 'PAPELITO_PAGARME_ORDER_ID_META' )
-		? sanitize_text_field( (string) $order->get_meta( PAPELITO_PAGARME_ORDER_ID_META, true ) )
-		: '';
-
-	if ( '' === $pagarme_order_id ) {
-		return new WP_Error(
-			'papelito_checkout_attempt_in_progress',
-			'Este checkout já esta sendo processado. Aguarde alguns instantes.',
-			array( 'status' => 409 )
-		);
-	}
-
+function papelito_order_routing_existing_order_totals( object $order ): ?array {
 	$total_cents = method_exists( $order, 'get_meta' )
 		? max( 0, (int) $order->get_meta( '_papelito_authoritative_total_cents', true ) )
 		: 0;
@@ -251,46 +257,151 @@ function papelito_order_routing_existing_order_response( object $order ) {
 		$shipping_cents = max( 0, (int) round( (float) $order->get_shipping_total() * 100 ) );
 	}
 
+	if ( $total_cents <= 0 ) {
+		return null;
+	}
+
 	$shipping_charged_cents = $shipping_cents - $shipping_discount_cents;
 	$items_cents            = max( 0, $total_cents - $shipping_charged_cents );
 	$subtotal_cents         = method_exists( $order, 'get_subtotal' )
 		? max( $items_cents, (int) round( (float) $order->get_subtotal() * 100 ) )
 		: $items_cents;
-	$discount_cents         = max( 0, $subtotal_cents - $items_cents );
+
+	return array(
+		'subtotalCents'         => $subtotal_cents,
+		'discountCents'         => max( 0, $subtotal_cents - $items_cents ),
+		'itemsCents'            => $items_cents,
+		'shippingCents'         => $shipping_cents,
+		'shippingDiscountCents' => $shipping_discount_cents,
+		'totalCents'            => $total_cents,
+	);
+}
+
+/**
+ * Monta a resposta de um pedido ja existente para retry idempotente.
+ *
+ * Pedido com tentativa registrada responde pelo estado da tentativa (inclusive preferência
+ * Mercado Pago e coleta pendente da Pagar.me); pedido legado exige o ID remoto da Pagar.me.
+ */
+function papelito_order_routing_existing_order_response( object $order ) {
+	if ( ! papelito_order_routing_is_wc_instance( $order, 'WC_Order' ) ) {
+		return null;
+	}
+
+	$attempt_id = function_exists( 'papelito_payment_attempt_find' ) && defined( 'PAPELITO_PAYMENT_ATTEMPT_ID_META' )
+		? absint( $order->get_meta( PAPELITO_PAYMENT_ATTEMPT_ID_META, true ) )
+		: 0;
+
+	if ( $attempt_id > 0 ) {
+		$payment = papelito_order_routing_attempt_payment_response( $order, $attempt_id );
+	} else {
+		$payment = papelito_order_routing_legacy_payment_response( $order );
+	}
+
+	if ( is_wp_error( $payment ) ) {
+		return $payment;
+	}
 
 	return array_filter(
 		array(
 			'order_id'     => method_exists( $order, 'get_id' ) ? $order->get_id() : 0,
 			'order_number' => method_exists( $order, 'get_order_number' ) ? $order->get_order_number() : '',
 			'status'       => method_exists( $order, 'get_status' ) ? $order->get_status() : '',
-			'payment'      => function_exists( 'papelito_pagarme_order_payment_snapshot' )
-				? papelito_pagarme_order_payment_snapshot( $order )
-				: array(
-					'method' => '',
-					'state'  => '',
-				),
-			'totals'       => $total_cents > 0
-				? array(
-					'subtotalCents'         => $subtotal_cents,
-					'discountCents'         => $discount_cents,
-					'itemsCents'            => $items_cents,
-					'shippingCents'         => $shipping_cents,
-					'shippingDiscountCents' => $shipping_discount_cents,
-					'totalCents'            => $total_cents,
-				)
-				: null,
+			'payment'      => $payment,
+			'totals'       => papelito_order_routing_existing_order_totals( $order ),
 		),
 		static fn( $value ): bool => null !== $value
 	);
 }
 
-function papelito_order_routing_validate_existing_attempt( object $order, int $company_id, string $request_hash ) {
-	$stored_company = (int) $order->get_meta( PAPELITO_CHECKOUT_ATTEMPT_COMPANY_META, true );
-	$stored_hash = sanitize_text_field( (string) $order->get_meta( PAPELITO_CHECKOUT_ATTEMPT_HASH_META, true ) );
+/**
+ * Pagamento do replay de pedido legado (sem tentativa registrada): só a Pagar.me existia.
+ *
+ * @param object $order Pedido WooCommerce.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_order_routing_legacy_payment_response( object $order ) {
+	$pagarme_order_id = method_exists( $order, 'get_meta' ) && defined( 'PAPELITO_PAGARME_ORDER_ID_META' )
+		? sanitize_text_field( (string) $order->get_meta( PAPELITO_PAGARME_ORDER_ID_META, true ) )
+		: '';
+
+	if ( '' === $pagarme_order_id ) {
+		return papelito_order_routing_attempt_in_progress_error();
+	}
+
+	return function_exists( 'papelito_pagarme_order_payment_snapshot' )
+		? papelito_pagarme_order_payment_snapshot( $order )
+		: array(
+			'method' => '',
+			'state'  => '',
+		);
+}
+
+/**
+ * Pagamento do replay de pedido com tentativa registrada, pelo estado da tentativa.
+ *
+ * `creating` ainda pode estar emitindo e `unknown` exige reconciliação: nos dois casos nada é
+ * reemitido. Os demais estados devolvem a mesma tentativa, com o link ainda válido no redirect.
+ *
+ * @param object $order      Pedido WooCommerce.
+ * @param int    $attempt_id Tentativa gravada no pedido.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_order_routing_attempt_payment_response( object $order, int $attempt_id ) {
+	$attempt = papelito_payment_attempt_find( $attempt_id );
+
+	if ( ! is_array( $attempt ) || 'creating' === $attempt['state'] ) {
+		return papelito_order_routing_attempt_in_progress_error();
+	}
+
+	if ( 'unknown' === $attempt['state'] ) {
+		return new WP_Error(
+			'papelito_payment_attempt_reconciling',
+			'Estamos confirmando o pagamento deste pedido com o gateway. Aguarde antes de tentar de novo.',
+			array( 'status' => 409 )
+		);
+	}
+
+	$payment = PAPELITO_PAYMENT_PROVIDER_PAGARME === $attempt['provider'] && function_exists( 'papelito_pagarme_order_payment_snapshot' )
+		? papelito_pagarme_order_payment_snapshot( $order )
+		: array(
+			'method' => '',
+			'state'  => (string) $attempt['state'],
+		);
+
+	return array_merge( $payment, papelito_payment_attempt_public( $attempt ) );
+}
+
+/**
+ * Erro de checkout ainda em processamento, devolvido ao retry concorrente.
+ *
+ * @return WP_Error
+ */
+function papelito_order_routing_attempt_in_progress_error(): WP_Error {
+	return new WP_Error(
+		'papelito_checkout_attempt_in_progress',
+		'Este checkout já esta sendo processado. Aguarde alguns instantes.',
+		array( 'status' => 409 )
+	);
+}
+
+/**
+ * Confere se o retry da tentativa é o mesmo checkout: mesma empresa e mesmos dados.
+ *
+ * Pedido com tentativa de pagamento registrada compara só o fingerprint comercial — o pagamento
+ * entra pela continuação autenticada, não pela troca do payload. Pedido legado compara o hash
+ * completo, como sempre.
+ */
+function papelito_order_routing_validate_existing_attempt( object $order, int $company_id, string $request_hash, string $commercial_hash = '' ) {
+	$stored_company    = (int) $order->get_meta( PAPELITO_CHECKOUT_ATTEMPT_COMPANY_META, true );
+	$stored_commercial = sanitize_text_field( (string) $order->get_meta( PAPELITO_CHECKOUT_ATTEMPT_COMMERCIAL_HASH_META, true ) );
+	$uses_commercial   = '' !== $stored_commercial && '' !== $commercial_hash && defined( 'PAPELITO_PAYMENT_ATTEMPT_ID_META' ) && absint( $order->get_meta( PAPELITO_PAYMENT_ATTEMPT_ID_META, true ) ) > 0;
+	$stored_hash       = $uses_commercial ? $stored_commercial : sanitize_text_field( (string) $order->get_meta( PAPELITO_CHECKOUT_ATTEMPT_HASH_META, true ) );
+	$expected_hash     = $uses_commercial ? $commercial_hash : $request_hash;
 	if ( $stored_company !== $company_id ) {
 		return new WP_Error( 'papelito_checkout_company_context_changed', 'A empresa desta tentativa não corresponde à empresa ativa.', array( 'status' => 409 ) );
 	}
-	if ( '' === $stored_hash || ! hash_equals( $stored_hash, $request_hash ) ) {
+	if ( '' === $stored_hash || ! hash_equals( $stored_hash, $expected_hash ) ) {
 		return new WP_Error( 'papelito_checkout_attempt_payload_conflict', 'Esta tentativa de checkout foi reutilizada com dados diferentes.', array( 'status' => 409 ) );
 	}
 	return true;
@@ -310,6 +421,8 @@ function papelito_order_routing_payment_method_label( string $method ): string {
 			return 'Pix';
 		case 'boleto':
 			return 'Boleto';
+		case 'mercadopago':
+			return 'Mercado Pago';
 		default:
 			return 'Pagamento headless';
 	}
@@ -878,6 +991,7 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 	$checkout_attempt_id = (string) ( $context['checkout_attempt_id'] ?? '' );
 	$b2b_snapshot        = is_array( $context['b2b_snapshot'] ?? null ) ? $context['b2b_snapshot'] : array();
 	$request_hash        = (string) ( $context['request_hash'] ?? '' );
+	$commercial_hash     = (string) ( $context['commercial_hash'] ?? '' );
 	$logistics_snapshot  = is_array( $context['logistics_snapshot'] ?? null ) ? $context['logistics_snapshot'] : null;
 
 	if ( ! function_exists( 'wc_create_order' ) || ! class_exists( 'WC_Order' ) || ! class_exists( 'WC_Order_Item_Shipping' ) || ! class_exists( 'WC_Order_Item_Product' ) ) {
@@ -962,6 +1076,7 @@ function papelito_order_routing_create_order( int $user_id, array $address, arra
 			$order->update_meta_data( PAPELITO_CHECKOUT_ATTEMPT_ID_META, $checkout_attempt_id );
 			$order->update_meta_data( PAPELITO_CHECKOUT_ATTEMPT_COMPANY_META, (int) ( $b2b_snapshot['company_id'] ?? 0 ) );
 			$order->update_meta_data( PAPELITO_CHECKOUT_ATTEMPT_HASH_META, $request_hash );
+			$order->update_meta_data( PAPELITO_CHECKOUT_ATTEMPT_COMMERCIAL_HASH_META, $commercial_hash );
 		}
 
 		$authoritative_total_cents = $shipping_charged_cents;
@@ -1275,12 +1390,10 @@ function papelito_order_routing_guard_place_order_request( WP_REST_Request $requ
 		);
 	}
 
-	if ( ! function_exists( 'papelito_pagarme_is_configured' ) || ! papelito_pagarme_is_configured() ) {
-		return new WP_Error(
-			'papelito_checkout_payment_unavailable',
-			'Checkout indisponível até a configuração do Pagar.me.',
-			array( 'status' => 501 )
-		);
+	$gateways_enabled = function_exists( 'papelito_payment_gateways_enabled' ) && papelito_payment_gateways_enabled();
+
+	if ( ! $gateways_enabled && ! papelito_order_routing_pagarme_ready() ) {
+		return papelito_order_routing_pagarme_unavailable_error();
 	}
 
 	$payload = $request->get_json_params();
@@ -1293,12 +1406,48 @@ function papelito_order_routing_guard_place_order_request( WP_REST_Request $requ
 }
 
 /**
+ * Diz se a Pagar.me está configurada para o checkout legado.
+ *
+ * @return bool
+ */
+function papelito_order_routing_pagarme_ready(): bool {
+	return function_exists( 'papelito_pagarme_is_configured' ) && papelito_pagarme_is_configured();
+}
+
+/**
+ * Erro de checkout sem Pagar.me configurada.
+ *
+ * @return WP_Error
+ */
+function papelito_order_routing_pagarme_unavailable_error(): WP_Error {
+	return new WP_Error(
+		'papelito_checkout_payment_unavailable',
+		'Checkout indisponível até a configuração do Pagar.me.',
+		array( 'status' => 501 )
+	);
+}
+
+/**
+ * PaymentContext do vendor do carrinho; legado quando os gateways não estão carregados.
+ *
+ * @param int $vendor_id Vendor autoritativo dos itens.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_order_routing_gateway_context( int $vendor_id ) {
+	if ( ! function_exists( 'papelito_payment_gateway_resolve' ) ) {
+		return array( 'legacy' => true );
+	}
+
+	return papelito_payment_gateway_resolve( $vendor_id );
+}
+
+/**
  * Devolve a resposta do pedido já criado para a mesma tentativa de checkout.
  *
  * @return WP_REST_Response|WP_Error|null Resposta pronta, erro de validação, ou null quando não
  *                                        existe tentativa anterior e o pedido deve seguir.
  */
-function papelito_order_routing_replay_checkout_attempt( int $user_id, string $checkout_attempt_id, int $company_id, string $request_hash ) {
+function papelito_order_routing_replay_checkout_attempt( int $user_id, string $checkout_attempt_id, int $company_id, string $request_hash, string $commercial_hash = '' ) {
 	if ( '' === $checkout_attempt_id ) {
 		return null;
 	}
@@ -1309,7 +1458,7 @@ function papelito_order_routing_replay_checkout_attempt( int $user_id, string $c
 		return null;
 	}
 
-	$attempt_valid = papelito_order_routing_validate_existing_attempt( $existing_order, $company_id, $request_hash );
+	$attempt_valid = papelito_order_routing_validate_existing_attempt( $existing_order, $company_id, $request_hash, $commercial_hash );
 
 	if ( is_wp_error( $attempt_valid ) ) {
 		return $attempt_valid;
@@ -1513,12 +1662,14 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 
 	$checkout_attempt_id = papelito_order_routing_normalize_checkout_attempt_id( $payload['checkout_attempt_id'] ?? '' );
 	$request_hash        = papelito_order_routing_checkout_request_hash( $payload );
+	$commercial_hash     = papelito_order_routing_commercial_request_hash( $payload );
 
 	$replay = papelito_order_routing_replay_checkout_attempt(
 		$user_id,
 		$checkout_attempt_id,
 		(int) ( $b2b_snapshot['company_id'] ?? 0 ),
-		$request_hash
+		$request_hash,
+		$commercial_hash
 	);
 	if ( null !== $replay ) {
 		return $replay;
@@ -1584,6 +1735,37 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 		max( 0, (int) ( $pricing['totals']['shippingDiscountCents'] ?? 0 ) )
 	);
 
+	$gateway_context = papelito_order_routing_gateway_context( (int) $resolved_items['vendor_id'] );
+	if ( is_wp_error( $gateway_context ) ) {
+		return $gateway_context;
+	}
+
+	if ( empty( $gateway_context['legacy'] ) ) {
+		return papelito_payment_checkout_place(
+			array(
+				'user_id'             => $user_id,
+				'payload'             => $payload,
+				'b2b_snapshot'        => $b2b_snapshot,
+				'checkout_attempt_id' => $checkout_attempt_id,
+				'request_hash'        => $request_hash,
+				'commercial_hash'     => $commercial_hash,
+				'address'             => $address,
+				'lines'               => $lines,
+				'shipping'            => $shipping,
+				'coupon'              => $coupon,
+				'pricing'             => $pricing,
+				'vendor_id'           => (int) $resolved_items['vendor_id'],
+				'logistics_snapshot'  => $logistics_snapshot,
+				'context'             => $gateway_context,
+				'frontend_base'       => function_exists( 'papelito_frontend_base_url' ) ? papelito_frontend_base_url( papelito_frontend_base_from_request( $request ) ) : '',
+			)
+		);
+	}
+
+	if ( ! papelito_order_routing_pagarme_ready() ) {
+		return papelito_order_routing_pagarme_unavailable_error();
+	}
+
 	$payment = papelito_order_routing_resolve_checkout_payment(
 		$payload,
 		$address,
@@ -1605,6 +1787,7 @@ function papelito_order_routing_handle_place_order( WP_REST_Request $request ) {
 			'checkout_attempt_id' => $checkout_attempt_id,
 			'b2b_snapshot'        => $b2b_snapshot,
 			'request_hash'        => $request_hash,
+			'commercial_hash'     => $commercial_hash,
 			'logistics_snapshot'  => $logistics_snapshot,
 		)
 	);

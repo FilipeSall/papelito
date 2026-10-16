@@ -352,7 +352,7 @@ function papelito_vendor_account_requirement( int $vendor_id ): array {
  * @param bool              $satisfied Se o mínimo do requisito está atendido.
  * @param bool              $blocking  Se a pendência impede a venda agora.
  * @param string            $reason    Código estável do motivo, vazio quando não há o que dizer.
- * @param array<string,int> $numbers   Números do requisito, quando existirem.
+ * @param array<string,mixed> $numbers  Números do requisito (ou gateways aptos), quando existirem.
  * @return array<string,mixed> Requisito normalizado.
  */
 function papelito_vendor_requirement( string $id, bool $satisfied, bool $blocking, string $reason, array $numbers = array() ): array {
@@ -401,9 +401,57 @@ function papelito_vendor_requirements( int $vendor_id ): array {
 
 	return array(
 		papelito_vendor_account_requirement( $vendor_id ),
-		papelito_vendor_pagarme_requirement( $vendor_id ),
+		papelito_vendor_financial_requirement( $vendor_id ),
 		papelito_vendor_boxes_requirement( $vendor_id ),
 	);
+}
+
+/**
+ * Requisito financeiro do vendor conforme o modo de pagamento.
+ *
+ * Legado: o recebedor Pagar.me de sempre. Fluxo novo: pelo menos um gateway utilizável, lido do
+ * estado persistido (sem chamada externa). Vendor que já ingressou e saiu da coorte fica bloqueado,
+ * sem voltar ao recebedor legado.
+ *
+ * @param int $vendor_id Vendor avaliado.
+ * @return array<string,mixed> Requisito normalizado.
+ */
+function papelito_vendor_financial_requirement( int $vendor_id ): array {
+	$mode = function_exists( 'papelito_vendor_payment_mode' ) ? papelito_vendor_payment_mode( $vendor_id ) : 'legacy';
+
+	if ( 'legacy' === $mode ) {
+		return papelito_vendor_pagarme_requirement( $vendor_id );
+	}
+
+	if ( 'suspended' === $mode || ! function_exists( 'papelito_payment_gateway_statuses' ) ) {
+		return papelito_vendor_requirement( 'payment_gateway', false, true, 'payment_policy_suspended', array( 'providers' => array() ) );
+	}
+
+	$statuses   = papelito_payment_gateway_statuses_by_provider( $vendor_id );
+	$preference = papelito_vendor_payment_preference( $vendor_id, $statuses );
+
+	return papelito_vendor_gateway_requirement( $statuses, (string) $preference['preferredProvider'], (bool) $preference['explicit'] );
+}
+
+/**
+ * Requisito "gateway escolhido apto" a partir dos GatewayStatus.
+ *
+ * A escolha é exclusiva: o outro gateway apto não habilita a venda. Sem escolha explícita e sem
+ * gateway apto, o motivo é `no_gateway_ready`; com escolha inapta, `selected_gateway_unavailable`.
+ *
+ * @param array<string,array<string,mixed>> $statuses Status por provider.
+ * @param string                            $selected Gateway escolhido (ou padrão da coorte).
+ * @param bool                              $explicit Se o vendor escolheu de fato.
+ * @return array<string,mixed> Requisito normalizado, com o gateway escolhido em `providers`.
+ */
+function papelito_vendor_gateway_requirement( array $statuses, string $selected, bool $explicit ): array {
+	if ( ! empty( $statuses[ $selected ]['canReceive'] ) ) {
+		return papelito_vendor_requirement( 'payment_gateway', true, false, '', array( 'providers' => array( $selected ) ) );
+	}
+
+	return $explicit
+		? papelito_vendor_requirement( 'payment_gateway', false, true, 'selected_gateway_unavailable', array( 'providers' => array( $selected ) ) )
+		: papelito_vendor_requirement( 'payment_gateway', false, true, 'no_gateway_ready', array( 'providers' => array() ) );
 }
 
 /**

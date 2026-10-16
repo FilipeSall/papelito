@@ -204,6 +204,7 @@ function papelito_cnpj_map_brasilapi( array $body ): array {
 				'street' => papelito_cnpj_nullable_string( $body, 'logradouro' ),
 			),
 			'qsa'               => papelito_cnpj_array_value( $body, 'qsa' ),
+			'cnaes'             => function_exists( 'papelito_vendor_cnae_extract' ) ? papelito_vendor_cnae_extract( $body ) : null,
 		)
 	);
 }

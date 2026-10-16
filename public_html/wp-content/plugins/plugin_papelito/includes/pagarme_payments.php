@@ -39,6 +39,9 @@ if ( ! defined( 'PAPELITO_PAGARME_ORDER_ID_META' ) ) {
 /**
  * Retorna o estado serializado do pagamento do pedido.
  *
+ * Pedido cobrado no Mercado Pago devolve o snapshot daquele gateway no mesmo formato, para recibo,
+ * pedido e painel funcionarem sem saber qual gateway cobrou.
+ *
  * @return array<string,mixed>
  */
 function papelito_pagarme_order_payment_snapshot( object $order ): array {
@@ -47,6 +50,15 @@ function papelito_pagarme_order_payment_snapshot( object $order ): array {
 			'method' => '',
 			'state'  => '',
 		);
+	}
+
+	if ( function_exists( 'papelito_mercadopago_order_payment_snapshot' ) && defined( 'PAPELITO_PAYMENT_PROVIDER_META' ) && 'mercadopago' === $order->get_meta( PAPELITO_PAYMENT_PROVIDER_META, true ) ) {
+		return papelito_mercadopago_order_payment_snapshot( $order );
+	}
+
+	$awaiting = function_exists( 'papelito_payment_checkout_awaiting_snapshot' ) ? papelito_payment_checkout_awaiting_snapshot( $order ) : null;
+	if ( null !== $awaiting ) {
+		return $awaiting;
 	}
 
 	$method = sanitize_key( (string) $order->get_meta( PAPELITO_PAGARME_PAYMENT_METHOD_META, true ) );
@@ -371,6 +383,16 @@ function papelito_pagarme_customer_payload( int $user_id, array $address ) {
  * @return true|WP_Error
  */
 function papelito_pagarme_validate_vendor_recipient( int $vendor_id ) {
+	$policy = function_exists( 'papelito_vendor_pagarme_policy_guard' ) ? papelito_vendor_pagarme_policy_guard( $vendor_id ) : true;
+
+	if ( is_wp_error( $policy ) ) {
+		return new WP_Error(
+			'papelito_checkout_vendor_not_approved',
+			'O vendor selecionado não esta apto para receber pagamentos.',
+			array( 'status' => 422 )
+		);
+	}
+
 	$recipient_id = papelito_pagarme_get_vendor_recipient_id( $vendor_id );
 
 	if ( '' === $recipient_id || ! papelito_pagarme_vendor_recipient_is_active( $vendor_id ) ) {
@@ -637,7 +659,7 @@ function papelito_pagarme_store_order_response( object $order, array $response, 
 }
 
 /**
- * Indica se o pedido ja esta pago em WooCommerce ou no estado Pagar.me local.
+ * Indica se o pedido ja esta pago em WooCommerce, no estado Pagar.me local ou liberado pelo fluxo de gateways.
  */
 function papelito_pagarme_order_has_paid_status( object $order ): bool {
 	if ( ! is_object( $order ) ) {
@@ -660,7 +682,7 @@ function papelito_pagarme_order_has_paid_status( object $order ): bool {
 		}
 	}
 
-	return false;
+	return function_exists( 'papelito_payment_order_is_released' ) && papelito_payment_order_is_released( $order );
 }
 
 /**
@@ -1088,6 +1110,10 @@ function papelito_pagarme_reconcile_pending_stock_reservations(): void {
 		}
 
 		if ( method_exists( $order, 'get_status' ) && in_array( $order->get_status(), array( 'processing', 'completed' ), true ) ) {
+			continue;
+		}
+
+		if ( function_exists( 'papelito_payment_reconcile_is_pagarme_order' ) && ! papelito_payment_reconcile_is_pagarme_order( $order ) ) {
 			continue;
 		}
 

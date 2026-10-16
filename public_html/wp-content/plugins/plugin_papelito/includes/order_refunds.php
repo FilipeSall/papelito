@@ -701,6 +701,10 @@ function papelito_order_refund_insert( object $order, int $vendor_id, string $mo
  * @param object $order Pedido WooCommerce.
  */
 function papelito_order_refund_resolve_mode( object $order ): string {
+	if ( function_exists( 'papelito_mercadopago_refund_mode' ) && PAPELITO_PAYMENT_PROVIDER_MERCADOPAGO === papelito_order_refund_row_provider( array( 'order_id' => (int) $order->get_id() ) ) ) {
+		return papelito_mercadopago_refund_mode( $order, papelito_order_refund_order_paid_at( $order ), time() );
+	}
+
 	$method = sanitize_key( (string) $order->get_meta( '_papelito_pagarme_payment_method', true ) );
 	$mode   = papelito_order_refund_mode( $method, true, papelito_order_refund_order_paid_at( $order ), time() );
 
@@ -822,19 +826,13 @@ function papelito_order_refund_attempt_api( int $refund_id, int $actor_id = 0 ) 
 
 	$order_id = (int) $row['order_id'];
 	$attempts = (int) $row['attempts'] + 1;
-	$amount   = (int) $row['amount_cents'];
-	$charge   = 'charges/' . rawurlencode( (string) $row['pagarme_charge_id'] );
-	$precheck = papelito_pagarme_request( 'GET', $charge );
+	$remote   = papelito_order_refund_remote_attempt( $row );
 
-	if ( is_array( $precheck ) && papelito_order_refund_charge_is_refunded( $precheck, $amount ) ) {
-		return papelito_order_refund_complete( $refund_id, 'api_precheck', $actor_id, array( 'charge_status' => (string) ( $precheck['status'] ?? '' ) ) );
+	if ( is_array( $remote ) && $remote['refunded'] ) {
+		return papelito_order_refund_complete( $refund_id, $remote['source'], $actor_id, array( 'charge_status' => (string) ( $remote['payload']['status'] ?? '' ) ) );
 	}
 
-	$response = papelito_pagarme_request( 'DELETE', $charge, null, array( 'idempotency_key' => (string) $row['idempotency_key'] ) );
-
-	if ( is_array( $response ) && papelito_order_refund_charge_is_refunded( $response, $amount ) ) {
-		return papelito_order_refund_complete( $refund_id, 'api', $actor_id, array( 'charge_status' => (string) ( $response['status'] ?? '' ) ) );
-	}
+	$response = is_array( $remote ) ? $remote['payload'] : $remote;
 
 	$now = time();
 
@@ -929,6 +927,59 @@ function papelito_order_refund_attempt_api( int $refund_id, int $actor_id = 0 ) 
 	);
 
 	return papelito_order_refund_get( $refund_id ) ?? $row;
+}
+
+/**
+ * Parte remota do estorno, no gateway que cobrou o pedido.
+ *
+ * O provider sai do snapshot do pedido, nunca da preferência atual do vendor. Pedido sem snapshot
+ * é Pagar.me, como sempre foi.
+ *
+ * @param array<string,mixed> $row Linha do estorno.
+ * @return array{refunded:bool,source:string,payload:array<string,mixed>}|WP_Error
+ */
+function papelito_order_refund_remote_attempt( array $row ) {
+	$result = function_exists( 'papelito_mercadopago_refund_remote' ) && PAPELITO_PAYMENT_PROVIDER_MERCADOPAGO === papelito_order_refund_row_provider( $row )
+		? papelito_mercadopago_refund_remote( $row )
+		: papelito_order_refund_pagarme_remote( $row );
+
+	if ( is_wp_error( $result ) && function_exists( 'papelito_payment_observe_metric' ) ) {
+		papelito_payment_observe_metric( 'refund_failed' );
+	}
+
+	return $result;
+}
+
+/**
+ * Parte remota do estorno na Pagar.me: lê a cobrança antes e devolve com idempotência.
+ *
+ * @param array<string,mixed> $row Linha do estorno.
+ * @return array{refunded:bool,source:string,payload:array<string,mixed>}|WP_Error
+ */
+function papelito_order_refund_pagarme_remote( array $row ) {
+	$amount   = (int) $row['amount_cents'];
+	$charge   = 'charges/' . rawurlencode( (string) $row['pagarme_charge_id'] );
+	$precheck = papelito_pagarme_request( 'GET', $charge );
+
+	if ( is_array( $precheck ) && papelito_order_refund_charge_is_refunded( $precheck, $amount ) ) {
+		return array(
+			'refunded' => true,
+			'source'   => 'api_precheck',
+			'payload'  => $precheck,
+		);
+	}
+
+	$response = papelito_pagarme_request( 'DELETE', $charge, null, array( 'idempotency_key' => (string) $row['idempotency_key'] ) );
+
+	if ( is_wp_error( $response ) ) {
+		return $response;
+	}
+
+	return array(
+		'refunded' => papelito_order_refund_charge_is_refunded( $response, $amount ),
+		'source'   => 'api',
+		'payload'  => $response,
+	);
 }
 
 /**

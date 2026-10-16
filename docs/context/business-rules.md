@@ -177,6 +177,16 @@ Além disso: a query parte de `FROM wp_posts p LEFT JOIN papelito_vendor_stock v
 52f. O reembolso no WooCommerce é escritural: `wc_create_refund` com `restock_items => false` e `refund_payment => false`, com o e-mail nativo de refund suprimido. `update_status( 'cancelled' )` repõe estoque do WooCommerce e não é usado. `tests/test-order-refunds.php` verifica as três coisas no código-fonte.
 52g. A chave PIX de reembolso só é decifrada por `papelito_refund_pix_key_decrypt()`, chamada só pelo endpoint do vendor com estorno `manual_pendente`, que grava o evento `pix_key_revealed`.
 
+### Gateways (Mercado Pago e Pagar.me) — fluxo novo atrás de flag
+
+52h. **Modo financeiro do vendor** sai de `papelito_vendor_payment_mode()`: `legacy` (nunca ingressou e fora da coorte — tudo acima vale como sempre), `gateways` (na coorte; grava `papelito_vendor_payment_policy_enforced` no primeiro ingresso) e `suspended` (marcado e fora da coorte/flag — sem novas compras, nunca volta ao legado).
+52i. **Gateway de cobrança é histórico**: `papelito_payment_provider_for_order()` lê o snapshot do pedido; sem snapshot, só evidência Pagar.me (`_papelito_pagarme_order_id`/`_charge_id`) autoriza ler como Pagar.me; o resto é erro explícito. Webhook, reconciliação e estorno (`papelito_order_refund_remote_attempt()`) usam a conta da tentativa, nunca a preferência atual.
+52j. **Política CNAE** (`papelito_vendor_pagarme_policy_guard()`): `4729601`, `4636201`, `4636202`, principal ou secundário, bloqueiam toda operação nova na Pagar.me (`upsert`, `kyc-link`, cobrança); evidência só da BrasilAPI (`papelito_vendor_cnae_refresh()`), falha nunca vira permissão e bloqueio confirmado sobrevive a evidência vencida. Não se aplica ao modo `legacy`.
+52k. **Requisito financeiro no modo `gateways`**: `papelito_vendor_financial_requirement()` exige que o gateway escolhido (`papelito_vendor_payment_preference()`, com o padrão da coorte em `papelito_vendor_payment_default_provider()`) tenha `canReceive` (`papelito_payment_gateway_statuses()`, estado persistido, sem chamada externa). A escolha é exclusiva: `papelito_payment_gateway_resolve()` nunca devolve o outro gateway, e o motivo da escolha inapta é `selected_gateway_unavailable`.
+52l. **Uma emissão por tentativa**: `papelito_payment_checkout_place()` serializa o checkout por trava nomeada, cria pedido e reserva uma vez, grava a tentativa e o snapshot antes do POST e só emite quem vence o compare-and-set `→ creating`. Timeout/5xx/resposta ilegível = `unknown` (reconciliar; nunca trocar de gateway). Fallback só depois de falha comprovadamente anterior à criação (`papelito_payment_gateway_pre_creation_failures()`), reaproveitando o mesmo pedido/reserva; sem dados Pagar.me vira `requires_payment_input` e a continuação (`/checkout/payment-attempts/{id}/continue`) só aceita a tentativa `awaiting_payment_input` do mesmo comprador/empresa e versão de configuração.
+52m. **Confirmação de pagamento MP** só por consulta autenticada (`papelito_mercadopago_payment_matches()`: referência, collector, moeda, valor, ambiente); a liberação para envio é única (`_papelito_payment_fulfillment_released`) e segunda aprovação vira incidente. A reconciliação (`papelito_payment_reconcile_due()`, a cada 5 min) expira `unknown` sem pagamento após 10 min e `pending` só com preferência vencida e sem PIX/boleto vivo.
+52n. **Titularidade da conta MP** não tem prova na API: conta nasce `verification_pending` e só fica `ready` com `papelito_vendor_payment_account_set_identity()` via admin, com referência de evidência.
+
 ## Rastreamento
 
 53. Somente `BDE/01` conclui entrega. O pedido projeta `entregue` só quando **todas** as remessas ativas estão entregues.
@@ -226,6 +236,7 @@ Além disso: a query parte de `FROM wp_posts p LEFT JOIN papelito_vendor_stock v
 
 ## Agendamentos (WP-Cron)
 
+69a. Ganchos dos gateways: `papelito_payment_reconcile_attempts` (`papelito_five_minutes`), `papelito_mercadopago_refresh_tokens` (diário; renova tokens a 30 dias do vencimento) e `papelito_vendor_cnae_refresh_due` (diário; no máximo 10 consultas BrasilAPI por execução, só vendors marcados). Todos agendados sem args.
 70. **Agendador que roda no `init` consulta `wp_next_scheduled()` com os mesmos args com que agenda.** O WP-Cron identifica o evento por hook + args, e a consulta sem args nunca acha um evento agendado com args. `papelito_legacy_schedule_email_cron()` caiu nisso e criava um evento por requisição: chegou a 35 mil eventos, uma option `cron` de 7,9 MB em autoload e ~1,5 s a mais em **toda** chamada ao WordPress. Os args vivem numa função (`papelito_legacy_email_cron_args()`), e a limpeza é `papelito_legacy_prune_email_cron()`, que usa `wp_unschedule_hook()` (uma só gravação da option, em vez de uma por evento). Sintoma para reconhecer: até um 401 anônimo demorando mais de 1 s.
 
 ## Ao refatorar

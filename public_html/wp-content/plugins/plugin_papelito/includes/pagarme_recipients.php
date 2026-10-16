@@ -927,6 +927,22 @@ function papelito_pagarme_bank_account_payload( array $bank_account, string $fal
 }
 
 /**
+ * Draft financeiro de onde o recebedor é montado: perfil comum no fluxo novo, draft legado no antigo.
+ *
+ * @param int $user_id Vendor.
+ * @return array<string,mixed>|null
+ */
+function papelito_pagarme_recipient_context_draft( int $user_id ): ?array {
+	if ( function_exists( 'papelito_pagarme_recipient_source_draft' ) ) {
+		return papelito_pagarme_recipient_source_draft( $user_id );
+	}
+
+	return function_exists( 'papelito_get_vendor_pagarme_recipient_draft' )
+		? papelito_get_vendor_pagarme_recipient_draft( $user_id )
+		: null;
+}
+
+/**
  * Carrega os dados necessarios para montar o payload do recebedor.
  *
  * @return array<string,mixed>|WP_Error
@@ -938,9 +954,7 @@ function papelito_pagarme_get_recipient_context( int $user_id ) {
 		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
 	}
 
-	$draft = function_exists( 'papelito_get_vendor_pagarme_recipient_draft' )
-		? papelito_get_vendor_pagarme_recipient_draft( $user_id )
-		: null;
+	$draft = papelito_pagarme_recipient_context_draft( $user_id );
 
 	if ( ! is_array( $draft ) ) {
 		return new WP_Error(
@@ -1187,9 +1201,7 @@ function papelito_pagarme_build_recipient_bank_account_payload( int $user_id ) {
 		return new WP_Error( 'papelito_vendor_not_found', 'Vendor nao encontrado.', array( 'status' => 404 ) );
 	}
 
-	$draft = function_exists( 'papelito_get_vendor_pagarme_recipient_draft' )
-		? papelito_get_vendor_pagarme_recipient_draft( $user_id )
-		: null;
+	$draft = papelito_pagarme_recipient_context_draft( $user_id );
 
 	if ( ! is_array( $draft ) ) {
 		return new WP_Error(
@@ -1358,6 +1370,12 @@ function papelito_pagarme_reserve_kyc_link_quota( int $user_id, int $max_attempt
  * @return array<string,mixed>|WP_Error
  */
 function papelito_pagarme_create_vendor_kyc_link( int $user_id ) {
+	$policy = papelito_pagarme_policy_guard_for( $user_id );
+
+	if ( is_wp_error( $policy ) ) {
+		return $policy;
+	}
+
 	$state = papelito_pagarme_sync_vendor_recipient( $user_id );
 
 	if ( is_wp_error( $state ) ) {
@@ -1412,11 +1430,32 @@ function papelito_pagarme_create_vendor_kyc_link( int $user_id ) {
 }
 
 /**
+ * Aplica a política financeira local antes de qualquer operação nova na Pagar.me.
+ *
+ * Fica num ponto só para que as quatro portas de cadastro, os hooks de autosync, as ações
+ * manuais e o KYC compartilhem a mesma decisão. Bloqueio não grava erro remoto no recebedor.
+ *
+ * @param int $user_id Vendor.
+ * @return true|WP_Error
+ */
+function papelito_pagarme_policy_guard_for( int $user_id ) {
+	return function_exists( 'papelito_vendor_pagarme_policy_guard' )
+		? papelito_vendor_pagarme_policy_guard( $user_id )
+		: true;
+}
+
+/**
  * Cria ou atualiza o recebedor do vendor.
  *
  * @return array<string,string>|WP_Error
  */
 function papelito_pagarme_upsert_vendor_recipient( int $user_id ) {
+	$policy = papelito_pagarme_policy_guard_for( $user_id );
+
+	if ( is_wp_error( $policy ) ) {
+		return $policy;
+	}
+
 	$payload = papelito_pagarme_build_recipient_payload( $user_id );
 
 	if ( is_wp_error( $payload ) ) {

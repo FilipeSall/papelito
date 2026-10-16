@@ -1835,6 +1835,10 @@ function papelito_vendor_dashboard_handle_customer_order( WP_REST_Request $reque
 		return $order;
 	}
 
+	if ( function_exists( 'papelito_payment_maybe_reconcile_on_view' ) ) {
+		papelito_payment_maybe_reconcile_on_view( $order );
+	}
+
 	if ( function_exists( 'papelito_pagarme_maybe_reconcile_checkout_order' ) ) {
 		papelito_pagarme_maybe_reconcile_checkout_order( $order );
 	}

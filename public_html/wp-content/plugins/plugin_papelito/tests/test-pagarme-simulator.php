@@ -182,6 +182,7 @@ function papelito_adjust_vendor_stock( int $vendor_id, int $product_id, int $qty
 
 require __DIR__ . '/../includes/pagarme_client.php';
 require __DIR__ . '/../includes/pagarme_payments.php';
+require_once __DIR__ . '/../includes/payment_order_state.php';
 require __DIR__ . '/../includes/pagarme_webhook.php';
 require __DIR__ . '/../includes/pagarme_simulator.php';
 
@@ -259,6 +260,13 @@ papelito_assert_same( 'expired simulation returns 200', 200, $response->get_stat
 papelito_assert_same( 'expired simulation stores expired state', 'expired', $order->meta[ PAPELITO_PAGARME_PAYMENT_STATE_META ] ?? null );
 papelito_assert_same( 'expired simulation fails order', 'failed', $order->status );
 papelito_assert_same( 'duplicate expired event releases stock once', 1, $papelito_test_stock_releases );
+
+echo "Scenario 5: order released by the gateway flow counts as paid\n";
+$released_order         = new WC_Order( 77 );
+$released_order->status = 'on-hold';
+$released_order->update_meta_data( PAPELITO_PAYMENT_FULFILLMENT_RELEASED_META, '1' );
+papelito_assert_same( 'released order without Pagar.me state is paid', true, papelito_pagarme_order_has_paid_status( $released_order ) );
+papelito_assert_same( 'pending order without release is not paid', false, papelito_pagarme_order_has_paid_status( new WC_Order( 78 ) ) );
 
 echo "\n";
 if ( $failures > 0 ) {

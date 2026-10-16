@@ -786,6 +786,21 @@ function papelito_refresh_vendor_pending_registration_state( int $user_id, array
 }
 
 /**
+ * Pendências que o onboarding do vendor exibe e usa como gate.
+ *
+ * No fluxo de gateways, campos exclusivos da Pagar.me deixam de prender o vendor (ver
+ * `papelito_vendor_onboarding_pending_fields()`); no legado é a lista completa de sempre.
+ *
+ * @param int $user_id Usuario.
+ * @return array<int, string>
+ */
+function papelito_vendor_onboarding_pending_fields_for( int $user_id ): array {
+	return function_exists( 'papelito_vendor_onboarding_pending_fields' )
+		? papelito_vendor_onboarding_pending_fields( $user_id )
+		: papelito_resolve_vendor_pending_registration_fields( $user_id );
+}
+
+/**
  * Monta a resposta REST das pendencias de cadastro do vendor.
  *
  * @param int $user_id Usuario.
@@ -805,7 +820,7 @@ function papelito_get_vendor_pending_registration_rest_response( int $user_id ):
 			'coverageRanges' => papelito_get_vendor_coverage_ranges( $user_id ),
 		),
 		'draft'         => papelito_get_vendor_pagarme_recipient_draft( $user_id ),
-		'pendingFields' => papelito_resolve_vendor_pending_registration_fields( $user_id ),
+		'pendingFields' => papelito_vendor_onboarding_pending_fields_for( $user_id ),
 		'updatedAt'     => (string) get_user_meta( $user_id, PAPELITO_VENDOR_PENDING_FIELDS_UPDATED_AT_META, true ),
 	);
 }
@@ -823,7 +838,7 @@ function papelito_get_vendor_application_rest_response( int $user_id ): array {
 	return array(
 		'status'       => $summary['status'],
 		'submittedAt'  => $summary['submittedAt'],
-		'pendingFields' => papelito_resolve_vendor_pending_registration_fields( $user_id ),
+		'pendingFields' => papelito_vendor_onboarding_pending_fields_for( $user_id ),
 		'application'  => array(
 			'step1' => array(
 				'storeName'        => $summary['storeName'],
@@ -884,6 +899,7 @@ function papelito_save_vendor_pagarme_recipient_draft( int $user_id, array $step
 
 	update_user_meta( $user_id, PAPELITO_VENDOR_PAGARME_RECIPIENT_DRAFT_META, $encoded );
 	update_user_meta( $user_id, PAPELITO_VENDOR_PAGARME_RECIPIENT_DRAFT_UPDATED_AT, papelito_current_utc_mysql() );
+	do_action( 'papelito_vendor_pagarme_draft_saved', $user_id, $sanitized );
 }
 
 /**
