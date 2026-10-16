@@ -20,6 +20,12 @@ function papelito_vendor_item_settings_table_name(): string {
 	return $wpdb->prefix . 'papelito_vendor_item_settings';
 }
 
+/** Nome completo da trilha de alterações do código do vendor. */
+function papelito_vendor_item_settings_log_table_name(): string {
+	global $wpdb;
+	return $wpdb->prefix . 'papelito_vendor_item_settings_log';
+}
+
 /**
  * Indexa `SHOW INDEX` por nome e posição da coluna.
  *
@@ -56,7 +62,19 @@ function papelito_vendor_item_settings_inspect_schema(): bool {
 			1 => 'vendor_id',
 			2 => 'vendor_code',
 		) === ( $keys['idx_vendor_code'] ?? array() )
-		&& array( 1 => 'product_id' ) === ( $keys['idx_product'] ?? array() );
+		&& array( 1 => 'product_id' ) === ( $keys['idx_product'] ?? array() )
+		&& papelito_vendor_item_settings_inspect_log_schema();
+}
+
+/** Confere que a trilha de alterações existe com as colunas gravadas por `log_change()`. */
+function papelito_vendor_item_settings_inspect_log_schema(): bool {
+	global $wpdb;
+	$table = papelito_vendor_item_settings_log_table_name();
+	if ( $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ) !== $table ) {
+		return false;
+	}
+	$columns = $wpdb->get_col( $wpdb->prepare( 'SHOW COLUMNS FROM %i', $table ) );
+	return ! array_diff( array( 'id', 'vendor_id', 'product_id', 'old_code', 'new_code', 'source', 'actor_user_id', 'batch_id', 'created_at' ), $columns );
 }
 
 /**
@@ -90,8 +108,24 @@ function papelito_vendor_item_settings_install_table(): bool {
   KEY idx_vendor_code (vendor_id,vendor_code),
   KEY idx_product (product_id)
 ) {$collate};";
+	$log     = papelito_vendor_item_settings_log_table_name();
+	$log_sql = "CREATE TABLE {$log} (
+  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  vendor_id bigint(20) unsigned NOT NULL,
+  product_id bigint(20) unsigned NOT NULL,
+  old_code VARCHAR(60) NULL DEFAULT NULL,
+  new_code VARCHAR(60) NULL DEFAULT NULL,
+  source VARCHAR(20) NOT NULL,
+  actor_user_id bigint(20) unsigned NOT NULL DEFAULT 0,
+  batch_id CHAR(36) NULL DEFAULT NULL,
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY  (id),
+  KEY idx_vendor_created (vendor_id,created_at),
+  KEY idx_batch (batch_id)
+) {$collate};";
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 	dbDelta( $sql );
+	dbDelta( $log_sql );
 	return papelito_vendor_item_settings_schema_ready( true );
 }
 
@@ -137,20 +171,115 @@ function papelito_vendor_item_settings_get_many( int $vendor_id, array $product_
 }
 
 /**
- * Grava o código do vendor para o item, preservando a data de criação; `null` apaga.
+ * Código atual do item no banco, lido na hora e travado (`FOR UPDATE`) até o fim da transação.
+ *
+ * @param int $vendor_id  Vendor dono do código.
+ * @param int $product_id Produto ou variação.
+ * @return string|null|WP_Error
+ */
+function papelito_vendor_item_settings_current_code( int $vendor_id, int $product_id ): string|null|WP_Error {
+	global $wpdb;
+	$code = $wpdb->get_var(
+		$wpdb->prepare(
+			'SELECT vendor_code FROM %i WHERE vendor_id = %d AND product_id = %d FOR UPDATE',
+			papelito_vendor_item_settings_table_name(),
+			$vendor_id,
+			$product_id
+		)
+	);
+	if ( '' !== $wpdb->last_error ) {
+		return papelito_vendor_item_settings_error();
+	}
+	return null === $code ? null : (string) $code;
+}
+
+/**
+ * Registra a troca de código na trilha; troca para o mesmo valor não gera linha.
+ *
+ * `source` diz de onde veio (`manual` no modal, `import` na planilha) e `batch_id`
+ * agrupa as linhas de uma mesma importação. Falha aqui é falha da gravação: quem
+ * chama dentro de transação precisa desfazer tudo.
+ *
+ * @param int                  $vendor_id  Vendor dono do código.
+ * @param int                  $product_id Produto ou variação.
+ * @param string|null          $old_code   Código antes da troca.
+ * @param string|null          $new_code   Código depois da troca.
+ * @param array<string,string> $audit      `source` e `batch_id` opcionais.
+ * @return true|WP_Error
+ */
+function papelito_vendor_item_settings_log_change( int $vendor_id, int $product_id, ?string $old_code, ?string $new_code, array $audit ): bool|WP_Error {
+	global $wpdb;
+	if ( $old_code === $new_code ) {
+		return true;
+	}
+	$batch_id = (string) ( $audit['batch_id'] ?? '' );
+	$inserted = $wpdb->insert(
+		papelito_vendor_item_settings_log_table_name(),
+		array(
+			'vendor_id'     => $vendor_id,
+			'product_id'    => $product_id,
+			'old_code'      => $old_code,
+			'new_code'      => $new_code,
+			'source'        => sanitize_key( (string) ( $audit['source'] ?? 'manual' ) ),
+			'actor_user_id' => get_current_user_id(),
+			'batch_id'      => '' === $batch_id ? null : $batch_id,
+			'created_at'    => current_time( 'mysql', true ),
+		),
+		array( '%d', '%d', '%s', '%s', '%s', '%d', '%s', '%s' )
+	);
+	return false === $inserted ? papelito_vendor_item_settings_error() : true;
+}
+
+/**
+ * Grava o código e a trilha numa transação própria: falha em qualquer um dos dois desfaz ambos.
+ *
+ * Porta de escrita da edição manual. Não use dentro de outra transação — no MySQL um
+ * `START TRANSACTION` aninhado confirma a anterior; a importação chama `save_code()` direto
+ * porque já abriu a dela.
  *
  * @param int         $vendor_id   Vendor dono do código.
  * @param int         $product_id  Produto ou variação publicado.
  * @param string|null $vendor_code Código já normalizado, ou null para remover.
  * @return true|WP_Error
  */
-function papelito_vendor_item_settings_save_code( int $vendor_id, int $product_id, ?string $vendor_code ): bool|WP_Error {
+function papelito_vendor_item_settings_save_code_atomic( int $vendor_id, int $product_id, ?string $vendor_code ): bool|WP_Error {
+	global $wpdb;
+	if ( ! papelito_vendor_item_settings_schema_ready() || false === $wpdb->query( 'START TRANSACTION' ) ) {
+		return papelito_vendor_item_settings_error();
+	}
+	$saved = papelito_vendor_item_settings_save_code( $vendor_id, $product_id, $vendor_code );
+	if ( is_wp_error( $saved ) || false === $wpdb->query( 'COMMIT' ) ) {
+		$wpdb->query( 'ROLLBACK' );
+		return is_wp_error( $saved ) ? $saved : papelito_vendor_item_settings_error();
+	}
+	return true;
+}
+
+/**
+ * Grava o código do vendor para o item, preservando a data de criação; `null` apaga.
+ *
+ * Toda troca efetiva entra na trilha `papelito_vendor_item_settings_log`, com a
+ * origem informada em `$audit` (padrão `manual`). Não abre transação: código e
+ * trilha só são atômicos dentro da transação de quem chama — a da importação ou
+ * a de `papelito_vendor_item_settings_save_code_atomic()`.
+ *
+ * @param int                  $vendor_id   Vendor dono do código.
+ * @param int                  $product_id  Produto ou variação publicado.
+ * @param string|null          $vendor_code Código já normalizado, ou null para remover.
+ * @param array<string,string> $audit       `source` e `batch_id` da trilha.
+ * @return true|WP_Error
+ */
+function papelito_vendor_item_settings_save_code( int $vendor_id, int $product_id, ?string $vendor_code, array $audit = array() ): bool|WP_Error {
 	global $wpdb;
 	if ( ! papelito_vendor_item_settings_schema_ready() ) {
 		return papelito_vendor_item_settings_error();
 	}
 	if ( null === $vendor_code ) {
-		return papelito_vendor_item_settings_clear_code( $vendor_id, $product_id );
+		return papelito_vendor_item_settings_clear_code( $vendor_id, $product_id, $audit );
+	}
+	$previous = papelito_vendor_item_settings_current_code( $vendor_id, $product_id );
+	if ( is_wp_error( $previous ) ) {
+		return $previous;
 	}
 	$now = current_time( 'mysql', true );
 	$sql = $wpdb->prepare(
@@ -164,7 +293,10 @@ function papelito_vendor_item_settings_save_code( int $vendor_id, int $product_i
 		$now
 	);
 	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- SQL preparado imediatamente acima, incluindo identificador da tabela.
-	return false === $wpdb->query( $sql ) ? papelito_vendor_item_settings_error() : true;
+	if ( false === $wpdb->query( $sql ) ) {
+		return papelito_vendor_item_settings_error();
+	}
+	return papelito_vendor_item_settings_log_change( $vendor_id, $product_id, $previous, $vendor_code, $audit );
 }
 
 /**
@@ -173,13 +305,18 @@ function papelito_vendor_item_settings_save_code( int $vendor_id, int $product_i
  * Ao ganhar coluna nova, ela entra na condição do DELETE; senão apagar o código
  * levaria junto um atributo ainda preenchido.
  *
- * @param int $vendor_id  Vendor dono do código.
- * @param int $product_id Produto ou variação.
+ * @param int                  $vendor_id  Vendor dono do código.
+ * @param int                  $product_id Produto ou variação.
+ * @param array<string,string> $audit      `source` e `batch_id` da trilha.
  * @return true|WP_Error
  */
-function papelito_vendor_item_settings_clear_code( int $vendor_id, int $product_id ): bool|WP_Error {
+function papelito_vendor_item_settings_clear_code( int $vendor_id, int $product_id, array $audit = array() ): bool|WP_Error {
 	global $wpdb;
-	$table   = papelito_vendor_item_settings_table_name();
+	$table    = papelito_vendor_item_settings_table_name();
+	$previous = papelito_vendor_item_settings_current_code( $vendor_id, $product_id );
+	if ( is_wp_error( $previous ) ) {
+		return $previous;
+	}
 	$cleared = $wpdb->query(
 		$wpdb->prepare(
 			'UPDATE %i SET vendor_code = NULL, updated_at = %s WHERE vendor_id = %d AND product_id = %d',
@@ -200,7 +337,10 @@ function papelito_vendor_item_settings_clear_code( int $vendor_id, int $product_
 			$product_id
 		)
 	);
-	return false === $pruned ? papelito_vendor_item_settings_error() : true;
+	if ( false === $pruned ) {
+		return papelito_vendor_item_settings_error();
+	}
+	return papelito_vendor_item_settings_log_change( $vendor_id, $product_id, $previous, null, $audit );
 }
 
 /**

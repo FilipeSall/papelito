@@ -59,6 +59,11 @@ require_once __DIR__ . '/includes/vendor_product_customization_rest.php';
 require_once __DIR__ . '/includes/vendor_item_settings.php';
 require_once __DIR__ . '/includes/vendor_item_settings_rest.php';
 require_once __DIR__ . '/includes/vendor_stock_export.php';
+require_once __DIR__ . '/includes/vendor_code_import_dictionary.php';
+require_once __DIR__ . '/includes/vendor_code_import_matcher.php';
+require_once __DIR__ . '/includes/vendor_code_import_reader.php';
+require_once __DIR__ . '/includes/vendor_code_import.php';
+require_once __DIR__ . '/includes/vendor_code_import_rest.php';
 require_once __DIR__ . '/includes/merchandise.php';
 require_once __DIR__ . '/includes/kits.php';
 require_once __DIR__ . '/includes/notification_emails.php';
@@ -124,7 +129,7 @@ require_once __DIR__ . '/includes/packaging.php';
 require_once __DIR__ . '/includes/vendor_eligibility.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.58.0' );
+	define( 'PAPELITO_DB_VERSION', '1.59.0' );
 }
 
 /**

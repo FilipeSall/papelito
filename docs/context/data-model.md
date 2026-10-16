@@ -703,3 +703,24 @@ Por que três tabelas vendor × produto, e não uma:
 
 Unificar quebraria duas coisas: a descrição é do pai e o resto é por variação, e qualquer atributo na linha de estoque disputa a trava do pedido e cria a linha que hoje significa "não configurado". **Regra de entrada da tabela nova:** só atributo do vendor, por item, que não seja quantidade; cada um em coluna explícita (nada de chave/valor); nada que a baixa de estoque precise ler. Coluna nova entra no `CREATE TABLE`, na checagem de `papelito_vendor_item_settings_inspect_schema()` e na condição de remoção de `papelito_vendor_item_settings_clear_code()`.
 
+### `wp_papelito_vendor_item_settings_log`
+
+```sql
+CREATE TABLE wp_papelito_vendor_item_settings_log (
+  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  vendor_id bigint(20) unsigned NOT NULL,
+  product_id bigint(20) unsigned NOT NULL,
+  old_code VARCHAR(60) NULL DEFAULT NULL,
+  new_code VARCHAR(60) NULL DEFAULT NULL,
+  source VARCHAR(20) NOT NULL,              -- manual | import
+  actor_user_id bigint(20) unsigned NOT NULL DEFAULT 0,
+  batch_id CHAR(36) NULL DEFAULT NULL,      -- agrupa as linhas de uma importação
+  created_at DATETIME NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_vendor_created (vendor_id, created_at),
+  KEY idx_batch (batch_id)
+);
+```
+
+Trilha de cada troca efetiva do código do vendor, escrita por `papelito_vendor_item_settings_log_change()` dentro de `save_code()`/`clear_code()` — troca para o mesmo valor não gera linha. Sempre na mesma transação da gravação (a da importação ou a de `papelito_vendor_item_settings_save_code_atomic()` na edição manual): falha na trilha desfaz o código. Não é limpa na exclusão de produto ou vendor; é histórico. Instalada junto com a tabela de atributos e conferida por `papelito_vendor_item_settings_inspect_log_schema()`.
+

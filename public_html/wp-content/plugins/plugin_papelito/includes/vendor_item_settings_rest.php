@@ -149,7 +149,7 @@ function papelito_vendor_item_settings_save( int $product_id, mixed $payload ): 
 	if ( is_wp_error( $input ) ) {
 		return $input;
 	}
-	$saved = papelito_vendor_item_settings_save_code( (int) $user->ID, $product->get_id(), $input['vendor_code'] );
+	$saved = papelito_vendor_item_settings_save_code_atomic( (int) $user->ID, $product->get_id(), $input['vendor_code'] );
 	return is_wp_error( $saved ) ? $saved : papelito_vendor_item_settings_view( (int) $user->ID, $product );
 }
 

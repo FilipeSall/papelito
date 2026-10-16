@@ -95,6 +95,15 @@ Quatro erros já cometidos nessa query, todos com sintoma silencioso:
 
 Além disso: a query parte de `FROM wp_posts p LEFT JOIN papelito_vendor_stock vs ... AND vs.vendor_id = %d`. **Nenhum JOIN restringe a "produtos do vendor"** — o painel mostra o catálogo global com o estoque sobreposto, e `duplicate_products_for_vendor` em `products_filter.php` virou no-op. O parâmetro `tags` **não pode** usar o `'type' => 'array'` padrão do WP (não faz parse de CSV): precisa de `sanitize_callback` com `explode`/`intval`/`array_filter`.
 
+### Importação de códigos do vendor
+
+- **Uma porta de escrita.** A importação grava só por `papelito_vendor_item_settings_save_code()`, a mesma da edição manual; nada escreve direto em `papelito_vendor_item_settings`. `save_code()` não abre transação: o PATCH manual passa por `papelito_vendor_item_settings_save_code_atomic()`, a importação pela transação de `persist()`. Não aninhe — no MySQL um `START TRANSACTION` dentro de outro confirma o anterior.
+- **A associação é pura e mora em `vendor_code_import_matcher.php`.** `papelito_vendor_code_import_compare()` decide `exact|synonym|review|incompatible` por tipo, faceta, número e sobra; `similar_text` (em `papelito_vendor_code_import_rank()`) só ordena sugestões. Termo novo entra no dicionário (`papelito_vendor_code_import_dictionary()`), nunca como `if` no matcher.
+- **A confirmação não confia no navegador.** `papelito_vendor_code_import_accept()` refaz a associação e só aceita `family_id` automático ou candidato; `papelito_vendor_code_import_flag_conflicts()` recalcula conflitos; `papelito_vendor_code_import_persist()` trava com `FOR UPDATE`, compara com o `expected` da prévia e faz tudo numa transação — qualquer `WP_Error` dá `ROLLBACK` e zero alterações reportadas. O `expected` é comparado com o snapshot travado, nunca com o que o lote já gravou (`$written`): senão a linha da família depois da linha de uma cor vira falso `stale`.
+- **A leitura é limitada antes de materializar a planilha.** `papelito_vendor_code_import_xlsx_matrix()` recusa ZIP acima de 20 MB descompactados, conta as linhas da aba por `listWorksheetInfo()` (streaming) e carrega só a primeira aba com filtro de 30 colunas e 2.010 linhas. `toArray()` sem limite volta a estourar a memória com um arquivo de 30 KB e uma célula em `XFD2`.
+- **Quantidade e dimensão do catálogo vêm da descrição** (`papelito_vendor_code_import_catalog_numbers()`: "25 Livretos por Display", "6 x 15mm"). Mudar esse texto no produto muda a associação.
+- Testes: `test-vendor-code-import-matcher.php` (puro, catálogo real), `test-vendor-code-import-reader.php` (CSV/XLSX), `test-vendor-code-import-db.php` (WP-CLI: isolamento, idempotência, `stale`, rollback, trilha).
+
 ## Vendor ativo
 
 36. O default é o vendor **mais próximo com estoque**, com resolução **lazy** (não persiste até o usuário interagir).
