@@ -16,11 +16,22 @@ class WP_Error {
 	public function get_error_code(): string {
 		return $this->code;
 	}
+
+	public function get_error_message(): string {
+		return $this->message;
+	}
+
+	public function get_error_data(): mixed {
+		return $this->data;
+	}
 }
 
 $GLOBALS['elig_env']       = array(
 	'PAPELITO_PAYMENT_GATEWAYS_ENABLED'    => 'true',
 	'PAPELITO_PAYMENT_GATEWAYS_VENDOR_IDS' => '101',
+	'PAPELITO_ALLOWED_ORIGINS'             => 'https://marketplace.papelito.com,https://papelito-web.vercel.app',
+	'PAPELITO_TEST_ORIGINS'                => 'https://papelito-web.vercel.app',
+	'PAPELITO_TEST_VENDOR_IDS'             => '8',
 );
 $GLOBALS['elig_meta']      = array();
 $GLOBALS['elig_can']       = array( 'pagarme' => false, 'mercadopago' => false );
@@ -32,6 +43,10 @@ function sanitize_key( mixed $value ): string { return preg_replace( '/[^a-z0-9_
 function current_time( string $type, bool $gmt = false ): string { return '2026-10-16 12:00:00'; }
 function get_option( string $key, mixed $default = false ): mixed { return $default; }
 function papelito_env( string $key, mixed $default = null ): mixed { return $GLOBALS['elig_env'][ $key ] ?? $default; }
+function sanitize_text_field( mixed $value ): string { return trim( strip_tags( (string) $value ) ); }
+function wp_unslash( mixed $value ): mixed { return $value; }
+function wp_parse_url( string $url, int $component = -1 ): mixed { return parse_url( $url, $component ); }
+function wp_get_environment_type(): string { return 'production'; }
 function get_user_meta( int $user_id, string $key, bool $single = false ): mixed { return $GLOBALS['elig_meta'][ $user_id ][ $key ] ?? ''; }
 function add_user_meta( int $user_id, string $key, mixed $value, bool $unique = false ): bool { $GLOBALS['elig_meta'][ $user_id ][ $key ] = $value; return true; }
 function papelito_account_is_suspended( int $vendor_id ): bool { return false; }
@@ -45,6 +60,7 @@ function papelito_payment_gateway_statuses( int $vendor_id ): array {
 	return array( papelito_payment_gateway_status( $vendor_id, 'pagarme' ), papelito_payment_gateway_status( $vendor_id, 'mercadopago' ) );
 }
 
+require_once dirname( __DIR__ ) . '/includes/frontend_links.php';
 require_once dirname( __DIR__ ) . '/includes/payment_providers.php';
 require_once dirname( __DIR__ ) . '/includes/payment_gateway_resolver.php';
 require_once dirname( __DIR__ ) . '/includes/vendor_eligibility.php';
@@ -72,6 +88,15 @@ function elig_requirement( int $vendor_id, string $id ): ?array {
 
 elig_assert( 'vendor legado mantém o requisito Pagar.me de sempre', null !== elig_requirement( 7, 'pagarme' ) && null === elig_requirement( 7, 'payment_gateway' ) );
 elig_assert( 'vendor legado com recipient ativo vende', papelito_vendor_is_eligible_to_sell( 7 ) );
+
+elig_assert( 'vendor de teste não vende sem domínio de teste', ! papelito_vendor_is_eligible_to_sell( 8 ) );
+$_SERVER['HTTP_X_PAPELITO_FRONTEND_BASE'] = 'https://marketplace.papelito.com';
+elig_assert( 'vendor de teste não vende pelo domínio de produção', ! papelito_vendor_is_eligible_to_sell( 8 ) );
+elig_assert( 'vendor real continua vendendo pelo domínio de produção', papelito_vendor_is_eligible_to_sell( 7 ) );
+$_SERVER['HTTP_X_PAPELITO_FRONTEND_BASE'] = 'https://papelito-web.vercel.app';
+elig_assert( 'vendor de teste vende pelo domínio de teste', papelito_vendor_is_eligible_to_sell( 8 ) );
+elig_assert( 'vendor real também vende pelo domínio de teste', papelito_vendor_is_eligible_to_sell( 7 ) );
+unset( $_SERVER['HTTP_X_PAPELITO_FRONTEND_BASE'] );
 
 elig_assert( 'vendor da coorte troca Pagar.me pelo requisito de gateway', null === elig_requirement( 101, 'pagarme' ) && null !== elig_requirement( 101, 'payment_gateway' ) );
 elig_assert( 'sem gateway utilizável o vendor da coorte não vende, mesmo com recipient legado ativo', ! papelito_vendor_is_eligible_to_sell( 101 ) );

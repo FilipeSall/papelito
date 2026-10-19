@@ -20,6 +20,10 @@
 
 defined( 'ABSPATH' ) || exit;
 
+if ( ! defined( 'PAPELITO_REST_NAMESPACE' ) ) {
+	define( 'PAPELITO_REST_NAMESPACE', 'papelito/v1' );
+}
+
 const PAPELITO_VENDOR_ELIGIBILITY_OPTION = 'papelito_vendor_eligibility';
 
 /**
@@ -455,16 +459,47 @@ function papelito_vendor_gateway_requirement( array $statuses, string $selected,
 }
 
 /**
+ * Diz se o vendor é de teste (`PAPELITO_TEST_VENDOR_IDS`).
+ *
+ * @param int $vendor_id Vendor.
+ * @return bool
+ */
+function papelito_vendor_is_test_vendor( int $vendor_id ): bool {
+	$ids = function_exists( 'papelito_frontend_config_value' ) ? papelito_frontend_config_value( 'PAPELITO_TEST_VENDOR_IDS' ) : '';
+
+	return in_array( $vendor_id, array_map( 'intval', explode( ',', $ids ) ), true );
+}
+
+/**
+ * Diz se o vendor existe para o frontend que fez a requisição.
+ *
+ * Vendor de teste só aparece para o domínio de teste (`papelito_frontend_request_is_test()`); no
+ * domínio de produção, em cron e em chamada direta sem cabeçalho ele fica fora da vitrine e do
+ * checkout, para comprador real nunca cair num pagamento de sandbox. Vendor real não muda.
+ *
+ * @param int $vendor_id Vendor.
+ * @return bool
+ */
+function papelito_vendor_visible_in_request( int $vendor_id ): bool {
+	if ( ! papelito_vendor_is_test_vendor( $vendor_id ) ) {
+		return true;
+	}
+
+	return function_exists( 'papelito_frontend_request_is_test' ) && papelito_frontend_request_is_test();
+}
+
+/**
  * Diz se o vendor pode vender agora.
  *
  * Único ponto de decisão do marketplace: a cobertura regional, a vitrine e o roteamento do
- * carrinho passam por aqui, e o painel do vendor mostra exatamente os mesmos requisitos.
+ * carrinho passam por aqui, e o painel do vendor mostra exatamente os mesmos requisitos. Vendor
+ * de teste só vende pelo domínio de teste (`papelito_vendor_visible_in_request()`).
  *
  * @param int $vendor_id Vendor avaliado.
  * @return bool Se o vendor está apto a vender.
  */
 function papelito_vendor_is_eligible_to_sell( int $vendor_id ): bool {
-	if ( $vendor_id <= 0 ) {
+	if ( $vendor_id <= 0 || ! papelito_vendor_visible_in_request( $vendor_id ) ) {
 		return false;
 	}
 
@@ -533,7 +568,7 @@ function papelito_vendor_eligibility_rest_me(): WP_REST_Response {
  */
 function papelito_vendor_eligibility_register_routes(): void {
 	register_rest_route(
-		'papelito/v1',
+		PAPELITO_REST_NAMESPACE,
 		'/vendor/me/eligibility',
 		array(
 			'methods'             => WP_REST_Server::READABLE,
@@ -543,7 +578,7 @@ function papelito_vendor_eligibility_register_routes(): void {
 	);
 
 	register_rest_route(
-		'papelito/v1',
+		PAPELITO_REST_NAMESPACE,
 		'/admin/vendor-eligibility',
 		array(
 			'methods'             => WP_REST_Server::READABLE,
@@ -553,7 +588,7 @@ function papelito_vendor_eligibility_register_routes(): void {
 	);
 
 	register_rest_route(
-		'papelito/v1',
+		PAPELITO_REST_NAMESPACE,
 		'/admin/vendor-eligibility',
 		array(
 			'methods'             => WP_REST_Server::EDITABLE,

@@ -11,18 +11,20 @@ Como ligar o Checkout Pro do Mercado Pago (marketplace 1:1, OAuth por vendor) e 
 | `MERCADOPAGO_CLIENT_ID` | WP | Número da aplicação no painel do Mercado Pago |
 | `MERCADOPAGO_CLIENT_SECRET` | WP (ou cofre `mercadopago_client_secret`) | Nunca no Vercel |
 | `MERCADOPAGO_WEBHOOK_SECRET` | WP (ou cofre `mercadopago_webhook_secret`) | "Assinatura secreta" de Suas integrações → Webhooks |
-| `MERCADOPAGO_REDIRECT_URI` | WP | `https://<front>/api/vendor/mercadopago/callback` — **idêntica** à Redirect URL cadastrada na aplicação |
+| `MERCADOPAGO_REDIRECT_URI` | WP, opcional | Reserva para conexão sem domínio de frontend. Normalmente o callback é `{domínio que iniciou}/api/vendor/mercadopago/callback`; cadastre na aplicação o de produção **e** o de teste |
 | `MERCADOPAGO_ENVIRONMENT` | WP | `test` em local/development, `live` em produção (o plugin recusa combinação trocada) |
 | `MERCADOPAGO_NOTIFICATION_BASE_URL` | WP, opcional | URL HTTPS pública do webhook (`…/wp-json/papelito/v1/mercadopago/webhook`). Em dev, a do túnel. Vazia = `rest_url()`; sem HTTPS a preferência sai sem notificação e a reconciliação de 5 em 5 min cobre |
 | `MERCADOPAGO_AUTH_URL` | WP, opcional | Padrão `https://auth.mercadopago.com.br/authorization` |
 | `PAPELITO_PAYMENT_GATEWAYS_ENABLED` | WP | `false` por padrão. Liga o fluxo novo **só** para a allowlist |
 | `PAPELITO_PAYMENT_GATEWAYS_VENDOR_IDS` | WP | IDs de vendor separados por vírgula |
+| `PAPELITO_TEST_ORIGINS` | WP | Domínios de teste (ex.: `https://papelito-web.vercel.app`), também presentes em `PAPELITO_ALLOWED_ORIGINS` |
+| `PAPELITO_TEST_VENDOR_IDS` | WP | Vendors de teste: só aparecem e vendem pelos domínios de `PAPELITO_TEST_ORIGINS` |
 
 Nenhum token OAuth de vendor vai para o Next/Vercel; o front só conhece rotas `/api/...`.
 
 ## Configurar a aplicação no Mercado Pago
 
-1. Suas integrações → aplicação → **Redirect URL** = `MERCADOPAGO_REDIRECT_URI`.
+1. Suas integrações → aplicação → **Redirect URLs**: `https://marketplace.papelito.com/api/vendor/mercadopago/callback` e `https://papelito-web.vercel.app/api/vendor/mercadopago/callback`.
 2. Habilitar **PKCE** (o plugin sempre envia `code_challenge` S256).
 3. Escopos com `offline_access` (sem ele não há renovação de token).
 4. Webhooks → URL de produção = `…/wp-json/papelito/v1/mercadopago/webhook`, tópico **Pagamentos**; copiar a assinatura secreta para `MERCADOPAGO_WEBHOOK_SECRET`.

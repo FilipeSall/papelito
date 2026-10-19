@@ -46,6 +46,10 @@ function papelito_fire_meta_hook( string $hook, int $user_id, string $meta_key )
 
 require_once __DIR__ . '/support/coverage_cache_boot.php';
 
+const COVERAGE_TEST_CEP = '70000000';
+
+$GLOBALS['coverage_request_is_test'] = false;
+
 $failures = 0;
 
 function coverage_assert( string $label, mixed $expected, mixed $actual ): void {
@@ -71,9 +75,15 @@ $after_reactivate = papelito_coverage_cache_version();
 papelito_fire_meta_hook( 'updated_user_meta', 42, 'description' );
 coverage_assert( 'meta irrelevante nao invalida', $after_reactivate, papelito_coverage_cache_version() );
 
-$key_active = papelito_coverage_products_cache_key( '70000000', array( 1 ), 1, 0, array( 1 => 1 ) );
+$key_active = papelito_coverage_products_cache_key( COVERAGE_TEST_CEP, array( 1 ), 1, 0, array( 1 => 1 ) );
 papelito_fire_meta_hook( 'updated_user_meta', 42, 'papelito_account_status' );
-$key_suspended = papelito_coverage_products_cache_key( '70000000', array( 1 ), 1, 0, array( 1 => 1 ) );
+$key_suspended = papelito_coverage_products_cache_key( COVERAGE_TEST_CEP, array( 1 ), 1, 0, array( 1 => 1 ) );
 coverage_assert( 'a chave de cache muda com o status da conta', true, $key_active !== $key_suspended );
+
+function papelito_frontend_request_is_test(): bool { return (bool) $GLOBALS['coverage_request_is_test']; }
+$key_live = papelito_coverage_products_cache_key( COVERAGE_TEST_CEP, array( 1 ), 1, 0, array( 1 => 1 ) );
+$GLOBALS['coverage_request_is_test'] = true;
+$key_test = papelito_coverage_products_cache_key( COVERAGE_TEST_CEP, array( 1 ), 1, 0, array( 1 => 1 ) );
+coverage_assert( 'domínio de teste e de produção não dividem o cache de cobertura', true, $key_live !== $key_test );
 
 exit( $failures > 0 ? 1 : 0 );

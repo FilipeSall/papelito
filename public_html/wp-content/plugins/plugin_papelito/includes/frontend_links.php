@@ -203,6 +203,47 @@ function papelito_frontend_base_from_request( $request = null ): string {
 }
 
 /**
+ * Dominio do frontend que originou a requisicao atual, ou vazio.
+ *
+ * Le o `X-Papelito-Frontend-Base` que o Next envia em toda chamada ao WordPress, fora de um
+ * `WP_REST_Request` (elegibilidade e cache de cobertura rodam longe do callback). So devolve
+ * dominio da allowlist. Separa ambientes, nao e barreira de seguranca: quem chama o WordPress
+ * direto escolhe o cabecalho.
+ *
+ * @return string Base normalizada, sem barra final.
+ */
+function papelito_frontend_request_base(): string {
+	$raw  = isset( $_SERVER['HTTP_X_PAPELITO_FRONTEND_BASE'] ) ? sanitize_text_field( wp_unslash( (string) $_SERVER['HTTP_X_PAPELITO_FRONTEND_BASE'] ) ) : '';
+	$base = papelito_frontend_normalize_base( $raw );
+
+	return '' !== $base && in_array( $base, papelito_frontend_allowed_bases(), true ) ? $base : '';
+}
+
+/**
+ * Diz se a requisicao veio de um frontend de teste (`PAPELITO_TEST_ORIGINS`).
+ *
+ * O dominio precisa estar tambem na allowlist. Sem cabecalho — cron, WP-CLI, chamada direta — a
+ * requisicao nunca e de teste.
+ *
+ * @return bool
+ */
+function papelito_frontend_request_is_test(): bool {
+	$base = papelito_frontend_request_base();
+
+	if ( '' === $base ) {
+		return false;
+	}
+
+	foreach ( explode( ',', papelito_frontend_config_value( 'PAPELITO_TEST_ORIGINS' ) ) as $origin ) {
+		if ( papelito_frontend_normalize_base( (string) $origin ) === $base ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/**
  * Monta um link publico do frontend, ou WP_Error quando a base nao esta configurada.
  *
  * Para e-mail transacional: melhor falhar com 500 visivel do que gravar estado pendente e enviar

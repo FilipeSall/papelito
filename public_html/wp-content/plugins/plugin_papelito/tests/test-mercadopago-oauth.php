@@ -35,6 +35,7 @@ $GLOBALS['oauth_env']        = array(
 	'MERCADOPAGO_ENVIRONMENT'              => 'test',
 	'PAPELITO_PAYMENT_GATEWAYS_ENABLED'    => 'true',
 	'PAPELITO_PAYMENT_GATEWAYS_VENDOR_IDS' => '71,72',
+	'PAPELITO_ALLOWED_ORIGINS'             => 'https://marketplace.papelito.com,https://papelito-web.vercel.app',
 );
 $GLOBALS['oauth_meta']       = array(
 	71 => array( 'cnpj' => '11222333000181' ),
@@ -56,6 +57,7 @@ function absint( mixed $value ): int { return abs( (int) $value ); }
 function wp_json_encode( mixed $value, int $flags = 0 ): string { return json_encode( $value, $flags ); }
 function wp_get_environment_type(): string { return 'local'; }
 function wp_parse_url( string $url, int $component = -1 ): mixed { return parse_url( $url, $component ); }
+function wp_unslash( mixed $value ): mixed { return $value; }
 function wp_salt( string $scheme = 'auth' ): string { return 'salt-' . $scheme; }
 function current_time( string $type, bool $gmt = false ): string { return gmdate( 'Y-m-d H:i:s' ); }
 function add_query_arg( array $args, string $url ): string { return $url . ( false === strpos( $url, '?' ) ? '?' : '&' ) . http_build_query( $args ); }
@@ -100,6 +102,7 @@ function papelito_vendor_payment_account_disconnect( int $account_id ): bool {
 }
 function papelito_vendor_payment_account_public( array $account ): array { return array( 'collectorId' => $account['collector_id'], 'status' => $account['status'], 'identityStatus' => $account['identity_status'] ); }
 
+require_once dirname( __DIR__ ) . '/includes/frontend_links.php';
 require_once dirname( __DIR__ ) . '/includes/payment_providers.php';
 require_once dirname( __DIR__ ) . '/includes/mercadopago_client.php';
 require_once dirname( __DIR__ ) . '/includes/mercadopago_oauth.php';
@@ -223,6 +226,33 @@ oauth_assert( 'token de produção não vincula em ambiente de teste', is_wp_err
 $disconnected = papelito_mercadopago_oauth_disconnect( 71 );
 oauth_assert( 'desconexão desativa a conta vigente', true === $disconnected && ! isset( $GLOBALS['oauth_accounts'][71] ) );
 oauth_assert( 'desconectar sem conta é erro recuperável', is_wp_error( papelito_mercadopago_oauth_disconnect( 71 ) ) );
+
+const OAUTH_TEST_VERCEL_CALLBACK = 'https://papelito-web.vercel.app/api/vendor/mercadopago/callback';
+
+$_SERVER['HTTP_X_PAPELITO_FRONTEND_BASE'] = 'https://papelito-web.vercel.app';
+$GLOBALS['oauth_accounts'] = array();
+$dynamic_begin = papelito_mercadopago_oauth_begin( 71, OAUTH_TEST_BINDING );
+parse_str( (string) parse_url( (string) ( $dynamic_begin['authorizationUrl'] ?? '' ), PHP_URL_QUERY ), $dynamic_query );
+oauth_assert( 'redirect sai do domínio que iniciou a conexão', OAUTH_TEST_VERCEL_CALLBACK === ( $dynamic_query['redirect_uri'] ?? '' ) );
+unset( $_SERVER['HTTP_X_PAPELITO_FRONTEND_BASE'] );
+$GLOBALS['oauth_response'] = oauth_token_response( '900001' );
+papelito_mercadopago_oauth_complete( 71, 'TG-code-dynamic', oauth_state_from( (string) $dynamic_begin['authorizationUrl'] ), OAUTH_TEST_BINDING );
+oauth_assert( 'troca do código usa o mesmo redirect da autorização', OAUTH_TEST_VERCEL_CALLBACK === ( end( $GLOBALS['oauth_requests'] )['body']['redirect_uri'] ?? '' ) );
+
+$_SERVER['HTTP_X_PAPELITO_FRONTEND_BASE'] = 'https://atacante.example';
+$foreign_begin = papelito_mercadopago_oauth_begin( 71, OAUTH_TEST_BINDING );
+parse_str( (string) parse_url( (string) ( $foreign_begin['authorizationUrl'] ?? '' ), PHP_URL_QUERY ), $foreign_query );
+oauth_assert( 'domínio fora da allowlist cai no redirect configurado', $GLOBALS['oauth_env']['MERCADOPAGO_REDIRECT_URI'] === ( $foreign_query['redirect_uri'] ?? '' ) );
+
+$configured_redirect = $GLOBALS['oauth_env']['MERCADOPAGO_REDIRECT_URI'];
+unset( $GLOBALS['oauth_env']['MERCADOPAGO_REDIRECT_URI'] );
+$_SERVER['HTTP_X_PAPELITO_FRONTEND_BASE'] = 'https://papelito-web.vercel.app';
+$no_config = papelito_mercadopago_oauth_begin( 71, OAUTH_TEST_BINDING );
+oauth_assert( 'sem redirect configurado, o domínio da requisição basta', ! is_wp_error( $no_config ) );
+unset( $_SERVER['HTTP_X_PAPELITO_FRONTEND_BASE'] );
+$no_redirect = papelito_mercadopago_oauth_begin( 71, OAUTH_TEST_BINDING );
+oauth_assert( 'sem domínio e sem redirect configurado a conexão não começa', is_wp_error( $no_redirect ) );
+$GLOBALS['oauth_env']['MERCADOPAGO_REDIRECT_URI'] = $configured_redirect;
 
 class WP_User {
 	public int $ID = 71;

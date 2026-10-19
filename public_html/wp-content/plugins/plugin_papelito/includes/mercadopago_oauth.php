@@ -24,8 +24,9 @@
 
 defined( 'ABSPATH' ) || exit;
 
-const PAPELITO_MERCADOPAGO_OAUTH_STATE_PREFIX = 'papelito_mp_oauth_';
-const PAPELITO_MERCADOPAGO_OAUTH_STATE_TTL    = 600;
+const PAPELITO_MERCADOPAGO_OAUTH_STATE_PREFIX  = 'papelito_mp_oauth_';
+const PAPELITO_MERCADOPAGO_OAUTH_STATE_TTL     = 600;
+const PAPELITO_MERCADOPAGO_OAUTH_CALLBACK_PATH = '/api/vendor/mercadopago/callback';
 
 /**
  * Codifica em base64url sem padding.
@@ -138,6 +139,11 @@ function papelito_mercadopago_oauth_begin( int $vendor_id, string $binding ) {
 		return new WP_Error( 'papelito_mercadopago_oauth_unavailable', 'Não foi possível iniciar a conexão com segurança.', array( 'status' => 500 ) );
 	}
 
+	$redirect_uri = papelito_mercadopago_oauth_redirect_uri();
+	if ( '' === $redirect_uri ) {
+		return new WP_Error( 'papelito_mercadopago_oauth_unavailable', 'O Mercado Pago não está configurado para este endereço da loja.', array( 'status' => 503 ) );
+	}
+
 	$state  = papelito_mercadopago_oauth_base64url( random_bytes( 32 ) );
 	$config = papelito_mercadopago_config();
 
@@ -150,33 +156,55 @@ function papelito_mercadopago_oauth_begin( int $vendor_id, string $binding ) {
 			'environment'           => $config['environment'],
 			'configuration_version' => papelito_mercadopago_configuration_version(),
 			'verifier'              => $envelope,
+			'redirect_uri'          => $redirect_uri,
 			'expires_at'            => time() + PAPELITO_MERCADOPAGO_OAUTH_STATE_TTL,
 		),
 		PAPELITO_MERCADOPAGO_OAUTH_STATE_TTL
 	);
 
 	return array(
-		'authorizationUrl' => papelito_mercadopago_oauth_authorization_url( $config, $state, $verifier['challenge'] ),
+		'authorizationUrl' => papelito_mercadopago_oauth_authorization_url( $config, $redirect_uri, $state, $verifier['challenge'] ),
 		'expiresIn'        => PAPELITO_MERCADOPAGO_OAUTH_STATE_TTL,
 	);
 }
 
 /**
+ * Redirect URL do OAuth para o frontend que iniciou a conexão.
+ *
+ * `{domínio da requisição}/api/vendor/mercadopago/callback` quando o domínio está na allowlist
+ * (`papelito_frontend_request_base()`), para teste e produção usarem o próprio callback sem trocar
+ * configuração; sem domínio, `MERCADOPAGO_REDIRECT_URI`. As duas URLs precisam estar cadastradas
+ * na aplicação do Mercado Pago.
+ *
+ * @return string Vazio quando não há domínio nem redirect configurado.
+ */
+function papelito_mercadopago_oauth_redirect_uri(): string {
+	$base = function_exists( 'papelito_frontend_request_base' ) ? papelito_frontend_request_base() : '';
+
+	if ( '' !== $base && papelito_frontend_base_is_usable( $base ) ) {
+		return $base . PAPELITO_MERCADOPAGO_OAUTH_CALLBACK_PATH;
+	}
+
+	return (string) papelito_mercadopago_config()['redirect_uri'];
+}
+
+/**
  * URL de autorização com PKCE.
  *
- * @param array<string,string> $config    Configuração da aplicação.
- * @param string               $state     State opaco.
- * @param string               $challenge Code challenge S256.
+ * @param array<string,string> $config       Configuração da aplicação.
+ * @param string               $redirect_uri Redirect da conexão, gravado no state.
+ * @param string               $state        State opaco.
+ * @param string               $challenge    Code challenge S256.
  * @return string
  */
-function papelito_mercadopago_oauth_authorization_url( array $config, string $state, string $challenge ): string {
+function papelito_mercadopago_oauth_authorization_url( array $config, string $redirect_uri, string $state, string $challenge ): string {
 	return add_query_arg(
 		array(
 			'client_id'             => $config['client_id'],
 			'response_type'         => 'code',
 			'platform_id'           => 'mp',
 			'state'                 => $state,
-			'redirect_uri'          => $config['redirect_uri'],
+			'redirect_uri'          => $redirect_uri,
 			'code_challenge'        => $challenge,
 			'code_challenge_method' => 'S256',
 		),
@@ -249,7 +277,7 @@ function papelito_mercadopago_oauth_complete( int $vendor_id, string $code, stri
 		array(
 			'grant_type'    => 'authorization_code',
 			'code'          => sanitize_text_field( $code ),
-			'redirect_uri'  => papelito_mercadopago_config()['redirect_uri'],
+			'redirect_uri'  => (string) ( $record['redirect_uri'] ?? papelito_mercadopago_config()['redirect_uri'] ),
 			'code_verifier' => $verifier,
 		)
 	);

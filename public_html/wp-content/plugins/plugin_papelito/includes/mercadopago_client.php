@@ -99,7 +99,8 @@ function papelito_mercadopago_wp_environment(): string {
  * Motivo pelo qual a integração não pode operar, ou nulo.
  *
  * Configuração inválida desliga o Mercado Pago, nunca o bootstrap do plugin. Produção exige `live`;
- * local e development exigem `test`.
+ * local e development exigem `test`. `MERCADOPAGO_REDIRECT_URI` é opcional: a conexão usa o domínio
+ * do frontend que a iniciou (`papelito_mercadopago_oauth_redirect_uri()`).
  *
  * @return WP_Error|null
  */
@@ -110,7 +111,6 @@ function papelito_mercadopago_config_error(): ?WP_Error {
 			array(
 				'client_id'     => $config['client_id'],
 				'client_secret' => $config['client_secret'],
-				'redirect_uri'  => $config['redirect_uri'],
 				'environment'   => $config['environment'],
 			),
 			static fn( string $value ): bool => '' === $value
@@ -132,7 +132,9 @@ function papelito_mercadopago_config_error(): ?WP_Error {
 		return papelito_mercadopago_error( 'configuration', 'O ambiente do Mercado Pago não corresponde ao ambiente do site.' );
 	}
 
-	if ( ! papelito_mercadopago_is_https_url( $config['redirect_uri'] ) || ! papelito_mercadopago_is_https_url( $config['auth_url'] ) ) {
+	$redirect_invalid = '' !== $config['redirect_uri'] && ! papelito_mercadopago_is_https_url( $config['redirect_uri'] );
+
+	if ( $redirect_invalid || ! papelito_mercadopago_is_https_url( $config['auth_url'] ) ) {
 		return papelito_mercadopago_error( 'configuration', 'URLs do Mercado Pago precisam usar HTTPS.' );
 	}
 
@@ -365,7 +367,7 @@ function papelito_mercadopago_interpret( string $method, mixed $response ) {
 	$is_write = 'GET' !== $method;
 
 	if ( is_wp_error( $response ) ) {
-		$before_send = 1 === preg_match( '/cURL error (6|7):/', $response->get_error_message() );
+		$before_send = 1 === preg_match( '/cURL error [67]:/', $response->get_error_message() );
 		return papelito_mercadopago_error( $is_write && ! $before_send ? 'unknown_outcome' : 'unavailable', 'Falha de comunicação com o Mercado Pago.' );
 	}
 

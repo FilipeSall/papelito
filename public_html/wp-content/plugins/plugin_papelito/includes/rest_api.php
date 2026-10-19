@@ -289,6 +289,7 @@ function papelito_coverage_products_cache_key( string $cep, array $product_ids, 
 				'qty'           => $qty,
 				'active_vendor' => $active_vendor,
 				'qty_by_product' => $qty_by_product,
+				'test_scope'     => function_exists( 'papelito_frontend_request_is_test' ) && papelito_frontend_request_is_test(),
 			)
 		)
 	);
