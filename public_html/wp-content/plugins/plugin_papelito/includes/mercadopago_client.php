@@ -144,15 +144,14 @@ function papelito_mercadopago_config_error(): ?WP_Error {
 /**
  * Ambiente Mercado Pago exigido pelo ambiente do site; vazio quando qualquer um serve.
  *
+ * Só produção é travada em `live`. Fora dela vale `test` ou `live`: usuário de teste do Mercado
+ * Pago opera com credencial de produção e seus pagamentos chegam com `live_mode: true`.
+ *
  * @param string $wp_environment Tipo de ambiente do WordPress.
  * @return string
  */
 function papelito_mercadopago_required_environment( string $wp_environment ): string {
-	if ( 'production' === $wp_environment ) {
-		return 'live';
-	}
-
-	return in_array( $wp_environment, array( 'local', 'development' ), true ) ? 'test' : '';
+	return 'production' === $wp_environment ? 'live' : '';
 }
 
 /**

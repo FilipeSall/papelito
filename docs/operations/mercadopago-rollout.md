@@ -12,7 +12,7 @@ Como ligar o Checkout Pro do Mercado Pago (marketplace 1:1, OAuth por vendor) e 
 | `MERCADOPAGO_CLIENT_SECRET` | WP (ou cofre `mercadopago_client_secret`) | Nunca no Vercel |
 | `MERCADOPAGO_WEBHOOK_SECRET` | WP (ou cofre `mercadopago_webhook_secret`) | "Assinatura secreta" de Suas integrações → Webhooks |
 | `MERCADOPAGO_REDIRECT_URI` | WP, opcional | Reserva para conexão sem domínio de frontend. Normalmente o callback é `{domínio que iniciou}/api/vendor/mercadopago/callback`; cadastre na aplicação o de produção **e** o de teste |
-| `MERCADOPAGO_ENVIRONMENT` | WP | `test` em local/development, `live` em produção (o plugin recusa combinação trocada) |
+| `MERCADOPAGO_ENVIRONMENT` | WP | `live` obrigatório em produção; fora dela `test` ou `live`. Usuário de teste do Mercado Pago usa credencial de produção e seus pagamentos chegam com `live_mode: true`, então teste com usuário de teste usa `live` |
 | `MERCADOPAGO_NOTIFICATION_BASE_URL` | WP, opcional | URL HTTPS pública do webhook (`…/wp-json/papelito/v1/mercadopago/webhook`). Em dev, a do túnel. Vazia = `rest_url()`; sem HTTPS a preferência sai sem notificação e a reconciliação de 5 em 5 min cobre |
 | `MERCADOPAGO_AUTH_URL` | WP, opcional | Padrão `https://auth.mercadopago.com.br/authorization` |
 | `PAPELITO_PAYMENT_GATEWAYS_ENABLED` | WP | `false` por padrão. Liga o fluxo novo **só** para a allowlist |

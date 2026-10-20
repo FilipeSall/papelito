@@ -98,7 +98,7 @@ mp_client_assert( 'client_id e redirect saem da configuração', '44281612628265
 $GLOBALS['mp_test_env']['MERCADOPAGO_ENVIRONMENT'] = 'sandbox';
 mp_client_assert( 'ambiente fora de test/live é recusado', is_wp_error( papelito_mercadopago_config_error() ) );
 $GLOBALS['mp_test_env']['MERCADOPAGO_ENVIRONMENT'] = 'live';
-mp_client_assert( 'live em ambiente local é incompatível', is_wp_error( papelito_mercadopago_config_error() ) );
+mp_client_assert( 'live em ambiente local é aceito, porque usuário de teste do MP usa credencial de produção', null === papelito_mercadopago_config_error() );
 $GLOBALS['mp_test_wp_env'] = 'production';
 mp_client_assert( 'live em produção é válido', null === papelito_mercadopago_config_error() );
 $GLOBALS['mp_test_env']['MERCADOPAGO_ENVIRONMENT'] = 'test';

@@ -26,6 +26,7 @@ defined( 'ABSPATH' ) || exit;
 const PAPELITO_MERCADOPAGO_PREFERENCE_TTL      = 3600;
 const PAPELITO_MERCADOPAGO_OFFLINE_PAYMENT_TTL = DAY_IN_SECONDS;
 const PAPELITO_MERCADOPAGO_RECONCILE_DELAY     = 120;
+const PAPELITO_MERCADOPAGO_MYSQL_DATETIME      = 'Y-m-d H:i:s';
 
 /**
  * Referência externa estável da tentativa (até 64 caracteres, só letras, números, `-` e `_`).
@@ -118,7 +119,27 @@ function papelito_mercadopago_preference_items( array $order_data ): array {
 }
 
 /**
+ * Diz se a cobrança é de teste: ambiente `test` ou vendor de teste (`PAPELITO_TEST_VENDOR_IDS`).
+ *
+ * Vendor de teste recebe por usuário de teste do Mercado Pago mesmo em produção (`live`).
+ *
+ * @param array<string,mixed> $attempt Tentativa.
+ * @return bool
+ */
+function papelito_mercadopago_payer_is_sandboxed( array $attempt ): bool {
+	if ( 'test' === papelito_mercadopago_environment() ) {
+		return true;
+	}
+
+	return function_exists( 'papelito_vendor_is_test_vendor' ) && papelito_vendor_is_test_vendor( (int) ( $attempt['vendor_id'] ?? 0 ) );
+}
+
+/**
  * Payload da preferência, com conferência exata de centavos.
+ *
+ * Em teste o pagador vai sem e-mail (`papelito_mercadopago_payer_is_sandboxed()`): o Mercado Pago
+ * recusa e-mail de conta real junto de vendedor de teste, e o comprador de teste se identifica no
+ * próprio Checkout Pro.
  *
  * @param array<string,mixed> $order_data Dados autoritativos (order_id, total_cents, shipping_cents, lines, payer, frontend_base, max_installments).
  * @param array<string,mixed> $attempt    Tentativa já gravada.
@@ -161,15 +182,21 @@ function papelito_mercadopago_preference_payload( array $order_data, array $atte
 		),
 	);
 
+	if ( papelito_mercadopago_payer_is_sandboxed( $attempt ) ) {
+		unset( $payload['payer']['email'] );
+	}
+
 	$frontend_base = trim( (string) $order_data['frontend_base'] );
 	if ( '' !== $frontend_base ) {
-		$back_url               = papelito_mercadopago_back_url( $frontend_base, (int) $order_data['order_id'] );
-		$payload['back_urls']   = array(
+		$back_url             = papelito_mercadopago_back_url( $frontend_base, (int) $order_data['order_id'] );
+		$payload['back_urls'] = array(
 			'success' => $back_url,
 			'pending' => $back_url,
 			'failure' => $back_url,
 		);
-		$payload['auto_return'] = 'approved';
+		if ( papelito_mercadopago_is_https_url( $back_url ) ) {
+			$payload['auto_return'] = 'approved';
+		}
 	}
 
 	$notification = papelito_mercadopago_notification_url( (string) $attempt['attempt_ref'] );
@@ -273,7 +300,7 @@ function papelito_mercadopago_accept_preference( int $attempt_id, array $account
 			array(
 				'remote_id'         => $preference_id,
 				'last_error_code'   => 'untrusted_preference',
-				'next_reconcile_at' => gmdate( 'Y-m-d H:i:s', time() + PAPELITO_MERCADOPAGO_RECONCILE_DELAY ),
+				'next_reconcile_at' => gmdate( PAPELITO_MERCADOPAGO_MYSQL_DATETIME, time() + PAPELITO_MERCADOPAGO_RECONCILE_DELAY ),
 			)
 		);
 
@@ -287,8 +314,8 @@ function papelito_mercadopago_accept_preference( int $attempt_id, array $account
 		array(
 			'remote_id'         => $preference_id,
 			'redirect_url'      => esc_url_raw( $init_point ),
-			'expires_at'        => gmdate( 'Y-m-d H:i:s', time() + PAPELITO_MERCADOPAGO_PREFERENCE_TTL ),
-			'next_reconcile_at' => gmdate( 'Y-m-d H:i:s', time() + 15 * MINUTE_IN_SECONDS ),
+			'expires_at'        => gmdate( PAPELITO_MERCADOPAGO_MYSQL_DATETIME, time() + PAPELITO_MERCADOPAGO_PREFERENCE_TTL ),
+			'next_reconcile_at' => gmdate( PAPELITO_MERCADOPAGO_MYSQL_DATETIME, time() + 15 * MINUTE_IN_SECONDS ),
 		)
 	);
 
@@ -314,7 +341,7 @@ function papelito_mercadopago_handle_creation_error( array $attempt, ?array $acc
 			'unknown',
 			array(
 				'last_error_code'   => 'unknown_outcome',
-				'next_reconcile_at' => gmdate( 'Y-m-d H:i:s', time() + PAPELITO_MERCADOPAGO_RECONCILE_DELAY ),
+				'next_reconcile_at' => gmdate( PAPELITO_MERCADOPAGO_MYSQL_DATETIME, time() + PAPELITO_MERCADOPAGO_RECONCILE_DELAY ),
 			)
 		);
 
