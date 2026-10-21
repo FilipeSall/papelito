@@ -163,6 +163,19 @@ $accounts_audit = papelito_vendor_payment_identity_audit( ACCOUNTS_TEST_VENDOR_A
 accounts_db_check( 'trilha de identidade acumula sem sobrescrever', PAPELITO_VENDOR_PAYMENT_IDENTITY_AUDIT_LIMIT === count( $accounts_audit ) && 'ticket-3' === $accounts_audit[0]['evidenceRef'] && 'ticket-' . ( PAPELITO_VENDOR_PAYMENT_IDENTITY_AUDIT_LIMIT + 2 ) === end( $accounts_audit )['evidenceRef'] && '' !== (string) end( $accounts_audit )['at'] );
 delete_user_meta( ACCOUNTS_TEST_VENDOR_A, PAPELITO_VENDOR_PAYMENT_IDENTITY_AUDIT_META );
 
+$accounts_long_scope = trim( str_repeat( 'urn:mp:online:payments/read-write ', 30 ) );
+$accounts_scope_data = array(
+	'collector_id'          => '9000077',
+	'access_token'          => 'APP_USR-escopo-longo',
+	'refresh_token'         => 'TG-escopo-longo',
+	'expires_in'            => 15552000,
+	'scope'                 => $accounts_long_scope,
+	'live_mode'             => false,
+	'configuration_version' => 'cfg-1',
+);
+$accounts_scope_account = papelito_vendor_payment_account_connect( ACCOUNTS_TEST_VENDOR_B, 'mercadopago', 'live', $accounts_scope_data );
+accounts_db_check( 'aplicação real com escopo de ~1000 caracteres conecta e guarda o escopo inteiro', is_array( $accounts_scope_account ) && $accounts_long_scope === $accounts_scope_account['scope'] );
+
 papelito_vendor_payment_accounts_install_table();
 accounts_db_check( 'migração repetida conserva dados', is_array( papelito_vendor_payment_account_find( (int) $after_rotation['id'] ) ) );
 
