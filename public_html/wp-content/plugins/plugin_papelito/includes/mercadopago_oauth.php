@@ -24,9 +24,10 @@
 
 defined( 'ABSPATH' ) || exit;
 
-const PAPELITO_MERCADOPAGO_OAUTH_STATE_PREFIX  = 'papelito_mp_oauth_';
-const PAPELITO_MERCADOPAGO_OAUTH_STATE_TTL     = 600;
-const PAPELITO_MERCADOPAGO_OAUTH_CALLBACK_PATH = '/api/vendor/mercadopago/callback';
+const PAPELITO_MERCADOPAGO_OAUTH_STATE_PREFIX           = 'papelito_mp_oauth_';
+const PAPELITO_MERCADOPAGO_OAUTH_STATE_TTL              = 600;
+const PAPELITO_MERCADOPAGO_OAUTH_CALLBACK_PATH          = '/api/vendor/mercadopago/callback';
+const PAPELITO_MERCADOPAGO_OAUTH_AUTO_IDENTITY_EVIDENCE = 'auto:mercadopago-users-me';
 
 /**
  * Codifica em base64url sem padding.
@@ -316,9 +317,80 @@ function papelito_mercadopago_oauth_complete( int $vendor_id, string $code, stri
 		return $account;
 	}
 
+	$account = papelito_mercadopago_oauth_check_identity( $vendor_id, $account, (string) $validated['access_token'] );
+
 	do_action( 'papelito_payment_gateway_account_changed', $vendor_id, PAPELITO_PAYMENT_PROVIDER_MERCADOPAGO );
 
 	return array( 'account' => papelito_vendor_payment_account_public( $account ) );
+}
+
+/**
+ * Confere sozinha a titularidade da conta recém-conectada pelo documento do titular.
+ *
+ * Consulta `/users/me` com o token da própria loja: CNPJ igual ao do cadastro marca `verified`;
+ * CNPJ diferente ou conta pessoa física marca `mismatch` e a conta não recebe. Sem resposta ou
+ * sem documento, nada muda e a conta segue `verification_pending` para o admin conferir. A
+ * consulta bem-sucedida também fica registrada como a primeira verificação da conta.
+ *
+ * @param int                 $vendor_id    Vendor.
+ * @param array<string,mixed> $account      Conta recém-gravada.
+ * @param string              $access_token Token da loja.
+ * @return array<string,mixed> Conta relida.
+ */
+function papelito_mercadopago_oauth_check_identity( int $vendor_id, array $account, string $access_token ): array {
+	$owner = papelito_mercadopago_request( 'GET', '/users/me', array( 'token' => $access_token ) );
+	if ( is_wp_error( $owner ) ) {
+		return $account;
+	}
+
+	papelito_vendor_payment_account_update_health(
+		(int) $account['id'],
+		array(
+			'health_status' => 'ok',
+			'health_reason' => '',
+			'success'       => true,
+		)
+	);
+
+	$status = papelito_mercadopago_oauth_identity_status( $vendor_id, $owner );
+
+	if ( '' === $status ) {
+		return $account;
+	}
+
+	papelito_vendor_payment_account_set_identity( (int) $account['id'], $status, 0, PAPELITO_MERCADOPAGO_OAUTH_AUTO_IDENTITY_EVIDENCE );
+	papelito_vendor_payment_identity_audit_append(
+		$vendor_id,
+		array(
+			'accountId'   => (int) $account['id'],
+			'collectorId' => (string) $account['collector_id'],
+			'status'      => $status,
+			'actorId'     => 0,
+			'evidenceRef' => PAPELITO_MERCADOPAGO_OAUTH_AUTO_IDENTITY_EVIDENCE,
+		)
+	);
+
+	return papelito_vendor_payment_account_find( (int) $account['id'] ) ?? $account;
+}
+
+/**
+ * Veredito da titularidade pelo documento do titular da conta Mercado Pago.
+ *
+ * @param int                 $vendor_id Vendor.
+ * @param array<string,mixed> $owner     Resposta de `/users/me` da conta conectada.
+ * @return string `verified`, `mismatch` ou vazio quando não dá para decidir.
+ */
+function papelito_mercadopago_oauth_identity_status( int $vendor_id, array $owner ): string {
+	$document = preg_replace( '/\D+/', '', (string) ( $owner['identification']['number'] ?? '' ) );
+	$cnpj     = preg_replace( '/\D+/', '', (string) get_user_meta( $vendor_id, 'cnpj', true ) );
+
+	if ( '' === $document || '' === $cnpj ) {
+		return '';
+	}
+
+	$is_company = 'CNPJ' === strtoupper( (string) ( $owner['identification']['type'] ?? '' ) );
+
+	return $is_company && hash_equals( $cnpj, $document ) ? 'verified' : 'mismatch';
 }
 
 /**

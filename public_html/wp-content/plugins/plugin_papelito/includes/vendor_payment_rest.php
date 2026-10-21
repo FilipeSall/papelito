@@ -221,6 +221,11 @@ function papelito_vendor_payment_rest_refresh() {
 
 	papelito_vendor_payment_refresh_mercadopago_token( $vendor_id );
 
+	$mercadopago_account = papelito_vendor_payment_account_current( $vendor_id, 'mercadopago', papelito_mercadopago_environment() );
+	if ( is_array( $mercadopago_account ) && function_exists( 'papelito_mercadopago_probe_account' ) ) {
+		papelito_mercadopago_probe_account( $mercadopago_account );
+	}
+
 	foreach ( array( 'pagarme', 'mercadopago' ) as $provider ) {
 		papelito_payment_gateway_health_record( $vendor_id, $provider );
 	}

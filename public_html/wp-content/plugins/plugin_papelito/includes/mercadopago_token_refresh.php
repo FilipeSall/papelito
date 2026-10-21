@@ -198,3 +198,39 @@ function papelito_mercadopago_schedule_refresh(): void {
 }
 
 add_action( 'init', 'papelito_mercadopago_schedule_refresh' );
+
+/**
+ * Testa a conta Mercado Pago de verdade e registra o resultado como verificação.
+ *
+ * Consulta `/users/me` com o token da própria conta, sem cobrar nada. Sucesso marca a última
+ * verificação e o último sucesso; falha registra `degraded`, que não tira a loja da vitrine, mas
+ * aparece no painel.
+ *
+ * @param array<string,mixed> $account Conta vigente.
+ * @return bool Se a conta respondeu.
+ */
+function papelito_mercadopago_probe_account( array $account ): bool {
+	$tokens = papelito_vendor_payment_account_tokens( $account );
+	if ( is_wp_error( $tokens ) ) {
+		return false;
+	}
+
+	$owner = papelito_mercadopago_request( 'GET', '/users/me', array( 'token' => (string) $tokens['access_token'] ) );
+	$ok    = ! is_wp_error( $owner );
+
+	papelito_vendor_payment_account_update_health(
+		(int) $account['id'],
+		$ok
+			? array(
+				'health_status' => 'ok',
+				'health_reason' => '',
+				'success'       => true,
+			)
+			: array(
+				'health_status' => 'degraded',
+				'health_reason' => 'probe_failed',
+			)
+	);
+
+	return $ok;
+}

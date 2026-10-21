@@ -98,7 +98,8 @@ function papelito_vendor_financial_profile_patch( int $vendor_id, array $patch, 
 	return 3 === $version ? papelito_vendor_financial_profile_public( $vendor_id ) : new WP_Error( 'papelito_financial_profile_version_conflict', 'x', array( 'status' => 409 ) );
 }
 function papelito_pagarme_financial_profile_pending( int $vendor_id ): array { return array( 'policy' => 'blocked_cnae', 'pendingFields' => array() ); }
-function papelito_vendor_payment_account_current( int $vendor_id, string $provider, string $environment ): ?array { return null; }
+function papelito_vendor_payment_account_current( int $vendor_id, string $provider, string $environment ): ?array { return $GLOBALS['rest_current_account'] ?? null; }
+function papelito_mercadopago_probe_account( array $account ): bool { $GLOBALS['rest_calls'][] = array( 'probe', $account['id'] ); return true; }
 function papelito_vendor_payment_account_latest( int $vendor_id, string $provider, string $environment ): ?array { return 202 === $vendor_id ? array( 'id' => 9, 'vendor_id' => 202, 'collector_id' => 'col-9' ) : null; }
 function papelito_vendor_payment_identity_audit_append( int $vendor_id, array $entry ): void { $GLOBALS['rest_calls'][] = array( 'audit', $vendor_id, $entry['accountId'], $entry['collectorId'], $entry['status'], $entry['actorId'] ); }
 function papelito_vendor_payment_account_set_identity( int $account_id, string $status, int $actor, string $evidence ): bool { $GLOBALS['rest_calls'][] = array( 'identity', $account_id, $status, $actor, $evidence ); return true; }
@@ -176,7 +177,10 @@ $conflict = papelito_vendor_payment_rest_profile_patch( new WP_REST_Request( arr
 rest_assert( 'PATCH com versão obsoleta é 409', is_wp_error( $conflict ) && 409 === $conflict->get_error_data()['status'] );
 
 $GLOBALS['rest_calls'] = array();
+$GLOBALS['rest_current_account'] = array( 'id' => 9, 'vendor_id' => 201, 'collector_id' => 'col-9', 'token_expires_at' => '2099-01-01 00:00:00' );
 $refreshed = papelito_vendor_payment_rest_refresh();
+$GLOBALS['rest_current_account'] = null;
+rest_assert( 'refresh testa a conta Mercado Pago de verdade e registra a verificação', in_array( array( 'probe', 9 ), $GLOBALS['rest_calls'], true ) );
 $kinds     = array_column( $GLOBALS['rest_calls'], 0 );
 rest_assert( 'refresh reconsulta CNAE, recipient e saúde sem criar cobrança', in_array( 'cnae_refresh', $kinds, true ) && in_array( 'pagarme_sync', $kinds, true ) && in_array( 'health', $kinds, true ) && ! is_wp_error( $refreshed ) );
 $GLOBALS['rest_rate_ok'] = false;

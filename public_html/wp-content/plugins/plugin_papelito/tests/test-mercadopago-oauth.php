@@ -45,6 +45,8 @@ $GLOBALS['oauth_transients'] = array();
 $GLOBALS['oauth_requests']   = array();
 $GLOBALS['oauth_response']   = null;
 $GLOBALS['oauth_connected']  = array();
+$GLOBALS['oauth_identity_lookups'] = array();
+$GLOBALS['oauth_health']           = array();
 $GLOBALS['oauth_accounts']   = array();
 
 function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
@@ -77,6 +79,10 @@ function delete_transient( string $key ): bool {
 function papelito_vendor_secret_encrypt( string $plain ): string { return 'k1:' . base64_encode( $plain ); }
 function papelito_vendor_secret_decrypt( string $envelope ) { return base64_decode( substr( $envelope, 3 ) ); }
 function apply_filters( string $hook, mixed $value, mixed ...$args ): mixed {
+	if ( 'papelito_mercadopago_pre_request' === $hook && str_contains( (string) $args[1], '/users/me' ) ) {
+		$GLOBALS['oauth_identity_lookups'][] = $args[2]['headers']['Authorization'] ?? '';
+		return $GLOBALS['oauth_users_me'] ?? array( 'response' => array( 'code' => 503 ), 'body' => '{}' );
+	}
 	if ( 'papelito_mercadopago_pre_request' === $hook ) {
 		$GLOBALS['oauth_requests'][] = array( 'url' => $args[1], 'body' => json_decode( (string) $args[2]['body'], true ) );
 		return $GLOBALS['oauth_response'];
@@ -101,6 +107,27 @@ function papelito_vendor_payment_account_disconnect( int $account_id ): bool {
 	return true;
 }
 function papelito_vendor_payment_account_public( array $account ): array { return array( 'collectorId' => $account['collector_id'], 'status' => $account['status'], 'identityStatus' => $account['identity_status'] ); }
+function papelito_vendor_payment_account_find( int $id ): ?array {
+	foreach ( $GLOBALS['oauth_accounts'] as $account ) {
+		if ( $account['id'] === $id ) {
+			return $account;
+		}
+	}
+	return null;
+}
+function papelito_vendor_payment_account_set_identity( int $account_id, string $status, int $actor, string $evidence ): bool {
+	foreach ( $GLOBALS['oauth_accounts'] as $vendor => $account ) {
+		if ( $account['id'] === $account_id ) {
+			$GLOBALS['oauth_accounts'][ $vendor ]['identity_status'] = $status;
+		}
+	}
+	return true;
+}
+function papelito_vendor_payment_identity_audit_append( int $vendor_id, array $entry ): void { $GLOBALS['oauth_identity_audit'][] = $entry; }
+function papelito_vendor_payment_account_update_health( int $account_id, array $health ): void { $GLOBALS['oauth_health'][] = $health; }
+function oauth_users_me( string $type, string $document ): array {
+	return array( 'response' => array( 'code' => 200 ), 'body' => json_encode( array( 'id' => 900001, 'identification' => array( 'type' => $type, 'number' => $document ) ) ) );
+}
 
 require_once dirname( __DIR__ ) . '/includes/frontend_links.php';
 require_once dirname( __DIR__ ) . '/includes/payment_providers.php';
@@ -226,6 +253,35 @@ oauth_assert( 'token de produção não vincula em ambiente de teste', is_wp_err
 $disconnected = papelito_mercadopago_oauth_disconnect( 71 );
 oauth_assert( 'desconexão desativa a conta vigente', true === $disconnected && ! isset( $GLOBALS['oauth_accounts'][71] ) );
 oauth_assert( 'desconectar sem conta é erro recuperável', is_wp_error( papelito_mercadopago_oauth_disconnect( 71 ) ) );
+
+function oauth_connect_with_identity( ?array $users_me ): array {
+	$GLOBALS['oauth_users_me']       = $users_me;
+	$GLOBALS['oauth_identity_audit'] = array();
+	$GLOBALS['oauth_response']       = oauth_token_response( '900001' );
+	$begin = papelito_mercadopago_oauth_begin( 71, OAUTH_TEST_BINDING );
+	$done  = papelito_mercadopago_oauth_complete( 71, 'TG-code-identity', oauth_state_from( (string) $begin['authorizationUrl'] ), OAUTH_TEST_BINDING );
+	return is_wp_error( $done ) ? array() : $done;
+}
+
+$identity_ok = oauth_connect_with_identity( oauth_users_me( 'CNPJ', '11.222.333/0001-81' ) );
+oauth_assert( 'conta do CNPJ da loja é conferida sozinha na conexão', 'verified' === ( $identity_ok['account']['identityStatus'] ?? '' ) );
+oauth_assert( 'conferência automática consulta o titular com o token da própria loja', 'Bearer ' . OAUTH_TEST_TOKEN === end( $GLOBALS['oauth_identity_lookups'] ) );
+oauth_assert( 'consulta bem-sucedida na conexão vira a primeira verificação da conta', 'ok' === ( end( $GLOBALS['oauth_health'] )['health_status'] ?? '' ) && true === ( end( $GLOBALS['oauth_health'] )['success'] ?? false ) );
+oauth_assert( 'conferência automática entra na trilha de auditoria', 'verified' === ( $GLOBALS['oauth_identity_audit'][0]['status'] ?? '' ) && 0 === ( $GLOBALS['oauth_identity_audit'][0]['actorId'] ?? -1 ) );
+
+$identity_other = oauth_connect_with_identity( oauth_users_me( 'CNPJ', '99.888.777/0001-66' ) );
+oauth_assert( 'conta de outro CNPJ fica como outro titular e não recebe', 'mismatch' === ( $identity_other['account']['identityStatus'] ?? '' ) );
+
+$identity_cpf = oauth_connect_with_identity( oauth_users_me( 'CPF', '11222333000' ) );
+oauth_assert( 'conta pessoa física nunca é conferida como da loja', 'mismatch' === ( $identity_cpf['account']['identityStatus'] ?? '' ) );
+
+$identity_unknown = oauth_connect_with_identity( null );
+oauth_assert( 'sem resposta do titular fica em verificação manual', 'verification_pending' === ( $identity_unknown['account']['identityStatus'] ?? '' ) && array() === $GLOBALS['oauth_identity_audit'] );
+
+$identity_blank = oauth_connect_with_identity( oauth_users_me( 'CNPJ', '' ) );
+oauth_assert( 'titular sem documento fica em verificação manual', 'verification_pending' === ( $identity_blank['account']['identityStatus'] ?? '' ) );
+$GLOBALS['oauth_users_me'] = null;
+$GLOBALS['oauth_accounts'] = array();
 
 const OAUTH_TEST_VERCEL_CALLBACK = 'https://papelito-web.vercel.app/api/vendor/mercadopago/callback';
 
