@@ -282,12 +282,67 @@ function papelito_vendor_dashboard_items( $order, ?int $vendor_id = null ): arra
 		}
 
 		$items[] = array(
-			'item_id'    => (int) $item->get_id(),
-			'product_id' => (int) $item->get_product_id(),
-			'name'       => sanitize_text_field( (string) $item->get_name() ),
-			'qty'        => (int) $item->get_quantity(),
-			'total'      => (float) $item->get_total(),
+			'item_id'      => (int) $item->get_id(),
+			'product_id'   => (int) $item->get_product_id(),
+			'variation_id' => method_exists( $item, 'get_variation_id' ) ? (int) $item->get_variation_id() : 0,
+			'name'         => sanitize_text_field( (string) $item->get_name() ),
+			'qty'          => (int) $item->get_quantity(),
+			'total'        => (float) $item->get_total(),
 		);
+	}
+
+	return $items;
+}
+
+/**
+ * Produto que carrega o SKU do item: a variação comprada, quando houver, senão o produto.
+ *
+ * @param array<string,mixed> $item Item mapeado por papelito_vendor_dashboard_items().
+ * @return int
+ */
+function papelito_vendor_dashboard_item_sku_id( array $item ): int {
+	$variation_id = absint( $item['variation_id'] ?? 0 );
+
+	return $variation_id > 0 ? $variation_id : absint( $item['product_id'] ?? 0 );
+}
+
+/**
+ * SKU do catálogo Papelito para um produto ou variação; vazio quando o produto sumiu.
+ *
+ * @param int $product_id Produto ou variação.
+ * @return string
+ */
+function papelito_vendor_dashboard_catalog_sku( int $product_id ): string {
+	$product = $product_id > 0 ? wc_get_product( $product_id ) : null;
+
+	return is_object( $product ) && method_exists( $product, 'get_sku' ) ? sanitize_text_field( (string) $product->get_sku() ) : '';
+}
+
+/**
+ * Acrescenta a cada item o SKU que o vendor vê: o código dele quando existe, senão o da Papelito.
+ *
+ * Mesmo critério da tela de estoque — para o vendor existe um SKU só. Sem schema de códigos,
+ * cai para o SKU do catálogo em vez de quebrar o detalhe do pedido.
+ *
+ * @param array<int,array<string,mixed>> $items     Itens já mapeados do pedido.
+ * @param int                            $vendor_id Vendor dono do painel.
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_vendor_dashboard_items_with_sku( array $items, int $vendor_id ): array {
+	if ( ! $items ) {
+		return $items;
+	}
+
+	$sku_ids = array_map( 'papelito_vendor_dashboard_item_sku_id', $items );
+	$codes   = papelito_vendor_item_settings_get_many( $vendor_id, $sku_ids );
+
+	if ( is_wp_error( $codes ) ) {
+		$codes = array();
+	}
+
+	foreach ( array_keys( $items ) as $index ) {
+		$sku_id                 = $sku_ids[ $index ];
+		$items[ $index ]['sku'] = $codes[ $sku_id ]['vendor_code'] ?? papelito_vendor_dashboard_catalog_sku( $sku_id );
 	}
 
 	return $items;
@@ -378,7 +433,7 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
  * @return array<string,mixed>
  */
 function papelito_vendor_dashboard_map_order_detail( $order, ?int $vendor_id, bool $include_receipt, array $items, array $result ): array {
-	$result['items'] = $items;
+	$result['items'] = null === $vendor_id ? $items : papelito_vendor_dashboard_items_with_sku( $items, $vendor_id );
 	$result['subtotal'] = (float) $order->get_subtotal();
 	$result['shipping_total'] = (float) $order->get_shipping_total();
 	$result['phone'] = sanitize_text_field( (string) $order->get_billing_phone() );
