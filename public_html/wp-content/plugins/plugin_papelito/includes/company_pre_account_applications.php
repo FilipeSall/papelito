@@ -6,6 +6,10 @@ if ( ! defined( 'PAPELITO_PRE_ACCOUNT_APPLICATION_TTL_DAYS' ) ) {
 	define( 'PAPELITO_PRE_ACCOUNT_APPLICATION_TTL_DAYS', 30 );
 }
 
+if ( ! defined( 'PAPELITO_PRE_ACCOUNT_DISCOVERY_CHANNELS' ) ) {
+	define( 'PAPELITO_PRE_ACCOUNT_DISCOVERY_CHANNELS', array( 'instagram', 'indicacao', 'evento', 'busca', 'outro' ) );
+}
+
 if ( ! defined( 'PAPELITO_PRE_ACCOUNT_APPLICATION_UNAVAILABLE_MESSAGE' ) ) {
 	define( 'PAPELITO_PRE_ACCOUNT_APPLICATION_UNAVAILABLE_MESSAGE', 'Não foi possível concluir esta candidatura.' );
 }
@@ -421,14 +425,62 @@ function papelito_pre_account_application_confirm_email( string $token ): array|
 	$application['application_status'] = $next_status;
 	$application['email_verified_at']  = $now;
 
+	$view = null;
 	if ( 'pending_manual_review' === $next_status ) {
-		papelito_pre_account_application_notify_pending( $application );
+		$view = papelito_pre_account_application_try_auto_approve( $application );
+		if ( null === $view ) {
+			papelito_pre_account_application_notify_pending( $application );
+		}
 	}
 
 	return array(
-		'application'  => papelito_pre_account_application_view( $application ),
+		'application'  => $view ?? papelito_pre_account_application_view( $application ),
 		'resume_token' => $resume_token,
 	);
+}
+
+/**
+ * Aprova sem administrador a candidatura cujo QSA confirma o titular, logo depois do e-mail.
+ *
+ * Só age com `PAPELITO_QSA_AUTO_APPROVE_ENABLED` ligada e com `review_path = qsa_review`. O
+ * registro é consultado de novo — o QSA pode ter mudado desde o envio — e a aprovação é a
+ * mesma do administrador (`papelito_pre_account_application_approve()`, atômica). Qualquer
+ * recusa devolve `null` e a candidatura segue para a fila manual: o erro nunca vira aprovação.
+ *
+ * @param array<string,mixed> $application Candidatura com e-mail já confirmado.
+ * @return array<string,mixed>|null Visão pública da candidatura aprovada, ou null.
+ */
+function papelito_pre_account_application_try_auto_approve( array $application ): ?array {
+	if ( ! papelito_company_qsa_auto_approve_enabled() || 'qsa_review' !== (string) ( $application['review_path'] ?? '' ) ) {
+		return null;
+	}
+	$values = papelito_pre_account_application_decrypt_values( $application );
+	if ( is_wp_error( $values ) ) {
+		return null;
+	}
+	$registry = papelito_company_validate_owner_registry( $values['cpf'], $values['birth'], (string) $application['canonical_cnpj'], $values['name'] );
+	if ( is_wp_error( $registry ) || true === $registry['review_required'] ) {
+		return null;
+	}
+	$view = papelito_pre_account_application_approve( $application, 0, $registry );
+	if ( is_wp_error( $view ) ) {
+		return null;
+	}
+
+	$decided = papelito_pre_account_application_get( (int) $application['id'] );
+	if ( $decided ) {
+		papelito_company_audit(
+			(int) $decided['created_company_id'],
+			null,
+			'owner_auto_approved',
+			array(
+				'application_id' => (int) $application['id'],
+				'source'         => 'qsa_auto',
+			)
+		);
+		papelito_pre_account_application_send_decision_email( $decided );
+	}
+	return $view;
 }
 
 /**
@@ -593,6 +645,54 @@ function papelito_pre_account_application_identity( array $input ): array|WP_Err
 	);
 }
 
+/**
+ * Dados comerciais opcionais da candidatura — de onde veio e o que a loja contou de si.
+ *
+ * Chegam do formulário do `/revendedor` (o `/cadastro` não manda nada e vira `source = cadastro`).
+ * Não decidem nada: nem QSA nem aprovação leem estes campos. Ficam em `lead_json`, em claro,
+ * porque nome da loja e Instagram são públicos por natureza.
+ *
+ * @param array<string,mixed> $input Corpo da candidatura; usa só a chave `lead`.
+ * @return array{source:string,store_name:?string,instagram:?string,discovery_channel:?string,has_sold_papelito:?string}|WP_Error
+ */
+function papelito_pre_account_application_lead( array $input ): array|WP_Error {
+	$raw       = is_array( $input['lead'] ?? null ) ? $input['lead'] : array();
+	$source    = sanitize_key( (string) ( $raw['source'] ?? '' ) );
+	$store     = mb_substr( sanitize_text_field( (string) ( $raw['storeName'] ?? '' ) ), 0, 120, 'UTF-8' );
+	$instagram = (string) preg_replace( '/[@\s]+/', '', sanitize_text_field( (string) ( $raw['instagram'] ?? '' ) ) );
+	$channel   = sanitize_key( (string) ( $raw['discoveryChannel'] ?? '' ) );
+	$sold      = sanitize_key( (string) ( $raw['hasSoldPapelito'] ?? '' ) );
+	$errors    = array();
+
+	if ( '' !== $instagram && 1 !== preg_match( '/^[A-Za-z0-9._]{1,30}$/', $instagram ) ) {
+		$errors['instagram'] = array( 'Informe o Instagram da loja sem espaços, com até 30 caracteres.' );
+	}
+	if ( '' !== $channel && ! in_array( $channel, PAPELITO_PRE_ACCOUNT_DISCOVERY_CHANNELS, true ) ) {
+		$errors['discovery_channel'] = array( 'Escolha como conheceu a Papelito.' );
+	}
+	if ( '' !== $sold && ! in_array( $sold, array( 'sim', 'nao' ), true ) ) {
+		$errors['has_sold_papelito'] = array( 'Escolha se já vende produtos Papelito.' );
+	}
+	if ( $errors ) {
+		return new WP_Error(
+			'papelito_pre_account_invalid_input',
+			'Revise os dados informados.',
+			array(
+				'status' => 422,
+				'errors' => $errors,
+			)
+		);
+	}
+
+	return array(
+		'source'            => 'revendedor' === $source ? 'revendedor' : 'cadastro',
+		'store_name'        => '' === $store ? null : $store,
+		'instagram'         => '' === $instagram ? null : $instagram,
+		'discovery_channel' => '' === $channel ? null : $channel,
+		'has_sold_papelito' => '' === $sold ? null : $sold,
+	);
+}
+
 function papelito_pre_account_application_address( array $input ): array|WP_Error {
 	$address = array(
 		'cep'          => preg_replace( '/\\D+/', '', (string) ( $input['cep'] ?? '' ) ) ?? '',
@@ -645,6 +745,10 @@ function papelito_pre_account_application_prepare( array $input ): array|WP_Erro
 	if ( is_wp_error( $identity ) ) {
 		return $identity;
 	}
+	$lead = papelito_pre_account_application_lead( $input );
+	if ( is_wp_error( $lead ) ) {
+		return $lead;
+	}
 	// Mensagem deliberadamente neutra e idêntica nos três casos: distinguir "CNPJ já cadastrado"
 	// de "e-mail já cadastrado" permitiria enumerar empresas e usuários.
 	if ( papelito_company_find_by_cnpj( $identity['cnpj'] ) || email_exists( $identity['email'] ) || username_exists( $identity['email'] ) ) {
@@ -662,6 +766,7 @@ function papelito_pre_account_application_prepare( array $input ): array|WP_Erro
 
 	return is_wp_error( $sealed ) ? $sealed : array(
 		'identity'  => $identity,
+		'lead'      => $lead,
 		'validated' => $validated,
 		'sealed'    => $sealed,
 	);
@@ -699,6 +804,7 @@ function papelito_pre_account_application_persist( array $prepared ): array|WP_E
 			'resume_token_hash'        => papelito_pre_account_application_token_hash( $token ),
 			'resume_token_expires_at'  => $expires_at,
 			'evidence_json'            => wp_json_encode( papelito_company_owner_application_safe_evidence( $validated['evidence'] ) ),
+			'lead_json'                => wp_json_encode( $prepared['lead'] ),
 			'provider_source'          => sanitize_key( (string) ( $validated['lookup']['source'] ?? '' ) ),
 			'provider_checked_at'      => $now,
 			'provider_data_hash'       => (string) ( $validated['evidence']['hash'] ?? '' ),
@@ -988,6 +1094,26 @@ function papelito_pre_account_application_document_purge_status( array $applicat
 	return 'not_applicable';
 }
 
+/**
+ * Dados comerciais da candidatura no formato do painel; null em candidatura anterior à coluna.
+ *
+ * @param array<string,mixed> $application Candidatura persistida.
+ * @return array{source:string,storeName:?string,instagram:?string,discoveryChannel:?string,hasSoldPapelito:?string}|null
+ */
+function papelito_pre_account_application_lead_view( array $application ): ?array {
+	$lead = json_decode( (string) ( $application['lead_json'] ?? '' ), true );
+	if ( ! is_array( $lead ) ) {
+		return null;
+	}
+	return array(
+		'source'           => (string) ( $lead['source'] ?? 'cadastro' ),
+		'storeName'        => $lead['store_name'] ?? null,
+		'instagram'        => $lead['instagram'] ?? null,
+		'discoveryChannel' => $lead['discovery_channel'] ?? null,
+		'hasSoldPapelito'  => $lead['has_sold_papelito'] ?? null,
+	);
+}
+
 function papelito_pre_account_application_admin_detail( int $application_id ): array|WP_Error {
 	$application = papelito_pre_account_application_get( $application_id );
 	if ( ! $application ) {
@@ -1001,22 +1127,24 @@ function papelito_pre_account_application_admin_detail( int $application_id ): a
 
 	return array(
 		'application' => array(
-			'applicationId'      => papelito_pre_account_application_external_id( $application_id ),
-			'companyId'          => null,
-			'attemptNumber'      => 1,
-			'status'             => (string) $application['application_status'],
-			'fileName'           => in_array( (string) $application['application_status'], array( 'document_required', 'pending_manual_review' ), true ) ? ( $application['document_original_name'] ?? null ) : null,
-			'submittedAt'        => $application['document_uploaded_at'] ?? null,
-			'decidedAt'          => $application['decided_at'] ?? null,
-			'canUpload'          => 'document_required' === (string) $application['application_status'] && empty( $application['document_storage_key'] ),
-			'canRestart'         => 'rejected' === (string) $application['application_status'],
-			'documentMime'       => $application['document_mime'] ?? null,
-			'documentSize'       => isset( $application['document_size'] ) ? (int) $application['document_size'] : null,
-			'documentAvailable'  => 'pending_manual_review' === (string) $application['application_status'] && ! empty( $application['document_storage_key'] ),
-			'documentPurgeStatus'=> papelito_pre_account_application_document_purge_status( $application ),
-			'rejectionReason'    => $application['rejection_reason'] ?? null,
-			'decidedByUserId'    => ! empty( $application['decided_by_user_id'] ) ? (int) $application['decided_by_user_id'] : null,
+			'applicationId'       => papelito_pre_account_application_external_id( $application_id ),
+			'companyId'           => null,
+			'attemptNumber'       => 1,
+			'status'              => (string) $application['application_status'],
+			'fileName'            => in_array( (string) $application['application_status'], array( 'document_required', 'pending_manual_review' ), true ) ? ( $application['document_original_name'] ?? null ) : null,
+			'submittedAt'         => $application['document_uploaded_at'] ?? null,
+			'decidedAt'           => $application['decided_at'] ?? null,
+			'canUpload'           => 'document_required' === (string) $application['application_status'] && empty( $application['document_storage_key'] ),
+			'canRestart'          => 'rejected' === (string) $application['application_status'],
+			'documentMime'        => $application['document_mime'] ?? null,
+			'documentSize'        => isset( $application['document_size'] ) ? (int) $application['document_size'] : null,
+			'documentAvailable'   => 'pending_manual_review' === (string) $application['application_status'] && ! empty( $application['document_storage_key'] ),
+			'documentPurgeStatus' => papelito_pre_account_application_document_purge_status( $application ),
+			'rejectionReason'     => $application['rejection_reason'] ?? null,
+			'decidedByUserId'     => ! empty( $application['decided_by_user_id'] ) ? (int) $application['decided_by_user_id'] : null,
+			'autoApproved'        => 'approved' === (string) $application['application_status'] && empty( $application['decided_by_user_id'] ),
 		),
+		'lead'        => papelito_pre_account_application_lead_view( $application ),
 		'person'      => papelito_pre_account_application_admin_person( $values ),
 		'company'     => array(
 			'id'               => null,
@@ -1225,16 +1353,19 @@ function papelito_pre_account_application_send_decision_email( array $applicatio
  * seguida. Sem isso, uma falha depois de `papelito_company_create` deixava empresa órfã e o
  * CNPJ travado para sempre em papelito_pre_account_application_prepare().
  *
+ * @param array<string,mixed>      $application   Candidatura persistida.
+ * @param int                      $actor_user_id Administrador que decide; 0 na aprovação automática.
+ * @param array<string,mixed>|null $registry      Registro já validado; null reconsulta o provedor.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_pre_account_application_approve( array $application, int $actor_user_id ): array|WP_Error {
+function papelito_pre_account_application_approve( array $application, int $actor_user_id, ?array $registry = null ): array|WP_Error {
 	$application_id = (int) $application['id'];
 	$values         = papelito_pre_account_application_decrypt_values( $application );
 	if ( is_wp_error( $values ) ) {
 		return $values;
 	}
 
-	$registry = papelito_company_validate_owner_registry( $values['cpf'], $values['birth'], (string) $application['canonical_cnpj'], $values['name'] );
+	$registry ??= papelito_company_validate_owner_registry( $values['cpf'], $values['birth'], (string) $application['canonical_cnpj'], $values['name'] );
 	if ( is_wp_error( $registry ) ) {
 		return $registry;
 	}
@@ -1317,7 +1448,7 @@ function papelito_pre_account_application_approve( array $application, int $acto
 			'member_role'         => 'owner',
 			'member_status'       => 'active',
 			'membership_origin'   => 'owner_candidate',
-			'approved_by_user_id' => $actor_user_id,
+			'approved_by_user_id' => $actor_user_id > 0 ? $actor_user_id : null,
 			'approved_at'         => $now,
 		)
 	);
@@ -1335,7 +1466,7 @@ function papelito_pre_account_application_approve( array $application, int $acto
 		array(
 			'application_status'    => 'approved',
 			'is_open'               => null,
-			'decided_by_user_id'    => $actor_user_id,
+			'decided_by_user_id'    => $actor_user_id > 0 ? $actor_user_id : null,
 			'decided_at'            => $now,
 			'created_user_id'       => $user_id,
 			'created_company_id'    => $company_id,

@@ -346,6 +346,7 @@ function papelito_company_applications_schema_sql( array $tables, string $charse
   email_verification_sent_at DATETIME NULL DEFAULT NULL,
   email_verified_at DATETIME NULL DEFAULT NULL,
   evidence_json LONGTEXT NULL DEFAULT NULL,
+  lead_json LONGTEXT NULL DEFAULT NULL,
   provider_source VARCHAR(32) NULL DEFAULT NULL,
   provider_checked_at DATETIME NULL DEFAULT NULL,
   provider_data_hash CHAR(64) NULL DEFAULT NULL,

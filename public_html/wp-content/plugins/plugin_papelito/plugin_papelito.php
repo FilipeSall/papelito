@@ -34,7 +34,6 @@ require_once __DIR__ . '/includes/product_benefits.php';
 require_once __DIR__ . '/includes/product_benefits_rest.php';
 require_once __DIR__ . '/includes/catalog_search.php';
 require_once __DIR__ . '/includes/revendedor_application.php';
-require_once __DIR__ . '/includes/vendor_interests.php';
 require_once __DIR__ . '/includes/favorites.php';
 require_once __DIR__ . '/includes/catalog-pdf.php';
 require_once __DIR__ . '/includes/flash_sale.php';
@@ -159,7 +158,7 @@ require_once __DIR__ . '/includes/packaging.php';
 require_once __DIR__ . '/includes/vendor_eligibility.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.62.0' );
+	define( 'PAPELITO_DB_VERSION', '1.63.0' );
 }
 
 /**
@@ -207,8 +206,6 @@ function papelito_maybe_migrate_db() {
 				'papelito_returns_install_tables',
 				'papelito_messaging_install_tables',
 				'papelito_messaging_backfill_chamado_reason',
-				'papelito_vendor_interests_install_table',
-				'papelito_vendor_interests_backfill_legacy',
 				'papelito_company_install_tables',
 				'papelito_company_migrate_cpf_required_memberships',
 				'papelito_pre_account_application_backfill_email_verification',
@@ -229,6 +226,7 @@ function papelito_maybe_migrate_db() {
 				'papelito_vendor_payment_accounts_install_table',
 				'papelito_legacy_prune_email_cron',
 				'papelito_report_operations_install_tables',
+				'papelito_vendor_interests_drop_legacy',
 			)
 		);
 

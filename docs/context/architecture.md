@@ -146,7 +146,6 @@ O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grav
 | `revendedor_application.php` | candidatura de vendor, aprovação, criação direta pelo admin |
 | `vendor_dashboard.php` | KPIs, pedidos, configurações, faixas de cobertura; e as regras canônicas de venda paga, desconto e reembolso |
 | `vendor_reports.php` | exportações do vendor, escopadas pela sessão |
-| `vendor_interests.php` | manifestações de interesse |
 | `vendor_messaging.php` | threads comprador ↔ vendor |
 | `vendor_processing_alerts.php` | alertas de separação |
 | `support.php` | apoio a suporte |

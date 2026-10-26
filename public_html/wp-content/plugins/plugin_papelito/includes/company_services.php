@@ -369,9 +369,20 @@ function papelito_company_validate_owner_registry( string $cpf, string $birth_da
 	return array(
 		'lookup'          => $lookup,
 		'evidence'        => $evidence,
-		'review_required' => true,
+		'review_required' => ! ( papelito_company_qsa_auto_approve_enabled() && papelito_company_should_auto_approve_owner( $evidence, $lookup ) ),
 		'review_path'     => $review_path,
 	);
+}
+
+/**
+ * Diz se a candidatura com QSA batendo pode ser aprovada sem administrador.
+ *
+ * O gate é `PAPELITO_QSA_AUTO_APPROVE_ENABLED`, desligada por padrão: sem ela toda candidatura
+ * vai para a fila manual, como antes de 26/10. Quem decide o critério continua sendo
+ * `papelito_company_should_auto_approve_owner()`; a flag só liga ou desliga o caminho.
+ */
+function papelito_company_qsa_auto_approve_enabled(): bool {
+	return papelito_b2b_flag( 'PAPELITO_QSA_AUTO_APPROVE_ENABLED' );
 }
 
 function papelito_company_audit( int $company_id, ?int $actor_user_id, string $action, array $payload = array() ): void {

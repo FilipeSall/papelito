@@ -450,6 +450,10 @@ Guarda os dados pessoais cifrados necessários à análise (contato, nome, telef
 
 **Confirmação de e-mail na própria linha.** `email_verification_token_hash`, `email_verification_token_expires_at`, `email_verification_sent_at` e `email_verified_at` existem aqui, e não em `wp_usermeta`, porque no momento da confirmação **ainda não há `wp_user`** onde pendurar meta. O token guarda só o SHA-256, expira em 24 horas e é anulado no uso; `email_verification_sent_at` sustenta o intervalo de um minuto do reenvio. `email_verified_at` é a autoridade sobre a posse comprovada — é ele, e não o `application_status`, que libera o upload do documento.
 
+**Dados da loja em `lead_json`.** JSON em claro `{source, store_name, instagram, discovery_channel, has_sold_papelito}`, preenchido pelo formulário do `/revendedor` (`source = revendedor`) ou só com `source = cadastro`. Não é cifrado porque nome de loja e Instagram são públicos por natureza; não entra em decisão nenhuma. `NULL` nas candidaturas anteriores à coluna.
+
+**Aprovação automática.** Aprovada pelo QSA sem administrador (`PAPELITO_QSA_AUTO_APPROVE_ENABLED`), a linha fica `approved` com `decided_by_user_id` `NULL`, e a membership criada com `approved_by_user_id` `NULL`. É isso que o painel lê como "aprovada automaticamente"; a auditoria da empresa registra `owner_auto_approved` com `source = qsa_auto`.
+
 `created_user_id`, `created_company_id` e `created_membership_id` só são preenchidos na aprovação, que é quem cria esses recursos. Candidatura `document_required` ou `pending_manual_review` nunca referencia nenhum deles.
 
 **Estados**: `pending_email_verification` → (`document_required` →) `pending_manual_review` → `approved` | `rejected`, mais `expired` pela varredura de retenção. A candidatura **nasce** em `pending_email_verification` e só sai dele pela confirmação do e-mail, que é quem decide entre `document_required` e `pending_manual_review` conforme o `review_path` gravado na submissão — e quem notifica o administrador. Nenhuma fila administrativa aceita `pending_email_verification`.

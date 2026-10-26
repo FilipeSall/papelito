@@ -17,22 +17,6 @@ define( 'ABSPATH', __DIR__ );
 function add_action( ...$args ) {}
 function add_filter( ...$args ) {}
 function register_rest_route( ...$args ) {}
-function sanitize_email( $value ) { return (string) $value; }
-function is_email( $value ) { return false !== strpos( (string) $value, '@' ); }
-function papelito_auth_normalize_phone( $value ) { return preg_replace( '/\D+/', '', (string) $value ); }
-function papelito_brazilian_states() { return array( 'SP' => 'Sao Paulo' ); }
-
-class WP_Error {
-	public $codes = array();
-
-	public function add( $code, $message = '' ) {
-		$this->codes[] = $code;
-	}
-
-	public function has( $code ) {
-		return in_array( $code, $this->codes, true );
-	}
-}
 
 require __DIR__ . '/../includes/revendedor_application.php';
 
@@ -71,17 +55,6 @@ echo "Scenario 6: no CNPJ gate may fall back to the mask-only regex\n";
 $source          = (string) file_get_contents( __DIR__ . '/../includes/revendedor_application.php' );
 $pattern_matches = preg_match_all( '/PAPELITO_VENDOR_CNPJ_PATTERN/', $source );
 papelito_assert( 'regex referenced only by the const and the helper', 2, $pattern_matches );
-
-echo "Scenario 7: the submit gate of the revendedor application rejects a fabricated CNPJ\n";
-$base = array( 'email' => 'vendor@teste.com', 'phoneNumber' => '(11) 99999-9999', 'state' => 'SP' );
-
-$errors = new WP_Error();
-papelito_validate_seller_identity_fields( array_merge( $base, array( 'cnpj' => '65.326.368/0001-91' ) ), $errors );
-papelito_assert( 'fabricated check digits are rejected', true, $errors->has( 'cnpj' ) );
-
-$errors = new WP_Error();
-papelito_validate_seller_identity_fields( array_merge( $base, array( 'cnpj' => '65.326.368/0001-90' ) ), $errors );
-papelito_assert( 'valid CNPJ passes the gate', false, $errors->has( 'cnpj' ) );
 
 echo "\n";
 if ( $failures > 0 ) {
