@@ -10,8 +10,6 @@ Para o *porquê* de cada decisão de modelagem, veja [context/data-model.md](con
 
 Após aplicar a migração de quota de KYC desta versão, o banco terá **194 tabelas**. Dessas, **41 são criadas pelo plugin próprio**, 12 são do core do WordPress e 40 do WooCommerce (incluindo o Action Scheduler). As outras **101 são plugins de terceiros** herdados da fase pré-headless, quase todas vazias.
 
-> **Desde 26/10/2026 o plugin tem 40 tabelas:** `wp_papelito_vendor_interests` foi apagada por `papelito_vendor_interests_drop_legacy()`. As contagens abaixo e o `.excalidraw` ainda são do levantamento anterior.
-
 Cinco constatações mudam como você deve ler qualquer coisa neste schema:
 
 **1. Não existe uma única chave estrangeira em todo o banco.** Zero. A consulta abaixo devolve conjunto vazio:
@@ -200,7 +198,7 @@ Metadados da linha — e onde o **vendor é gravado por item**:
 | `wp_papelito_benefit_items` | Itens do grupo | PK `id`; `group_id`; `icon_type` ∈ `emoji`\|`svg` (nunca HTML); `icon_attachment_id` |
 | `wp_papelito_benefit_group_targets` | Alvo do grupo — **polimórfico** | PK `(target_type, target_key)` → um alvo pertence a no máximo um grupo. `target_type` ∈ `product`\|`collection`\|`category`. Precedência de resolução: produto > coleção > categoria > global |
 
-### Kits, brindes e estoque (6)
+### Kits, brindes e estoque (7)
 
 | Tabela | Papel | Chaves e colunas que importam |
 |---|---|---|
@@ -210,6 +208,7 @@ Metadados da linha — e onde o **vendor é gravado por item**:
 | `wp_papelito_kit_merchandise_items` | Brindes que compõem o kit | PK `(kit_id, merchandise_id)`; `quantity` |
 | `wp_papelito_vendor_stock` ⭐ | **A disponibilidade** | PK `id`; UNIQUE `(vendor_id, product_id)`; `qty`; `notified_zero_at` |
 | `wp_papelito_vendor_stock_log` | Razão do estoque, com delta e motivo | PK `id`; `vendor_id`, `product_id`, `delta`, `reason` |
+| `wp_papelito_vendor_interests` | Lead de quem quer virar vendor — **legada desde 26/10/2026**: o formulário parou de gravar e nenhum código lê; os dados ficam para consulta | PK `id`; UNIQUE `(cnpj, visibility)`, `(email, visibility)`, `customer_user_id`; **PII em claro**: `cnpj`, `phone`, `email` |
 
 ### Pedido, recibo e documento fiscal (5)
 
@@ -326,7 +325,7 @@ Dentro das tabelas Papelito, sete colunas são `utf8mb4_bin` de propósito — c
 
 1. **`tb_codigosdisplay`** — tabela sem prefixo `wp_`, sem chave primária, com **PII em claro** (CNPJ, CPF, e-mail, telefone) de uma campanha de sorteio legada. Nenhum código do projeto a referencia. Está vazia localmente, mas **é preciso confirmar se está vazia em produção** antes de descartar. Se tiver dados, é um passivo de LGPD fora de qualquer inventário.
 
-2. ~~`wp_papelito_vendor_interests` guarda CNPJ, telefone e e-mail em claro~~ — resolvido em 26/10/2026: a tabela foi apagada pela migração `papelito_vendor_interests_drop_legacy()` (exportada de produção antes do deploy).
+2. **`wp_papelito_vendor_interests` guarda CNPJ, telefone e e-mail em claro**, enquanto o resto do domínio cifra PII (`customer_profiles`, `company_pre_account_applications`). Divergência deliberada ou lacuna? Vale decidir.
 
 3. **`receipt_vendor_parts` suporta N vendors por recibo**, mas a regra de negócio proíbe pedido multivendor. O mesmo vale para `_vendor_id` por item em `order_itemmeta`. O schema está pronto para algo que o código bloqueia — deixar assim é decisão consciente, mas não está registrada em lugar nenhum.
 

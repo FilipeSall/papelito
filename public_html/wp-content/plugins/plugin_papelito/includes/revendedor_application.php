@@ -1408,28 +1408,6 @@ function papelito_validate_vendor_pagarme_bank_fields( array $step3, WP_Error $e
 	}
 }
 
-/**
- * Migração: apaga as manifestações de interesse em virar vendor, descontinuadas em 26/10/2026.
- *
- * Remove a tabela, a option do backfill legado e as notificações `new_vendor_application`
- * já entregues, cujo link levava a uma tela que não existe mais. Não há volta: a tabela
- * de produção precisa ser exportada antes do deploy que roda esta migração.
- *
- * @return bool Se a tabela deixou de existir e as notificações foram apagadas.
- */
-function papelito_vendor_interests_drop_legacy(): bool {
-	global $wpdb;
-
-	$table = $wpdb->prefix . 'papelito_vendor_interests';
-
-	$dropped = $wpdb->query( "DROP TABLE IF EXISTS {$table}" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-	delete_option( 'papelito_vendor_interests_legacy_backfill_v1' );
-
-	$notifications = $wpdb->delete( papelito_notifications_table_name(), array( 'type' => 'new_vendor_application' ), array( '%s' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-
-	return false !== $dropped && false !== $notifications;
-}
-
 add_action( 'rest_api_init', 'papelito_register_vendor_application_routes' );
 
 /**

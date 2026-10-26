@@ -226,7 +226,6 @@ function papelito_maybe_migrate_db() {
 				'papelito_vendor_payment_accounts_install_table',
 				'papelito_legacy_prune_email_cron',
 				'papelito_report_operations_install_tables',
-				'papelito_vendor_interests_drop_legacy',
 			)
 		);
 
