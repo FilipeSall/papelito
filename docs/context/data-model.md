@@ -715,6 +715,20 @@ Por que três tabelas vendor × produto, e não uma:
 
 Unificar quebraria duas coisas: a descrição é do pai e o resto é por variação, e qualquer atributo na linha de estoque disputa a trava do pedido e cria a linha que hoje significa "não configurado". **Regra de entrada da tabela nova:** só atributo do vendor, por item, que não seja quantidade; cada um em coluna explícita (nada de chave/valor); nada que a baixa de estoque precise ler. Coluna nova entra no `CREATE TABLE`, na checagem de `papelito_vendor_item_settings_inspect_schema()` e na condição de remoção de `papelito_vendor_item_settings_clear_code()`.
 
+### `wp_papelito_report_operations`
+
+Uma linha por exportação administrativa (`kind = export`, `report = sales|users`) e por lote de
+importação de produtos (`kind = import`, `report = products`), escrita por `report_operations.php`.
+Guarda recorte (`params`, JSON), `status` (`running`, `done`, `partial`, `empty`, `failed`),
+contagens (`row_count`, `created_count`, `ignored_count`, `error_count`), `lot_code` (`L-` + id),
+`file_hash` (SHA-256 do arquivo importado, indexado: é a trava contra reimportar), `detail` (JSON
+do resultado do lote), `error_message`, `user_id`, `created_at` e `finished_at` (UTC). Nunca guarda
+o conteúdo exportado. Linha `running` há mais de uma hora é lida como `failed`. Histórico: não é
+limpa.
+
+Produto criado pela importação guarda os postmetas `_papelito_import_lot` (código do lote) e
+`_papelito_import_line` (linha do arquivo).
+
 ### `wp_papelito_vendor_item_settings_log`
 
 ```sql

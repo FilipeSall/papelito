@@ -64,6 +64,11 @@ require_once __DIR__ . '/includes/vendor_code_import_matcher.php';
 require_once __DIR__ . '/includes/vendor_code_import_reader.php';
 require_once __DIR__ . '/includes/vendor_code_import.php';
 require_once __DIR__ . '/includes/vendor_code_import_rest.php';
+require_once __DIR__ . '/includes/report_operations.php';
+require_once __DIR__ . '/includes/admin_product_import_rules.php';
+require_once __DIR__ . '/includes/admin_product_import.php';
+require_once __DIR__ . '/includes/admin_product_import_rest.php';
+require_once __DIR__ . '/includes/admin_product_export.php';
 require_once __DIR__ . '/includes/merchandise.php';
 require_once __DIR__ . '/includes/kits.php';
 require_once __DIR__ . '/includes/notification_emails.php';
@@ -154,7 +159,7 @@ require_once __DIR__ . '/includes/packaging.php';
 require_once __DIR__ . '/includes/vendor_eligibility.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.61.0' );
+	define( 'PAPELITO_DB_VERSION', '1.62.0' );
 }
 
 /**
@@ -223,6 +228,7 @@ function papelito_maybe_migrate_db() {
 				'papelito_payment_attempts_install_table',
 				'papelito_vendor_payment_accounts_install_table',
 				'papelito_legacy_prune_email_cron',
+				'papelito_report_operations_install_tables',
 			)
 		);
 

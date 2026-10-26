@@ -7,6 +7,11 @@
  * número, para não perder zero à esquerda. Não associa produto nem grava nada;
  * o arquivo é lido do diretório temporário do upload e descartado pelo PHP.
  *
+ * A leitura neutra do arquivo — limites, encoding, delimitador, XLSX sem fórmula —
+ * é compartilhada com a importação de produtos do admin por
+ * `papelito_vendor_code_import_read_matrix()`; só o reconhecimento do cabeçalho é
+ * de cada importação.
+ *
  * @package Papelito
  */
 
@@ -232,10 +237,14 @@ function papelito_vendor_code_import_csv_row_is_blank( array $cells ): bool {
  * entra como vazia, sem contar no limite, para a numeração continuar a do arquivo; cada
  * linha é cortada na mesma janela de colunas do XLSX.
  *
- * @param string $content Bytes do arquivo.
+ * @param string        $content       Bytes do arquivo.
+ * @param callable|null $delimiter_for Recebe o CSV em UTF-8 e devolve o delimitador; sem ele,
+ *                                     vale o que reconhece o cabeçalho da planilha de códigos.
  * @return array<int,array<int,string>>|WP_Error
  */
-function papelito_vendor_code_import_csv_matrix( string $content ): array|WP_Error {
+function papelito_vendor_code_import_csv_matrix( string $content, ?callable $delimiter_for = null ): array|WP_Error {
+	$delimiter_for ??= 'papelito_vendor_code_import_csv_delimiter';
+
 	$content = str_starts_with( $content, "\xEF\xBB\xBF" ) ? substr( $content, 3 ) : $content;
 	if ( ! mb_check_encoding( $content, 'UTF-8' ) ) {
 		$content = (string) mb_convert_encoding( $content, 'UTF-8', 'Windows-1252' );
@@ -247,7 +256,7 @@ function papelito_vendor_code_import_csv_matrix( string $content ): array|WP_Err
 	$stream->fwrite( $content );
 	$stream->rewind();
 	$stream->setFlags( SplFileObject::READ_CSV | SplFileObject::SKIP_EMPTY | SplFileObject::READ_AHEAD );
-	$stream->setCsvControl( papelito_vendor_code_import_csv_delimiter( $content ), '"', '' );
+	$stream->setCsvControl( (string) $delimiter_for( $content ), '"', '' );
 	$matrix = array();
 	$filled = 0;
 	foreach ( $stream as $cells ) {
@@ -428,12 +437,16 @@ function papelito_vendor_code_import_xlsx_bounded_matrix( string $path ): array|
 }
 
 /**
- * Valida o upload e devolve as linhas da planilha.
+ * Valida o upload e devolve a planilha como matriz de células, sem interpretar cabeçalho.
  *
- * @param array{name?:string,tmp_name?:string,size?:int} $file Arquivo recebido pelo upload direto.
- * @return array<int,array{line:int,description:string,subgroup:string,code:string}>|WP_Error
+ * É a parte da leitura que não depende de qual importação está lendo: extensão, tamanho,
+ * encoding e as defesas do XLSX. Quem chama reconhece o próprio cabeçalho na matriz.
+ *
+ * @param array{name?:string,tmp_name?:string,size?:int} $file          Arquivo recebido pelo upload direto.
+ * @param callable|null                                  $delimiter_for Detector de delimitador do CSV.
+ * @return array<int,array<int,mixed>>|WP_Error
  */
-function papelito_vendor_code_import_read_file( array $file ): array|WP_Error {
+function papelito_vendor_code_import_read_matrix( array $file, ?callable $delimiter_for = null ): array|WP_Error {
 	$extension = strtolower( pathinfo( (string) ( $file['name'] ?? '' ), PATHINFO_EXTENSION ) );
 	$path      = (string) ( $file['tmp_name'] ?? '' );
 	if ( ! in_array( $extension, array( 'csv', 'xlsx' ), true ) ) {
@@ -446,8 +459,18 @@ function papelito_vendor_code_import_read_file( array $file ): array|WP_Error {
 	if ( $size > PAPELITO_VENDOR_CODE_IMPORT_MAX_BYTES ) {
 		return papelito_vendor_code_import_read_error( 'papelito_vendor_code_import_too_large', 'A planilha excede o limite de 2 MB.', 413 );
 	}
-	$matrix = 'xlsx' === $extension
+	return 'xlsx' === $extension
 		? papelito_vendor_code_import_xlsx_matrix( $path )
-		: papelito_vendor_code_import_csv_matrix( papelito_vendor_code_import_read_bytes( $path, 0 ) );
+		: papelito_vendor_code_import_csv_matrix( papelito_vendor_code_import_read_bytes( $path, 0 ), $delimiter_for );
+}
+
+/**
+ * Valida o upload e devolve as linhas da planilha de códigos.
+ *
+ * @param array{name?:string,tmp_name?:string,size?:int} $file Arquivo recebido pelo upload direto.
+ * @return array<int,array{line:int,description:string,subgroup:string,code:string}>|WP_Error
+ */
+function papelito_vendor_code_import_read_file( array $file ): array|WP_Error {
+	$matrix = papelito_vendor_code_import_read_matrix( $file );
 	return is_wp_error( $matrix ) ? $matrix : papelito_vendor_code_import_rows_from_matrix( $matrix );
 }

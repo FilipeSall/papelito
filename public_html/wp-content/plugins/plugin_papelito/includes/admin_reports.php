@@ -1517,6 +1517,101 @@ function papelito_admin_reports_output_download( string $binary, string $filenam
 	exit;
 }
 
+/**
+ * Rótulo exibível da exportação, com o papel quando o recorte de usuários não é "todos".
+ *
+ * @param string               $report  `sales` ou `users`.
+ * @param array<string,string> $filters Filtros já normalizados.
+ */
+function papelito_admin_reports_export_title( string $report, array $filters ): string {
+	if ( 'sales' === $report ) {
+		return 'Vendas';
+	}
+	$roles = array(
+		'administrator' => 'Admins',
+		'customer'      => 'Compradores',
+		'seller'        => 'Vendors',
+	);
+	$role  = (string) ( $filters['role'] ?? 'all' );
+
+	return isset( $roles[ $role ] ) ? 'Usuários · ' . $roles[ $role ] : 'Usuários';
+}
+
+/**
+ * Registra a exportação na Atividade recente: recorte, formato e quantas linhas saíram.
+ *
+ * O conteúdo do arquivo não é guardado; só a contagem. Exportação sem linha nenhuma fica como
+ * `empty`, e falha ao gerar o arquivo como `failed`.
+ *
+ * @param string               $report  `sales` ou `users`.
+ * @param array<string,string> $filters Filtros já normalizados.
+ * @param int                  $rows    Linhas do arquivo.
+ * @param string|WP_Error      $binary  Arquivo gerado ou a falha.
+ */
+function papelito_admin_reports_record_export( string $report, array $filters, int $rows, string|WP_Error $binary ): void {
+	$status = 0 === $rows ? PAPELITO_REPORT_OPERATION_EMPTY : PAPELITO_REPORT_OPERATION_DONE;
+	if ( is_wp_error( $binary ) ) {
+		$status = PAPELITO_REPORT_OPERATION_FAILED;
+	}
+
+	papelito_report_operation_record(
+		array(
+			'kind'   => 'export',
+			'report' => $report,
+			'title'  => papelito_admin_reports_export_title( $report, $filters ),
+			'params' => $filters,
+		),
+		array(
+			'status' => $status,
+			'rows'   => $rows,
+			'error'  => is_wp_error( $binary ) ? $binary->get_error_message() : null,
+		)
+	);
+}
+
+/**
+ * GET da contagem de pedidos pagos que a exportação de vendas geraria no recorte.
+ *
+ * Existe para o painel dizer "nada para exportar" antes do download, em vez de entregar um
+ * arquivo só com o cabeçalho.
+ *
+ * @param WP_REST_Request $request Parâmetros `from` e `to`.
+ */
+function papelito_admin_reports_sales_count_endpoint( WP_REST_Request $request ): WP_REST_Response {
+	$filters = papelito_admin_reports_parse_simple_export_filters( $request );
+	$orders  = papelito_admin_reports_paid_sales_orders( papelito_admin_reports_query_sales_orders( $filters ) );
+
+	return new WP_REST_Response( array( 'count' => count( $orders ) ), 200 );
+}
+
+/**
+ * GET da contagem de contas que a exportação de usuários geraria no recorte de cadastro e papel.
+ *
+ * @param WP_REST_Request $request Parâmetros `from`, `to` e `role`.
+ */
+function papelito_admin_reports_users_count_endpoint( WP_REST_Request $request ): WP_REST_Response {
+	$filters = papelito_admin_reports_parse_users_export_filters( $request );
+
+	return new WP_REST_Response( array( 'count' => count( papelito_admin_reports_query_simple_user_rows( $filters ) ) ), 200 );
+}
+
+/** Registra as rotas de contagem das exportações, restritas a administradores. */
+function papelito_admin_reports_register_count_routes(): void {
+	foreach ( array( 'sales', 'users' ) as $report ) {
+		register_rest_route(
+			'papelito/v1/admin',
+			'/reports/' . $report . '/count',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => 'papelito_admin_reports_' . $report . '_count_endpoint',
+				'permission_callback' => static fn (): bool => current_user_can( 'manage_options' ),
+			)
+		);
+	}
+}
+
+add_action( 'rest_api_init', 'papelito_admin_reports_register_count_routes' );
+
 add_action(
 	'rest_api_init',
 	static function (): void {
@@ -1565,6 +1660,8 @@ add_action(
 						? papelito_admin_reports_generate_simple_users_csv( $rows )
 						: papelito_admin_reports_generate_simple_users_xlsx( $rows );
 
+					papelito_admin_reports_record_export( 'users', $filters, count( $rows ), $binary );
+
 					if ( is_wp_error( $binary ) ) {
 						return $binary;
 					}
@@ -1594,6 +1691,8 @@ add_action(
 					$binary  = 'csv' === $filters['format']
 						? papelito_admin_reports_generate_simple_sales_csv( $rows )
 						: papelito_admin_reports_generate_simple_sales_xlsx( $rows );
+
+					papelito_admin_reports_record_export( 'sales', $filters, count( $rows ), $binary );
 
 					if ( is_wp_error( $binary ) ) {
 						return $binary;

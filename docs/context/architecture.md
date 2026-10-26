@@ -159,6 +159,11 @@ O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grav
 | `account_status.php` | estado comercial da conta (ativa/suspensa), guards, histórico e contexto de `/auth/me` |
 | `account_admin_endpoints.php` | rotas de suspender/reativar conta e empresa, e histórico de estado |
 | `admin_reports.php` | snapshot de vendas com segmento e janela anterior, relatórios e exportações |
+| `report_operations.php` | registro de cada exportação e lote de importação (`wp_papelito_report_operations`), Atividade recente e trava de arquivo já importado |
+| `admin_product_import_rules.php` | regras puras da importação de produtos: colunas, validação por linha, duplicidade no catálogo e no arquivo |
+| `admin_product_import.php` | prévia em transient, confirmação e criação do lote com rollback |
+| `admin_product_import_rest.php` | finalidade de upload `admin-product-import` e `POST /admin/products/import` |
+| `admin_product_export.php` | exportação do catálogo no formato da importação (`/admin/reports/products/export` e `/count`) |
 | `notifications.php` | dispatcher **e todos os listeners** dos eventos de domínio |
 | `notification_emails.php` | camada de apresentação dos e-mails transacionais: casca da marca, chapas, botão e os corpos HTML/texto. Não conhece hook nem evento |
 

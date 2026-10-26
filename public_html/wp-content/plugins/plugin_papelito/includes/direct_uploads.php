@@ -560,6 +560,9 @@ function papelito_direct_upload_ticket_issue( WP_REST_Request $request ) {
 	if ( 'vendor-sku-import' === $purpose ) {
 		return papelito_vendor_code_import_ticket();
 	}
+	if ( 'admin-product-import' === $purpose ) {
+		return papelito_product_import_ticket();
+	}
 
 	if ( 'pre-account-document' === $purpose ) {
 		$application = papelito_pre_account_application_authorize( $application_token );
@@ -597,6 +600,7 @@ function papelito_direct_upload_receive( WP_REST_Request $request ) {
 		'return-refund-proof'    => papelito_direct_upload_return_refund_proof( $ticket, $file ),
 		'order-refund-proof'     => papelito_direct_upload_order_refund_proof( $ticket, $file ),
 		'vendor-sku-import'      => papelito_vendor_code_import_receive( $ticket, $file ),
+		'admin-product-import'   => papelito_product_import_receive( $ticket, $file ),
 		default                  => papelito_direct_upload_error( 'papelito_upload_invalid_purpose', 'Finalidade de upload inválida.', 422 ),
 	};
 
