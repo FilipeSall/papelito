@@ -35,10 +35,14 @@ function papelito_company_owner_application_safe_evidence( array $evidence ): ar
 		'name_match',
 		'age_band_match',
 		'partner_match',
+		'partner_identity_match',
+		'eligible_qualification',
+		'eligible_partner_match',
 		'mei_confirmed',
 		'mei_name_match',
 		'provider',
 		'checked_at',
+		'source_updated_at',
 	);
 	$safe    = array();
 

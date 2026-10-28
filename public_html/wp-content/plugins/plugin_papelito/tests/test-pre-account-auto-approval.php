@@ -188,7 +188,7 @@ function auto_approval_load( string $file, array $functions ): void {
 
 define( 'PAPELITO_PRE_ACCOUNT_DISCOVERY_CHANNELS', array( 'instagram', 'indicacao', 'evento', 'busca', 'outro' ) );
 auto_approval_load( 'company_services.php', array( 'papelito_company_qsa_auto_approve_enabled' ) );
-auto_approval_load( 'company_pre_account_applications.php', array( 'papelito_pre_account_application_try_auto_approve', 'papelito_pre_account_application_lead', 'papelito_pre_account_application_lead_view' ) );
+auto_approval_load( 'company_pre_account_applications.php', array( 'papelito_pre_account_application_email_is_verified', 'papelito_pre_account_application_try_auto_approve', 'papelito_pre_account_application_lead', 'papelito_pre_account_application_lead_view' ) );
 
 /**
  * Candidatura com e-mail confirmado, no caminho de QSA.
@@ -198,9 +198,10 @@ auto_approval_load( 'company_pre_account_applications.php', array( 'papelito_pre
  */
 function auto_approval_application( string $review_path = 'qsa_review' ): array {
 	return array(
-		'id'             => AUTO_APPROVAL_TEST_APPLICATION_ID,
-		'review_path'    => $review_path,
-		'canonical_cnpj' => '99999001000159',
+		'id'                => AUTO_APPROVAL_TEST_APPLICATION_ID,
+		'review_path'       => $review_path,
+		'canonical_cnpj'    => '99999001000159',
+		'email_verified_at' => '2026-10-28 12:00:00',
 	);
 }
 
@@ -242,7 +243,14 @@ papelito_assert( 'devolve null', null, papelito_pre_account_application_try_auto
 papelito_assert( 'sem auditoria', 0, count( AutoApprovalWorld::$audits ) );
 papelito_assert( 'sem e-mail', 0, count( AutoApprovalWorld::$emails ) );
 
-echo "Cenário 6: dados comerciais do /revendedor\n";
+echo "Cenário 6: sem confirmação de e-mail não tenta aprovar\n";
+AutoApprovalWorld::reset();
+$unverified                      = auto_approval_application();
+$unverified['email_verified_at'] = null;
+papelito_assert( 'sem e-mail confirmado devolve null', null, papelito_pre_account_application_try_auto_approve( $unverified ) );
+papelito_assert( 'sem e-mail confirmado não chama aprovação', 0, count( AutoApprovalWorld::$approve_calls ) );
+
+echo "Cenário 7: dados comerciais do /revendedor\n";
 $lead = papelito_pre_account_application_lead(
 	array(
 		'lead' => array(

@@ -29,7 +29,7 @@ if ( ! defined( 'PAPELITO_CNPJ_TOTAL_BUDGET' ) ) {
 }
 
 if ( ! defined( 'PAPELITO_CNPJ_CACHE_PREFIX' ) ) {
-	define( 'PAPELITO_CNPJ_CACHE_PREFIX', 'papelito_cnpj_' );
+	define( 'PAPELITO_CNPJ_CACHE_PREFIX', 'papelito_cnpj_v2_' );
 }
 
 if ( ! defined( 'PAPELITO_CNPJ_JSON_CONTENT_TYPE' ) ) {
@@ -89,17 +89,18 @@ function papelito_cnpj_providers(): array {
  * @return array<string,mixed>|WP_Error
  */
 function papelito_cnpj_http_get( string $url, array $args = array() ) {
-	$pre = apply_filters( 'papelito_cnpj_http_response', null, $url, $args );
+	$defaults = array(
+		'timeout'     => PAPELITO_CNPJ_PROVIDER_TIMEOUT,
+		'headers'     => array( 'Accept' => PAPELITO_CNPJ_JSON_CONTENT_TYPE ),
+		'redirection' => 0,
+	);
+	$args     = array_merge( $defaults, $args );
+	$pre      = apply_filters( 'papelito_cnpj_http_response', null, $url, $args );
 	if ( null !== $pre ) {
 		return $pre;
 	}
 
-	$defaults = array(
-		'timeout' => PAPELITO_CNPJ_PROVIDER_TIMEOUT,
-		'headers' => array( 'Accept' => PAPELITO_CNPJ_JSON_CONTENT_TYPE ),
-	);
-
-	return wp_remote_get( $url, array_merge( $defaults, $args ) );
+	return wp_remote_get( $url, $args );
 }
 
 /**
@@ -133,11 +134,64 @@ function papelito_cnpj_status_from_situacao( string $situacao ): string {
 
 /** Retorna um campo textual opcional do corpo do provider. */
 function papelito_cnpj_nullable_string( array $body, string $key ): ?string {
-	if ( ! isset( $body[ $key ] ) ) {
+	if ( ! isset( $body[ $key ] ) || ! is_scalar( $body[ $key ] ) ) {
 		return null;
 	}
 
 	return (string) $body[ $key ];
+}
+
+/** Aceita somente indicadores afirmativos explícitos, nunca a coerção booleana de texto. */
+function papelito_cnpj_is_mei( mixed $value ): bool {
+	if ( true === $value || 1 === $value ) {
+		return true;
+	}
+
+	return is_string( $value ) && in_array( strtolower( trim( $value ) ), array( 'sim', 'true', '1' ), true );
+}
+
+/** Extrai apenas o código de natureza; dígitos na descrição não compõem o código. */
+function papelito_cnpj_legal_nature_code( mixed $value ): ?string {
+	if ( ! is_scalar( $value ) || ! preg_match( '/^(\d{3})[-.]?(\d)(?:\D|$)/', trim( (string) $value ), $matches ) ) {
+		return null;
+	}
+
+	return $matches[1] . $matches[2];
+}
+
+/** Normaliza faixas textuais conhecidas sem criar evidência para faixas desconhecidas. */
+function papelito_cnpj_normalize_qsa( array $entries ): array {
+	foreach ( $entries as &$entry ) {
+		if ( ! is_array( $entry ) || isset( $entry['codigo_faixa_etaria'] ) ) {
+			continue;
+		}
+
+		$band = papelito_cnpj_nullable_string( $entry, 'faixa_etaria' );
+		if ( null !== $band && preg_match( '/^(?:entre\s+)?(\d+)\s+a\s+(\d+)\s+anos$/i', trim( $band ), $matches ) ) {
+			$ranges = array( '0-12', '13-20', '21-30', '31-40', '41-50', '51-60', '61-70', '71-80' );
+			$index  = array_search( $matches[1] . '-' . $matches[2], $ranges, true );
+			if ( false !== $index ) {
+				$entry['codigo_faixa_etaria'] = $index + 1;
+			}
+		} elseif ( null !== $band && preg_match( '/^(?:maior(?:es)? de|acima de)\s+80\s+anos$/i', trim( $band ) ) ) {
+			$entry['codigo_faixa_etaria'] = 9;
+		}
+	}
+	unset( $entry );
+
+	return $entries;
+}
+
+/** Retorna atualização declarada pela fonte; consulta e situação cadastral não são atualização. */
+function papelito_cnpj_source_updated_at( array $body, array $keys ): ?string {
+	foreach ( $keys as $key ) {
+		$value = papelito_cnpj_nullable_string( $body, $key );
+		if ( null !== $value && '' !== trim( $value ) ) {
+			return $value;
+		}
+	}
+
+	return null;
 }
 
 /** Retorna um campo de lista do corpo do provider. */
@@ -195,15 +249,16 @@ function papelito_cnpj_map_brasilapi( array $body ): array {
 			'cnpj'              => papelito_cnpj_nullable_string( $body, 'cnpj' ),
 			'legal_name'        => papelito_cnpj_nullable_string( $body, 'razao_social' ),
 			'trade_name'        => papelito_cnpj_nullable_string( $body, 'nome_fantasia' ),
-			'legal_nature_code' => papelito_cnpj_nullable_string( $body, 'codigo_natureza_juridica' ),
-			'is_mei'            => true === ( $body['opcao_pelo_mei'] ?? false ),
+			'legal_nature_code' => papelito_cnpj_legal_nature_code( $body['codigo_natureza_juridica'] ?? null ),
+			'is_mei'            => papelito_cnpj_is_mei( $body['opcao_pelo_mei'] ?? null ),
+			'source_updated_at' => papelito_cnpj_source_updated_at( $body, array( 'updated_at', 'atualizado_em', 'data_atualizacao' ) ),
 			'fiscal_address'    => array(
 				'cep'    => papelito_cnpj_nullable_string( $body, 'cep' ),
 				'state'  => papelito_cnpj_nullable_string( $body, 'uf' ),
 				'city'   => papelito_cnpj_nullable_string( $body, 'municipio' ),
 				'street' => papelito_cnpj_nullable_string( $body, 'logradouro' ),
 			),
-			'qsa'               => papelito_cnpj_array_value( $body, 'qsa' ),
+			'qsa'               => papelito_cnpj_normalize_qsa( papelito_cnpj_array_value( $body, 'qsa' ) ),
 			'cnaes'             => function_exists( 'papelito_vendor_cnae_extract' ) ? papelito_vendor_cnae_extract( $body ) : null,
 		)
 	);
@@ -214,8 +269,8 @@ function papelito_cnpj_map_brasilapi( array $body ): array {
  *
  * @return array<string,mixed>
  */
-function papelito_cnpj_adapter_brasilapi( string $cnpj ): array {
-	$response = papelito_cnpj_http_get( 'https://brasilapi.com.br/api/cnpj/v1/' . rawurlencode( $cnpj ) );
+function papelito_cnpj_adapter_brasilapi( string $cnpj, float $timeout = PAPELITO_CNPJ_PROVIDER_TIMEOUT ): array {
+	$response = papelito_cnpj_http_get( 'https://brasilapi.com.br/api/cnpj/v1/' . rawurlencode( $cnpj ), array( 'timeout' => $timeout ) );
 
 	return papelito_cnpj_interpret_response(
 		$response,
@@ -229,9 +284,9 @@ function papelito_cnpj_adapter_brasilapi( string $cnpj ): array {
  *
  * @return array<string,mixed>
  */
-function papelito_cnpj_adapter_cnpjws( string $cnpj ): array {
+function papelito_cnpj_adapter_cnpjws( string $cnpj, float $timeout = PAPELITO_CNPJ_PROVIDER_TIMEOUT ): array {
 	$token = (string) papelito_env( 'PAPELITO_CNPJWS_TOKEN', '' );
-	$args  = array();
+	$args  = array( 'timeout' => $timeout );
 	if ( '' !== $token ) {
 		$args['headers'] = array(
 			'Accept'      => PAPELITO_CNPJ_JSON_CONTENT_TYPE,
@@ -251,18 +306,31 @@ function papelito_cnpj_adapter_cnpjws( string $cnpj ): array {
 
 /** Normaliza o corpo retornado pelo CNPJ.ws. */
 function papelito_cnpj_map_cnpjws( array $body ): array {
-	$situacao = '';
-	if ( isset( $body['estabelecimento'] ) && is_array( $body['estabelecimento'] ) ) {
-		$situacao = strtolower( (string) ( $body['estabelecimento']['situacao_cadastral'] ?? '' ) );
-	}
+	$establishment = papelito_cnpj_array_value( $body, 'estabelecimento' );
+	$nature        = papelito_cnpj_array_value( $body, 'natureza_juridica' );
+	$simples       = papelito_cnpj_array_value( $body, 'simples' );
+	$state         = papelito_cnpj_array_value( $establishment, 'estado' );
+	$city          = papelito_cnpj_array_value( $establishment, 'cidade' );
+	$situacao      = strtolower( (string) ( $establishment['situacao_cadastral'] ?? '' ) );
 
 	return papelito_cnpj_result(
 		papelito_cnpj_status_from_situacao( $situacao ),
 		'cnpjws',
 		array(
-			'http_code'  => 200,
-			'legal_name' => papelito_cnpj_nullable_string( $body, 'razao_social' ),
-			'qsa'        => papelito_cnpj_array_value( $body, 'socios' ),
+			'http_code'         => 200,
+			'cnpj'              => papelito_cnpj_nullable_string( $establishment, 'cnpj' ),
+			'legal_name'        => papelito_cnpj_nullable_string( $body, 'razao_social' ),
+			'trade_name'        => papelito_cnpj_nullable_string( $establishment, 'nome_fantasia' ),
+			'legal_nature_code' => papelito_cnpj_legal_nature_code( $nature['id'] ?? null ),
+			'is_mei'            => papelito_cnpj_is_mei( $simples['mei'] ?? null ),
+			'source_updated_at' => papelito_cnpj_source_updated_at( $body, array( 'atualizado_em' ) ),
+			'fiscal_address'    => array(
+				'cep'    => papelito_cnpj_nullable_string( $establishment, 'cep' ),
+				'state'  => papelito_cnpj_nullable_string( $state, 'sigla' ),
+				'city'   => papelito_cnpj_nullable_string( $city, 'nome' ),
+				'street' => papelito_cnpj_nullable_string( $establishment, 'logradouro' ),
+			),
+			'qsa'               => papelito_cnpj_normalize_qsa( papelito_cnpj_array_value( $body, 'socios' ) ),
 		)
 	);
 }
@@ -278,22 +346,34 @@ function papelito_cnpj_map_receitaws( array $body ): array {
 	}
 
 	$situacao = strtolower( (string) ( $body['situacao'] ?? '' ) );
+	$simei    = papelito_cnpj_array_value( $body, 'simei' );
 
 	return papelito_cnpj_result(
 		papelito_cnpj_status_from_situacao( $situacao ),
 		'receitaws',
 		array(
-			'http_code'  => 200,
-			'legal_name' => papelito_cnpj_nullable_string( $body, 'nome' ),
-			'trade_name' => papelito_cnpj_nullable_string( $body, 'fantasia' ),
-			'qsa'        => papelito_cnpj_array_value( $body, 'qsa' ),
+			'http_code'         => 200,
+			'cnpj'              => papelito_cnpj_nullable_string( $body, 'cnpj' ),
+			'legal_name'        => papelito_cnpj_nullable_string( $body, 'nome' ),
+			'trade_name'        => papelito_cnpj_nullable_string( $body, 'fantasia' ),
+			'legal_nature_code' => papelito_cnpj_legal_nature_code( $body['natureza_juridica'] ?? null ),
+			'is_mei'            => papelito_cnpj_is_mei( $simei['optante'] ?? null ),
+			'source_updated_at' => papelito_cnpj_source_updated_at( $body, array( 'ultima_atualizacao' ) ),
+			'fiscal_address'    => array(
+				'cep'    => papelito_cnpj_nullable_string( $body, 'cep' ),
+				'state'  => papelito_cnpj_nullable_string( $body, 'uf' ),
+				'city'   => papelito_cnpj_nullable_string( $body, 'municipio' ),
+				'street' => papelito_cnpj_nullable_string( $body, 'logradouro' ),
+			),
+			'qsa'               => papelito_cnpj_normalize_qsa( papelito_cnpj_array_value( $body, 'qsa' ) ),
 		)
 	);
 }
 
-function papelito_cnpj_adapter_receitaws( string $cnpj ): array {
+/** Consulta a ReceitaWS sem retry; o timeout recebido respeita o orçamento do orquestrador. */
+function papelito_cnpj_adapter_receitaws( string $cnpj, float $timeout = PAPELITO_CNPJ_PROVIDER_TIMEOUT ): array {
 	$token = (string) papelito_env( 'PAPELITO_RECEITAWS_TOKEN', '' );
-	$args  = array();
+	$args  = array( 'timeout' => $timeout );
 	if ( '' !== $token ) {
 		$args['headers'] = array(
 			'Accept'        => PAPELITO_CNPJ_JSON_CONTENT_TYPE,
@@ -312,8 +392,59 @@ function papelito_cnpj_adapter_receitaws( string $cnpj ): array {
 
 /* --- Orquestrador --- */
 
-/** Consulta todos os providers e coleta as evidencias de fallback. */
-function papelito_cnpj_collect_provider_results( string $cnpj ): array {
+/** Exige os campos comparáveis do mesmo sócio; qualificação preenchida não autoriza aprovação. */
+function papelito_cnpj_qsa_is_comparable( array $entry ): bool {
+	$partner       = papelito_cnpj_array_value( $entry, 'socio' );
+	$name          = $entry['nome_socio'] ?? $entry['nome'] ?? $partner['nome'] ?? '';
+	$document      = $entry['cnpj_cpf_do_socio'] ?? $entry['cpf_cnpj_socio'] ?? $entry['cpf'] ?? $partner['cpf_cnpj_socio'] ?? $partner['cpf'] ?? '';
+	$qualification = $entry['qualificacao_socio'] ?? $entry['qualificacao'] ?? $entry['qual'] ?? '';
+	if ( is_array( $qualification ) ) {
+		$qualification = $qualification['descricao'] ?? $qualification['nome'] ?? '';
+	}
+	$qualification = is_scalar( $qualification ) ? strtolower( trim( (string) $qualification ) ) : '';
+	$mask          = is_scalar( $document ) ? preg_replace( '/[^0-9*]+/', '', (string) $document ) : '';
+	$age_band      = papelito_cnpj_nullable_string( $entry, 'codigo_faixa_etaria' );
+
+	return is_scalar( $name ) && '' !== trim( (string) $name )
+		&& 11 === strlen( $mask ) && preg_match_all( '/\d/', $mask ) >= 6
+		&& in_array( $age_band, array( '1', '2', '3', '4', '5', '6', '7', '8', '9' ), true )
+		&& ! in_array( $qualification, array( '', 'unknown', 'desconhecida', 'não informada', 'nao informada' ), true );
+}
+
+/** Identifica evidência suficiente de uma única fonte, sem decidir elegibilidade do representante. */
+function papelito_cnpj_has_ownership_evidence( array $result ): bool {
+	if ( '' === trim( (string) ( $result['legal_name'] ?? '' ) ) ) {
+		return false;
+	}
+
+	if ( true === ( $result['is_mei'] ?? false ) && '2135' === ( $result['legal_nature_code'] ?? null ) ) {
+		return true;
+	}
+
+	foreach ( $result['qsa'] ?? array() as $entry ) {
+		if ( ! is_array( $entry ) ) {
+			continue;
+		}
+
+		if ( papelito_cnpj_qsa_is_comparable( $entry ) ) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+/** Interrompe o fallback ao obter o contrato pedido ou uma divergência já observada. */
+function papelito_cnpj_collection_complete( array $state, bool $include_evidence ): bool {
+	if ( null === $state['active_result'] ) {
+		return false;
+	}
+
+	return null !== $state['inactive_result'] || ! $include_evidence || papelito_cnpj_has_ownership_evidence( $state['active_result'] );
+}
+
+/** Consulta o fallback só enquanto faltarem evidências; nunca combina QSA entre fontes. */
+function papelito_cnpj_collect_provider_results( string $cnpj, bool $include_evidence = false ): array {
 	$is_alpha = papelito_cnpj_is_alphanumeric( $cnpj );
 	$deadline = microtime( true ) + PAPELITO_CNPJ_TOTAL_BUDGET;
 	$state    = array(
@@ -326,7 +457,8 @@ function papelito_cnpj_collect_provider_results( string $cnpj ): array {
 	);
 
 	foreach ( papelito_cnpj_providers() as $provider ) {
-		if ( microtime( true ) >= $deadline ) {
+		$remaining = $deadline - microtime( true );
+		if ( $remaining <= 0 ) {
 			break;
 		}
 
@@ -337,13 +469,15 @@ function papelito_cnpj_collect_provider_results( string $cnpj ): array {
 		}
 
 		$started              = microtime( true );
-		$result               = call_user_func( $provider['fn'], $cnpj );
+		$result               = call_user_func( $provider['fn'], $cnpj, min( PAPELITO_CNPJ_PROVIDER_TIMEOUT, $remaining ) );
 		$result['latency_ms'] = (int) round( ( microtime( true ) - $started ) * 1000 );
 		$state['last_result'] = $result;
 
 		switch ( $result['status'] ) {
 			case 'active':
-				$state['active_result'] = $result;
+				if ( null === $state['active_result'] || papelito_cnpj_has_ownership_evidence( $result ) ) {
+					$state['active_result'] = $result;
+				}
 				break;
 			case 'inactive':
 				$state['inactive_result'] = $result;
@@ -356,6 +490,10 @@ function papelito_cnpj_collect_provider_results( string $cnpj ): array {
 				break;
 			default:
 				break;
+		}
+
+		if ( papelito_cnpj_collection_complete( $state, $include_evidence ) ) {
+			break;
 		}
 	}
 
@@ -436,7 +574,7 @@ function papelito_cnpj_lookup( string $raw_cnpj, bool $include_evidence = false 
 		return $cached;
 	}
 
-	$state = papelito_cnpj_collect_provider_results( $cnpj );
+	$state = papelito_cnpj_collect_provider_results( $cnpj, $include_evidence );
 	return papelito_cnpj_finalize_lookup( $cnpj, $cache_key, $state );
 }
 

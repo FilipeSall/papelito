@@ -62,7 +62,7 @@ assert_same( 'qualificacao ausente', '', papelito_company_qsa_qualification( arr
 
 /* --- Decisão de aprovação automática --- */
 
-$match  = array( 'qsa_available' => true, 'cpf_mask_match' => true, 'name_match' => true, 'age_band_match' => true, 'partner_match' => true );
+$match  = array( 'qsa_available' => true, 'cpf_mask_match' => true, 'name_match' => true, 'age_band_match' => true, 'partner_match' => true, 'eligible_partner_match' => true );
 $active = array( 'status' => 'active' );
 
 assert_same( 'socio confirmado em cnpj ativo aprova na hora', true, papelito_company_should_auto_approve_owner( $match, $active ) );

@@ -109,6 +109,7 @@ $papelito_services_needed = array(
 	'papelito_company_cpf_mask_matches',
 	'papelito_company_cpf_mask_is_comparable',
 	'papelito_company_qsa_qualification',
+	'papelito_company_qsa_qualification_is_eligible',
 	'papelito_company_qsa_partner_name',
 	'papelito_company_qsa_partner_cpf_mask',
 	'papelito_company_owner_evidence',
@@ -198,6 +199,9 @@ echo "\n== 4. publica.cnpj.ws e receitaws.com.br recebem 404, brasilapi recebe o
 papelito_reset();
 $r = papelito_cnpj_lookup( FIXTURE_A );
 papelito_assert_same( 'brasilapi recebeu 200', 200, $papelito_seen['brasilapi.com.br'] ?? null );
+papelito_assert_same( 'lookup suficiente consulta somente a brasilapi', array( 'brasilapi.com.br' ), array_keys( $papelito_seen ) );
+papelito_cnpj_adapter_cnpjws( FIXTURE_A );
+papelito_cnpj_adapter_receitaws( FIXTURE_A );
 papelito_assert_same( 'publica.cnpj.ws recebeu 404', 404, $papelito_seen['publica.cnpj.ws'] ?? null );
 papelito_assert_same( 'receitaws recebeu 404', 404, $papelito_seen['receitaws.com.br'] ?? null );
 papelito_assert_same( 'o 404 dos secundarios nao vira conflict nem not_found', 'active', $r['status'] );
@@ -206,6 +210,7 @@ papelito_assert_same( 'resultado rico da brasilapi prevalece (QSA intacto)', 1, 
 echo "\n== 5. Endpoint comercial do CNPJ.ws tambem e interceptado ==\n";
 papelito_reset();
 $papelito_test_env['PAPELITO_CNPJWS_TOKEN'] = 'token-comercial-ficticio';
+papelito_cnpj_adapter_cnpjws( FIXTURE_A );
 $r = papelito_cnpj_lookup( FIXTURE_A );
 papelito_assert_same( 'comercial.cnpj.ws foi o host consultado', true, isset( $papelito_seen['comercial.cnpj.ws'] ) );
 papelito_assert_same( 'comercial.cnpj.ws recebeu 404', 404, $papelito_seen['comercial.cnpj.ws'] ?? null );

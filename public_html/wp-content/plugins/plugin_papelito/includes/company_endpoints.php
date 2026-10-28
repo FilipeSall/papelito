@@ -1,4 +1,12 @@
 <?php
+/**
+ * Rotas REST do cadastro e onboarding empresarial.
+ *
+ * Cotas públicas usam e-mail, CNPJ ou token para sobreviver ao proxy Next sem compartilhar
+ * o IP do marketplace. Identidade de cota nunca substitui a autorização do usuário ou token.
+ *
+ * @package Papelito
+ */
 
 defined( 'ABSPATH' ) || exit;
 
@@ -12,6 +20,20 @@ if ( ! defined( 'PAPELITO_COMPANY_DIGITS_REGEX' ) ) {
 
 if ( ! defined( 'PAPELITO_COMPANY_RATE_LIMIT_MESSAGE' ) ) {
 	define( 'PAPELITO_COMPANY_RATE_LIMIT_MESSAGE', 'Muitas tentativas. Tente novamente em alguns instantes.' );
+}
+
+/**
+ * Limita candidatura por e-mail e CNPJ independentemente, impedindo rotação de só um deles.
+ *
+ * Os prefixos preservam o escopo mesmo com campos ausentes; o serviço continua responsável
+ * por validar os dados. O limitador compartilhado armazena somente hashes das identidades.
+ */
+function papelito_company_application_rate_limit( array $data ): bool {
+	$email = papelito_normalize_email( (string) ( $data['email'] ?? '' ) );
+	$cnpj  = papelito_normalize_cnpj( (string) ( $data['cnpj'] ?? '' ) );
+
+	return papelito_auth_rate_limit( 'pre_account_application', 5, 60, 'email:' . $email )
+		&& papelito_auth_rate_limit( 'pre_account_application_cnpj', 5, 60, 'cnpj:' . $cnpj );
 }
 
 function papelito_company_require_authenticated_user() {
@@ -100,32 +122,33 @@ add_action( 'rest_api_init', static function (): void { // NOSONAR -- bloco decl
 		if ( is_wp_error( $writes ) ) {
 			return $writes;
 		}
-		if ( ! papelito_auth_rate_limit( 'pre_account_application', 5, 60 ) ) {
+		$data = (array) $request->get_json_params();
+		if ( ! papelito_company_application_rate_limit( $data ) ) {
 			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 		}
-		$result = papelito_pre_account_application_create( (array) $request->get_json_params() );
+		$result = papelito_pre_account_application_create( $data );
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 201 );
 	} ) );
 
 	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/company-applications/current', array( 'methods' => 'GET', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
-		if ( ! papelito_auth_rate_limit( 'pre_account_application_read', 60, 60 ) ) {
+		$token = sanitize_text_field( (string) $request->get_header( 'X-Papelito-Application-Token' ) );
+		if ( ! papelito_auth_rate_limit( 'pre_account_application_read', 60, 60, 'application:' . $token ) ) {
 			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 		}
-		$application = papelito_pre_account_application_authorize( sanitize_text_field( (string) $request->get_header( 'X-Papelito-Application-Token' ) ) );
+		$application = papelito_pre_account_application_authorize( $token );
 		return is_wp_error( $application ) ? $application : new WP_REST_Response( papelito_pre_account_application_view( $application ), 200 );
 	} ) );
 
 	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/company-applications/current/document', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
-		// Upload não autenticado: sem limite por IP, validar imagem e calcular SHA-256 vira
-		// vetor de abuso de disco e CPU. O limite é menor que o de leitura de propósito.
-		if ( ! papelito_auth_rate_limit( 'pre_account_application_document', 10, 60 ) ) {
+		$token = sanitize_text_field( (string) $request->get_header( 'X-Papelito-Application-Token' ) );
+		if ( ! papelito_auth_rate_limit( 'pre_account_application_document', 10, 60, 'application:' . $token ) ) {
 			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
 		}
 		$file = $_FILES['document'] ?? null; // phpcs:ignore WordPress.Security.NonceVerification.Missing
 		if ( ! is_array( $file ) ) {
 			return new WP_Error( 'papelito_company_document_missing', 'Selecione um documento.', array( 'status' => 422 ) );
 		}
-		$result = papelito_pre_account_application_upload( sanitize_text_field( (string) $request->get_header( 'X-Papelito-Application-Token' ) ), $file );
+		$result = papelito_pre_account_application_upload( $token, $file );
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result, 201 );
 	} ) );
 
@@ -174,9 +197,16 @@ add_action( 'rest_api_init', static function (): void { // NOSONAR -- bloco decl
 	} ) );
 
 	register_rest_route( PAPELITO_COMPANY_REST_NAMESPACE, '/companies/validate-cnpj', array( 'methods' => 'POST', 'permission_callback' => '__return_true', 'callback' => static function ( WP_REST_Request $request ) {
+		$writes = papelito_b2b_require_company_writes();
+		if ( is_wp_error( $writes ) ) {
+			return $writes;
+		}
 		$data = (array) $request->get_json_params();
-		$cnpj = isset( $data['cnpj'] ) ? (string) $data['cnpj'] : '';
+		$cnpj = papelito_normalize_cnpj( (string) ( $data['cnpj'] ?? '' ) );
 		if ( ! papelito_validate_cnpj( $cnpj ) ) { return new WP_Error( 'papelito_b2b_invalid_cnpj', 'CNPJ inválido.', array( 'status' => 422 ) ); }
+		if ( ! papelito_auth_rate_limit( 'company_validate_cnpj', 10, 60, 'cnpj:' . $cnpj ) ) {
+			return new WP_Error( 'papelito_rate_limited', PAPELITO_COMPANY_RATE_LIMIT_MESSAGE, array( 'status' => 429 ) );
+		}
 		$lookup = papelito_cnpj_lookup( $cnpj );
 		return new WP_REST_Response( array( 'status' => $lookup['status'], 'legalName' => $lookup['legal_name'] ?? null, 'tradeName' => $lookup['trade_name'] ?? null ), 200 );
 	} ) );

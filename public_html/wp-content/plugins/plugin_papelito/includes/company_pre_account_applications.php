@@ -451,7 +451,7 @@ function papelito_pre_account_application_confirm_email( string $token ): array|
  * @return array<string,mixed>|null Visão pública da candidatura aprovada, ou null.
  */
 function papelito_pre_account_application_try_auto_approve( array $application ): ?array {
-	if ( ! papelito_company_qsa_auto_approve_enabled() || 'qsa_review' !== (string) ( $application['review_path'] ?? '' ) ) {
+	if ( ! papelito_pre_account_application_email_is_verified( $application ) || ! papelito_company_qsa_auto_approve_enabled() || 'qsa_review' !== (string) ( $application['review_path'] ?? '' ) ) {
 		return null;
 	}
 	$values = papelito_pre_account_application_decrypt_values( $application );

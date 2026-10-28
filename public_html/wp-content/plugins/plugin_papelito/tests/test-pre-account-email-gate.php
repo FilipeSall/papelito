@@ -182,6 +182,12 @@ function papelito_notifications_table_name(): string { return 'wp_papelito_notif
 function get_users( array $args = array() ): array { return array( 7 ); }
 function user_can( int $user_id, string $capability ): bool { return true; }
 
+/** Fronteira de configuração: o fluxo manual continua com as flags em seus defaults. */
+function papelito_env_bool( string $name, bool $fallback = false ): bool {
+	unset( $name );
+	return $fallback;
+}
+
 /**
  * @return array<string,string>
  */
@@ -189,6 +195,8 @@ function papelito_company_table_names(): array {
 	return array( 'pre_account_applications' => 'wp_papelito_company_pre_account_applications' );
 }
 
+require_once dirname( __DIR__ ) . '/includes/company_flags.php';
+require_once dirname( __DIR__ ) . '/includes/company_services.php';
 require_once dirname( __DIR__ ) . '/includes/company_pre_account_applications.php';
 
 /**
@@ -212,13 +220,13 @@ function papelito_email_gate_fixture( string $review_path, string $status, bool 
 		'application_status'                  => $status,
 		'is_open'                             => 1,
 		'resume_token_hash'                   => papelito_pre_account_application_token_hash( 'resume-antigo' ),
-		'resume_token_expires_at'             => '2026-12-31 00:00:00',
+		'resume_token_expires_at'             => gmdate( 'Y-m-d H:i:s', time() + DAY_IN_SECONDS ),
 		'email_verification_token_hash'       => papelito_pre_account_application_token_hash( EMAIL_GATE_TEST_TOKEN ),
-		'email_verification_token_expires_at' => '2026-09-22 12:00:00',
+		'email_verification_token_expires_at' => gmdate( 'Y-m-d H:i:s', time() + DAY_IN_SECONDS ),
 		'email_verification_sent_at'          => null,
 		'email_verified_at'                   => $email_verified ? EMAIL_GATE_TEST_NOW : null,
 		'document_storage_key'                => null,
-		'expires_at'                          => '2026-12-31 00:00:00',
+		'expires_at'                          => gmdate( 'Y-m-d H:i:s', time() + DAY_IN_SECONDS ),
 		'created_at'                          => '2026-09-20 10:00:00',
 	);
 }
@@ -247,7 +255,7 @@ papelito_assert( 'etapa de documento ainda nao avisa o administrador', array(), 
 echo "\n--- o link so vale uma vez e nao vale para sempre ---\n";
 
 $wpdb->row = papelito_email_gate_fixture( 'qsa_review', PAPELITO_PRE_ACCOUNT_STATUS_PENDING_EMAIL );
-$wpdb->row['email_verification_token_expires_at'] = '2026-09-20 12:00:00';
+$wpdb->row['email_verification_token_expires_at'] = gmdate( 'Y-m-d H:i:s', time() - DAY_IN_SECONDS );
 $expired = papelito_pre_account_application_confirm_email( EMAIL_GATE_TEST_TOKEN );
 
 papelito_assert( 'link vencido devolve 410', 'papelito_pre_account_email_token_expired', is_wp_error( $expired ) ? $expired->get_error_code() : '' );
