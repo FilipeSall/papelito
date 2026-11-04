@@ -7,6 +7,10 @@
  * (`papelito_pagarme_promote_vendor_status_on_payment()` re-reserva quando dá, ou manda para
  * análise sem estoque). O estoque nativo do WooCommerce continua intocado.
  *
+ * Pagamento que expira sem ter sido feito encerra o pedido como `cancelled`, como o próprio
+ * WooCommerce faz com pedido não pago no prazo: `failed` fica para recusa real do gateway, para o
+ * painel e o e-mail de "pedido malsucedido" não acusarem erro quando o comprador só desistiu.
+ *
  * A regra de ouro: efeito é idempotente. Um marcador no pedido garante que a liberação para
  * envio acontece uma vez, mesmo com webhook repetido, cron simultâneo ou segunda aprovação da mesma
  * preferência; e pedido pago nunca é encerrado como não pago.
@@ -55,6 +59,19 @@ function papelito_payment_order_mark_paid( object $order, string $provider ): bo
 }
 
 /**
+ * Status WooCommerce de um pedido encerrado sem pagamento.
+ *
+ * Expiração é `cancelled` (pending → cancelled não dispara e-mail); qualquer outro estado
+ * terminal é recusa e continua `failed`.
+ *
+ * @param string $state Estado ou motivo do gateway.
+ * @return string
+ */
+function papelito_payment_order_unpaid_status( string $state ): string {
+	return in_array( sanitize_key( $state ), array( 'expired', 'payment_expired' ), true ) ? 'cancelled' : 'failed';
+}
+
+/**
  * Encerra o pedido sem pagamento: libera a reserva e cancela o status operacional.
  *
  * Pedido já pago nunca passa por aqui.
@@ -72,7 +89,7 @@ function papelito_payment_order_mark_unpaid( object $order, string $reason ): bo
 		papelito_pagarme_release_order_stock_for_terminal_state( $order, sanitize_key( $reason ) );
 	}
 
-	$order->update_status( 'failed' );
+	$order->update_status( papelito_payment_order_unpaid_status( $reason ) );
 	if ( function_exists( 'papelito_pagarme_mark_vendor_status_unpaid' ) ) {
 		papelito_pagarme_mark_vendor_status_unpaid( $order );
 	}

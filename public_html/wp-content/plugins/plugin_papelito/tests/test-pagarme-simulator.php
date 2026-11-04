@@ -258,7 +258,7 @@ $response = papelito_pagarme_handle_simulate_webhook(
 );
 papelito_assert_same( 'expired simulation returns 200', 200, $response->get_status() );
 papelito_assert_same( 'expired simulation stores expired state', 'expired', $order->meta[ PAPELITO_PAGARME_PAYMENT_STATE_META ] ?? null );
-papelito_assert_same( 'expired simulation fails order', 'failed', $order->status );
+papelito_assert_same( 'expired simulation cancels order', 'cancelled', $order->status );
 papelito_assert_same( 'duplicate expired event releases stock once', 1, $papelito_test_stock_releases );
 
 echo "Scenario 5: order released by the gateway flow counts as paid\n";

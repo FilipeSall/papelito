@@ -711,7 +711,7 @@ function papelito_pagarme_apply_order_state( object $order, string $state, bool 
 			$order->add_order_note( sprintf( 'A Pagar.me reportou a cobrança já paga como "%s". O pedido não foi alterado; confira a cobrança no painel da Pagar.me.', $state ) );
 		}
 	} elseif ( papelito_pagarme_payment_state_releases_stock( $state ) ) {
-		$order->update_status( 'failed' );
+		$order->update_status( function_exists( 'papelito_payment_order_unpaid_status' ) ? papelito_payment_order_unpaid_status( $state ) : 'failed' );
 		papelito_pagarme_mark_vendor_status_unpaid( $order );
 	}
 
@@ -1160,7 +1160,7 @@ function papelito_pagarme_reconcile_pending_stock_reservations(): void {
 			}
 
 			$order->update_meta_data( PAPELITO_PAGARME_PAYMENT_STATE_META, 'expired' );
-			$order->update_status( 'failed' );
+			$order->update_status( function_exists( 'papelito_payment_order_unpaid_status' ) ? papelito_payment_order_unpaid_status( 'expired' ) : 'failed' );
 			papelito_pagarme_mark_vendor_status_unpaid( $order );
 			$order->add_order_note( 'Reserva de estoque liberada após expiracao do pagamento Pagar.me.' );
 			$order->save();

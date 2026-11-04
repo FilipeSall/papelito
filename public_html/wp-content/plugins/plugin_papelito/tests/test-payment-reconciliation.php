@@ -197,7 +197,7 @@ rc_assert( 'ausência ainda recente mantém unknown', 'unknown' === papelito_pay
 
 $unknown_old = rc_attempt( 13, 'unknown', array( 'created_at' => rc_old( 20 ) ) );
 papelito_payment_reconcile_attempt( $unknown_old );
-rc_assert( 'sem pagamento depois da janela, unknown expira e libera a reserva', 'expired' === papelito_payment_attempt_find( $unknown_old['id'] )['state'] && 'failed' === $GLOBALS['rc_orders'][13]->status && '0' === $GLOBALS['rc_orders'][13]->meta['_papelito_stock_reserved'] );
+rc_assert( 'sem pagamento depois da janela, unknown expira e libera a reserva', 'expired' === papelito_payment_attempt_find( $unknown_old['id'] )['state'] && 'cancelled' === $GLOBALS['rc_orders'][13]->status && '0' === $GLOBALS['rc_orders'][13]->meta['_papelito_stock_reserved'] );
 
 $stuck = rc_attempt( 14, 'creating', array( 'created_at' => rc_old( 20 ) ) );
 papelito_payment_reconcile_attempt( $stuck );
@@ -212,7 +212,7 @@ rc_assert( 'preferência vencida não cancela boleto/PIX ainda válido', 'pendin
 $pending_dead = rc_attempt( 21, 'pending', array( 'expires_at' => rc_old( 120 ) ) );
 rc_payment( $pending_dead, '4', 'rejected' );
 papelito_payment_reconcile_attempt( $pending_dead );
-rc_assert( 'preferência vencida sem pagamento vivo expira e libera estoque', 'expired' === papelito_payment_attempt_find( $pending_dead['id'] )['state'] && 'failed' === $GLOBALS['rc_orders'][21]->status );
+rc_assert( 'preferência vencida sem pagamento vivo expira, libera estoque e cancela o pedido em vez de marcá-lo como falho', 'expired' === papelito_payment_attempt_find( $pending_dead['id'] )['state'] && 'cancelled' === $GLOBALS['rc_orders'][21]->status );
 
 $pending_live = rc_attempt( 22, 'pending', array( 'expires_at' => gmdate( 'Y-m-d H:i:s', time() + 600 ) ) );
 papelito_payment_reconcile_attempt( $pending_live );
@@ -220,10 +220,11 @@ rc_assert( 'preferência ainda vigente continua pendente', 'pending' === papelit
 
 $paid_late = rc_attempt( 23, 'pending', array( 'expires_at' => rc_old( 120 ) ) );
 papelito_payment_attempt_transition( $paid_late['id'], 'pending', 'expired' );
-$GLOBALS['rc_orders'][23]->status = 'failed';
+$GLOBALS['rc_orders'][23]->status = 'cancelled';
 rc_payment( papelito_payment_attempt_find( $paid_late['id'] ), '5', 'approved' );
 papelito_payment_reconcile_attempt( papelito_payment_attempt_find( $paid_late['id'] ) );
 rc_assert( 'pagamento aprovado depois da expiração local é aplicado', 'paid' === papelito_payment_attempt_find( $paid_late['id'] )['state'] );
+rc_assert( 'pedido cancelado por expiração reabre como pago', 'processing' === $GLOBALS['rc_orders'][23]->status );
 
 $releases = $GLOBALS['rc_releases'];
 papelito_payment_reconcile_attempt( papelito_payment_attempt_find( $unknown_paid['id'] ) );
@@ -263,7 +264,7 @@ $GLOBALS['rc_orders'][70] = new WC_Order( 70 );
 $GLOBALS['rc_orders'][70]->meta['_papelito_stock_reserved'] = '1';
 $abandoned = papelito_payment_attempt_create( array( 'order_id' => 70, 'vendor_id' => 40, 'provider' => 'pagarme', 'environment' => 'test', 'amount_cents' => 5000, 'state' => 'awaiting_payment_input', 'flow' => 'requires_payment_input', 'expires_at' => rc_old( 5 ) ) );
 papelito_payment_reconcile_attempt( $abandoned );
-rc_assert( 'coleta abandonada expira e libera a reserva', 'expired' === papelito_payment_attempt_find( $abandoned['id'] )['state'] && 'failed' === $GLOBALS['rc_orders'][70]->status && '0' === $GLOBALS['rc_orders'][70]->meta['_papelito_stock_reserved'] );
+rc_assert( 'coleta abandonada expira e libera a reserva', 'expired' === papelito_payment_attempt_find( $abandoned['id'] )['state'] && 'cancelled' === $GLOBALS['rc_orders'][70]->status && '0' === $GLOBALS['rc_orders'][70]->meta['_papelito_stock_reserved'] );
 $GLOBALS['rc_orders'][71] = new WC_Order( 71 );
 $waiting = papelito_payment_attempt_create( array( 'order_id' => 71, 'vendor_id' => 40, 'provider' => 'pagarme', 'environment' => 'test', 'amount_cents' => 5000, 'state' => 'awaiting_payment_input', 'flow' => 'requires_payment_input', 'expires_at' => gmdate( 'Y-m-d H:i:s', time() + 600 ) ) );
 papelito_payment_reconcile_attempt( $waiting );
