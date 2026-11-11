@@ -344,6 +344,54 @@ function papelito_mercadopago_remote_error( mixed $decoded ): array {
 }
 
 /**
+ * `x-request-id` da última resposta do Mercado Pago, o id que o suporte pede para rastrear uma chamada.
+ *
+ * Cada envio substitui o anterior; resposta sem o cabeçalho (ou falha de rede) deixa vazio. Passar
+ * um valor só é feito por `papelito_mercadopago_send()`.
+ *
+ * @param string|null $request_id Novo valor, ou nulo para só ler.
+ * @return string
+ */
+function papelito_mercadopago_last_request_id( ?string $request_id = null ): string {
+	static $last = '';
+
+	if ( null !== $request_id ) {
+		$last = $request_id;
+	}
+
+	return $last;
+}
+
+/**
+ * Lê o `x-request-id` da resposta crua, aceitando o dicionário de cabeçalhos do WordPress.
+ *
+ * @param mixed $response Resposta do transporte.
+ * @return string Id ou vazio quando ausente ou fora do formato esperado.
+ */
+function papelito_mercadopago_response_request_id( mixed $response ): string {
+	$headers = is_array( $response ) ? ( $response['headers'] ?? array() ) : array();
+	$value   = is_array( $headers ) || $headers instanceof ArrayAccess ? ( $headers['x-request-id'] ?? '' ) : '';
+	$value   = is_array( $value ) ? (string) reset( $value ) : (string) $value;
+
+	return 1 === preg_match( '/^[A-Za-z0-9._:-]{1,128}$/', $value ) ? $value : '';
+}
+
+/**
+ * Erro com o `x-request-id` acrescentado aos dados, para o log e para quem chamou.
+ *
+ * @param WP_Error $error      Erro categorizado.
+ * @param string   $request_id Id da resposta.
+ * @return WP_Error
+ */
+function papelito_mercadopago_error_with_request_id( WP_Error $error, string $request_id ): WP_Error {
+	if ( '' === $request_id ) {
+		return $error;
+	}
+
+	return new WP_Error( $error->get_error_code(), $error->get_error_message(), array_merge( (array) $error->get_error_data(), array( 'request_id' => $request_id ) ) );
+}
+
+/**
  * Envia a requisição e categoriza o resultado.
  *
  * @param string               $method  Método HTTP.
@@ -388,9 +436,13 @@ function papelito_mercadopago_send( string $method, string $path, array $args, a
 		$response = wp_remote_request( $url, $request_args );
 	}
 
+	$request_id = papelito_mercadopago_response_request_id( $response );
+	papelito_mercadopago_last_request_id( $request_id );
+
 	$result = papelito_mercadopago_interpret( $method, $response );
 
 	if ( is_wp_error( $result ) ) {
+		$result = papelito_mercadopago_error_with_request_id( $result, $request_id );
 		papelito_mercadopago_log_failure( $method, $path, $result );
 	}
 
@@ -479,12 +531,13 @@ function papelito_mercadopago_log_failure( string $method, string $path, WP_Erro
 
 	error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 		sprintf(
-			'[papelito_mercadopago] %s %s -> %s http=%d remote=%s',
+			'[papelito_mercadopago] %s %s -> %s http=%d remote=%s request_id=%s',
 			$method,
 			strtok( $path, '?' ),
 			(string) ( $data['category'] ?? '' ),
 			(int) ( $data['http_status'] ?? 0 ),
-			(string) ( $data['remote_code'] ?? '' )
+			(string) ( $data['remote_code'] ?? '' ),
+			(string) ( $data['request_id'] ?? '' )
 		)
 	);
 }

@@ -205,6 +205,7 @@ function papelito_mercadopago_point_cancel_order( string $order_id, string $idem
 function papelito_mercadopago_point_payment_fees( string $payment_id ): array {
 	return '' === $payment_id ? array( 'fee_cents' => null, 'net_cents' => null ) : array( 'fee_cents' => 4321, 'net_cents' => EVENT_ORDERS_TEST_TOTAL - 4321 );
 }
+function papelito_mercadopago_last_request_id(): string { return 'req-teste-1'; }
 function papelito_mercadopago_point_external_reference( array $attempt ): string { return sprintf( 'ppl-%d-%d', (int) $attempt['order_id'], (int) $attempt['id'] ); }
 function papelito_mercadopago_point_amount( int $amount_cents ): string { return sprintf( '%d.%02d', intdiv( $amount_cents, 100 ), $amount_cents % 100 ); }
 
@@ -508,6 +509,8 @@ function test_cancel_calls_remote(): void {
 	$GLOBALS['event_mp']['create'] = array( event_orders_remote( 'created' ) );
 	event_orders_create();
 	$result = papelito_event_sales_cancel( $GLOBALS['event_orders'][501] );
+	event_orders_assert( 'nota do envio à maquininha com order e x-request-id', 1 === count( array_filter( $GLOBALS['event_orders'][501]->notes, static fn( string $n ): bool => str_contains( $n, EVENT_ORDERS_TEST_REMOTE ) && str_contains( $n, 'req-teste-1' ) && str_contains( $n, 'Envio' ) ) ) );
+	event_orders_assert( 'nota do cancelamento com x-request-id', 1 === count( array_filter( $GLOBALS['event_orders'][501]->notes, static fn( string $n ): bool => str_contains( $n, 'Cancelamento' ) && str_contains( $n, 'req-teste-1' ) ) ) );
 	event_orders_assert( 'cancela a order remota com chave própria da tentativa', is_array( $result ) && in_array( array( 'cancel', EVENT_ORDERS_TEST_REMOTE, 'cancel-' . $GLOBALS['memory_attempts'][1]['attempt_ref'] ), $GLOBALS['event_mp_calls'], true ) );
 }
 

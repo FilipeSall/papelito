@@ -266,6 +266,7 @@ function papelito_event_sales_dispatch_attempt( array $attempt, object $order ):
 	}
 
 	$remote = papelito_mercadopago_point_create_order( $attempt, (int) $attempt['amount_cents'], papelito_event_sales_order_terminal( $order ), (string) $attempt['payment_method'], papelito_event_sales_order_description( (string) $order->get_order_number() ) );
+	papelito_event_sales_note_remote_call( $order, 'Envio', $remote );
 
 	$category = is_wp_error( $remote ) ? (string) ( ( (array) $remote->get_error_data() )['category'] ?? '' ) : '';
 
@@ -297,6 +298,22 @@ function papelito_event_sales_order_terminal( object $order ): string {
 	$terminals = papelito_event_sales_config()['terminal_ids'];
 
 	return $terminals[0] ?? '';
+}
+
+/**
+ * Nota no pedido com o resultado de uma chamada à maquininha: id da order (ou código do erro) e o
+ * `x-request-id` do Mercado Pago, que o suporte pede para rastrear a entrega ao terminal.
+ *
+ * @param object                       $order  Pedido do evento.
+ * @param string                       $action O que foi pedido ("Envio", "Reenvio", "Cancelamento").
+ * @param array<string,mixed>|WP_Error $result Resposta da API.
+ * @return void
+ */
+function papelito_event_sales_note_remote_call( object $order, string $action, array|WP_Error $result ): void {
+	$outcome    = is_wp_error( $result ) ? 'erro ' . $result->get_error_code() : 'order ' . sanitize_text_field( (string) ( $result['id'] ?? '' ) );
+	$request_id = papelito_mercadopago_last_request_id();
+
+	$order->add_order_note( sprintf( '%s da cobrança à maquininha %s: %s, x-request-id %s.', $action, papelito_event_sales_order_terminal( $order ), $outcome, '' === $request_id ? 'ausente' : $request_id ) );
 }
 
 /**
@@ -595,6 +612,7 @@ function papelito_event_sales_cancel( object $order ): array|WP_Error {
 	}
 
 	$result = papelito_mercadopago_point_cancel_order( (string) $attempt['remote_id'], 'cancel-' . (string) $attempt['attempt_ref'] );
+	papelito_event_sales_note_remote_call( $order, 'Cancelamento', $result );
 	if ( is_wp_error( $result ) ) {
 		return $result;
 	}

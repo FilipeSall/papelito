@@ -337,7 +337,10 @@ function papelito_event_sales_recover_remote( array $attempt ): array|WP_Error {
 		return papelito_mercadopago_error( 'validation', 'Pedido da cobrança não encontrado.' );
 	}
 
-	return papelito_mercadopago_point_create_order( $attempt, (int) $attempt['amount_cents'], papelito_event_sales_order_terminal( $order ), (string) $attempt['payment_method'], papelito_event_sales_order_description( (string) $order->get_order_number() ) );
+	$remote = papelito_mercadopago_point_create_order( $attempt, (int) $attempt['amount_cents'], papelito_event_sales_order_terminal( $order ), (string) $attempt['payment_method'], papelito_event_sales_order_description( (string) $order->get_order_number() ) );
+	papelito_event_sales_note_remote_call( $order, 'Reenvio', $remote );
+
+	return $remote;
 }
 
 /**

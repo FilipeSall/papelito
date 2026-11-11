@@ -90,6 +90,22 @@ function point_reset(): void {
 	$GLOBALS['point_response'] = point_response( 201, array( 'id' => 'ORD01', 'status' => 'at_terminal' ) );
 }
 
+function test_request_id_is_kept(): void {
+	point_reset();
+	$GLOBALS['point_response']['headers'] = array( 'x-request-id' => 'req-abc-123' );
+	papelito_mercadopago_point_create_order( point_attempt(), 1000, POINT_TEST_TERMINAL, 'card', 'Pedido' );
+	point_assert( 'guarda o x-request-id da última chamada', 'req-abc-123' === papelito_mercadopago_last_request_id() );
+
+	$GLOBALS['point_response']            = point_response( 409, array( 'errors' => array( array( 'code' => 'already_queued_order_for_terminal', 'message' => 'x' ) ) ) );
+	$GLOBALS['point_response']['headers'] = array( 'x-request-id' => 'req-err-9' );
+	$error                                = papelito_mercadopago_point_create_order( point_attempt(), 1000, POINT_TEST_TERMINAL, 'card', 'Pedido' );
+	point_assert( 'erro leva o x-request-id', is_wp_error( $error ) && 'req-err-9' === ( $error->get_error_data()['request_id'] ?? '' ) );
+
+	$GLOBALS['point_response'] = point_response( 201, array( 'id' => 'ORD02' ) );
+	papelito_mercadopago_point_create_order( point_attempt(), 1000, POINT_TEST_TERMINAL, 'card', 'Pedido' );
+	point_assert( 'resposta sem cabeçalho zera o id anterior', '' === papelito_mercadopago_last_request_id() );
+}
+
 function point_attempt(): array {
 	return array(
 		'id'         => 77,
@@ -225,6 +241,7 @@ test_orders_api_error_code_is_read();
 test_token_and_collector();
 test_terminal_mode_and_list();
 test_payment_fees();
+test_request_id_is_kept();
 
 if ( $failures > 0 ) {
 	echo "{$failures} falha(s)\n";
