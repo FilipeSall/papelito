@@ -156,6 +156,9 @@ function papelito_event_sales_b2b_snapshot( array $company, array $member, int $
 /**
  * Pedido do evento já criado para o `checkoutAttemptId`, ou nulo.
  *
+ * O WooCommerce ignora `meta_query` em `wc_get_orders()`; por isso a busca usa `meta_key` e o
+ * pedido devolvido ainda é conferido pelas duas marcas antes de ser reaproveitado.
+ *
  * @param string $checkout_attempt_id Chave do tablet.
  * @return object|null
  */
@@ -163,21 +166,20 @@ function papelito_event_sales_find_order_by_checkout( string $checkout_attempt_i
 	$orders = wc_get_orders(
 		array(
 			'limit'      => 1,
+			'orderby'    => 'date',
+			'order'      => 'DESC',
 			'return'     => 'objects',
-			'meta_query' => array(
-				array(
-					'key'   => PAPELITO_EVENT_SALES_CHECKOUT_META,
-					'value' => $checkout_attempt_id,
-				),
-				array(
-					'key'   => PAPELITO_EVENT_SALES_EVENT_META,
-					'value' => PAPELITO_EVENT_SALES_ID,
-				),
-			),
+			'meta_key'   => PAPELITO_EVENT_SALES_CHECKOUT_META,
+			'meta_value' => $checkout_attempt_id,
 		)
 	);
+	$order  = is_array( $orders ) && isset( $orders[0] ) && is_object( $orders[0] ) ? $orders[0] : null;
 
-	return is_array( $orders ) && isset( $orders[0] ) && is_object( $orders[0] ) ? $orders[0] : null;
+	if ( null === $order || $checkout_attempt_id !== (string) $order->get_meta( PAPELITO_EVENT_SALES_CHECKOUT_META, true ) || PAPELITO_EVENT_SALES_ID !== (string) $order->get_meta( PAPELITO_EVENT_SALES_EVENT_META, true ) ) {
+		return null;
+	}
+
+	return $order;
 }
 
 /**
@@ -444,6 +446,22 @@ function papelito_event_sales_place_order( array $input, string $method ): array
 }
 
 /**
+ * Pedido já criado pelo mesmo atendimento: devolve o estado ou, se a cobrança nem chegou a abrir
+ * (credencial ausente, Mercado Pago fora), abre agora no mesmo pedido.
+ *
+ * @param object $order  Pedido do evento.
+ * @param string $method `card` ou `pix`.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_event_sales_resume_order( object $order, string $method ): array|WP_Error {
+	if ( null !== papelito_event_sales_latest_attempt( $order ) ) {
+		return papelito_event_sales_order_summary( $order );
+	}
+
+	return papelito_event_sales_retry_locked( $order, $method );
+}
+
+/**
  * Forma de pagamento do tablet, ou erro fora de cartão e Pix.
  *
  * @param mixed $method Valor cru.
@@ -485,7 +503,7 @@ function papelito_event_sales_create_order( array $input ): array|WP_Error {
 
 	try {
 		$existing = papelito_event_sales_find_order_by_checkout( $checkout );
-		$result   = null === $existing ? papelito_event_sales_place_order( $input, $method ) : papelito_event_sales_order_summary( $existing );
+		$result   = null === $existing ? papelito_event_sales_place_order( $input, $method ) : papelito_event_sales_resume_order( $existing, $method );
 	} finally {
 		papelito_payment_attempt_release_lock( $lock );
 	}

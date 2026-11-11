@@ -115,16 +115,13 @@ function wc_get_product( mixed $id ): Event_Test_Product { return new Event_Test
 function wc_get_order( mixed $id ): ?Event_Test_Order { return $GLOBALS['event_orders'][ (int) $id ] ?? null; }
 function wc_get_orders( array $args ): array {
 	$found = array();
-	foreach ( $GLOBALS['event_orders'] as $order ) {
-		$matches = true;
-		foreach ( $args['meta_query'] ?? array() as $clause ) {
-			$matches = $matches && is_array( $clause ) && ( $order->meta[ $clause['key'] ] ?? null ) === $clause['value'];
+	foreach ( array_reverse( $GLOBALS['event_orders'], true ) as $order ) {
+		if ( isset( $args['meta_key'] ) && ( $order->meta[ $args['meta_key'] ] ?? null ) !== $args['meta_value'] ) {
+			continue;
 		}
-		if ( $matches ) {
-			$found[] = $order;
-		}
+		$found[] = $order;
 	}
-	return $found;
+	return array_slice( $found, 0, (int) ( $args['limit'] ?? 10 ) );
 }
 function papelito_company_get( int $id ): ?array {
 	return 30 === $id ? array( 'id' => 30, 'cnpj' => '11222333000181', 'legal_name' => 'Loja', 'trade_name' => 'Loja', 'billing_email' => 'loja@exemplo.com.br', 'phone' => '11987654321', 'fiscal_cep' => '01001000', 'fiscal_state' => 'SP', 'fiscal_city' => 'São Paulo', 'fiscal_street' => 'Praça da Sé', 'fiscal_number' => '', 'fiscal_neighborhood' => '', 'fiscal_complement' => '', 'company_status' => 'onboarding', 'registry_status' => 'active', 'ownership_status' => 'pending', 'provider_checked_at' => '', 'provider_data_hash' => '', 'billing_email_verified_at' => '' ) : null;
@@ -177,7 +174,9 @@ function papelito_event_sales_settlement_record( array $row ): bool {
 	return true;
 }
 function papelito_mercadopago_environment(): string { return 'test'; }
-function papelito_mercadopago_point_collector_id(): string { return EVENT_ORDERS_TEST_COLLECTOR; }
+function papelito_mercadopago_point_collector_id(): string|WP_Error {
+	return empty( $GLOBALS['event_collector_down'] ) ? EVENT_ORDERS_TEST_COLLECTOR : new WP_Error( 'papelito_mercadopago_configuration', 'sem credencial', array( 'status' => 503, 'category' => 'configuration' ) );
+}
 function event_mp_next( string $name ): array|WP_Error {
 	$queue = $GLOBALS['event_mp'][ $name ] ?? array();
 	$next  = array_shift( $queue );
@@ -237,6 +236,7 @@ function event_orders_reset(): void {
 	$GLOBALS['memory_attempts']    = array();
 	$GLOBALS['memory_locks']       = array();
 	$GLOBALS['event_caps']         = array( 'papelito_event_sell' => true );
+	$GLOBALS['event_collector_down'] = false;
 }
 
 function event_orders_input( string $method = 'card' ): array {
@@ -298,6 +298,35 @@ function test_create_twice_reuses_open_attempt(): void {
 	event_orders_assert( 'método da maquininha', 'mercadopago_point' === $created['payment_method'] );
 	event_orders_assert( 'endereço com número e bairro', '100' === $created['address']['number'] && 'Sé' === $created['address']['neighborhood'] && '01001000' === $created['address']['zip_code'] );
 	event_orders_assert( 'snapshot da empresa completa número e bairro', '100' === $created['context']['b2b_snapshot']['company']['fiscal_number'] );
+}
+
+function test_other_orders_are_never_reused(): void {
+	event_orders_reset();
+	$GLOBALS['event_orders'][900]                                       = new Event_Test_Order( 900 );
+	$GLOBALS['event_orders'][901]                                       = new Event_Test_Order( 901 );
+	$GLOBALS['event_orders'][901]->meta['_papelito_checkout_attempt_id'] = EVENT_ORDERS_TEST_CHECKOUT;
+	$GLOBALS['event_mp']['create']                                      = array( event_orders_remote( 'created', array( 'external_reference' => 'ppl-503-1' ) ) );
+	$result                                                             = event_orders_create();
+	event_orders_assert( 'pedido de fora do evento não é reaproveitado', is_array( $result ) && ! in_array( $result['orderId'], array( 900, 901 ), true ) );
+	event_orders_assert( 'cria o pedido do evento', 3 === count( $GLOBALS['event_orders'] ) );
+
+	$GLOBALS['event_quote_fp'] = 'fingerprint-novo';
+	$stale                     = papelito_event_sales_create_order( array_merge( event_orders_input(), array( 'checkoutAttemptId' => 'chk-0002' ) ) );
+	event_orders_assert( 'atendimento novo com fingerprint velho é recusado', $stale instanceof WP_Error && 'papelito_event_quote_changed' === $stale->get_error_code() );
+}
+
+function test_second_tap_opens_missing_attempt(): void {
+	event_orders_reset();
+	$GLOBALS['event_collector_down'] = true;
+	$first                           = event_orders_create();
+	event_orders_assert( 'sem credencial a cobrança falha', $first instanceof WP_Error && 'papelito_mercadopago_configuration' === $first->get_error_code() );
+	event_orders_assert( 'o pedido fica criado sem tentativa', 1 === count( $GLOBALS['event_orders'] ) && array() === $GLOBALS['memory_attempts'] );
+
+	$GLOBALS['event_collector_down'] = false;
+	$GLOBALS['event_mp']['create']   = array( event_orders_remote( 'created' ) );
+	$second                          = event_orders_create();
+	event_orders_assert( 'o segundo toque abre a tentativa no mesmo pedido', is_array( $second ) && 501 === $second['orderId'] && 'at_terminal' === $second['state'] );
+	event_orders_assert( 'continua um pedido só', 1 === count( $GLOBALS['event_orders'] ) );
 }
 
 function test_order_rejects_stale_fingerprint(): void {
@@ -500,6 +529,8 @@ function test_order_routes_check_event(): void {
 }
 
 test_create_twice_reuses_open_attempt();
+test_other_orders_are_never_reused();
+test_second_tap_opens_missing_attempt();
 test_order_rejects_stale_fingerprint();
 test_buyer_must_belong_to_company();
 test_terminal_busy_maps_to_failed();
