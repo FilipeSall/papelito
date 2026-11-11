@@ -45,6 +45,7 @@ class WP_REST_Request {
 
 $GLOBALS['event_env']          = array();
 $GLOBALS['event_current_user'] = new WP_User();
+$GLOBALS['event_routes']       = array();
 
 function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
 function add_action( mixed ...$args ): bool { return true; }
@@ -53,6 +54,10 @@ function wp_get_current_user(): WP_User { return $GLOBALS['event_current_user'];
 function get_current_user_id(): int { return $GLOBALS['event_current_user']->ID; }
 function user_can( WP_User $user, string $cap ): bool { return ! empty( $user->allcaps[ $cap ] ); }
 function current_user_can( string $cap ): bool { return user_can( $GLOBALS['event_current_user'], $cap ); }
+function register_rest_route( string $route_namespace, string $route, array $args = array() ): bool {
+	$GLOBALS['event_routes'][] = $route_namespace . $route;
+	return true;
+}
 
 require_once dirname( __DIR__ ) . '/includes/payment_providers.php';
 require_once dirname( __DIR__ ) . '/includes/event_sales_config.php';
@@ -75,11 +80,11 @@ function event_config_error_is( mixed $result, string $code, int $status ): bool
 	return $result instanceof WP_Error && $code === $result->get_error_code() && $status === ( $result->get_error_data()['status'] ?? 0 );
 }
 
-function test_flag_defaults_false(): void {
-	$GLOBALS['event_env'] = array();
-	event_config_assert( 'a flag nasce desligada', false === papelito_event_sales_enabled() );
-	$GLOBALS['event_env'] = array( 'PAPELITO_EVENT_SALES_ENABLED' => 'true' );
-	event_config_assert( 'a flag liga com true', true === papelito_event_sales_enabled() );
+function test_routes_register_without_any_flag(): void {
+	$GLOBALS['event_env']    = array( 'PAPELITO_EVENT_SALES_ENABLED' => 'false' );
+	$GLOBALS['event_routes'] = array();
+	papelito_event_sales_register_route( '/context', array() );
+	event_config_assert( 'a rota do evento existe sem flag nenhuma', array( 'papelito/v1/event/(?P<event_id>[a-z0-9-]+)/context' ) === $GLOBALS['event_routes'] );
 }
 
 function test_config_parses_csv_and_dates(): void {
@@ -147,7 +152,7 @@ function test_require_seller_error_order(): void {
 	event_config_assert( 'supervisor passa', true === papelito_event_sales_require_supervisor( $request ) );
 }
 
-test_flag_defaults_false();
+test_routes_register_without_any_flag();
 test_config_parses_csv_and_dates();
 test_window_blocks_operator_outside_and_allows_admin();
 test_require_seller_error_order();

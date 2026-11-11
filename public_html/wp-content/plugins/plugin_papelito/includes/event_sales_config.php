@@ -3,12 +3,12 @@
  * Configuração e autorização da venda no estande da ExpoCannabis Brasil 2026.
  *
  * O operador fecha no tablet pedidos B2B de um único vendor (a Cifal) e cobra na Point Smart 2 da
- * conta Mercado Pago da Papelito. Este módulo responde três perguntas: o evento está ligado, quem
- * pode vender e se a janela do evento está aberta.
+ * conta Mercado Pago da Papelito. Este módulo responde três perguntas: o evento está configurado,
+ * quem pode vender e se a janela do evento está aberta.
  *
- * Regra de ouro: com `PAPELITO_EVENT_SALES_ENABLED` desligada nenhuma rota `event/*` existe, e
- * todo callback de rota passa por `papelito_event_sales_require_seller()` ou
- * `papelito_event_sales_require_supervisor()`, que releem usuário e configuração a cada chamada.
+ * Regra de ouro: as rotas `event/*` existem sempre, e todo callback de rota passa por
+ * `papelito_event_sales_require_seller()` ou `papelito_event_sales_require_supervisor()`, que releem
+ * usuário, janela e configuração a cada chamada. Sem vendor ou terminal configurado, tudo é 503.
  *
  * O que este módulo não faz: não calcula preço, não cria pedido e não fala com o Mercado Pago.
  *
@@ -28,15 +28,6 @@ const PAPELITO_EVENT_SALES_DEFAULT_STARTS   = '2026-11-20T00:00:00-03:00';
 const PAPELITO_EVENT_SALES_DEFAULT_ENDS     = '2026-11-22T23:59:59-03:00';
 const PAPELITO_EVENT_SALES_FORBIDDEN_CODE   = 'papelito_event_forbidden';
 const PAPELITO_EVENT_SALES_FORBIDDEN_STATUS = 403;
-
-/**
- * Flag server-side da venda no estande. Nasce desligada e, desligada, nenhuma rota é registrada.
- *
- * @return bool
- */
-function papelito_event_sales_enabled(): bool {
-	return true === filter_var( papelito_payment_gateways_config( 'PAPELITO_EVENT_SALES_ENABLED', 'false' ), FILTER_VALIDATE_BOOLEAN );
-}
 
 /**
  * Converte data ISO 8601 da configuração em timestamp, caindo no padrão quando ela é inválida.
@@ -185,16 +176,12 @@ function papelito_event_sales_install_roles(): void {
 add_action( 'init', 'papelito_event_sales_install_roles' );
 
 /**
- * Registra uma rota do evento sob `papelito/v1/event/{event_id}`, só com a flag ligada.
+ * Registra uma rota do evento sob `papelito/v1/event/{event_id}`.
  *
  * @param string              $path Sufixo depois de `event/{event_id}`.
  * @param array<string,mixed> $args Argumentos de `register_rest_route`.
  * @return void
  */
 function papelito_event_sales_register_route( string $path, array $args ): void {
-	if ( ! papelito_event_sales_enabled() ) {
-		return;
-	}
-
 	register_rest_route( PAPELITO_EVENT_SALES_NAMESPACE, PAPELITO_EVENT_SALES_ROUTE_PREFIX . $path, $args );
 }

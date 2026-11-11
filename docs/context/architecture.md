@@ -141,7 +141,7 @@ O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grav
 
 ### Venda no estande (ExpoCannabis)
 
-Tablet do estande em `/expocannabis`, atrás de `PAPELITO_EVENT_SALES_ENABLED`. O operador vende pedidos B2B da Cifal e cobra na Point Smart 2 da **conta Mercado Pago da Papelito**; o repasse à Cifal é manual, a partir do ledger. Contrato em [`../../../docs/integration-contracts.md`](../../../docs/integration-contracts.md#venda-no-estande--expocannabis-eventeventid); operação em [`../../../docs/expoday-point-evento.md`](../../../docs/expoday-point-evento.md).
+Tablet do estande em `/expocannabis`; as rotas `event/*` existem sempre e respondem 503 sem vendor e terminal configurados. O operador vende pedidos B2B da Cifal e cobra na Point Smart 2 da **conta Mercado Pago da Papelito**; o repasse à Cifal é manual, a partir do ledger. Contrato em [`../../../docs/integration-contracts.md`](../../../docs/integration-contracts.md#venda-no-estande--expocannabis-eventeventid); operação em [`../../../docs/expoday-point-evento.md`](../../../docs/expoday-point-evento.md).
 
 | Arquivo | Responsabilidade |
 |---|---|
