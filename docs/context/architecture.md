@@ -139,6 +139,25 @@ O recibo tem duas camadas com responsabilidades distintas. `receipts.php` **grav
 
 `papelito_receipt_issue_for_order()` é idempotente por `order_id` e recusa pedido que `papelito_pagarme_payment_state_is_paid()` não aprove. A numeração `PPL-AAAA-NNNNNN` sai de `papelito_receipt_sequences`, com `SELECT ... FOR UPDATE` na linha do ano dentro da mesma transação que grava o recibo — **nunca `MAX(id)+1`, `get_option` ou contador em memória**. A soma das parcelas por vendor bate exatamente com o total do recibo: o frete é repartido por `papelito_receipt_allocate_cents()`, que dá o resto à última parcela.
 
+### Venda no estande (ExpoCannabis)
+
+Tablet do estande em `/expocannabis`, atrás de `PAPELITO_EVENT_SALES_ENABLED`. O operador vende pedidos B2B da Cifal e cobra na Point Smart 2 da **conta Mercado Pago da Papelito**; o repasse à Cifal é manual, a partir do ledger. Contrato em [`../../../docs/integration-contracts.md`](../../../docs/integration-contracts.md#venda-no-estande--expocannabis-eventeventid); operação em [`../../../docs/expoday-point-evento.md`](../../../docs/expoday-point-evento.md).
+
+| Arquivo | Responsabilidade |
+|---|---|
+| `event_sales_config.php` | flag, janela, vendor, terminal e kit do evento; papel `papelito_event_operator`, caps `papelito_event_sell`/`papelito_event_supervise` e os gates das rotas |
+| `event_sales_pricing.php` | regras puras: nível por unidades, desconto por linha, Kit Premium (−15% sobre 4 produtos) |
+| `event_sales_catalog.php` | `GET context`: catálogo com preço e estoque do vendor, prateleiras e níveis |
+| `event_sales_buyers.php` | consulta de CNPJ e cadastro rápido de empresa, usuário e vínculo |
+| `event_sales_quote.php` | cotação autoritativa com frete Correios e `quoteFingerprint` |
+| `mercadopago_point.php` | cliente da Orders API da Point com `PAPELITO_MERCADOPAGO_POINT_ACCESS_TOKEN` (nunca o OAuth do vendor) |
+| `event_sales_settlement.php` | ledger do repasse (`papelito_event_settlements`) e CSV |
+| `event_sales_orders.php` | pedido, tentativa `mercadopago_point`, status, cancelar, nova tentativa, abandonar, liberação manual e lead |
+| `event_sales_reconcile.php` | aplica a order à tentativa (webhook `type=order`, status do tablet e cron), sob o lock `attempt:{id}` |
+| `event_sales_admin.php` | repasse em JSON/CSV, terminais, modo da máquina e estorno |
+
+Invariantes: a tentativa é gravada antes do `POST /v1/orders` com `X-Idempotency-Key = attempt_ref`; só paga a order cuja referência, valor e `user_id` batem com a tentativa (senão incidente `mismatch`); cobrança perdida só é reenviada à máquina até 10 minutos; `mercadopago_point` é provider interno (`papelito_payment_internal_providers()`), fora de `papelito_payment_providers()`.
+
 ### Vendor e operação
 
 | Arquivo | Responsabilidade |
