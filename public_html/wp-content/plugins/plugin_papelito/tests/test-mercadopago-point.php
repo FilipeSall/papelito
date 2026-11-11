@@ -127,10 +127,11 @@ function test_create_order_payload_pix(): void {
 
 function test_cancel_sends_allowlisted_header(): void {
 	point_reset();
-	papelito_mercadopago_point_cancel_order( 'ORD01' );
+	papelito_mercadopago_point_cancel_order( 'ORD01', 'cancel-att_abc123' );
 	$request = point_last_request();
 	point_assert( 'cancela pela rota da order', 'https://api.mercadopago.com/v1/orders/ORD01/cancel' === $request['url'] && 'POST' === $request['method'] );
 	point_assert( 'permite cancelar com a order na máquina', 'at_terminal' === ( $request['args']['headers']['x-allow-cancelable-status'] ?? '' ) );
+	point_assert( 'cancelamento leva chave de idempotência própria', 'cancel-att_abc123' === ( $request['args']['headers']['X-Idempotency-Key'] ?? '' ) );
 }
 
 function test_unknown_header_dropped(): void {

@@ -211,11 +211,23 @@ function papelito_mercadopago_point_get_order( string $order_id ): array|WP_Erro
 /**
  * Pede o cancelamento, inclusive com a order já na máquina. O resultado final chega pelo webhook.
  *
- * @param string $order_id Id da order.
+ * A Orders API recusa o cancelamento sem `X-Idempotency-Key`; a chave é própria do cancelamento,
+ * diferente da usada na criação.
+ *
+ * @param string $order_id        Id da order.
+ * @param string $idempotency_key Chave do cancelamento.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_mercadopago_point_cancel_order( string $order_id ): array|WP_Error {
-	return papelito_mercadopago_point_order_call( 'POST', $order_id, '/cancel', array( 'headers' => array( 'x-allow-cancelable-status' => 'at_terminal' ) ) );
+function papelito_mercadopago_point_cancel_order( string $order_id, string $idempotency_key ): array|WP_Error {
+	return papelito_mercadopago_point_order_call(
+		'POST',
+		$order_id,
+		'/cancel',
+		array(
+			'headers'         => array( 'x-allow-cancelable-status' => 'at_terminal' ),
+			'idempotency_key' => $idempotency_key,
+		)
+	);
 }
 
 /**

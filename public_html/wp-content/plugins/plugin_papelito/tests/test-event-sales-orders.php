@@ -198,8 +198,8 @@ function papelito_mercadopago_point_get_order( string $order_id ): array|WP_Erro
 	$GLOBALS['event_mp_calls'][] = array( 'get', $order_id );
 	return event_mp_next( 'get' );
 }
-function papelito_mercadopago_point_cancel_order( string $order_id ): array|WP_Error {
-	$GLOBALS['event_mp_calls'][] = array( 'cancel', $order_id );
+function papelito_mercadopago_point_cancel_order( string $order_id, string $idempotency_key = '' ): array|WP_Error {
+	$GLOBALS['event_mp_calls'][] = array( 'cancel', $order_id, $idempotency_key );
 	return array( 'id' => $order_id, 'status' => 'at_terminal' );
 }
 function papelito_mercadopago_point_payment_fees( string $payment_id ): array {
@@ -508,7 +508,7 @@ function test_cancel_calls_remote(): void {
 	$GLOBALS['event_mp']['create'] = array( event_orders_remote( 'created' ) );
 	event_orders_create();
 	$result = papelito_event_sales_cancel( $GLOBALS['event_orders'][501] );
-	event_orders_assert( 'cancela a order remota', is_array( $result ) && in_array( array( 'cancel', EVENT_ORDERS_TEST_REMOTE ), $GLOBALS['event_mp_calls'], true ) );
+	event_orders_assert( 'cancela a order remota com chave própria da tentativa', is_array( $result ) && in_array( array( 'cancel', EVENT_ORDERS_TEST_REMOTE, 'cancel-' . $GLOBALS['memory_attempts'][1]['attempt_ref'] ), $GLOBALS['event_mp_calls'], true ) );
 }
 
 function test_manual_confirm_requires_supervisor(): void {

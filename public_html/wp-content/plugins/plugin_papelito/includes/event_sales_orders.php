@@ -564,7 +564,7 @@ function papelito_event_sales_cancel( object $order ): array|WP_Error {
 		return papelito_event_sales_order_error( 'papelito_event_not_cancelable', 'Não há cobrança na maquininha para cancelar.', PAPELITO_EVENT_SALES_CONFLICT );
 	}
 
-	$result = papelito_mercadopago_point_cancel_order( (string) $attempt['remote_id'] );
+	$result = papelito_mercadopago_point_cancel_order( (string) $attempt['remote_id'], 'cancel-' . (string) $attempt['attempt_ref'] );
 	if ( is_wp_error( $result ) ) {
 		return $result;
 	}
