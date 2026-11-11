@@ -157,6 +157,7 @@ require_once __DIR__ . '/includes/account_admin_endpoints.php';
 require_once __DIR__ . '/includes/packaging.php';
 require_once __DIR__ . '/includes/vendor_eligibility.php';
 require_once __DIR__ . '/includes/event_sales_config.php';
+require_once __DIR__ . '/includes/event_sales_pricing.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
 	define( 'PAPELITO_DB_VERSION', '1.63.0' );
