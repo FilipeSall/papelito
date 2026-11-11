@@ -163,6 +163,8 @@ require_once __DIR__ . '/includes/event_sales_catalog.php';
 require_once __DIR__ . '/includes/event_sales_buyers.php';
 require_once __DIR__ . '/includes/event_sales_quote.php';
 require_once __DIR__ . '/includes/event_sales_settlement.php';
+require_once __DIR__ . '/includes/event_sales_reconcile.php';
+require_once __DIR__ . '/includes/event_sales_orders.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
 	define( 'PAPELITO_DB_VERSION', '1.64.0' );

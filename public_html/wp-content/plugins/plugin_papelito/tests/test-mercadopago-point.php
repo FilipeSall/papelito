@@ -198,6 +198,23 @@ function test_terminal_mode_and_list(): void {
 	point_assert( 'estorno pela rota da order com chave própria', 'https://api.mercadopago.com/v1/orders/ORD01/refund' === $refund['url'] && 'refund-77' === $refund['args']['headers']['X-Idempotency-Key'] );
 }
 
+function test_payment_fees(): void {
+	point_reset();
+	$GLOBALS['point_response'] = point_response( 200, array( 'id' => 123456789, 'transaction_amount' => 1234.56, 'fee_details' => array( array( 'amount' => 40.12 ), array( 'amount' => 3.09 ) ), 'transaction_details' => array( 'net_received_amount' => 1191.35 ) ) );
+	$fees                      = papelito_mercadopago_point_payment_fees( '123456789' );
+	point_assert( 'taxa soma os fee_details', 4321 === $fees['fee_cents'] );
+	point_assert( 'líquido vem do net_received_amount', 119135 === $fees['net_cents'] );
+	point_assert( 'consulta o pagamento pelo id', 'https://api.mercadopago.com/v1/payments/123456789' === point_last_request()['url'] );
+
+	point_reset();
+	$empty = papelito_mercadopago_point_payment_fees( '' );
+	point_assert( 'sem id não consulta e fica a conferir', null === $empty['fee_cents'] && null === $empty['net_cents'] && array() === $GLOBALS['point_requests'] );
+
+	$GLOBALS['point_response'] = point_response( 500, array() );
+	$failed                    = papelito_mercadopago_point_payment_fees( '123' );
+	point_assert( 'falha na consulta fica a conferir', null === $failed['fee_cents'] );
+}
+
 test_create_order_payload_card();
 test_create_order_payload_pix();
 test_cancel_sends_allowlisted_header();
@@ -206,6 +223,7 @@ test_provider_valid_but_not_in_vendor_list();
 test_orders_api_error_code_is_read();
 test_token_and_collector();
 test_terminal_mode_and_list();
+test_payment_fees();
 
 if ( $failures > 0 ) {
 	echo "{$failures} falha(s)\n";

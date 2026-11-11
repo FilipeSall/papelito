@@ -131,6 +131,7 @@ function test_quote_total_is_items_plus_kit_plus_shipping(): void {
 	event_quote_assert( 'total soma o frete', $quote['itemsCents'] + 2990 === $quote['totalCents'] );
 	event_quote_assert( 'nível vem das 22 unidades', 'pdv_perfeito' === $quote['level']['key'] && 22 === $quote['units'] );
 	event_quote_assert( 'fingerprint presente', 64 === strlen( $quote['quoteFingerprint'] ) );
+	event_quote_assert( 'componentes do kit com preço cheio e do kit', array( 'product_id' => 101, 'price_cents' => 18020, 'unit_cents' => 15317 ) === $quote['kitComponents'][0] && 4 === count( $quote['kitComponents'] ) );
 
 	$call = $GLOBALS['quote_calls'][0];
 	event_quote_assert( 'cota com o vendor do evento e o CEP em dígitos', 2163 === $call[0] && '01001000' === $call[1] );

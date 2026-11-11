@@ -158,6 +158,29 @@ function papelito_event_sales_shipping_items( array $priced, array $products, ar
 }
 
 /**
+ * Componentes do kit com o preço cheio e o preço com −15%, para as linhas do pedido.
+ *
+ * @param array<string,mixed>                           $priced   Resultado de `papelito_event_sales_price()`.
+ * @param array<int,array{price_cents:int,name:string}> $products Catálogo por id.
+ * @param array<int,int>                                $kit_ids  Produtos do kit.
+ * @return array<int,array{product_id:int,price_cents:int,unit_cents:int}>
+ */
+function papelito_event_sales_kit_components( array $priced, array $products, array $kit_ids ): array {
+	$components = array();
+
+	foreach ( (int) $priced['kit']['qty'] > 0 ? $kit_ids : array() as $product_id ) {
+		$price        = (int) $products[ $product_id ]['price_cents'];
+		$components[] = array(
+			'product_id'  => (int) $product_id,
+			'price_cents' => $price,
+			'unit_cents'  => papelito_event_sales_kit_unit_cents( array( $price ) ),
+		);
+	}
+
+	return $components;
+}
+
+/**
  * Opção Correios de menor preço da cotação, ou erro quando não há nenhuma.
  *
  * @param array<string,mixed>|WP_Error $quote Resultado de `papelito_shipping_quote_all_providers()`.
@@ -236,6 +259,7 @@ function papelito_event_sales_quote( array $input ): array|WP_Error {
 		'level'           => $priced['level'],
 		'lines'           => $priced['lines'],
 		'kit'             => $priced['kit'],
+		'kitComponents'   => papelito_event_sales_kit_components( $priced, $products, $kit_ids ),
 		'itemsCents'      => $priced['items_cents'],
 		'discountCents'   => $priced['discount_cents'],
 		'kitSavingsCents' => $priced['kit_savings_cents'],

@@ -230,6 +230,42 @@ function papelito_mercadopago_point_refund_order( string $order_id, string $idem
 }
 
 /**
+ * Taxa e líquido de um pagamento da Point, lidos de `/v1/payments/{id}` com o token da Papelito.
+ *
+ * Sem id ou com a consulta falhando, os dois voltam nulos e o ledger mostra "a conferir".
+ *
+ * @param string $payment_id Id numérico do pagamento.
+ * @return array{fee_cents:int|null,net_cents:int|null}
+ */
+function papelito_mercadopago_point_payment_fees( string $payment_id ): array {
+	$unknown = array(
+		'fee_cents' => null,
+		'net_cents' => null,
+	);
+
+	if ( 1 !== preg_match( '/^\d{1,20}$/', $payment_id ) ) {
+		return $unknown;
+	}
+
+	$payment = papelito_mercadopago_point_request( 'GET', '/v1/payments/' . $payment_id );
+	if ( is_wp_error( $payment ) ) {
+		return $unknown;
+	}
+
+	$fee = 0.0;
+	foreach ( is_array( $payment['fee_details'] ?? null ) ? $payment['fee_details'] : array() as $detail ) {
+		$fee += is_array( $detail ) && is_numeric( $detail['amount'] ?? null ) ? (float) $detail['amount'] : 0.0;
+	}
+
+	$net = $payment['transaction_details']['net_received_amount'] ?? null;
+
+	return array(
+		'fee_cents' => (int) round( $fee * 100 ),
+		'net_cents' => is_numeric( $net ) ? (int) round( (float) $net * 100 ) : null,
+	);
+}
+
+/**
  * Terminais Point ativos na conta da Papelito, com loja, caixa e modo de operação.
  *
  * @return array<string,mixed>|WP_Error
