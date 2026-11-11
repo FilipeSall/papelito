@@ -15,7 +15,9 @@
 
 defined( 'ABSPATH' ) || exit;
 
-const PAPELITO_EVENT_SALES_RECONCILE_AFTER = 20;
+const PAPELITO_EVENT_SALES_RECONCILE_AFTER   = 20;
+const PAPELITO_EVENT_SALES_RECOVER_WINDOW    = 600;
+const PAPELITO_EVENT_SALES_REFERENCE_PATTERN = '/^ppl-(\\d+)-(\\d+)$/';
 
 /**
  * Estado que o tablet mostra para uma tentativa da Point.
@@ -259,6 +261,29 @@ function papelito_event_sales_apply_remote_order( array $attempt, array $remote 
 }
 
 /**
+ * Diz se ainda dá para reenviar a criação: depois de 10 minutos a cobrança perdida não volta à
+ * máquina sozinha, porque o lojista pode já ter ido embora.
+ *
+ * @param array<string,mixed> $attempt Tentativa.
+ * @return bool
+ */
+function papelito_event_sales_can_recover( array $attempt ): bool {
+	return papelito_event_sales_attempt_age( $attempt ) <= PAPELITO_EVENT_SALES_RECOVER_WINDOW;
+}
+
+/**
+ * Segundos desde a criação da tentativa.
+ *
+ * @param array<string,mixed> $attempt Tentativa.
+ * @return int
+ */
+function papelito_event_sales_attempt_age( array $attempt ): int {
+	$created = strtotime( (string) $attempt['created_at'] . ' UTC' );
+
+	return false === $created ? 0 : time() - $created;
+}
+
+/**
  * Reenvia a criação com a mesma chave de idempotência quando o resultado do POST se perdeu.
  *
  * @param array<string,mixed> $attempt Tentativa `creating` ou `unknown` sem id remoto.
@@ -292,6 +317,10 @@ function papelito_event_sales_reconcile_attempt( array $attempt ): string {
 	$remote_id = (string) $attempt['remote_id'];
 	$lost      = in_array( $attempt['state'], array( 'creating', 'unknown' ), true ) && '' === $remote_id;
 
+	if ( $lost && ! papelito_event_sales_can_recover( $attempt ) ) {
+		return papelito_event_sales_public_state( $attempt );
+	}
+
 	if ( $lost ) {
 		$remote = papelito_event_sales_recover_remote( $attempt );
 	} elseif ( '' !== $remote_id ) {
@@ -305,4 +334,83 @@ function papelito_event_sales_reconcile_attempt( array $attempt ): string {
 	}
 
 	return papelito_event_sales_apply_remote_order( $attempt, $remote );
+}
+
+/**
+ * Tentativa da Point apontada pela referência externa `ppl-{pedido}-{tentativa}`, ou nulo.
+ *
+ * @param array<string,mixed> $remote Order da API.
+ * @return array<string,mixed>|null
+ */
+function papelito_event_sales_attempt_from_remote( array $remote ): ?array {
+	if ( 1 !== preg_match( PAPELITO_EVENT_SALES_REFERENCE_PATTERN, (string) ( $remote['external_reference'] ?? '' ), $match ) ) {
+		return null;
+	}
+
+	$attempt = papelito_payment_attempt_find( (int) $match[2] );
+	$ours    = is_array( $attempt ) && PAPELITO_MERCADOPAGO_POINT_PROVIDER === $attempt['provider'] && (int) $match[1] === (int) $attempt['order_id'];
+
+	return $ours ? $attempt : null;
+}
+
+/**
+ * Webhook `type=order`: lê a order com o token da Point e aplica à tentativa da referência externa.
+ *
+ * Responde 500 quando o Mercado Pago deve reenviar (API fora do ar ou a notificação chegou antes de
+ * o POST gravar o id remoto) e 200 sem efeito quando a order não é de uma tentativa da Point.
+ *
+ * @param string $data_id Id da order na notificação.
+ * @return WP_REST_Response
+ */
+function papelito_event_sales_handle_order_notification( string $data_id ): WP_REST_Response {
+	$retry = new WP_REST_Response( array( 'received' => false ), 500 );
+	$done  = new WP_REST_Response( array( 'received' => true ), 200 );
+
+	if ( '' === $data_id ) {
+		return $done;
+	}
+
+	$remote = papelito_mercadopago_point_get_order( $data_id );
+	if ( is_wp_error( $remote ) ) {
+		$category = (string) ( ( (array) $remote->get_error_data() )['category'] ?? '' );
+		return in_array( $category, array( 'unavailable', 'rate_limit', 'unknown_outcome' ), true ) ? $retry : $done;
+	}
+
+	$attempt = papelito_event_sales_attempt_from_remote( $remote );
+	if ( null === $attempt ) {
+		return $done;
+	}
+
+	if ( '' === (string) $attempt['remote_id'] ) {
+		papelito_payment_attempt_update( $attempt, array( 'next_reconcile_at' => gmdate( 'Y-m-d H:i:s' ) ) );
+		return $retry;
+	}
+
+	papelito_event_sales_apply_remote_order( $attempt, $remote );
+
+	return $done;
+}
+
+/**
+ * Ramo da Point no cron de reconciliação. Cobrança perdida há mais de 10 minutos vira incidente
+ * `unresolved` e só volta a ser conferida em 6 horas, sem reenviar nada à máquina.
+ *
+ * @param array<string,mixed> $attempt Tentativa da Point, já sob o lock do cron.
+ * @return string Desfecho.
+ */
+function papelito_event_sales_cron_reconcile( array $attempt ): string {
+	$lost = in_array( $attempt['state'], array( 'creating', 'unknown' ), true ) && '' === (string) $attempt['remote_id'];
+
+	if ( $lost && ! papelito_event_sales_can_recover( $attempt ) ) {
+		papelito_payment_attempt_update(
+			$attempt,
+			array(
+				'incident'          => 'unresolved',
+				'next_reconcile_at' => gmdate( 'Y-m-d H:i:s', time() + 6 * HOUR_IN_SECONDS ),
+			)
+		);
+		return 'incident';
+	}
+
+	return papelito_event_sales_reconcile_attempt( $attempt );
 }

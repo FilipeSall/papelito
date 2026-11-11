@@ -191,18 +191,6 @@ function papelito_event_sales_latest_attempt( object $order ): ?array {
 }
 
 /**
- * Segundos desde a criação da tentativa.
- *
- * @param array<string,mixed> $attempt Tentativa.
- * @return int
- */
-function papelito_event_sales_attempt_age( array $attempt ): int {
-	$created = strtotime( (string) $attempt['created_at'] . ' UTC' );
-
-	return false === $created ? 0 : time() - $created;
-}
-
-/**
  * Estado do pedido para o tablet; tentativa sem resposta há mais de 20 s é conferida na Point.
  *
  * @param object $order Pedido do evento.

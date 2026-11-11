@@ -148,6 +148,10 @@ function papelito_payment_reconcile_attempt_locked( array $attempt ): string {
 		$attempt = papelito_payment_attempt_find( (int) $attempt['id'] ) ?? $attempt;
 	}
 
+	if ( 'mercadopago_point' === $attempt['provider'] && function_exists( 'papelito_event_sales_cron_reconcile' ) ) {
+		return papelito_event_sales_cron_reconcile( $attempt );
+	}
+
 	return PAPELITO_PAYMENT_PROVIDER_MERCADOPAGO === $attempt['provider']
 		? papelito_payment_reconcile_mercadopago( $attempt )
 		: papelito_payment_reconcile_pagarme( $attempt );

@@ -146,6 +146,10 @@ function papelito_mercadopago_webhook_handle( WP_REST_Request $request ): WP_RES
 	$type    = sanitize_key( (string) ( $query['type'] ?? $body['type'] ?? '' ) );
 	$data_id = papelito_mercadopago_webhook_data_id( $request );
 
+	if ( 'order' === $type && function_exists( 'papelito_event_sales_handle_order_notification' ) ) {
+		return papelito_event_sales_handle_order_notification( $data_id );
+	}
+
 	if ( 'payment' !== $type || '' === $data_id || null === $attempt ) {
 		return new WP_REST_Response( array( 'received' => true ), 200 );
 	}
