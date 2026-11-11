@@ -127,6 +127,9 @@ function papelito_event_sales_settlement_from_remote( array $attempt, array $rem
 /**
  * Marca a tentativa e o pedido como pagos e registra o repasse. Repetir não paga de novo.
  *
+ * Pagamento já liberado à mão pelo supervisor não ganha segunda linha no ledger: a confirmação da
+ * máquina só marca a liberação como confirmada.
+ *
  * @param array<string,mixed> $attempt Tentativa relida sob lock.
  * @param array<string,mixed> $remote  Order processada.
  * @return void
@@ -139,6 +142,12 @@ function papelito_event_sales_apply_paid( array $attempt, array $remote ): void 
 	$order = wc_get_order( (int) $attempt['order_id'] );
 	if ( is_object( $order ) ) {
 		papelito_payment_order_mark_paid( $order, PAPELITO_MERCADOPAGO_POINT_PROVIDER );
+	}
+
+	if ( 'manual_release' === (string) $attempt['incident'] ) {
+		$fresh = papelito_payment_attempt_find( (int) $attempt['id'] );
+		papelito_payment_attempt_update( null === $fresh ? $attempt : $fresh, array( 'incident' => 'manual_release_confirmed' ) );
+		return;
 	}
 
 	papelito_event_sales_settlement_record( papelito_event_sales_settlement_from_remote( $attempt, $remote, 'payment' ) );

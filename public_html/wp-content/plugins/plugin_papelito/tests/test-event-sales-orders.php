@@ -514,6 +514,11 @@ function test_manual_confirm_requires_supervisor(): void {
 	event_orders_assert( 'tentativa com incidente manual', 'manual_release' === $GLOBALS['memory_attempts'][1]['incident'] );
 	event_orders_assert( 'ledger de liberação manual', isset( $GLOBALS['event_ledger']['1:manual_release'] ) && '000123' === $GLOBALS['event_ledger']['1:manual_release']['nsu'] );
 
+	$GLOBALS['memory_attempts'][1]['remote_id'] = EVENT_ORDERS_TEST_REMOTE;
+	papelito_event_sales_apply_remote_order( $GLOBALS['memory_attempts'][1], event_orders_remote( 'processed' ) );
+	event_orders_assert( 'confirmação da máquina depois da liberação manual não duplica o repasse', 1 === count( $GLOBALS['event_ledger'] ) );
+	event_orders_assert( 'a liberação manual fica marcada como confirmada', 'manual_release_confirmed' === $GLOBALS['memory_attempts'][1]['incident'] );
+
 	$again = papelito_event_sales_manual_confirm( $GLOBALS['event_orders'][501], array( 'nsu' => '000123', 'method' => 'card', 'reason' => 'De novo por engano' ) );
 	event_orders_assert( 'não libera pedido já pago', $again instanceof WP_Error );
 }
