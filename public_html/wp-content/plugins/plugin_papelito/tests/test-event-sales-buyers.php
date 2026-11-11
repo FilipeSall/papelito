@@ -37,7 +37,7 @@ function papelito_validate_cnpj( string $raw ): bool { return EVENT_BUYER_TEST_C
 function papelito_normalize_email( string $email ): string { return strtolower( trim( $email ) ); }
 function papelito_auth_normalize_phone( string $phone ): string { return preg_replace( '/\D+/', '', $phone ); }
 function papelito_cnpj_lookup( string $raw_cnpj, bool $include_evidence = false ): array { return $GLOBALS['buyer_lookup']; }
-function papelito_company_find_by_cnpj( string $raw_cnpj ): ?array { return null; }
+function papelito_company_find_by_cnpj( string $raw_cnpj ): ?array { return $GLOBALS['buyer_existing'] ?? null; }
 
 require_once dirname( __DIR__ ) . '/includes/event_sales_buyers.php';
 
@@ -103,8 +103,21 @@ function test_upsert_validates_input(): void {
 	event_buyer_assert( 'nome separa primeiro e último', array( 'Maria', 'da Silva' ) === papelito_event_sales_split_name( EVENT_BUYER_TEST_NAME ) );
 }
 
+function test_existing_company_still_needs_active_cnpj(): void {
+	$GLOBALS['buyer_existing'] = array( 'id' => 30, 'cnpj' => EVENT_BUYER_TEST_CNPJ );
+	$GLOBALS['buyer_lookup']   = array( 'status' => 'inactive' );
+	$buyer                     = array( 'cnpj' => EVENT_BUYER_TEST_CNPJ, 'name' => EVENT_BUYER_TEST_NAME, 'phone' => '11987654321', 'email' => EVENT_BUYER_TEST_EMAIL );
+	event_buyer_assert( 'empresa já cadastrada com CNPJ inativo é recusada', event_buyer_error( papelito_event_sales_find_or_create_company( 7, $buyer ), 'papelito_event_cnpj_inactive', 422 ) );
+
+	$GLOBALS['buyer_lookup'] = array( 'status' => 'active', 'legal_name' => 'Loja Exemplo LTDA' );
+	$found                   = papelito_event_sales_find_or_create_company( 7, $buyer );
+	event_buyer_assert( 'empresa já cadastrada com CNPJ ativo é reaproveitada', is_array( $found ) && 30 === $found['company_id'] && false === $found['created'] );
+	$GLOBALS['buyer_existing'] = null;
+}
+
 test_lookup_maps_statuses();
 test_upsert_validates_input();
+test_existing_company_still_needs_active_cnpj();
 
 if ( $failures > 0 ) {
 	echo "{$failures} falha(s)\n";

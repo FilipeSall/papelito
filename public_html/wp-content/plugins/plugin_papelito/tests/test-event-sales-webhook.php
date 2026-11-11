@@ -104,6 +104,14 @@ function wc_get_order( mixed $id ): Event_Webhook_Order { return new Event_Webho
 function papelito_payment_order_mark_paid( object $order, string $provider ): bool { $GLOBALS['ewh_paid'][] = $order->get_id(); return true; }
 function papelito_payment_order_mark_unpaid( object $order, string $reason ): bool { return true; }
 function papelito_event_sales_settlement_record( array $row ): bool { $GLOBALS['ewh_ledger'][] = $row; return true; }
+function papelito_event_sales_settlement_has( int $attempt_id, string $kind ): bool {
+	foreach ( $GLOBALS['ewh_ledger'] as $row ) {
+		if ( $attempt_id === (int) $row['attempt_id'] && $kind === $row['kind'] ) {
+			return true;
+		}
+	}
+	return false;
+}
 function apply_filters( string $hook, mixed $value, mixed ...$args ): mixed {
 	if ( 'papelito_mercadopago_pre_request' !== $hook ) {
 		return $value;
@@ -149,6 +157,7 @@ function ewh_reset(): void {
 	$GLOBALS['ewh_paid']        = array();
 	$GLOBALS['ewh_ledger']      = array();
 	$GLOBALS['ewh_trans']       = array();
+	$GLOBALS['ewh_metrics']     = array();
 }
 
 function ewh_attempt( string $state, string $remote_id ): array {
@@ -267,7 +276,41 @@ function test_cron_dispatches_point_provider(): void {
 	ewh_assert( 'cobrança perdida vira incidente', 'unresolved' === $GLOBALS['memory_attempts'][ $stale['id'] ]['incident'] );
 }
 
+function test_webhook_after_manual_release_without_remote_id(): void {
+	ewh_reset();
+	$attempt                                    = ewh_attempt( 'paid', '' );
+	$GLOBALS['memory_attempts'][ $attempt['id'] ]['incident'] = 'manual_release';
+	$GLOBALS['ewh_ledger'][]                    = array( 'attempt_id' => $attempt['id'], 'kind' => 'manual_release' );
+	$GLOBALS['ewh_remote']                      = ewh_remote( 'processed' );
+	$response                                   = papelito_mercadopago_webhook_handle( ewh_request( true ) );
+	$fresh                                      = $GLOBALS['memory_attempts'][ $attempt['id'] ];
+	ewh_assert( 'confirmação depois da liberação manual sem id remoto é 200', 200 === $response->get_status() );
+	ewh_assert( 'a order validada grava o id remoto', EVENT_WEBHOOK_TEST_REMOTE === $fresh['remote_id'] );
+	ewh_assert( 'a liberação manual fica confirmada sem outra receita', 'manual_release_confirmed' === $fresh['incident'] && 1 === count( $GLOBALS['ewh_ledger'] ) );
+
+	ewh_reset();
+	$lost                  = ewh_attempt( 'unknown', '' );
+	$GLOBALS['ewh_remote'] = ewh_remote( 'at_terminal' );
+	$open                  = papelito_mercadopago_webhook_handle( ewh_request( true ) );
+	ewh_assert( 'cobrança com resultado desconhecido é achada pelo webhook', 200 === $open->get_status() && 'pending' === $GLOBALS['memory_attempts'][ $lost['id'] ]['state'] && EVENT_WEBHOOK_TEST_REMOTE === $GLOBALS['memory_attempts'][ $lost['id'] ]['remote_id'] );
+}
+
+function test_cron_backs_off_when_point_fails(): void {
+	ewh_reset();
+	$attempt = ewh_attempt( 'pending', EVENT_WEBHOOK_TEST_REMOTE );
+	$outcome = papelito_payment_reconcile_attempt_locked( $GLOBALS['memory_attempts'][ $attempt['id'] ] );
+	$fresh   = $GLOBALS['memory_attempts'][ $attempt['id'] ];
+	ewh_assert( 'Point fora do ar adia a conferência', 'deferred' === $outcome );
+	ewh_assert( 'falha conta para o backoff', 1 === (int) $fresh['reconcile_failures'] );
+	ewh_assert( 'próxima conferência fica no futuro', null !== $fresh['next_reconcile_at'] && strtotime( $fresh['next_reconcile_at'] . ' UTC' ) > time() );
+
+	papelito_payment_reconcile_attempt_locked( $fresh );
+	ewh_assert( 'segunda falha aumenta o contador', 2 === (int) $GLOBALS['memory_attempts'][ $attempt['id'] ]['reconcile_failures'] );
+}
+
 test_order_webhook_invalid_signature_401();
+test_webhook_after_manual_release_without_remote_id();
+test_cron_backs_off_when_point_fails();
 test_order_webhook_before_remote_id_is_saved();
 test_order_webhook_foreign_reference_200();
 test_order_webhook_unavailable_asks_resend();

@@ -105,6 +105,8 @@ $manual = array_merge(
 	)
 );
 event_settlement_db_check( 'liberação manual grava', true === papelito_event_sales_settlement_record( $manual ) );
+event_settlement_db_check( 'acha a liberação manual da tentativa', papelito_event_sales_settlement_has( 9002, 'manual_release' ) );
+event_settlement_db_check( 'não acha tipo que a tentativa não tem', ! papelito_event_sales_settlement_has( 9002, 'payment' ) );
 
 $rows = papelito_event_sales_settlement_rows( EVENT_SETTLEMENT_TEST_EVENT );
 event_settlement_db_check( 'três linhas, sem duplicata', 3 === count( $rows ) );

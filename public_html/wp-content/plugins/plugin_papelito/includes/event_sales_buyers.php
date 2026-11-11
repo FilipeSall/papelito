@@ -194,24 +194,24 @@ function papelito_event_sales_find_or_create_user( array $buyer ): array|WP_Erro
 }
 
 /**
- * Reaproveita a empresa do CNPJ ou cria uma com os dados da Receita.
+ * Reaproveita a empresa do CNPJ ou cria uma com os dados da Receita. Nos dois casos o CNPJ
+ * precisa estar ativo agora: empresa já cadastrada não dispensa a consulta.
  *
  * @param int                                                      $operator_id Operador que cadastra.
  * @param array{cnpj:string,name:string,phone:string,email:string} $buyer       Dados validados.
  * @return array{company_id:int,created:bool}|WP_Error
  */
 function papelito_event_sales_find_or_create_company( int $operator_id, array $buyer ): array|WP_Error {
-	$existing = papelito_company_find_by_cnpj( $buyer['cnpj'] );
-	if ( null !== $existing ) {
-		return array(
-			'company_id' => (int) $existing['id'],
-			'created'    => false,
-		);
-	}
-
 	$lookup = papelito_event_sales_lookup_buyer( $buyer['cnpj'] );
 	if ( is_wp_error( $lookup ) ) {
 		return $lookup;
+	}
+
+	if ( null !== $lookup['companyId'] ) {
+		return array(
+			'company_id' => (int) $lookup['companyId'],
+			'created'    => false,
+		);
 	}
 
 	$company_id = papelito_company_create(

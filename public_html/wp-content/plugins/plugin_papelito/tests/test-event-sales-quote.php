@@ -33,6 +33,7 @@ class WC_Product {
 	public function get_id(): int { return $this->id; }
 	public function get_name(): string { return "Produto {$this->id}"; }
 	public function get_status(): string { return 'publish'; }
+	public function get_catalog_visibility( string $context = 'view' ): string { return in_array( $this->id, $GLOBALS['quote_hidden'], true ) ? 'hidden' : 'visible'; }
 	public function get_price( string $context = 'view' ): string { return $this->price; }
 }
 
@@ -46,6 +47,8 @@ $GLOBALS['quote_prices']   = array();
 $GLOBALS['quote_stock']    = array();
 $GLOBALS['quote_shipping'] = array();
 $GLOBALS['quote_calls']    = array();
+$GLOBALS['quote_hidden']   = array();
+$GLOBALS['quote_orphans']  = array();
 
 function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
 function add_action( mixed ...$args ): bool { return true; }
@@ -53,6 +56,9 @@ function wp_json_encode( mixed $value ): string { return json_encode( $value ); 
 function wp_salt( string $scheme = 'auth' ): string { return 'sal-de-teste'; }
 function papelito_env( string $key, mixed $default = null ): mixed { return $GLOBALS['quote_env'][ $key ] ?? $default; }
 function papelito_kit_is_product( int $product_id ): bool { return false; }
+function papelito_product_get_category( mixed $product_id ): ?array {
+	return in_array( (int) $product_id, $GLOBALS['quote_orphans'], true ) ? null : array( 'id' => 1, 'slug' => 'sedas', 'name' => 'Sedas' );
+}
 function papelito_normalize_cnpj( string $raw ): string { return preg_replace( '/\D+/', '', $raw ); }
 function papelito_shipping_normalize_cep( mixed $value ): string { return preg_replace( '/\D+/', '', (string) $value ); }
 function papelito_get_vendor_stock( mixed $vendor_id, mixed $product_id ): int { return $GLOBALS['quote_stock'][ (int) $product_id ] ?? 0; }
@@ -105,6 +111,8 @@ function event_quote_fixture(): void {
 	);
 	$GLOBALS['quote_stock']    = array( 101 => 50, 102 => 50, 103 => 50, 104 => 50, EVENT_QUOTE_TEST_LOOSE => 50 );
 	$GLOBALS['quote_calls']    = array();
+	$GLOBALS['quote_hidden']   = array();
+	$GLOBALS['quote_orphans']  = array();
 	$GLOBALS['quote_shipping'] = array(
 		'options' => array(
 			event_quote_option( 'correios', 'correios:sedex', 4500 ),
@@ -184,7 +192,34 @@ function test_fingerprint_changes_with_price(): void {
 	event_quote_assert( 'produto que não existe é recusado', $unknown instanceof WP_Error && 'papelito_event_unknown_product' === $unknown->get_error_code() );
 }
 
+function test_products_out_of_catalog_are_refused(): void {
+	event_quote_fixture();
+	$input                    = event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 3 ) ), 0 );
+	$GLOBALS['quote_orphans'] = array( EVENT_QUOTE_TEST_LOOSE );
+	$orphan                   = papelito_event_sales_quote( $input );
+	event_quote_assert( 'produto sem categoria Papelito não é cotado', $orphan instanceof WP_Error && 'papelito_event_unknown_product' === $orphan->get_error_code() );
+
+	$GLOBALS['quote_orphans'] = array();
+	$GLOBALS['quote_hidden']  = array( EVENT_QUOTE_TEST_LOOSE );
+	$hidden                   = papelito_event_sales_quote( $input );
+	event_quote_assert( 'produto oculto do catálogo não é cotado', $hidden instanceof WP_Error && 'papelito_event_unknown_product' === $hidden->get_error_code() );
+}
+
+function test_fingerprint_changes_with_kit_composition(): void {
+	event_quote_fixture();
+	$input   = event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 14 ) ), 1 );
+	$before  = papelito_event_sales_quote( $input );
+	$GLOBALS['quote_prices'][105]                         = $GLOBALS['quote_prices'][104];
+	$GLOBALS['quote_stock'][105]                          = 50;
+	$GLOBALS['quote_env']['PAPELITO_EVENT_SALES_KIT_PRODUCT_IDS'] = '101,102,103,105';
+	$swapped = papelito_event_sales_quote( $input );
+	event_quote_assert( 'troca de componente com o mesmo preço mantém o total', $before['totalCents'] === $swapped['totalCents'] );
+	event_quote_assert( 'troca de componente do kit muda o fingerprint', $before['quoteFingerprint'] !== $swapped['quoteFingerprint'] );
+}
+
 test_quote_total_is_items_plus_kit_plus_shipping();
+test_products_out_of_catalog_are_refused();
+test_fingerprint_changes_with_kit_composition();
 test_quote_picks_cheapest_correios();
 test_kit_component_stock_counts_kits();
 test_fingerprint_changes_with_price();

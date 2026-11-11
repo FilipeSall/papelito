@@ -37,6 +37,8 @@ class WC_Product {
 	}
 
 	public function get_id(): int { return $this->data['id']; }
+	public function get_status(): string { return 'publish'; }
+	public function get_catalog_visibility( string $context = 'view' ): string { return $this->data['visibility'] ?? 'visible'; }
 	public function get_name(): string { return $this->data['name']; }
 	public function get_slug(): string { return 'produto-' . $this->data['id']; }
 	public function get_image_id(): int { return $this->data['id']; }

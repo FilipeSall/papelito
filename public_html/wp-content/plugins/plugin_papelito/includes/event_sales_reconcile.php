@@ -127,8 +127,8 @@ function papelito_event_sales_settlement_from_remote( array $attempt, array $rem
 /**
  * Marca a tentativa e o pedido como pagos e registra o repasse. Repetir não paga de novo.
  *
- * Pagamento já liberado à mão pelo supervisor não ganha segunda linha no ledger: a confirmação da
- * máquina só marca a liberação como confirmada.
+ * Pagamento já liberado à mão pelo supervisor não ganha segunda linha no ledger, por mais vezes
+ * que a confirmação da máquina chegue: a liberação é lida do ledger, não do incidente.
  *
  * @param array<string,mixed> $attempt Tentativa relida sob lock.
  * @param array<string,mixed> $remote  Order processada.
@@ -144,9 +144,11 @@ function papelito_event_sales_apply_paid( array $attempt, array $remote ): void 
 		papelito_payment_order_mark_paid( $order, PAPELITO_MERCADOPAGO_POINT_PROVIDER );
 	}
 
-	if ( 'manual_release' === (string) $attempt['incident'] ) {
-		$fresh = papelito_payment_attempt_find( (int) $attempt['id'] );
-		papelito_payment_attempt_update( null === $fresh ? $attempt : $fresh, array( 'incident' => 'manual_release_confirmed' ) );
+	if ( papelito_event_sales_settlement_has( (int) $attempt['id'], 'manual_release' ) ) {
+		$fresh = papelito_payment_attempt_find( (int) $attempt['id'] ) ?? $attempt;
+		if ( 'manual_release_confirmed' !== (string) $fresh['incident'] ) {
+			papelito_payment_attempt_update( $fresh, array( 'incident' => 'manual_release_confirmed' ) );
+		}
 		return;
 	}
 
@@ -184,7 +186,11 @@ function papelito_event_sales_apply_terminal( array $attempt, array $target ): v
 }
 
 /**
- * Estorno confirmado: tentativa `refunded` e linha negativa no ledger.
+ * Estorno confirmado: tentativa `refunded`, linha negativa no ledger e o estorno no pedido.
+ *
+ * O pedido entra no fluxo de estornos (`papelito_order_refund_handle_psp_reversal()`), que o marca
+ * `estornado`, lança o reembolso no WooCommerce sem devolver estoque e avisa o comprador. Repetir
+ * não duplica nada.
  *
  * @param array<string,mixed> $attempt Tentativa.
  * @param array<string,mixed> $remote  Order estornada.
@@ -195,8 +201,15 @@ function papelito_event_sales_apply_refund( array $attempt, array $remote ): voi
 		papelito_payment_attempt_transition( (int) $attempt['id'], 'paid', 'refunded' );
 	}
 
-	if ( in_array( $attempt['state'], array( 'paid', 'refunded' ), true ) ) {
-		papelito_event_sales_settlement_record( papelito_event_sales_settlement_from_remote( $attempt, $remote, 'refund' ) );
+	if ( ! in_array( $attempt['state'], array( 'paid', 'refunded' ), true ) ) {
+		return;
+	}
+
+	papelito_event_sales_settlement_record( papelito_event_sales_settlement_from_remote( $attempt, $remote, 'refund' ) );
+
+	$order = wc_get_order( (int) $attempt['order_id'] );
+	if ( is_object( $order ) && function_exists( 'papelito_order_refund_handle_psp_reversal' ) ) {
+		papelito_order_refund_handle_psp_reversal( $order, 'refunded' );
 	}
 }
 
@@ -214,6 +227,25 @@ function papelito_event_sales_apply_open( array $attempt, array $remote ): void 
 }
 
 /**
+ * Grava na tentativa o id da order já validada quando ele faltava (timeout na criação seguido de
+ * liberação manual), para que confirmação e estorno passem a achar a cobrança.
+ *
+ * @param array<string,mixed> $attempt Tentativa que bateu com a order.
+ * @param array<string,mixed> $remote  Order da API.
+ * @return array<string,mixed> Tentativa relida.
+ */
+function papelito_event_sales_adopt_remote_id( array $attempt, array $remote ): array {
+	$remote_id = (string) ( $remote['id'] ?? '' );
+	if ( '' !== (string) $attempt['remote_id'] || '' === $remote_id ) {
+		return $attempt;
+	}
+
+	papelito_payment_attempt_update( $attempt, array( 'remote_id' => $remote_id ) );
+
+	return papelito_payment_attempt_find( (int) $attempt['id'] ) ?? $attempt;
+}
+
+/**
  * Aplica a order sob o lock já adquirido.
  *
  * @param array<string,mixed> $attempt Tentativa relida.
@@ -226,8 +258,9 @@ function papelito_event_sales_apply_locked( array $attempt, array $remote ): voi
 		return;
 	}
 
-	$status = sanitize_key( (string) ( $remote['status'] ?? '' ) );
-	$target = papelito_event_sales_terminal_target( $status );
+	$attempt = papelito_event_sales_adopt_remote_id( $attempt, $remote );
+	$status  = sanitize_key( (string) ( $remote['status'] ?? '' ) );
+	$target  = papelito_event_sales_terminal_target( $status );
 
 	if ( 'processed' === $status ) {
 		papelito_event_sales_apply_paid( $attempt, $remote );
@@ -317,28 +350,41 @@ function papelito_event_sales_order_description( string $order_number ): string 
 }
 
 /**
- * Consulta a Point e aplica o que ela disser. É o caminho do status do tablet e do cron.
+ * Diz se a criação da cobrança se perdeu: criando ou com resultado desconhecido, sem id remoto.
+ *
+ * @param array<string,mixed> $attempt Tentativa da Point.
+ * @return bool
+ */
+function papelito_event_sales_attempt_lost( array $attempt ): bool {
+	return in_array( $attempt['state'], array( 'creating', 'unknown' ), true ) && '' === (string) $attempt['remote_id'];
+}
+
+/**
+ * Order remota da tentativa: reenvia a criação perdida (dentro de 10 minutos) ou lê pelo id.
+ *
+ * @param array<string,mixed> $attempt Tentativa da Point.
+ * @return array<string,mixed>|WP_Error|null Nulo quando não há o que consultar.
+ */
+function papelito_event_sales_fetch_remote( array $attempt ): array|WP_Error|null {
+	if ( papelito_event_sales_attempt_lost( $attempt ) ) {
+		return papelito_event_sales_can_recover( $attempt ) ? papelito_event_sales_recover_remote( $attempt ) : null;
+	}
+
+	$remote_id = (string) $attempt['remote_id'];
+
+	return '' === $remote_id ? null : papelito_mercadopago_point_get_order( $remote_id );
+}
+
+/**
+ * Consulta a Point e aplica o que ela disser. É o caminho do status do tablet.
  *
  * @param array<string,mixed> $attempt Tentativa da Point.
  * @return string Estado que o tablet mostra.
  */
 function papelito_event_sales_reconcile_attempt( array $attempt ): string {
-	$remote_id = (string) $attempt['remote_id'];
-	$lost      = in_array( $attempt['state'], array( 'creating', 'unknown' ), true ) && '' === $remote_id;
+	$remote = papelito_event_sales_fetch_remote( $attempt );
 
-	if ( $lost && ! papelito_event_sales_can_recover( $attempt ) ) {
-		return papelito_event_sales_public_state( $attempt );
-	}
-
-	if ( $lost ) {
-		$remote = papelito_event_sales_recover_remote( $attempt );
-	} elseif ( '' !== $remote_id ) {
-		$remote = papelito_mercadopago_point_get_order( $remote_id );
-	} else {
-		return papelito_event_sales_public_state( $attempt );
-	}
-
-	if ( is_wp_error( $remote ) ) {
+	if ( ! is_array( $remote ) ) {
 		return papelito_event_sales_public_state( $attempt );
 	}
 
@@ -365,8 +411,9 @@ function papelito_event_sales_attempt_from_remote( array $remote ): ?array {
 /**
  * Webhook `type=order`: lê a order com o token da Point e aplica à tentativa da referência externa.
  *
- * Responde 500 quando o Mercado Pago deve reenviar (API fora do ar ou a notificação chegou antes de
- * o POST gravar o id remoto) e 200 sem efeito quando a order não é de uma tentativa da Point.
+ * Responde 500 quando o Mercado Pago deve reenviar (API fora do ar ou a notificação chegou com o
+ * POST de criação ainda em andamento) e 200 sem efeito quando a order não é de uma tentativa da
+ * Point. Tentativa sem id remoto fora da criação (timeout, liberação manual) adota o id da order.
  *
  * @param string $data_id Id da order na notificação.
  * @return WP_REST_Response
@@ -390,7 +437,7 @@ function papelito_event_sales_handle_order_notification( string $data_id ): WP_R
 		return $done;
 	}
 
-	if ( '' === (string) $attempt['remote_id'] ) {
+	if ( 'creating' === $attempt['state'] && '' === (string) $attempt['remote_id'] ) {
 		papelito_payment_attempt_update( $attempt, array( 'next_reconcile_at' => gmdate( 'Y-m-d H:i:s' ) ) );
 		return $retry;
 	}
@@ -402,15 +449,15 @@ function papelito_event_sales_handle_order_notification( string $data_id ): WP_R
 
 /**
  * Ramo da Point no cron de reconciliação. Cobrança perdida há mais de 10 minutos vira incidente
- * `unresolved` e só volta a ser conferida em 6 horas, sem reenviar nada à máquina.
+ * `unresolved` e só volta a ser conferida em 6 horas, sem reenviar nada à máquina. Falha da API
+ * adia a tentativa com o backoff do cron (`papelito_payment_reconcile_defer()`), para ela não
+ * ocupar todo lote; a primeira consulta que responde zera as falhas.
  *
  * @param array<string,mixed> $attempt Tentativa da Point, já sob o lock do cron.
  * @return string Desfecho.
  */
 function papelito_event_sales_cron_reconcile( array $attempt ): string {
-	$lost = in_array( $attempt['state'], array( 'creating', 'unknown' ), true ) && '' === (string) $attempt['remote_id'];
-
-	if ( $lost && ! papelito_event_sales_can_recover( $attempt ) ) {
+	if ( papelito_event_sales_attempt_lost( $attempt ) && ! papelito_event_sales_can_recover( $attempt ) ) {
 		papelito_payment_attempt_update(
 			$attempt,
 			array(
@@ -421,5 +468,18 @@ function papelito_event_sales_cron_reconcile( array $attempt ): string {
 		return 'incident';
 	}
 
-	return papelito_event_sales_reconcile_attempt( $attempt );
+	$remote = papelito_event_sales_fetch_remote( $attempt );
+	if ( is_wp_error( $remote ) ) {
+		return papelito_payment_reconcile_defer( $attempt );
+	}
+
+	if ( null === $remote ) {
+		return papelito_event_sales_public_state( $attempt );
+	}
+
+	if ( (int) ( $attempt['reconcile_failures'] ?? 0 ) > 0 ) {
+		papelito_payment_attempt_update( papelito_payment_attempt_find( (int) $attempt['id'] ) ?? $attempt, array( 'reconcile_failures' => 0 ) );
+	}
+
+	return papelito_event_sales_apply_remote_order( $attempt, $remote );
 }

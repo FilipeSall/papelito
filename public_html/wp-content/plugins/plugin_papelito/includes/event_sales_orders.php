@@ -320,7 +320,9 @@ function papelito_event_sales_open_attempt( object $order, int $amount_cents, st
 }
 
 /**
- * Comprador e empresa do pedido, relidos do banco; o vínculo precisa existir.
+ * Comprador e empresa do pedido, relidos do banco; o vínculo precisa existir e o CNPJ precisa estar
+ * ativo na Receita agora. Empresa já cadastrada não prova nada: a situação é reconsultada (o cache
+ * da consulta de CNPJ deixa isso barato).
  *
  * @param array<string,mixed> $input Corpo do pedido.
  * @return array{company:array<string,mixed>,member:array<string,mixed>,buyer:int}|WP_Error
@@ -333,6 +335,11 @@ function papelito_event_sales_order_buyer( array $input ): array|WP_Error {
 
 	if ( null === $company || null === $member ) {
 		return papelito_event_sales_order_error( 'papelito_event_buyer_not_found', 'Cadastre o lojista antes de fechar o pedido.', 404 );
+	}
+
+	$registry = papelito_event_sales_lookup_buyer( (string) $company['cnpj'] );
+	if ( is_wp_error( $registry ) ) {
+		return $registry;
 	}
 
 	return array(

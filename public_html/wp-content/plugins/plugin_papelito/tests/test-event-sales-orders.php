@@ -96,6 +96,8 @@ $GLOBALS['event_unpaid']   = array();
 $GLOBALS['event_reserved'] = array();
 $GLOBALS['event_ledger']   = array();
 $GLOBALS['event_quote_fp'] = EVENT_ORDERS_TEST_FP;
+$GLOBALS['event_registry'] = 'active';
+$GLOBALS['event_reversals'] = array();
 
 function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
 function add_action( mixed ...$args ): bool { return true; }
@@ -168,6 +170,11 @@ function papelito_payment_order_mark_paid( object $order, string $provider ): bo
 	return true;
 }
 function papelito_payment_order_mark_unpaid( object $order, string $reason ): bool { $order->status = 'cancelled'; $GLOBALS['event_unpaid'][] = array( $order->get_id(), $reason ); return true; }
+function papelito_event_sales_settlement_has( int $attempt_id, string $kind ): bool { return isset( $GLOBALS['event_ledger'][ $attempt_id . ':' . $kind ] ); }
+function papelito_order_refund_handle_psp_reversal( object $order, string $state ): void { $GLOBALS['event_reversals'][] = array( $order->get_id(), $state ); }
+function papelito_event_sales_lookup_buyer( string $raw_cnpj ): array|WP_Error {
+	return 'active' === $GLOBALS['event_registry'] ? array( 'cnpj' => $raw_cnpj ) : new WP_Error( 'papelito_event_cnpj_inactive', 'Esse CNPJ está inativo na Receita.', array( 'status' => 422 ) );
+}
 function papelito_event_sales_settlement_record( array $row ): bool {
 	$key                            = $row['attempt_id'] . ':' . $row['kind'];
 	$GLOBALS['event_ledger'][ $key ] = $GLOBALS['event_ledger'][ $key ] ?? $row;
@@ -237,6 +244,8 @@ function event_orders_reset(): void {
 	$GLOBALS['memory_locks']       = array();
 	$GLOBALS['event_caps']         = array( 'papelito_event_sell' => true );
 	$GLOBALS['event_collector_down'] = false;
+	$GLOBALS['event_registry']       = 'active';
+	$GLOBALS['event_reversals']      = array();
 }
 
 function event_orders_input( string $method = 'card' ): array {
@@ -344,8 +353,13 @@ function test_buyer_must_belong_to_company(): void {
 	$input['buyerUserId'] = 41;
 	$result               = papelito_event_sales_create_order( $input );
 	event_orders_assert( 'comprador sem vínculo é recusado', $result instanceof WP_Error && 'papelito_event_buyer_not_found' === $result->get_error_code() );
+	$input['buyerUserId']      = 40;
+	$GLOBALS['event_registry'] = 'inactive';
+	$inactive                  = papelito_event_sales_create_order( $input );
+	event_orders_assert( 'empresa com CNPJ inativo não fecha pedido', $inactive instanceof WP_Error && 'papelito_event_cnpj_inactive' === $inactive->get_error_code() );
+	event_orders_assert( 'CNPJ inativo não cria pedido', array() === $GLOBALS['event_orders'] );
+	$GLOBALS['event_registry'] = 'active';
 	$input['method']      = 'boleto';
-	$input['buyerUserId'] = 40;
 	$bad_method           = papelito_event_sales_create_order( $input );
 	event_orders_assert( 'método fora de cartão e Pix é recusado', $bad_method instanceof WP_Error && 'papelito_event_invalid_method' === $bad_method->get_error_code() );
 }
@@ -394,6 +408,10 @@ function test_processed_marks_paid_once_and_records_ledger(): void {
 	$refunded = papelito_event_sales_apply_remote_order( $GLOBALS['memory_attempts'][1], event_orders_remote( 'refunded' ) );
 	event_orders_assert( 'estorno muda a tentativa', 'refunded' === $GLOBALS['memory_attempts'][1]['state'] );
 	event_orders_assert( 'estorno grava linha', isset( $GLOBALS['event_ledger']['1:refund'] ) && 'canceled' !== $refunded );
+	event_orders_assert( 'estorno confirmado entra no fluxo de estornos do pedido', array( array( 501, 'refunded' ) ) === $GLOBALS['event_reversals'] );
+
+	papelito_event_sales_apply_remote_order( $GLOBALS['memory_attempts'][1], event_orders_remote( 'refunded' ) );
+	event_orders_assert( 'estorno repetido não duplica a linha', 2 === count( $GLOBALS['event_ledger'] ) );
 }
 
 function test_mismatch_amount_sets_incident_not_paid(): void {
@@ -518,6 +536,10 @@ function test_manual_confirm_requires_supervisor(): void {
 	papelito_event_sales_apply_remote_order( $GLOBALS['memory_attempts'][1], event_orders_remote( 'processed' ) );
 	event_orders_assert( 'confirmação da máquina depois da liberação manual não duplica o repasse', 1 === count( $GLOBALS['event_ledger'] ) );
 	event_orders_assert( 'a liberação manual fica marcada como confirmada', 'manual_release_confirmed' === $GLOBALS['memory_attempts'][1]['incident'] );
+
+	papelito_event_sales_apply_remote_order( $GLOBALS['memory_attempts'][1], event_orders_remote( 'processed' ) );
+	papelito_event_sales_apply_remote_order( $GLOBALS['memory_attempts'][1], event_orders_remote( 'processed' ) );
+	event_orders_assert( 'confirmações repetidas não somam outro repasse', 1 === count( $GLOBALS['event_ledger'] ) );
 
 	$again = papelito_event_sales_manual_confirm( $GLOBALS['event_orders'][501], array( 'nsu' => '000123', 'method' => 'card', 'reason' => 'De novo por engano' ) );
 	event_orders_assert( 'não libera pedido já pago', $again instanceof WP_Error );

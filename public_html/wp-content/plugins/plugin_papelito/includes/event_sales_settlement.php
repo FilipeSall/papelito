@@ -125,6 +125,23 @@ function papelito_event_sales_settlement_record( array $row ): bool {
 }
 
 /**
+ * Diz se a tentativa já tem linha daquele tipo no ledger. Lê do banco, não do incidente da
+ * tentativa, que outro desfecho pode sobrescrever.
+ *
+ * @param int    $attempt_id Tentativa.
+ * @param string $kind       Tipo da linha.
+ * @return bool
+ */
+function papelito_event_sales_settlement_has( int $attempt_id, string $kind ): bool {
+	global $wpdb;
+
+	$table = papelito_event_sales_settlement_table();
+	$found = $wpdb->get_var( $wpdb->prepare( "SELECT id FROM {$table} WHERE attempt_id = %d AND kind = %s LIMIT 1", $attempt_id, $kind ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+
+	return null !== $found;
+}
+
+/**
  * Diz se o valor não é nulo; usado para tirar do `prepare` os campos gravados como NULL literal.
  *
  * @param mixed $value Valor.

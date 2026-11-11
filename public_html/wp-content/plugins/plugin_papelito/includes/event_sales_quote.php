@@ -39,9 +39,10 @@ function papelito_event_sales_qty_by_product( array $items ): array {
 }
 
 /**
- * Preço atual de cada produto pedido, só para produto publicado, com preço e que não seja kit.
+ * Preço atual de cada produto pedido, só para produto que o catálogo do estande venderia.
  *
- * Produto que não passa fica fora do índice e as regras de preço o recusam como desconhecido.
+ * Produto reprovado por `papelito_event_sales_product_sellable()` fica fora do índice e as regras
+ * de preço o recusam como desconhecido.
  *
  * @param array<int,int> $product_ids Produtos.
  * @return array<int,array{price_cents:int,name:string}>
@@ -51,14 +52,9 @@ function papelito_event_sales_load_prices( array $product_ids ): array {
 
 	foreach ( array_unique( $product_ids ) as $product_id ) {
 		$product = wc_get_product( $product_id );
-		if ( ! $product instanceof WC_Product || 'publish' !== $product->get_status() || papelito_kit_is_product( (int) $product_id ) ) {
-			continue;
-		}
-
-		$price = papelito_event_sales_to_cents( (string) $product->get_price( 'edit' ) );
-		if ( $price > 0 ) {
+		if ( $product instanceof WC_Product && papelito_event_sales_product_sellable( $product ) ) {
 			$index[ (int) $product_id ] = array(
-				'price_cents' => $price,
+				'price_cents' => papelito_event_sales_to_cents( (string) $product->get_price( 'edit' ) ),
 				'name'        => $product->get_name(),
 			);
 		}
@@ -205,7 +201,8 @@ function papelito_event_sales_cheapest_correios( array|WP_Error $quote ): array|
 }
 
 /**
- * Assina o que define o valor cobrado: linhas, kit, frete escolhido e total.
+ * Assina o que define o valor cobrado e o que vai na caixa: linhas, kit e seus componentes, frete
+ * escolhido e total. Trocar um produto do kit por outro de mesmo preço também muda a assinatura.
  *
  * O frete entra por opção, preço e prazo, não pelo fingerprint do provider, que também carrega a
  * validade da cotação e mudaria sem o valor mudar.
@@ -216,7 +213,7 @@ function papelito_event_sales_cheapest_correios( array|WP_Error $quote ): array|
 function papelito_event_sales_quote_fingerprint( array $quote ): string {
 	$shipping = array( $quote['shipping']['optionKey'], $quote['shipping']['priceCents'], $quote['shipping']['deliveryTime'] );
 
-	return hash_hmac( 'sha256', (string) wp_json_encode( array( $quote['lines'], $quote['kit'], $shipping, $quote['totalCents'] ) ), wp_salt( 'auth' ) );
+	return hash_hmac( 'sha256', (string) wp_json_encode( array( $quote['lines'], $quote['kit'], $quote['kitComponents'], $shipping, $quote['totalCents'] ) ), wp_salt( 'auth' ) );
 }
 
 /**

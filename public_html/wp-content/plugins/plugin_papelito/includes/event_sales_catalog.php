@@ -52,22 +52,40 @@ function papelito_event_sales_product_specs( WC_Product $product ): array {
 }
 
 /**
- * Linha de catálogo do evento, ou null quando o produto não pode ser vendido no estande.
+ * Diz se o produto pode ser vendido no estande: publicado, visível no catálogo, com preço, com
+ * categoria Papelito e sem ser kit do WooCommerce.
  *
- * Fica fora o kit do WooCommerce, o produto sem preço e o produto sem categoria Papelito.
+ * É o critério único do catálogo do tablet e da cotação: produto que sai do catálogo depois de o
+ * tablet carregar o contexto deixa de ser cotável e cobrável.
+ *
+ * @param WC_Product $product Produto.
+ * @return bool
+ */
+function papelito_event_sales_product_sellable( WC_Product $product ): bool {
+	$product_id = $product->get_id();
+
+	return 'publish' === $product->get_status()
+		&& in_array( $product->get_catalog_visibility( 'edit' ), array( 'visible', 'catalog' ), true )
+		&& papelito_event_sales_to_cents( (string) $product->get_price( 'edit' ) ) > 0
+		&& is_array( papelito_product_get_category( $product_id ) )
+		&& ! papelito_kit_is_product( $product_id );
+}
+
+/**
+ * Linha de catálogo do evento, ou null quando o produto não pode ser vendido no estande.
  *
  * @param WC_Product $product   Produto publicado.
  * @param int        $vendor_id Vendor que vende no evento.
  * @return array<string,mixed>|null
  */
 function papelito_event_sales_catalog_row( WC_Product $product, int $vendor_id ): ?array {
-	$product_id = $product->get_id();
-	$price      = papelito_event_sales_to_cents( (string) $product->get_price( 'edit' ) );
-	$category   = papelito_product_get_category( $product_id );
-
-	if ( $price <= 0 || ! is_array( $category ) || papelito_kit_is_product( $product_id ) ) {
+	if ( ! papelito_event_sales_product_sellable( $product ) ) {
 		return null;
 	}
+
+	$product_id = $product->get_id();
+	$price      = papelito_event_sales_to_cents( (string) $product->get_price( 'edit' ) );
+	$category   = (array) papelito_product_get_category( $product_id );
 
 	$image   = wp_get_attachment_image_url( (int) $product->get_image_id(), 'large' );
 	$created = $product->get_date_created();
