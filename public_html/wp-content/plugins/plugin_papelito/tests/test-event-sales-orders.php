@@ -228,7 +228,7 @@ function event_orders_assert( string $label, bool $condition ): void {
 function event_orders_reset(): void {
 	$GLOBALS['event_env']          = array(
 		'PAPELITO_EVENT_SALES_VENDOR_ID'       => '2163',
-		'PAPELITO_EVENT_SALES_TERMINAL_ID'     => 'NEWLAND_N950__SBX0000001',
+		'PAPELITO_EVENT_SALES_TERMINAL_ID'     => 'NEWLAND_N950__SBX0000001,NEWLAND_N950__SBX0000002',
 		'PAPELITO_EVENT_SALES_KIT_PRODUCT_IDS' => '101,102,103,104',
 	);
 	$GLOBALS['event_orders']       = array();
@@ -555,6 +555,39 @@ function test_order_routes_check_event(): void {
 	event_orders_assert( 'lead marca o pedido', '1' === $GLOBALS['event_orders'][900]->meta['_papelito_event_pdv_perfeito_lead'] );
 }
 
+function test_charge_goes_to_chosen_terminal(): void {
+	event_orders_reset();
+	$GLOBALS['event_mp']['create'] = array(
+		new WP_Error( 'papelito_mercadopago_unknown_outcome', 'timeout', array( 'category' => 'unknown_outcome' ) ),
+		event_orders_remote( 'at_terminal' ),
+	);
+	$input               = event_orders_input();
+	$input['terminalId'] = 'NEWLAND_N950__SBX0000002';
+	papelito_event_sales_create_order( $input );
+	papelito_event_sales_reconcile_attempt( $GLOBALS['memory_attempts'][1] );
+	$terminals = array_column( array_filter( $GLOBALS['event_mp_calls'], static fn( array $c ): bool => 'create' === $c[0] ), 3 );
+	event_orders_assert( 'cobra na maquininha escolhida e reenvia para a mesma', array( 'NEWLAND_N950__SBX0000002', 'NEWLAND_N950__SBX0000002' ) === $terminals );
+
+	event_orders_reset();
+	$GLOBALS['event_mp']['create'] = array( event_orders_remote( 'created' ) );
+	papelito_event_sales_create_order( event_orders_input() );
+	event_orders_assert( 'sem escolha cobra na primeira maquininha', 'NEWLAND_N950__SBX0000001' === $GLOBALS['event_mp_calls'][0][3] );
+
+	event_orders_reset();
+	$input['terminalId'] = 'PAX_A910__SMARTPOS1491733241';
+	$foreign             = papelito_event_sales_create_order( $input );
+	event_orders_assert( 'maquininha de fora do evento é recusada', $foreign instanceof WP_Error && 'papelito_event_terminal_invalid' === $foreign->get_error_code() );
+	event_orders_assert( 'maquininha recusada não cria pedido', array() === $GLOBALS['event_orders'] && array() === $GLOBALS['event_mp_calls'] );
+
+	event_orders_reset();
+	$GLOBALS['event_mp']['create'] = array( event_orders_remote( 'created' ), event_orders_remote( 'created', array( 'id' => 'ORD02', 'external_reference' => 'ppl-501-2' ) ) );
+	papelito_event_sales_create_order( event_orders_input() );
+	papelito_event_sales_apply_remote_order( $GLOBALS['memory_attempts'][1], event_orders_remote( 'failed' ) );
+	papelito_event_sales_retry( $GLOBALS['event_orders'][501], 'card', 'NEWLAND_N950__SBX0000002' );
+	event_orders_assert( 'nova tentativa pode ir para a outra maquininha', 'NEWLAND_N950__SBX0000002' === $GLOBALS['event_mp_calls'][1][3] );
+}
+
+test_charge_goes_to_chosen_terminal();
 test_create_twice_reuses_open_attempt();
 test_other_orders_are_never_reused();
 test_second_tap_opens_missing_attempt();

@@ -288,6 +288,7 @@ function papelito_event_sales_context( WP_User $user, int $vendor_id ): array {
 			'name'         => (string) $user->display_name,
 			'canSupervise' => user_can( $user, PAPELITO_EVENT_SALES_CAP_SUPERVISE ),
 		),
+		'terminals'  => papelito_event_sales_public_terminals(),
 		'levels'     => array_map( 'papelito_event_sales_public_level', papelito_event_sales_levels() ),
 		'kit'        => papelito_event_sales_context_kit( papelito_event_sales_price_index( $products ), $config['kit_product_ids'] ),
 		'categories' => papelito_event_sales_context_categories( $products ),

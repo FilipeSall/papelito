@@ -148,7 +148,7 @@ function test_shelves_rules(): void {
 function test_context_shape_keys(): void {
 	event_catalog_fixture();
 	$context = papelito_event_sales_context( new WP_User( 7, 'Operadora', array( 'papelito_event_sell' => true ) ), EVENT_CATALOG_TEST_VENDOR );
-	event_catalog_assert( 'contexto tem as chaves do contrato', array( 'event', 'operator', 'levels', 'kit', 'categories', 'products', 'shelves' ) === array_keys( $context ) );
+	event_catalog_assert( 'contexto tem as chaves do contrato', array( 'event', 'operator', 'terminals', 'levels', 'kit', 'categories', 'products', 'shelves' ) === array_keys( $context ) );
 	event_catalog_assert( 'evento tem id e nome', 'expocannabis-2026' === $context['event']['id'] && 'ExpoCannabis Brasil 2026' === $context['event']['name'] );
 	event_catalog_assert( 'operador sem supervise', 'Operadora' === $context['operator']['name'] && false === $context['operator']['canSupervise'] );
 	event_catalog_assert( 'kit calculado pelos preços atuais', 65595 === $context['kit']['unitCents'] && true === $context['kit']['available'] );

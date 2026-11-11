@@ -39,9 +39,10 @@ class Event_Admin_Order {
 
 const EVENT_ADMIN_TEST_TERMINAL = 'NEWLAND_N950__N950NCD600451364';
 const EVENT_ADMIN_TEST_EVENT    = 'expocannabis-2026';
+const EVENT_ADMIN_TEST_SECOND   = 'NEWLAND_N950__N950NCD700342623';
 
 $GLOBALS['eadm_caps']     = array();
-$GLOBALS['eadm_env']      = array( 'PAPELITO_EVENT_SALES_TERMINAL_ID' => EVENT_ADMIN_TEST_TERMINAL );
+$GLOBALS['eadm_env']      = array( 'PAPELITO_EVENT_SALES_TERMINAL_ID' => EVENT_ADMIN_TEST_TERMINAL . ',' . EVENT_ADMIN_TEST_SECOND );
 $GLOBALS['eadm_calls']    = array();
 $GLOBALS['eadm_attempts'] = array();
 
@@ -63,6 +64,7 @@ function papelito_mercadopago_point_list_terminals(): array {
 			'terminals' => array(
 				array( 'id' => EVENT_ADMIN_TEST_TERMINAL, 'operating_mode' => 'PDV' ),
 				array( 'id' => 'PAX_A910__OUTRA', 'operating_mode' => 'STANDALONE' ),
+				array( 'id' => EVENT_ADMIN_TEST_SECOND, 'operating_mode' => $GLOBALS['eadm_second_mode'] ?? 'PDV' ),
 			),
 		),
 	);
@@ -113,16 +115,20 @@ function test_settlement_csv_route_admin_only(): void {
 
 function test_terminals_check_marks_configured(): void {
 	$check = papelito_event_sales_terminals_check();
-	eadm_assert( 'lista os terminais da conta', 2 === count( $check['terminals'] ) );
+	eadm_assert( 'lista os terminais da conta', 3 === count( $check['terminals'] ) );
 	eadm_assert( 'marca o terminal do evento', true === $check['terminals'][0]['configured'] && 'PDV' === $check['terminals'][0]['operatingMode'] );
 	eadm_assert( 'os outros não são do evento', false === $check['terminals'][1]['configured'] );
 	eadm_assert( 'diz se o terminal do evento está pronto', true === $check['ready'] );
+	eadm_assert( 'marca as duas maquininhas do evento', true === $check['terminals'][2]['configured'] );
+	$GLOBALS['eadm_second_mode'] = 'STANDALONE';
+	eadm_assert( 'só fica pronto com todas as maquininhas do evento em PDV', false === papelito_event_sales_terminals_check()['ready'] );
+	$GLOBALS['eadm_second_mode'] = 'PDV';
 }
 
 function test_mode_only_on_configured_terminal(): void {
 	$GLOBALS['eadm_calls'] = array();
 	papelito_event_sales_terminal_mode( 'STANDALONE' );
-	eadm_assert( 'troca o modo só do terminal configurado', array( 'mode ' . EVENT_ADMIN_TEST_TERMINAL . ' STANDALONE' ) === $GLOBALS['eadm_calls'] );
+	eadm_assert( 'troca o modo só das maquininhas do evento', array( 'mode ' . EVENT_ADMIN_TEST_TERMINAL . ' STANDALONE', 'mode ' . EVENT_ADMIN_TEST_SECOND . ' STANDALONE' ) === $GLOBALS['eadm_calls'] );
 	eadm_assert( 'modo inválido é recusado', papelito_event_sales_terminal_mode( 'OUTRO' ) instanceof WP_Error );
 }
 

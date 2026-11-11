@@ -62,11 +62,32 @@ function papelito_event_sales_config_ids( string $name ): array {
 }
 
 /**
- * Configuração corrente do evento: janela, vendor que vende, terminal que cobra e produtos do kit.
+ * Ids de terminal de uma configuração CSV, sem espaço, repetição ou valor fora do formato da API.
  *
- * Relê constante e ambiente a cada chamada; vendor 0 ou terminal vazio significam "não configurado".
+ * @param string $name Nome da configuração.
+ * @return array<int,string>
+ */
+function papelito_event_sales_config_terminals( string $name ): array {
+	$ids = array();
+
+	foreach ( explode( ',', papelito_payment_gateways_config( $name, '' ) ) as $piece ) {
+		$piece = trim( $piece );
+		if ( 1 === preg_match( '/^[A-Za-z0-9_]{1,64}$/', $piece ) ) {
+			$ids[] = $piece;
+		}
+	}
+
+	return array_values( array_unique( $ids ) );
+}
+
+/**
+ * Configuração corrente do evento: janela, vendor que vende, maquininhas que cobram e produtos do kit.
  *
- * @return array{event_id:string, starts_at:int, ends_at:int, vendor_id:int, terminal_id:string, kit_product_ids:array<int,int>}
+ * Relê constante e ambiente a cada chamada; vendor 0 ou nenhuma maquininha significam "não
+ * configurado". `PAPELITO_EVENT_SALES_TERMINAL_ID` aceita lista separada por vírgula; a primeira é
+ * a padrão do tablet.
+ *
+ * @return array{event_id:string, starts_at:int, ends_at:int, vendor_id:int, terminal_ids:array<int,string>, kit_product_ids:array<int,int>}
  */
 function papelito_event_sales_config(): array {
 	return array(
@@ -74,9 +95,60 @@ function papelito_event_sales_config(): array {
 		'starts_at'       => papelito_event_sales_config_time( 'PAPELITO_EVENT_SALES_STARTS_AT', PAPELITO_EVENT_SALES_DEFAULT_STARTS ),
 		'ends_at'         => papelito_event_sales_config_time( 'PAPELITO_EVENT_SALES_ENDS_AT', PAPELITO_EVENT_SALES_DEFAULT_ENDS ),
 		'vendor_id'       => max( 0, (int) papelito_payment_gateways_config( 'PAPELITO_EVENT_SALES_VENDOR_ID', '0' ) ),
-		'terminal_id'     => papelito_payment_gateways_config( 'PAPELITO_EVENT_SALES_TERMINAL_ID', '' ),
+		'terminal_ids'    => papelito_event_sales_config_terminals( 'PAPELITO_EVENT_SALES_TERMINAL_ID' ),
 		'kit_product_ids' => papelito_event_sales_config_ids( 'PAPELITO_EVENT_SALES_KIT_PRODUCT_IDS' ),
 	);
+}
+
+/**
+ * Maquininha da cobrança: a pedida, se for do evento, ou a primeira configurada quando nada foi pedido.
+ *
+ * Uma cobrança vai para uma máquina só; maquininha de fora da lista (inclusive as do B2C) é recusada.
+ *
+ * @param string $requested Id pedido pelo tablet, ou vazio.
+ * @return string|WP_Error
+ */
+function papelito_event_sales_resolve_terminal( string $requested ): string|WP_Error {
+	$terminals = papelito_event_sales_config()['terminal_ids'];
+	$requested = trim( $requested );
+
+	if ( '' === $requested && array() !== $terminals ) {
+		return $terminals[0];
+	}
+
+	if ( in_array( $requested, $terminals, true ) ) {
+		return $requested;
+	}
+
+	return new WP_Error( 'papelito_event_terminal_invalid', 'Essa maquininha não é do evento.', array( 'status' => 400 ) );
+}
+
+/**
+ * Nome curto da maquininha para o tablet, pelos quatro últimos dígitos do número de série.
+ *
+ * @param string $terminal_id Id do terminal na API.
+ * @return string
+ */
+function papelito_event_sales_terminal_label( string $terminal_id ): string {
+	return 'Maquininha final ' . substr( $terminal_id, -4 );
+}
+
+/**
+ * Maquininhas do evento no formato do contexto do tablet, a padrão primeiro.
+ *
+ * @return array<int,array{id:string,label:string}>
+ */
+function papelito_event_sales_public_terminals(): array {
+	$terminals = array();
+
+	foreach ( papelito_event_sales_config()['terminal_ids'] as $terminal_id ) {
+		$terminals[] = array(
+			'id'    => $terminal_id,
+			'label' => papelito_event_sales_terminal_label( $terminal_id ),
+		);
+	}
+
+	return $terminals;
 }
 
 /**
@@ -122,7 +194,7 @@ function papelito_event_sales_require_seller( WP_REST_Request $request ): bool|W
 	}
 
 	$config = papelito_event_sales_config();
-	if ( $config['vendor_id'] <= 0 || '' === $config['terminal_id'] ) {
+	if ( $config['vendor_id'] <= 0 || array() === $config['terminal_ids'] ) {
 		return new WP_Error( 'papelito_event_not_configured', 'O evento ainda não foi configurado.', array( 'status' => 503 ) );
 	}
 

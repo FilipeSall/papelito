@@ -332,11 +332,12 @@ function papelito_event_sales_attempt_age( array $attempt ): int {
  * @return array<string,mixed>|WP_Error Order existente ou recém-criada.
  */
 function papelito_event_sales_recover_remote( array $attempt ): array|WP_Error {
-	$config = papelito_event_sales_config();
-	$order  = wc_get_order( (int) $attempt['order_id'] );
-	$number = is_object( $order ) ? (string) $order->get_order_number() : (string) $attempt['order_id'];
+	$order = wc_get_order( (int) $attempt['order_id'] );
+	if ( ! is_object( $order ) ) {
+		return papelito_mercadopago_error( 'validation', 'Pedido da cobrança não encontrado.' );
+	}
 
-	return papelito_mercadopago_point_create_order( $attempt, (int) $attempt['amount_cents'], $config['terminal_id'], (string) $attempt['payment_method'], papelito_event_sales_order_description( $number ) );
+	return papelito_mercadopago_point_create_order( $attempt, (int) $attempt['amount_cents'], papelito_event_sales_order_terminal( $order ), (string) $attempt['payment_method'], papelito_event_sales_order_description( (string) $order->get_order_number() ) );
 }
 
 /**

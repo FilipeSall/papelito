@@ -98,7 +98,7 @@ function test_config_parses_csv_and_dates(): void {
 	event_config_assert( 'início padrão é 20/11 às 0h de Brasília', strtotime( EVENT_SALES_TEST_STARTS ) === $config['starts_at'] );
 	event_config_assert( 'fim padrão é 22/11 às 23h59 de Brasília', strtotime( EVENT_SALES_TEST_ENDS ) === $config['ends_at'] );
 	event_config_assert( 'vendor vem do ambiente', 2163 === $config['vendor_id'] );
-	event_config_assert( 'terminal sem espaços', 'NEWLAND_N950__N950NCD600451364' === $config['terminal_id'] );
+	event_config_assert( 'terminal sem espaços', array( 'NEWLAND_N950__N950NCD600451364' ) === $config['terminal_ids'] );
 	event_config_assert( 'id do evento é fixo', EVENT_SALES_TEST_ID === $config['event_id'] );
 
 	$GLOBALS['event_env'] = array( 'PAPELITO_EVENT_SALES_STARTS_AT' => 'amanhã cedo' );
@@ -152,7 +152,19 @@ function test_require_seller_error_order(): void {
 	event_config_assert( 'supervisor passa', true === papelito_event_sales_require_supervisor( $request ) );
 }
 
+function test_terminals_list_and_choice(): void {
+	$GLOBALS['event_env'] = array( 'PAPELITO_EVENT_SALES_TERMINAL_ID' => 'NEWLAND_N950__N950NCD600451364, NEWLAND_N950__N950NCD700342623,x y,NEWLAND_N950__N950NCD600451364' );
+	$ids                  = papelito_event_sales_config()['terminal_ids'];
+	event_config_assert( 'lista de terminais sem repetição nem lixo', array( 'NEWLAND_N950__N950NCD600451364', 'NEWLAND_N950__N950NCD700342623' ) === $ids );
+	event_config_assert( 'sem escolha usa a primeira maquininha', 'NEWLAND_N950__N950NCD600451364' === papelito_event_sales_resolve_terminal( '' ) );
+	event_config_assert( 'escolhe a segunda maquininha', 'NEWLAND_N950__N950NCD700342623' === papelito_event_sales_resolve_terminal( 'NEWLAND_N950__N950NCD700342623' ) );
+	event_config_assert( 'maquininha de fora do evento é recusada', event_config_error_is( papelito_event_sales_resolve_terminal( 'PAX_A910__SMARTPOS1491733241' ), 'papelito_event_terminal_invalid', 400 ) );
+	event_config_assert( 'rótulo pelo final do número de série', 'Maquininha final 1364' === papelito_event_sales_terminal_label( 'NEWLAND_N950__N950NCD600451364' ) );
+	event_config_assert( 'contexto lista as maquininhas', array( array( 'id' => 'NEWLAND_N950__N950NCD600451364', 'label' => 'Maquininha final 1364' ), array( 'id' => 'NEWLAND_N950__N950NCD700342623', 'label' => 'Maquininha final 2623' ) ) === papelito_event_sales_public_terminals() );
+}
+
 test_routes_register_without_any_flag();
+test_terminals_list_and_choice();
 test_config_parses_csv_and_dates();
 test_window_blocks_operator_outside_and_allows_admin();
 test_require_seller_error_order();

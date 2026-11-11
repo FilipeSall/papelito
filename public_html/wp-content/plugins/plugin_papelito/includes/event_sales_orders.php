@@ -22,6 +22,7 @@ const PAPELITO_EVENT_SALES_OPERATOR_META = '_papelito_event_operator_id';
 const PAPELITO_EVENT_SALES_QUOTE_META    = '_papelito_event_quote';
 const PAPELITO_EVENT_SALES_LEAD_META     = '_papelito_event_pdv_perfeito_lead';
 const PAPELITO_EVENT_SALES_CHECKOUT_META = '_papelito_checkout_attempt_id';
+const PAPELITO_EVENT_SALES_TERMINAL_META = '_papelito_event_terminal_id';
 const PAPELITO_EVENT_SALES_TOTAL_META    = '_papelito_authoritative_total_cents';
 const PAPELITO_EVENT_SALES_METHODS       = array( 'card', 'pix' );
 const PAPELITO_EVENT_SALES_ATTEMPT_OPEN  = 'papelito_event_attempt_open';
@@ -264,8 +265,7 @@ function papelito_event_sales_dispatch_attempt( array $attempt, object $order ):
 		return papelito_event_sales_public_state( papelito_payment_attempt_find( $id ) );
 	}
 
-	$config = papelito_event_sales_config();
-	$remote = papelito_mercadopago_point_create_order( $attempt, (int) $attempt['amount_cents'], $config['terminal_id'], (string) $attempt['payment_method'], papelito_event_sales_order_description( (string) $order->get_order_number() ) );
+	$remote = papelito_mercadopago_point_create_order( $attempt, (int) $attempt['amount_cents'], papelito_event_sales_order_terminal( $order ), (string) $attempt['payment_method'], papelito_event_sales_order_description( (string) $order->get_order_number() ) );
 
 	$category = is_wp_error( $remote ) ? (string) ( ( (array) $remote->get_error_data() )['category'] ?? '' ) : '';
 
@@ -281,18 +281,41 @@ function papelito_event_sales_dispatch_attempt( array $attempt, object $order ):
 }
 
 /**
- * Abre uma tentativa da Point na conta da Papelito e a despacha.
+ * Maquininha da cobrança atual do pedido. A recuperação reenvia para ela, nunca para outra.
+ *
+ * Pedido de antes da escolha de maquininha cai na primeira configurada.
+ *
+ * @param object $order Pedido do evento.
+ * @return string
+ */
+function papelito_event_sales_order_terminal( object $order ): string {
+	$stored = (string) $order->get_meta( PAPELITO_EVENT_SALES_TERMINAL_META, true );
+	if ( '' !== $stored ) {
+		return $stored;
+	}
+
+	$terminals = papelito_event_sales_config()['terminal_ids'];
+
+	return $terminals[0] ?? '';
+}
+
+/**
+ * Abre uma tentativa da Point na conta da Papelito e a despacha para a maquininha escolhida.
  *
  * @param object $order        Pedido do evento.
  * @param int    $amount_cents Valor cobrado.
  * @param string $method       `card` ou `pix`.
+ * @param string $terminal_id  Maquininha já validada por `papelito_event_sales_resolve_terminal()`.
  * @return array<string,mixed>|WP_Error Resumo do pedido.
  */
-function papelito_event_sales_open_attempt( object $order, int $amount_cents, string $method ): array|WP_Error {
+function papelito_event_sales_open_attempt( object $order, int $amount_cents, string $method, string $terminal_id ): array|WP_Error {
 	$collector = papelito_mercadopago_point_collector_id();
 	if ( is_wp_error( $collector ) ) {
 		return $collector;
 	}
+
+	$order->update_meta_data( PAPELITO_EVENT_SALES_TERMINAL_META, $terminal_id );
+	$order->save();
 
 	$attempt = papelito_payment_attempt_create(
 		array(
@@ -424,11 +447,12 @@ function papelito_event_sales_build_order( array $input, array $buyer, array $ad
 /**
  * Valida, cota e cria o pedido, e manda a cobrança para a Point.
  *
- * @param array<string,mixed> $input  Corpo do pedido.
- * @param string              $method `card` ou `pix`.
+ * @param array<string,mixed> $input       Corpo do pedido.
+ * @param string              $method      `card` ou `pix`.
+ * @param string              $terminal_id Maquininha validada.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_event_sales_place_order( array $input, string $method ): array|WP_Error {
+function papelito_event_sales_place_order( array $input, string $method, string $terminal_id ): array|WP_Error {
 	$buyer = papelito_event_sales_order_buyer( $input );
 	if ( is_wp_error( $buyer ) ) {
 		return $buyer;
@@ -449,23 +473,24 @@ function papelito_event_sales_place_order( array $input, string $method ): array
 		return $order;
 	}
 
-	return papelito_event_sales_open_attempt( $order, (int) $quote['totalCents'], $method );
+	return papelito_event_sales_open_attempt( $order, (int) $quote['totalCents'], $method, $terminal_id );
 }
 
 /**
  * Pedido já criado pelo mesmo atendimento: devolve o estado ou, se a cobrança nem chegou a abrir
  * (credencial ausente, Mercado Pago fora), abre agora no mesmo pedido.
  *
- * @param object $order  Pedido do evento.
- * @param string $method `card` ou `pix`.
+ * @param object $order       Pedido do evento.
+ * @param string $method      `card` ou `pix`.
+ * @param string $terminal_id Maquininha validada.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_event_sales_resume_order( object $order, string $method ): array|WP_Error {
+function papelito_event_sales_resume_order( object $order, string $method, string $terminal_id ): array|WP_Error {
 	if ( null !== papelito_event_sales_latest_attempt( $order ) ) {
 		return papelito_event_sales_order_summary( $order );
 	}
 
-	return papelito_event_sales_retry_locked( $order, $method );
+	return papelito_event_sales_retry_locked( $order, $method, $terminal_id );
 }
 
 /**
@@ -498,6 +523,11 @@ function papelito_event_sales_create_order( array $input ): array|WP_Error {
 		return $method;
 	}
 
+	$terminal = papelito_event_sales_resolve_terminal( (string) ( $input['terminalId'] ?? '' ) );
+	if ( is_wp_error( $terminal ) ) {
+		return $terminal;
+	}
+
 	$checkout = (string) ( $input['checkoutAttemptId'] ?? '' );
 	if ( 1 !== preg_match( '/^[A-Za-z0-9_-]{1,120}$/', $checkout ) ) {
 		return papelito_event_sales_order_error( 'papelito_event_checkout_invalid', 'Atendimento inválido. Comece um pedido novo.', 400 );
@@ -510,7 +540,7 @@ function papelito_event_sales_create_order( array $input ): array|WP_Error {
 
 	try {
 		$existing = papelito_event_sales_find_order_by_checkout( $checkout );
-		$result   = null === $existing ? papelito_event_sales_place_order( $input, $method ) : papelito_event_sales_resume_order( $existing, $method );
+		$result   = null === $existing ? papelito_event_sales_place_order( $input, $method, $terminal ) : papelito_event_sales_resume_order( $existing, $method, $terminal );
 	} finally {
 		papelito_payment_attempt_release_lock( $lock );
 	}
@@ -575,11 +605,12 @@ function papelito_event_sales_cancel( object $order ): array|WP_Error {
 /**
  * Nova tentativa no mesmo pedido, só depois que a anterior terminou e com o pedido aberto.
  *
- * @param object $order  Pedido do evento.
- * @param string $method `card` ou `pix`.
+ * @param object $order       Pedido do evento.
+ * @param string $method      `card` ou `pix`.
+ * @param string $terminal_id Maquininha validada; pode ser outra que a da tentativa anterior.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_event_sales_retry_locked( object $order, string $method ): array|WP_Error {
+function papelito_event_sales_retry_locked( object $order, string $method, string $terminal_id ): array|WP_Error {
 	if ( in_array( $order->get_status(), array( 'cancelled', 'failed', 'processing', 'completed', 'on-hold' ), true ) ) {
 		return papelito_event_sales_order_error( 'papelito_event_order_closed', 'Este pedido não aceita nova cobrança.', PAPELITO_EVENT_SALES_CONFLICT );
 	}
@@ -592,25 +623,31 @@ function papelito_event_sales_retry_locked( object $order, string $method ): arr
 
 	$amount = null === $attempt ? (int) $order->get_meta( PAPELITO_EVENT_SALES_TOTAL_META, true ) : (int) $attempt['amount_cents'];
 
-	return papelito_event_sales_open_attempt( $order, $amount, $method );
+	return papelito_event_sales_open_attempt( $order, $amount, $method, $terminal_id );
 }
 
 /**
- * `POST orders/{id}/retry`.
+ * `POST orders/{id}/retry`, na maquininha pedida ou na padrão do evento.
  *
- * @param object $order  Pedido do evento.
- * @param mixed  $method Forma escolhida.
+ * @param object $order    Pedido do evento.
+ * @param mixed  $method   Forma escolhida.
+ * @param mixed  $terminal Maquininha pedida, ou vazio.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_event_sales_retry( object $order, mixed $method ): array|WP_Error {
+function papelito_event_sales_retry( object $order, mixed $method, mixed $terminal = '' ): array|WP_Error {
 	$method = papelito_event_sales_method( $method );
 	if ( is_wp_error( $method ) ) {
 		return $method;
 	}
 
+	$terminal = papelito_event_sales_resolve_terminal( is_string( $terminal ) ? $terminal : '' );
+	if ( is_wp_error( $terminal ) ) {
+		return $terminal;
+	}
+
 	return papelito_event_sales_with_order_lock(
 		$order,
-		static fn( object $locked ): array|WP_Error => papelito_event_sales_retry_locked( $locked, $method )
+		static fn( object $locked ): array|WP_Error => papelito_event_sales_retry_locked( $locked, $method, $terminal )
 	);
 }
 
@@ -818,7 +855,7 @@ function papelito_event_sales_cancel_endpoint( WP_REST_Request $request ): WP_RE
  * @return WP_REST_Response|WP_Error
  */
 function papelito_event_sales_retry_endpoint( WP_REST_Request $request ): WP_REST_Response|WP_Error {
-	return papelito_event_sales_order_action( $request, static fn( object $order, array $body ): array|WP_Error => papelito_event_sales_retry( $order, $body['method'] ?? '' ) );
+	return papelito_event_sales_order_action( $request, static fn( object $order, array $body ): array|WP_Error => papelito_event_sales_retry( $order, $body['method'] ?? '', $body['terminalId'] ?? '' ) );
 }
 
 /**

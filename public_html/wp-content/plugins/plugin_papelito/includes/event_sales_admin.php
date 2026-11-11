@@ -3,8 +3,8 @@
  * Rotas de administrador da venda no estande: repasse à Cifal, terminais e estorno.
  *
  * Só `manage_options`. O repasse sai do ledger em JSON ou CSV; a conferência de terminais lista os
- * terminais da conta Papelito e marca o configurado no evento; o modo da máquina (PDV para o
- * evento, STANDALONE depois) e o estorno agem só no terminal e nas orders do evento.
+ * terminais da conta Papelito e marca as maquininhas do evento; o modo (PDV para o evento,
+ * STANDALONE depois) e o estorno agem só nas maquininhas e nas orders do evento.
  *
  * O que este módulo não faz: não grava o ledger de estorno; isso chega pelo webhook `refunded`.
  *
@@ -95,7 +95,7 @@ function papelito_event_sales_terminals_from_list( array $response ): array {
 }
 
 /**
- * Terminais da conta Papelito, marcando o configurado no evento e se ele está em PDV.
+ * Terminais da conta Papelito, marcando as maquininhas do evento. Pronto só com todas em PDV.
  *
  * @return array{terminals:array<int,array{id:string,operatingMode:string,configured:bool}>,ready:bool}|WP_Error
  */
@@ -105,15 +105,15 @@ function papelito_event_sales_terminals_check(): array|WP_Error {
 		return $list;
 	}
 
-	$configured = papelito_event_sales_config()['terminal_id'];
+	$configured = papelito_event_sales_config()['terminal_ids'];
 	$terminals  = array();
-	$ready      = false;
+	$in_pdv     = array();
 
 	foreach ( papelito_event_sales_terminals_from_list( $list ) as $terminal ) {
 		$id          = (string) ( $terminal['id'] ?? '' );
 		$mode        = (string) ( $terminal['operating_mode'] ?? '' );
-		$is_event    = '' !== $configured && $configured === $id;
-		$ready       = $ready || ( $is_event && 'PDV' === $mode );
+		$is_event    = in_array( $id, $configured, true );
+		$in_pdv[]    = $is_event && 'PDV' === $mode ? $id : '';
 		$terminals[] = array(
 			'id'            => $id,
 			'operatingMode' => $mode,
@@ -123,31 +123,34 @@ function papelito_event_sales_terminals_check(): array|WP_Error {
 
 	return array(
 		'terminals' => $terminals,
-		'ready'     => $ready,
+		'ready'     => array() !== $configured && array() === array_diff( $configured, $in_pdv ),
 	);
 }
 
 /**
- * Troca o modo da máquina configurada no evento. Outro terminal nunca é tocado.
+ * Troca o modo de todas as maquininhas do evento, uma chamada por terminal (a API aceita um por
+ * vez). Terminal de fora do evento nunca é tocado.
  *
  * @param string $mode `PDV` ou `STANDALONE`.
  * @return array<string,mixed>|WP_Error
  */
 function papelito_event_sales_terminal_mode( string $mode ): array|WP_Error {
-	$terminal = papelito_event_sales_config()['terminal_id'];
+	$terminals = papelito_event_sales_config()['terminal_ids'];
 
-	if ( '' === $terminal || ! in_array( $mode, array( 'PDV', 'STANDALONE' ), true ) ) {
+	if ( array() === $terminals || ! in_array( $mode, array( 'PDV', 'STANDALONE' ), true ) ) {
 		return new WP_Error( 'papelito_event_terminal_mode_invalid', 'Modo inválido ou terminal do evento não configurado.', array( 'status' => 400 ) );
 	}
 
-	$result = papelito_mercadopago_point_set_mode( $terminal, $mode );
-	if ( is_wp_error( $result ) ) {
-		return $result;
+	foreach ( $terminals as $terminal ) {
+		$result = papelito_mercadopago_point_set_mode( $terminal, $mode );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
 	}
 
 	return array(
-		'terminalId' => $terminal,
-		'mode'       => $mode,
+		'terminalIds' => $terminals,
+		'mode'        => $mode,
 	);
 }
 
