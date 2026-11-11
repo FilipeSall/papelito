@@ -162,9 +162,10 @@ require_once __DIR__ . '/includes/event_sales_pricing.php';
 require_once __DIR__ . '/includes/event_sales_catalog.php';
 require_once __DIR__ . '/includes/event_sales_buyers.php';
 require_once __DIR__ . '/includes/event_sales_quote.php';
+require_once __DIR__ . '/includes/event_sales_settlement.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
-	define( 'PAPELITO_DB_VERSION', '1.63.0' );
+	define( 'PAPELITO_DB_VERSION', '1.64.0' );
 }
 
 /**
@@ -232,6 +233,7 @@ function papelito_maybe_migrate_db() {
 				'papelito_vendor_payment_accounts_install_table',
 				'papelito_legacy_prune_email_cron',
 				'papelito_report_operations_install_tables',
+				'papelito_event_sales_install_tables',
 			)
 		);
 
