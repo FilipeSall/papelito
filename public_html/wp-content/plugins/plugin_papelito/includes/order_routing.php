@@ -423,6 +423,8 @@ function papelito_order_routing_payment_method_label( string $method ): string {
 			return 'Boleto';
 		case 'mercadopago':
 			return 'Mercado Pago';
+		case 'mercadopago_point':
+			return 'Maquininha Mercado Pago';
 		default:
 			return 'Pagamento headless';
 	}

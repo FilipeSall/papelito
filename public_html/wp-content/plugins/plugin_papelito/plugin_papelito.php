@@ -119,6 +119,7 @@ require_once __DIR__ . '/includes/vendor_payment_policy.php';
 require_once __DIR__ . '/includes/vendor_financial_profile.php';
 require_once __DIR__ . '/includes/pagarme_financial_profile.php';
 require_once __DIR__ . '/includes/mercadopago_client.php';
+require_once __DIR__ . '/includes/mercadopago_point.php';
 require_once __DIR__ . '/includes/vendor_payment_accounts.php';
 require_once __DIR__ . '/includes/mercadopago_oauth.php';
 require_once __DIR__ . '/includes/payment_gateway_health.php';

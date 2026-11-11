@@ -255,7 +255,7 @@ function papelito_mercadopago_path_is_safe( string $path ): bool {
 /**
  * Requisição autenticada com o token de uma conta de vendor já resolvida pelo chamador.
  *
- * Args: `token` (obrigatório), `body`, `query`, `idempotency_key`, `timeout`.
+ * Args: `token` (obrigatório), `body`, `query`, `idempotency_key`, `timeout` e `headers` (lista fechada).
  * Nenhum POST é repetido aqui: retry de escrita só depois de reconciliar.
  *
  * @param string              $method Método HTTP.
@@ -303,6 +303,47 @@ function papelito_mercadopago_oauth_token_request( array $fields ) {
 }
 
 /**
+ * Cabeçalhos extras que o chamador pode mandar, filtrados por lista fechada e em minúsculas.
+ *
+ * Só `x-allow-cancelable-status` (cancelar order da Point na máquina) passa; autenticação,
+ * conteúdo e idempotência continuam exclusivos deste módulo.
+ *
+ * @param mixed $headers Cabeçalhos pedidos.
+ * @return array<string,string>
+ */
+function papelito_mercadopago_extra_headers( mixed $headers ): array {
+	$allowed = array( 'x-allow-cancelable-status' );
+	$extra   = array();
+
+	foreach ( is_array( $headers ) ? $headers : array() as $name => $value ) {
+		$name = strtolower( (string) $name );
+		if ( in_array( $name, $allowed, true ) && is_scalar( $value ) ) {
+			$extra[ $name ] = sanitize_text_field( (string) $value );
+		}
+	}
+
+	return $extra;
+}
+
+/**
+ * Código e mensagem do erro remoto, no formato clássico (`error`/`code`) ou da Orders API (`errors[]`).
+ *
+ * @param mixed $decoded Corpo decodificado.
+ * @return array{0:string,1:string}
+ */
+function papelito_mercadopago_remote_error( mixed $decoded ): array {
+	if ( ! is_array( $decoded ) ) {
+		return array( '', '' );
+	}
+
+	$first = is_array( $decoded['errors'][0] ?? null ) ? $decoded['errors'][0] : array();
+	$code  = $decoded['error'] ?? $decoded['code'] ?? $first['code'] ?? '';
+	$text  = $decoded['message'] ?? $first['message'] ?? '';
+
+	return array( sanitize_key( is_scalar( $code ) ? (string) $code : '' ), is_scalar( $text ) ? (string) $text : '' );
+}
+
+/**
  * Envia a requisição e categoriza o resultado.
  *
  * @param string               $method  Método HTTP.
@@ -330,6 +371,7 @@ function papelito_mercadopago_send( string $method, string $path, array $args, a
 	if ( ! empty( $args['idempotency_key'] ) ) {
 		$headers['X-Idempotency-Key'] = (string) $args['idempotency_key'];
 	}
+	$headers = array_merge( papelito_mercadopago_extra_headers( $args['headers'] ?? array() ), $headers );
 
 	$request_args = array(
 		'method'              => $method,
@@ -380,9 +422,8 @@ function papelito_mercadopago_interpret( string $method, mixed $response ) {
 		return papelito_mercadopago_error( $is_write ? 'unknown_outcome' : 'unavailable', 'Resposta ilegível do Mercado Pago.', array( 'http_status' => $status ) );
 	}
 
-	$remote_code = is_array( $decoded ) ? sanitize_key( (string) ( $decoded['error'] ?? $decoded['code'] ?? '' ) ) : '';
-	$message     = is_array( $decoded ) ? (string) ( $decoded['message'] ?? '' ) : '';
-	$extra       = array(
+	list( $remote_code, $message ) = papelito_mercadopago_remote_error( $decoded );
+	$extra                         = array(
 		'http_status' => $status,
 		'remote_code' => $remote_code,
 	);

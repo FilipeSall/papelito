@@ -48,13 +48,25 @@ function papelito_payment_providers(): array {
 }
 
 /**
- * Diz se o identificador é um gateway conhecido.
+ * Providers que cobram fora da escolha do vendor, como a Point da conta Papelito no evento.
+ *
+ * Ficam fora de `papelito_payment_providers()` porque o resolver de gateway e a saúde do vendor
+ * iteram aquela lista; aqui só se reconhece a tentativa como válida.
+ *
+ * @return array<int,string>
+ */
+function papelito_payment_internal_providers(): array {
+	return array( 'mercadopago_point' );
+}
+
+/**
+ * Diz se o identificador é um gateway conhecido, de vendor ou interno.
  *
  * @param string $provider Identificador cru.
  * @return bool
  */
 function papelito_payment_provider_is_valid( string $provider ): bool {
-	return in_array( $provider, papelito_payment_providers(), true );
+	return in_array( $provider, array_merge( papelito_payment_providers(), papelito_payment_internal_providers() ), true );
 }
 
 /**
