@@ -160,6 +160,7 @@ require_once __DIR__ . '/includes/event_sales_config.php';
 require_once __DIR__ . '/includes/event_sales_pricing.php';
 require_once __DIR__ . '/includes/event_sales_catalog.php';
 require_once __DIR__ . '/includes/event_sales_buyers.php';
+require_once __DIR__ . '/includes/event_sales_quote.php';
 
 if ( ! defined( 'PAPELITO_DB_VERSION' ) ) {
 	define( 'PAPELITO_DB_VERSION', '1.63.0' );
