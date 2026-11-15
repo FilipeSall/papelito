@@ -39,7 +39,8 @@ function papelito_event_sales_qty_by_product( array $items ): array {
 }
 
 /**
- * Preço atual de cada produto pedido, só para produto que o catálogo do estande venderia.
+ * Preço do estande de cada produto pedido (o próprio do evento ou o do site), só para produto que o
+ * catálogo do estande venderia.
  *
  * Produto reprovado por `papelito_event_sales_product_sellable()` fica fora do índice e as regras
  * de preço o recusam como desconhecido.
@@ -54,7 +55,7 @@ function papelito_event_sales_load_prices( array $product_ids ): array {
 		$product = wc_get_product( $product_id );
 		if ( $product instanceof WC_Product && papelito_event_sales_product_sellable( $product ) ) {
 			$index[ (int) $product_id ] = array(
-				'price_cents' => papelito_event_sales_to_cents( (string) $product->get_price( 'edit' ) ),
+				'price_cents' => papelito_event_sales_price_override( (int) $product_id ) ?? papelito_event_sales_to_cents( (string) $product->get_price( 'edit' ) ),
 				'name'        => $product->get_name(),
 			);
 		}
@@ -138,7 +139,7 @@ function papelito_event_sales_shipping_items( array $priced, array $products, ar
 
 	$kits = (int) $priced['kit']['qty'];
 	foreach ( $kits > 0 ? $kit_ids : array() as $product_id ) {
-		$unit  = papelito_event_sales_kit_unit_cents( array( $products[ $product_id ]['price_cents'] ) );
+		$unit  = papelito_event_sales_kit_unit_cents( array( $products[ $product_id ]['price_cents'] ), papelito_event_sales_kit_pct_kept() );
 		$entry = $items[ $product_id ] ?? array(
 			'product_id'           => $product_id,
 			'qty'                  => 0,
@@ -154,7 +155,7 @@ function papelito_event_sales_shipping_items( array $priced, array $products, ar
 }
 
 /**
- * Componentes do kit com o preço cheio e o preço com −15%, para as linhas do pedido.
+ * Componentes do kit com o preço cheio e o preço com o desconto do kit, para as linhas do pedido.
  *
  * @param array<string,mixed>                           $priced   Resultado de `papelito_event_sales_price()`.
  * @param array<int,array{price_cents:int,name:string}> $products Catálogo por id.
@@ -169,7 +170,7 @@ function papelito_event_sales_kit_components( array $priced, array $products, ar
 		$components[] = array(
 			'product_id'  => (int) $product_id,
 			'price_cents' => $price,
-			'unit_cents'  => papelito_event_sales_kit_unit_cents( array( $price ) ),
+			'unit_cents'  => papelito_event_sales_kit_unit_cents( array( $price ), papelito_event_sales_kit_pct_kept() ),
 		);
 	}
 
@@ -228,8 +229,9 @@ function papelito_event_sales_quote( array $input ): array|WP_Error {
 	$qty     = papelito_event_sales_qty_by_product( is_array( $input['items'] ?? null ) ? $input['items'] : array() );
 	$kits    = (int) ( $input['kits'] ?? 0 );
 
+	$pct_kept = papelito_event_sales_kit_pct_kept();
 	$products = papelito_event_sales_load_prices( array_merge( array_keys( $qty ), $kits > 0 ? $kit_ids : array() ) );
-	$priced   = papelito_event_sales_price( $products, $qty, $kits, $kit_ids );
+	$priced   = papelito_event_sales_price( $products, $qty, $kits, $kit_ids, $pct_kept );
 	if ( is_wp_error( $priced ) ) {
 		return $priced;
 	}
@@ -260,6 +262,7 @@ function papelito_event_sales_quote( array $input ): array|WP_Error {
 		'itemsCents'      => $priced['items_cents'],
 		'discountCents'   => $priced['discount_cents'],
 		'kitSavingsCents' => $priced['kit_savings_cents'],
+		'kitPctOff'       => 100 - $pct_kept,
 		'shipping'        => array(
 			'optionKey'    => (string) $shipping['option_key'],
 			'name'         => (string) ( $shipping['name'] ?? '' ),

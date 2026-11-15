@@ -56,6 +56,7 @@ function wp_json_encode( mixed $value ): string { return json_encode( $value ); 
 function wp_salt( string $scheme = 'auth' ): string { return 'sal-de-teste'; }
 function papelito_env( string $key, mixed $default = null ): mixed { return $GLOBALS['quote_env'][ $key ] ?? $default; }
 function papelito_kit_is_product( int $product_id ): bool { return false; }
+function get_option( string $name, mixed $default_value = false ): mixed { return $GLOBALS['quote_options'][ $name ] ?? $default_value; }
 function papelito_product_get_category( mixed $product_id ): ?array {
 	return in_array( (int) $product_id, $GLOBALS['quote_orphans'], true ) ? null : array( 'id' => 1, 'slug' => 'sedas', 'name' => 'Sedas' );
 }
@@ -73,6 +74,7 @@ function papelito_shipping_quote_all_providers( int $vendor_id, string $destinat
 require_once dirname( __DIR__ ) . '/includes/payment_providers.php';
 require_once dirname( __DIR__ ) . '/includes/event_sales_config.php';
 require_once dirname( __DIR__ ) . '/includes/event_sales_pricing.php';
+require_once dirname( __DIR__ ) . '/includes/event_sales_prices.php';
 require_once dirname( __DIR__ ) . '/includes/event_sales_catalog.php';
 require_once dirname( __DIR__ ) . '/includes/event_sales_quote.php';
 
@@ -113,6 +115,7 @@ function event_quote_fixture(): void {
 	$GLOBALS['quote_calls']    = array();
 	$GLOBALS['quote_hidden']   = array();
 	$GLOBALS['quote_orphans']  = array();
+	$GLOBALS['quote_options']  = array();
 	$GLOBALS['quote_shipping'] = array(
 		'options' => array(
 			event_quote_option( 'correios', 'correios:sedex', 4500 ),
@@ -192,6 +195,25 @@ function test_fingerprint_changes_with_price(): void {
 	event_quote_assert( 'produto que não existe é recusado', $unknown instanceof WP_Error && 'papelito_event_unknown_product' === $unknown->get_error_code() );
 }
 
+function test_event_prices_drive_quote(): void {
+	event_quote_fixture();
+	$input = event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 3 ) ), 0 );
+	$site  = papelito_event_sales_quote( $input );
+
+	$GLOBALS['quote_options'] = array(
+		'papelito_event_sales_prices' => array(
+			'prices'      => array( EVENT_QUOTE_TEST_LOOSE => 10000 ),
+			'kit_pct_off' => 20,
+		),
+	);
+	$event = papelito_event_sales_quote( $input );
+	event_quote_assert( 'cotação cobra o preço próprio do evento', 30000 === $event['itemsCents'] );
+	event_quote_assert( 'preço próprio muda o fingerprint', $site['quoteFingerprint'] !== $event['quoteFingerprint'] );
+
+	$kit = papelito_event_sales_quote( event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 6 ) ), 1 ) );
+	event_quote_assert( 'kit usa o desconto configurado', 14416 === $kit['kitComponents'][0]['unit_cents'] && 20 === $kit['kitPctOff'] );
+}
+
 function test_products_out_of_catalog_are_refused(): void {
 	event_quote_fixture();
 	$input                    = event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 3 ) ), 0 );
@@ -223,6 +245,7 @@ test_fingerprint_changes_with_kit_composition();
 test_quote_picks_cheapest_correios();
 test_kit_component_stock_counts_kits();
 test_fingerprint_changes_with_price();
+test_event_prices_drive_quote();
 
 if ( $failures > 0 ) {
 	echo "{$failures} falha(s)\n";

@@ -2,8 +2,9 @@
 /**
  * Catálogo e contexto do tablet na venda do estande.
  *
- * Entrega numa chamada tudo o que as telas precisam para montar a loja: produtos com preço atual e
- * estoque do vendor do evento, categorias, prateleiras, níveis e o preço do Kit Premium.
+ * Entrega numa chamada tudo o que as telas precisam para montar a loja: produtos com o preço do
+ * estande (o preço próprio do evento, quando o admin definiu um, senão o do site) e estoque do
+ * vendor do evento, categorias, prateleiras, níveis e o preço do Kit Premium.
  *
  * Regra de ouro: o produto sem estoque continua listado (o tablet mostra "Sem estoque"), e o kit
  * cadastrado no WooCommerce nunca entra: o Kit Premium do evento é calculado a partir dos 4
@@ -84,27 +85,28 @@ function papelito_event_sales_catalog_row( WC_Product $product, int $vendor_id )
 	}
 
 	$product_id = $product->get_id();
-	$price      = papelito_event_sales_to_cents( (string) $product->get_price( 'edit' ) );
+	$site_price = papelito_event_sales_to_cents( (string) $product->get_price( 'edit' ) );
 	$category   = (array) papelito_product_get_category( $product_id );
 
 	$image   = wp_get_attachment_image_url( (int) $product->get_image_id(), 'large' );
 	$created = $product->get_date_created();
 
 	return array(
-		'id'          => $product_id,
-		'name'        => $product->get_name(),
-		'slug'        => $product->get_slug(),
-		'imageUrl'    => is_string( $image ) ? $image : '',
-		'priceCents'  => $price,
-		'stock'       => max( 0, (int) papelito_get_vendor_stock( $vendor_id, $product_id ) ),
-		'category'    => array(
+		'id'             => $product_id,
+		'name'           => $product->get_name(),
+		'slug'           => $product->get_slug(),
+		'imageUrl'       => is_string( $image ) ? $image : '',
+		'priceCents'     => papelito_event_sales_price_override( $product_id ) ?? $site_price,
+		'sitePriceCents' => $site_price,
+		'stock'          => max( 0, (int) papelito_get_vendor_stock( $vendor_id, $product_id ) ),
+		'category'       => array(
 			'slug' => (string) $category['slug'],
 			'name' => (string) $category['name'],
 		),
-		'description' => wp_strip_all_tags( (string) $product->get_short_description( 'edit' ) ),
-		'specs'       => papelito_event_sales_product_specs( $product ),
-		'totalSales'  => (int) $product->get_total_sales( 'edit' ),
-		'createdAt'   => null === $created ? '' : $created->format( DATE_ATOM ),
+		'description'    => wp_strip_all_tags( (string) $product->get_short_description( 'edit' ) ),
+		'specs'          => papelito_event_sales_product_specs( $product ),
+		'totalSales'     => (int) $product->get_total_sales( 'edit' ),
+		'createdAt'      => null === $created ? '' : $created->format( DATE_ATOM ),
 	);
 }
 
@@ -211,14 +213,16 @@ function papelito_event_sales_price_index( array $products ): array {
 }
 
 /**
- * Bloco do Kit Premium no contexto: preço atual ou indisponível quando falta produto.
+ * Bloco do Kit Premium no contexto: preço atual ou indisponível quando falta produto, e o desconto
+ * publicado (`pctOff`), que o tablet usa nos textos do kit em vez de um "−15%" fixo.
  *
  * @param array<int,array{price_cents:int,name:string}> $index   Catálogo por id.
  * @param array<int,int>                                $kit_ids Produtos do Kit Premium.
- * @return array{productIds:array<int,int>,unitCents:int,fullUnitCents:int,available:bool}
+ * @return array{productIds:array<int,int>,unitCents:int,fullUnitCents:int,available:bool,pctOff:int}
  */
 function papelito_event_sales_context_kit( array $index, array $kit_ids ): array {
-	$prices    = papelito_event_sales_kit_prices( $index, $kit_ids );
+	$pct_kept  = papelito_event_sales_kit_pct_kept();
+	$prices    = papelito_event_sales_kit_prices( $index, $kit_ids, $pct_kept );
 	$available = ! is_wp_error( $prices );
 
 	return array(
@@ -226,6 +230,7 @@ function papelito_event_sales_context_kit( array $index, array $kit_ids ): array
 		'unitCents'     => $available ? $prices['unit_cents'] : 0,
 		'fullUnitCents' => $available ? $prices['full_unit_cents'] : 0,
 		'available'     => $available,
+		'pctOff'        => 100 - $pct_kept,
 	);
 }
 

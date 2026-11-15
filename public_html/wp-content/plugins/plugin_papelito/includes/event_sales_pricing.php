@@ -4,7 +4,9 @@
  *
  * Tudo aqui é puro (sem banco e sem WordPress além de `WP_Error`) e trabalha em centavos inteiros.
  * A unidade é o display; um kit conta como 4. O nível vale para as linhas avulsas, arredondado no
- * centavo por linha; o kit tem preço próprio (−15% sobre os 4 produtos) e não recebe o nível.
+ * centavo por linha; o kit tem preço próprio (desconto sobre os 4 produtos, −15% por padrão e
+ * configurável pelo admin em `event_sales_prices.php`) e não recebe o nível. Quem chama passa a
+ * porcentagem mantida do kit; o padrão é `PAPELITO_EVENT_SALES_KIT_PCT_KEPT`.
  *
  * O tablet espelha esta conta só para exibir. O valor cobrado é sempre o que sai daqui, recalculado
  * no servidor com os preços atuais.
@@ -87,16 +89,17 @@ function papelito_event_sales_level_for( int $units ): array {
 }
 
 /**
- * Preço de um kit: soma dos 4 produtos com −15%, cada um arredondado no centavo.
+ * Preço de um kit: soma dos 4 produtos com o desconto do kit, cada um arredondado no centavo.
  *
  * @param array<int,int> $component_price_cents Preço atual de cada produto do kit.
+ * @param int            $pct_kept              Porcentagem do preço que o kit mantém (85 = −15%).
  * @return int
  */
-function papelito_event_sales_kit_unit_cents( array $component_price_cents ): int {
+function papelito_event_sales_kit_unit_cents( array $component_price_cents, int $pct_kept = PAPELITO_EVENT_SALES_KIT_PCT_KEPT ): int {
 	$total = 0;
 
 	foreach ( $component_price_cents as $price ) {
-		$total += intdiv( (int) $price * PAPELITO_EVENT_SALES_KIT_PCT_KEPT + 50, 100 );
+		$total += intdiv( (int) $price * $pct_kept + 50, 100 );
 	}
 
 	return $total;
@@ -145,9 +148,10 @@ function papelito_event_sales_validate_quantities( array $products, array $qty_b
  *
  * @param array<int,array{price_cents:int,name:string}> $products        Catálogo por id.
  * @param array<int,int>                                $kit_product_ids Os 4 produtos do kit.
+ * @param int                                           $pct_kept        Porcentagem que o kit mantém.
  * @return array{unit_cents:int,full_unit_cents:int}|WP_Error
  */
-function papelito_event_sales_kit_prices( array $products, array $kit_product_ids ): array|WP_Error {
+function papelito_event_sales_kit_prices( array $products, array $kit_product_ids, int $pct_kept = PAPELITO_EVENT_SALES_KIT_PCT_KEPT ): array|WP_Error {
 	$prices = array();
 
 	foreach ( $kit_product_ids as $product_id ) {
@@ -162,7 +166,7 @@ function papelito_event_sales_kit_prices( array $products, array $kit_product_id
 	}
 
 	return array(
-		'unit_cents'      => papelito_event_sales_kit_unit_cents( $prices ),
+		'unit_cents'      => papelito_event_sales_kit_unit_cents( $prices, $pct_kept ),
 		'full_unit_cents' => (int) array_sum( $prices ),
 	);
 }
@@ -198,9 +202,10 @@ function papelito_event_sales_line( int $product_id, int $qty, int $unit_cents, 
  * @param int                                           $kits            Kits no pedido.
  * @param int                                           $units           Unidades do pedido.
  * @param array<int,int>                                $kit_product_ids Os 4 produtos do kit.
+ * @param int                                           $pct_kept        Porcentagem que o kit mantém.
  * @return array{qty:int,unit_cents:int,full_unit_cents:int,total_cents:int}|WP_Error
  */
-function papelito_event_sales_kit_block( array $products, int $kits, int $units, array $kit_product_ids ): array|WP_Error {
+function papelito_event_sales_kit_block( array $products, int $kits, int $units, array $kit_product_ids, int $pct_kept = PAPELITO_EVENT_SALES_KIT_PCT_KEPT ): array|WP_Error {
 	if ( 0 === $kits ) {
 		return array(
 			'qty'             => 0,
@@ -214,7 +219,7 @@ function papelito_event_sales_kit_block( array $products, int $kits, int $units,
 		return papelito_event_sales_pricing_error( 'papelito_event_kit_requires_level', 'O Kit Premium só entra com 10 unidades no pedido.', 409 );
 	}
 
-	$prices = papelito_event_sales_kit_prices( $products, $kit_product_ids );
+	$prices = papelito_event_sales_kit_prices( $products, $kit_product_ids, $pct_kept );
 	if ( is_wp_error( $prices ) ) {
 		return $prices;
 	}
@@ -237,9 +242,10 @@ function papelito_event_sales_kit_block( array $products, int $kits, int $units,
  * @param array<int|string,int>                         $qty_by_product  Quantidade por produto.
  * @param int                                           $kits            Kits no pedido.
  * @param array<int,int>                                $kit_product_ids Os 4 produtos do kit.
+ * @param int                                           $kit_pct_kept    Porcentagem que o kit mantém.
  * @return array<string,mixed>|WP_Error
  */
-function papelito_event_sales_price( array $products, array $qty_by_product, int $kits, array $kit_product_ids ): array|WP_Error {
+function papelito_event_sales_price( array $products, array $qty_by_product, int $kits, array $kit_product_ids, int $kit_pct_kept = PAPELITO_EVENT_SALES_KIT_PCT_KEPT ): array|WP_Error {
 	$valid = papelito_event_sales_validate_quantities( $products, $qty_by_product, $kits );
 	if ( is_wp_error( $valid ) ) {
 		return $valid;
@@ -247,7 +253,7 @@ function papelito_event_sales_price( array $products, array $qty_by_product, int
 
 	$units = papelito_event_sales_units( $qty_by_product, $kits );
 	$level = papelito_event_sales_level_for( $units );
-	$kit   = papelito_event_sales_kit_block( $products, $kits, $units, $kit_product_ids );
+	$kit   = papelito_event_sales_kit_block( $products, $kits, $units, $kit_product_ids, $kit_pct_kept );
 	if ( is_wp_error( $kit ) ) {
 		return $kit;
 	}

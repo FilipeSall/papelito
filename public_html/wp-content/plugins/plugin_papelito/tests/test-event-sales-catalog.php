@@ -56,6 +56,7 @@ const EVENT_CATALOG_TEST_KIT    = 900;
 $GLOBALS['catalog_products'] = array();
 $GLOBALS['catalog_stock']    = array();
 $GLOBALS['catalog_env']      = array();
+$GLOBALS['catalog_options']  = array();
 
 function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
 function add_action( mixed ...$args ): bool { return true; }
@@ -76,10 +77,12 @@ function papelito_categories_list( array $args = array() ): array {
 function wp_get_attachment_image_url( int $id, string $size = 'thumbnail' ): string { return "https://cdn.test/{$id}.jpg"; }
 function wp_strip_all_tags( string $text ): string { return trim( strip_tags( $text ) ); }
 function wc_attribute_label( string $name ): string { return ucfirst( $name ); }
+function get_option( string $name, mixed $default_value = false ): mixed { return $GLOBALS['catalog_options'][ $name ] ?? $default_value; }
 
 require_once dirname( __DIR__ ) . '/includes/payment_providers.php';
 require_once dirname( __DIR__ ) . '/includes/event_sales_config.php';
 require_once dirname( __DIR__ ) . '/includes/event_sales_pricing.php';
+require_once dirname( __DIR__ ) . '/includes/event_sales_prices.php';
 require_once dirname( __DIR__ ) . '/includes/event_sales_catalog.php';
 
 $failures = 0;
@@ -118,6 +121,7 @@ function event_catalog_fixture(): void {
 	);
 	$GLOBALS['catalog_stock']    = array( 1 => 10, 2 => 10, 3 => 10, 4 => 10, 5 => 0, 900 => 50 );
 	$GLOBALS['catalog_env']      = array( 'PAPELITO_EVENT_SALES_KIT_PRODUCT_IDS' => '1,2,3,4' );
+	$GLOBALS['catalog_options']  = array();
 }
 
 function test_kits_excluded_and_zero_stock_kept(): void {
@@ -152,6 +156,7 @@ function test_context_shape_keys(): void {
 	event_catalog_assert( 'evento tem id e nome', 'expocannabis-2026' === $context['event']['id'] && 'ExpoCannabis Brasil 2026' === $context['event']['name'] );
 	event_catalog_assert( 'operador sem supervise', 'Operadora' === $context['operator']['name'] && false === $context['operator']['canSupervise'] );
 	event_catalog_assert( 'kit calculado pelos preços atuais', 65595 === $context['kit']['unitCents'] && true === $context['kit']['available'] );
+	event_catalog_assert( 'kit traz o desconto padrão', 15 === $context['kit']['pctOff'] );
 	event_catalog_assert( 'níveis em camelCase', 10 === $context['levels'][1]['minUnits'] && 500 === $context['levels'][1]['pctBp'] );
 	event_catalog_assert( 'categorias só as que têm produto', array( 'sedas' ) === array_column( $context['categories'], 'slug' ) );
 
@@ -160,9 +165,28 @@ function test_context_shape_keys(): void {
 	event_catalog_assert( 'kit incompleto fica indisponível', false === $partial['kit']['available'] && 0 === $partial['kit']['unitCents'] );
 }
 
+function test_event_price_override(): void {
+	event_catalog_fixture();
+	$GLOBALS['catalog_options'] = array(
+		'papelito_event_sales_prices' => array(
+			'prices'      => array( 1 => 15000 ),
+			'kit_pct_off' => 20,
+			'version'     => 3,
+		),
+	);
+	$products = papelito_event_sales_catalog_products( EVENT_CATALOG_TEST_VENDOR );
+	event_catalog_assert( 'preço próprio do evento vira o preço do estande', 15000 === $products[0]['priceCents'] );
+	event_catalog_assert( 'preço do site continua disponível', 18020 === $products[0]['sitePriceCents'] );
+	event_catalog_assert( 'produto sem preço próprio usa o do site', 19195 === $products[1]['priceCents'] );
+
+	$context = papelito_event_sales_context( new WP_User( 7, 'Operadora', array() ), EVENT_CATALOG_TEST_VENDOR );
+	event_catalog_assert( 'kit usa o preço próprio e o desconto configurado', 59320 === $context['kit']['unitCents'] && 20 === $context['kit']['pctOff'] );
+}
+
 test_kits_excluded_and_zero_stock_kept();
 test_shelves_rules();
 test_context_shape_keys();
+test_event_price_override();
 
 if ( $failures > 0 ) {
 	echo "{$failures} falha(s)\n";

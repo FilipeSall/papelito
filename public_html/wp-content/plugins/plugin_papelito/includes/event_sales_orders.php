@@ -82,7 +82,7 @@ function papelito_event_sales_order_line( int $product_id, int $qty, int $subtot
 }
 
 /**
- * Linhas do pedido: avulsas com o desconto do nível e os componentes do kit com −15%.
+ * Linhas do pedido: avulsas com o desconto do nível e os componentes do kit com o desconto do kit.
  *
  * @param array<string,mixed> $quote     Cotação autoritativa.
  * @param int                 $vendor_id Vendor do evento.
