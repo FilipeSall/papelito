@@ -17,17 +17,18 @@
 
 defined( 'ABSPATH' ) || exit;
 
-const PAPELITO_EVENT_SALES_EVENT_META    = '_papelito_event_id';
-const PAPELITO_EVENT_SALES_OPERATOR_META = '_papelito_event_operator_id';
-const PAPELITO_EVENT_SALES_QUOTE_META    = '_papelito_event_quote';
-const PAPELITO_EVENT_SALES_LEAD_META     = '_papelito_event_pdv_perfeito_lead';
-const PAPELITO_EVENT_SALES_CHECKOUT_META = '_papelito_checkout_attempt_id';
-const PAPELITO_EVENT_SALES_TERMINAL_META = '_papelito_event_terminal_id';
-const PAPELITO_EVENT_SALES_TOTAL_META    = '_papelito_authoritative_total_cents';
-const PAPELITO_EVENT_SALES_METHODS       = array( 'card', 'pix' );
-const PAPELITO_EVENT_SALES_ATTEMPT_OPEN  = 'papelito_event_attempt_open';
-const PAPELITO_EVENT_SALES_CONFLICT      = 409;
-const PAPELITO_EVENT_SALES_ORDER_ROUTE   = '/orders/(?P<order_id>\d{1,18})';
+const PAPELITO_EVENT_SALES_EVENT_META     = '_papelito_event_id';
+const PAPELITO_EVENT_SALES_OPERATOR_META  = '_papelito_event_operator_id';
+const PAPELITO_EVENT_SALES_QUOTE_META     = '_papelito_event_quote';
+const PAPELITO_EVENT_SALES_LEAD_META      = '_papelito_event_pdv_perfeito_lead';
+const PAPELITO_EVENT_SALES_CHECKOUT_META  = '_papelito_checkout_attempt_id';
+const PAPELITO_EVENT_SALES_TERMINAL_META  = '_papelito_event_terminal_id';
+const PAPELITO_EVENT_SALES_TOTAL_META     = '_papelito_authoritative_total_cents';
+const PAPELITO_EVENT_SALES_METHODS        = array( 'card', 'pix' );
+const PAPELITO_EVENT_SALES_ATTEMPT_OPEN   = 'papelito_event_attempt_open';
+const PAPELITO_EVENT_SALES_CONFLICT       = 409;
+const PAPELITO_EVENT_SALES_ORDER_ROUTE    = '/orders/(?P<order_id>\d{1,18})';
+const PAPELITO_EVENT_SALES_NOT_SENT_STATE = 'failed';
 
 /**
  * Erro de pedido com o status HTTP no formato do REST do WordPress.
@@ -211,7 +212,7 @@ function papelito_event_sales_order_status( object $order ): array {
 	$detail = null === $attempt ? '' : (string) ( '' !== (string) $attempt['incident'] ? $attempt['incident'] : $attempt['last_error_code'] );
 
 	return array(
-		'state'      => papelito_event_sales_public_state( $attempt ),
+		'state'      => null === $attempt ? PAPELITO_EVENT_SALES_NOT_SENT_STATE : papelito_event_sales_public_state( $attempt ),
 		'detail'     => $detail,
 		'totalCents' => null === $attempt ? (int) $order->get_meta( PAPELITO_EVENT_SALES_TOTAL_META, true ) : (int) $attempt['amount_cents'],
 		'method'     => null === $attempt ? '' : (string) $attempt['payment_method'],
@@ -444,6 +445,22 @@ function papelito_event_sales_logistics_snapshot( int $vendor_id, array $quote, 
 }
 
 /**
+ * Troca o e-mail de faturamento do pedido pelo de quem comprou no estande. O da empresa é o do
+ * primeiro cadastro do CNPJ, que pode ser outra pessoa e nunca foi verificado; os avisos do pedido
+ * e do rastreio vão para este e-mail.
+ *
+ * @param object $order   Pedido recém-criado, antes do pagamento.
+ * @param int    $user_id Comprador validado como membro da empresa.
+ * @return void
+ */
+function papelito_event_sales_set_buyer_email( object $order, int $user_id ): void {
+	$user = get_userdata( $user_id );
+	if ( $user instanceof WP_User && is_email( $user->user_email ) ) {
+		$order->set_billing_email( $user->user_email );
+	}
+}
+
+/**
  * Cria o pedido WooCommerce do evento, grava as marcas do evento e reserva o estoque.
  *
  * @param array<string,mixed>  $input   Corpo do pedido.
@@ -474,6 +491,7 @@ function papelito_event_sales_build_order( array $input, array $buyer, array $ad
 	}
 
 	$order = wc_get_order( (int) $created['order_id'] );
+	papelito_event_sales_set_buyer_email( $order, (int) $buyer['buyer'] );
 	$order->update_meta_data( PAPELITO_EVENT_SALES_EVENT_META, PAPELITO_EVENT_SALES_ID );
 	$order->update_meta_data( PAPELITO_EVENT_SALES_OPERATOR_META, get_current_user_id() );
 	$order->update_meta_data( PAPELITO_EVENT_SALES_QUOTE_META, wp_json_encode( papelito_event_sales_public_quote( $quote ) ) );
@@ -740,8 +758,16 @@ function papelito_event_sales_manual_input( array $input ): array|WP_Error {
 	$method = (string) ( $input['method'] ?? '' );
 	$reason = sanitize_text_field( (string) ( $input['reason'] ?? '' ) );
 
-	if ( 1 !== preg_match( '/^[A-Za-z0-9-]{1,40}$/', $nsu ) || ! in_array( $method, PAPELITO_EVENT_SALES_METHODS, true ) || 1 !== preg_match( '/^.{5,}$/u', $reason ) ) {
-		return papelito_event_sales_order_error( 'papelito_event_manual_invalid', 'Informe o NSU, a forma e o motivo.', 400 );
+	if ( 1 !== preg_match( '/^[A-Za-z0-9-]{1,40}$/', $nsu ) ) {
+		return papelito_event_sales_order_error( 'papelito_event_manual_invalid', 'Confira o NSU: só letras, números e hífen, até 40 caracteres.', 400 );
+	}
+
+	if ( ! in_array( $method, PAPELITO_EVENT_SALES_METHODS, true ) ) {
+		return papelito_event_sales_order_error( 'papelito_event_manual_invalid', 'Escolha a forma de pagamento: cartão ou Pix.', 400 );
+	}
+
+	if ( 1 !== preg_match( '/^.{5,}$/u', $reason ) ) {
+		return papelito_event_sales_order_error( 'papelito_event_manual_invalid', 'Escreva o motivo com pelo menos 5 caracteres.', 400 );
 	}
 
 	return array(

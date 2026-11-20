@@ -259,7 +259,7 @@ function papelito_event_sales_waived_shipping(): array {
 		'option_key'           => PAPELITO_EVENT_SALES_WAIVED_SHIPPING,
 		'service'              => 'PAC',
 		'code'                 => '',
-		'name'                 => 'Frete grátis do estande (postar por PAC)',
+		'name'                 => 'Frete grátis do estande · PAC',
 		'customer_price_cents' => 0,
 		'price'                => 0.0,
 		'delivery_time'        => null,

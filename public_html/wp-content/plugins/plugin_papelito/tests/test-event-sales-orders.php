@@ -52,13 +52,18 @@ class WP_REST_Request {
 }
 
 class WP_User {
-	public function __construct( public int $ID = 0 ) {}
+	public string $user_email = '';
+
+	public function __construct( public int $ID = 0 ) {
+		$this->user_email = 'comprador-' . $ID . '@exemplo.test';
+	}
 }
 
 class Event_Test_Order {
 	public array $meta   = array();
 	public array $notes  = array();
 	public string $status = 'pending';
+	public string $billing_email = 'primeiro-cadastro@exemplo.test';
 
 	public function __construct( public int $id ) {}
 
@@ -67,6 +72,7 @@ class Event_Test_Order {
 	public function get_status(): string { return $this->status; }
 	public function get_meta( string $key, bool $single = true ): mixed { return $this->meta[ $key ] ?? ''; }
 	public function update_meta_data( string $key, mixed $value ): void { $this->meta[ $key ] = $value; }
+	public function set_billing_email( string $email ): void { $this->billing_email = $email; }
 	public function add_order_note( string $note ): int { $this->notes[] = $note; return count( $this->notes ); }
 	public function save(): int { return $this->id; }
 }
@@ -108,6 +114,8 @@ function sanitize_key( mixed $value ): string { return preg_replace( '/[^a-z0-9_
 function wp_json_encode( mixed $value, int $flags = 0 ): string { return json_encode( $value, $flags ); }
 function esc_url_raw( string $url ): string { return $url; }
 function papelito_env( string $key, mixed $default = null ): mixed { return $GLOBALS['event_env'][ $key ] ?? $default; }
+function get_userdata( int $user_id ): WP_User|false { return $user_id > 0 ? new WP_User( $user_id ) : false; }
+function is_email( mixed $value ): bool { return false !== filter_var( (string) $value, FILTER_VALIDATE_EMAIL ); }
 function get_current_user_id(): int { return $GLOBALS['event_user']; }
 function wp_get_current_user(): WP_User { return new WP_User( $GLOBALS['event_user'] ); }
 function user_can( WP_User $user, string $cap ): bool { return ! empty( $GLOBALS['event_caps'][ $cap ] ); }
@@ -300,6 +308,7 @@ function test_create_twice_reuses_open_attempt(): void {
 	$order = $GLOBALS['event_orders'][501];
 	event_orders_assert( 'pedido marcado como do evento', EVENT_ORDERS_TEST_EVENT === $order->meta['_papelito_event_id'] && 7 === $order->meta['_papelito_event_operator_id'] );
 	event_orders_assert( 'estoque reservado', array( 501 ) === $GLOBALS['event_reserved'] );
+	event_orders_assert( 'avisos do pedido vão para quem comprou, não para o primeiro cadastro da empresa', 'comprador-40@exemplo.test' === $order->billing_email );
 
 	$created = $GLOBALS['event_created'][0];
 	$sources = array_column( $created['lines'], 'discount_source' );
@@ -331,6 +340,7 @@ function test_second_tap_opens_missing_attempt(): void {
 	$first                           = event_orders_create();
 	event_orders_assert( 'sem credencial a cobrança falha', $first instanceof WP_Error && 'papelito_mercadopago_configuration' === $first->get_error_code() );
 	event_orders_assert( 'o pedido fica criado sem tentativa', 1 === count( $GLOBALS['event_orders'] ) && array() === $GLOBALS['memory_attempts'] );
+	event_orders_assert( 'pedido sem tentativa aparece como falha, para o tablet oferecer tentar de novo', 'failed' === papelito_event_sales_order_status( $GLOBALS['event_orders'][501] )['state'] );
 
 	$GLOBALS['event_collector_down'] = false;
 	$GLOBALS['event_mp']['create']   = array( event_orders_remote( 'created' ) );
