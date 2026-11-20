@@ -144,9 +144,67 @@ function papelito_event_sales_split_name( string $name ): array {
 }
 
 /**
+ * Texto do e-mail de boas-vindas do lojista cadastrado no estande.
+ *
+ * @param string $first_name Primeiro nome, ou vazio.
+ * @param string $link       Link de criar a senha.
+ * @return array<string,mixed> View de `papelito_email_notice_html()`.
+ */
+function papelito_event_sales_welcome_email_view( string $first_name, string $link ): array {
+	$greeting = '' !== $first_name ? "Olá {$first_name}," : 'Olá,';
+
+	return array(
+		'kicker'       => PAPELITO_EVENT_SALES_NAME,
+		'headline'     => 'Sua conta Papelito foi criada.',
+		'lead'         => sprintf(
+			'%s criamos sua conta no estande da Papelito na %s. Crie sua senha para acompanhar seu pedido e a entrega pelo site.',
+			$greeting,
+			PAPELITO_EVENT_SALES_NAME
+		),
+		'cta'          => array(
+			'label' => 'Criar minha senha',
+			'url'   => $link,
+		),
+		'notes'        => array( 'Este link vale por 24 horas. Se ele vencer, use "Esqueci minha senha" com este e-mail.' ),
+		'footer_lines' => array( 'Se você não passou pelo estande da Papelito, ignore esta mensagem.' ),
+	);
+}
+
+/**
+ * Manda ao lojista recém-cadastrado no estande o convite para criar a senha.
+ *
+ * O link é o mesmo do "esqueci minha senha" (vale 24 h e, ao ser usado, confirma o e-mail); muda só
+ * o texto, porque o lojista nunca pediu redefinição e leria o e-mail de reset como engano ou golpe.
+ * Devolve falso quando não deu para enviar; a venda não depende disso.
+ *
+ * @param WP_User $user Conta recém-criada.
+ * @return bool
+ */
+function papelito_event_sales_send_welcome_email( WP_User $user ): bool {
+	$key = get_password_reset_key( $user );
+	if ( is_wp_error( $key ) || '' === (string) $key ) {
+		return false;
+	}
+
+	$link = papelito_auth_build_password_reset_link( (string) $user->user_login, (string) $key );
+	if ( '' === $link ) {
+		return false;
+	}
+
+	$view = papelito_event_sales_welcome_email_view( (string) get_user_meta( $user->ID, 'first_name', true ), $link );
+
+	return papelito_email_send(
+		sanitize_email( (string) $user->user_email ),
+		'Sua conta Papelito foi criada - crie sua senha',
+		papelito_email_notice_html( $view ),
+		papelito_email_notice_text( $view )
+	);
+}
+
+/**
  * Reaproveita o usuário do e-mail ou cria um `customer` sem senha escolhida.
  *
- * Conta nova recebe o e-mail de definir senha; falha no envio não impede a venda.
+ * Conta nova recebe o e-mail de boas-vindas do evento para criar a senha; falha no envio não impede a venda.
  *
  * @param array{cnpj:string,name:string,phone:string,email:string} $buyer Dados validados.
  * @return array{user_id:int,created:bool}|WP_Error
@@ -184,7 +242,7 @@ function papelito_event_sales_find_or_create_user( array $buyer ): array|WP_Erro
 
 	$user = get_userdata( $user_id );
 	if ( $user instanceof WP_User ) {
-		papelito_auth_dispatch_password_reset_email( $user );
+		papelito_event_sales_send_welcome_email( $user );
 	}
 
 	return array(

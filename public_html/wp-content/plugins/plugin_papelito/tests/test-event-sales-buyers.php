@@ -39,6 +39,30 @@ function papelito_auth_normalize_phone( string $phone ): string { return preg_re
 function papelito_cnpj_lookup( string $raw_cnpj, bool $include_evidence = false ): array { return $GLOBALS['buyer_lookup']; }
 function papelito_company_find_by_cnpj( string $raw_cnpj ): ?array { return $GLOBALS['buyer_existing'] ?? null; }
 
+const PAPELITO_EVENT_SALES_NAME = 'ExpoCannabis Brasil 2026';
+
+/**
+ * Conta mínima com os campos que o e-mail de boas-vindas lê.
+ */
+class Event_Buyer_Test_User {
+	public int $ID           = 41;
+	public string $user_login = EVENT_BUYER_TEST_EMAIL;
+	public string $user_email = EVENT_BUYER_TEST_EMAIL;
+}
+class_alias( Event_Buyer_Test_User::class, 'WP_User' );
+
+$GLOBALS['buyer_mail']     = array();
+$GLOBALS['buyer_reset_ok'] = true;
+
+function get_password_reset_key( WP_User $user ): string|WP_Error { return $GLOBALS['buyer_reset_ok'] ? 'chave-' . $user->ID : new WP_Error( 'no_password_reset' ); }
+function papelito_auth_build_password_reset_link( string $login, string $key ): string { return 'https://papelito.test/redefinir-senha?login=' . rawurlencode( $login ) . '&key=' . $key; }
+function get_user_meta( int $user_id, string $key, bool $single = false ): string { return 'first_name' === $key ? 'Maria' : ''; }
+function sanitize_email( mixed $value ): string { return strtolower( trim( (string) $value ) ); }
+function papelito_email_notice_html( array $view ): string { return (string) wp_json_encode_test( $view ); }
+function papelito_email_notice_text( array $view ): string { return (string) $view['lead']; }
+function papelito_email_send( string $to, string $subject, string $html, string $text ): bool { $GLOBALS['buyer_mail'][] = compact( 'to', 'subject', 'html', 'text' ); return true; }
+function wp_json_encode_test( mixed $value ): string|false { return json_encode( $value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ); }
+
 require_once dirname( __DIR__ ) . '/includes/event_sales_buyers.php';
 
 $failures = 0;
@@ -115,7 +139,35 @@ function test_existing_company_still_needs_active_cnpj(): void {
 	$GLOBALS['buyer_existing'] = null;
 }
 
+function test_welcome_email_speaks_of_the_event(): void {
+	$GLOBALS['buyer_mail']     = array();
+	$GLOBALS['buyer_reset_ok'] = true;
+	$sent = papelito_event_sales_send_welcome_email( new WP_User() );
+	$mail = $GLOBALS['buyer_mail'][0] ?? array();
+	event_buyer_assert( 'e-mail de boas-vindas é enviado', true === $sent && 1 === count( $GLOBALS['buyer_mail'] ) );
+	event_buyer_assert( 'vai para o e-mail digitado no estande', EVENT_BUYER_TEST_EMAIL === ( $mail['to'] ?? '' ) );
+	event_buyer_assert( 'assunto fala de conta criada, não de redefinir senha', 'Sua conta Papelito foi criada - crie sua senha' === ( $mail['subject'] ?? '' ) );
+	event_buyer_assert( 'texto cita o evento e chama pelo nome', str_contains( $mail['text'] ?? '', 'Olá Maria, criamos sua conta no estande da Papelito na ExpoCannabis Brasil 2026' ) );
+	event_buyer_assert( 'botão leva ao link de criar senha', str_contains( $mail['html'] ?? '', 'https://papelito.test/redefinir-senha?login=loja%40exemplo.com.br&key=chave-41' ) );
+	event_buyer_assert( 'botão diz criar senha', str_contains( $mail['html'] ?? '', 'Criar minha senha' ) );
+	event_buyer_assert( 'texto não fala em redefinir', ! str_contains( strtolower( ( $mail['html'] ?? '' ) . ( $mail['text'] ?? '' ) ), 'redefin' . 'ir a senha' ) );
+}
+
+function test_welcome_email_without_key_is_not_sent(): void {
+	$GLOBALS['buyer_mail']     = array();
+	$GLOBALS['buyer_reset_ok'] = false;
+	event_buyer_assert( 'sem chave de senha nada é enviado', false === papelito_event_sales_send_welcome_email( new WP_User() ) && array() === $GLOBALS['buyer_mail'] );
+	$GLOBALS['buyer_reset_ok'] = true;
+}
+
+function test_welcome_email_without_name_still_greets(): void {
+	event_buyer_assert( 'sem nome a saudação continua correta', str_starts_with( papelito_event_sales_welcome_email_view( '', 'https://x' )['lead'], 'Olá, criamos sua conta' ) );
+}
+
 test_lookup_maps_statuses();
+test_welcome_email_speaks_of_the_event();
+test_welcome_email_without_key_is_not_sent();
+test_welcome_email_without_name_still_greets();
 test_upsert_validates_input();
 test_existing_company_still_needs_active_cnpj();
 
