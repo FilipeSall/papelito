@@ -70,30 +70,31 @@ function test_units_count_kit_as_four(): void {
 }
 
 function test_levels_boundaries(): void {
-	$cases = array( 0 => 'lojista', 9 => 'lojista', 10 => 'parceiro', 19 => 'parceiro', 20 => 'pdv_perfeito', 39 => 'pdv_perfeito', 40 => 'lenda', 400 => 'lenda' );
-	foreach ( $cases as $units => $key ) {
-		event_pricing_assert( "{$units} unidades é {$key}", $key === papelito_event_sales_level_for( $units )['key'] );
+	$cases = array( 0 => 'lojista', 99999 => 'lojista', 100000 => 'parceiro', 149999 => 'parceiro', 150000 => 'lenda', 500000 => 'lenda' );
+	foreach ( $cases as $base => $key ) {
+		event_pricing_assert( "base de {$base} centavos é {$key}", $key === papelito_event_sales_level_for_cents( $base )['key'] );
 	}
-	event_pricing_assert( 'Lenda tem 12%', 1200 === papelito_event_sales_level_for( 40 )['pct_bp'] );
+	event_pricing_assert( 'Lenda tem 10%', 1000 === papelito_event_sales_level_for_cents( 150000 )['pct_bp'] );
+	event_pricing_assert( 'kit e brinde liberam no primeiro degrau com desconto', 100000 === papelito_event_sales_kit_min_cents() );
 }
 
 function test_line_discount_rounds_per_line(): void {
 	$priced = papelito_event_sales_price( event_pricing_products(), array( EVENT_SALES_TEST_LOOSE => 3, EVENT_SALES_TEST_INSANE => 17 ), 0, event_pricing_kit_ids() );
 	$line   = $priced['lines'][0];
-	event_pricing_assert( '20 unidades é PDV Perfeito', 'pdv_perfeito' === $priced['level']['key'] );
+	event_pricing_assert( 'base de R$ 3.398,26 é Lenda', 'lenda' === $priced['level']['key'] && 339826 === $priced['base_cents'] );
 	event_pricing_assert( 'linha guarda o subtotal cheio', 33486 === $line['subtotal_cents'] );
-	event_pricing_assert( 'desconto da linha arredonda no centavo', 2679 === $line['discount_cents'] );
-	event_pricing_assert( 'total da linha é subtotal menos desconto', 30807 === $line['total_cents'] );
+	event_pricing_assert( 'desconto da linha arredonda no centavo', 3349 === $line['discount_cents'] );
+	event_pricing_assert( 'total da linha é subtotal menos desconto', 30137 === $line['total_cents'] );
 	event_pricing_assert( 'origem do desconto é o nível do evento', 'event_level' === $line['source'] );
-	event_pricing_assert( 'desconto do pedido soma as linhas', 2679 + 24507 === $priced['discount_cents'] );
+	event_pricing_assert( 'desconto do pedido soma as linhas', 3349 + 30634 === $priced['discount_cents'] );
 }
 
 function test_kit_without_level_is_rejected(): void {
 	$result = papelito_event_sales_price( event_pricing_products(), array( EVENT_SALES_TEST_LOOSE => 5 ), 1, event_pricing_kit_ids() );
-	event_pricing_assert( 'kit com 9 unidades é recusado', event_pricing_error( $result, 'papelito_event_kit_requires_level', 409 ) );
+	event_pricing_assert( 'kit abaixo de R$ 1.000 é recusado', event_pricing_error( $result, 'papelito_event_kit_requires_level', 409 ) );
 
 	$allowed = papelito_event_sales_price( event_pricing_products(), array( EVENT_SALES_TEST_LOOSE => 6 ), 1, event_pricing_kit_ids() );
-	event_pricing_assert( 'kit conta para liberar o kit', ! is_wp_error( $allowed ) && 10 === $allowed['units'] );
+	event_pricing_assert( 'kit conta na base que libera o kit', ! is_wp_error( $allowed ) && 144142 === $allowed['base_cents'] );
 }
 
 function test_kit_not_discounted_by_level(): void {
@@ -102,7 +103,7 @@ function test_kit_not_discounted_by_level(): void {
 	event_pricing_assert( 'kit mantém o preço próprio', 2 * EVENT_SALES_TEST_KIT_UNIT === $priced['kit']['total_cents'] );
 	event_pricing_assert( 'kit informa o preço cheio dos 4', 77170 === $priced['kit']['full_unit_cents'] );
 	event_pricing_assert( 'economia do kit é a diferença', 2 * ( 77170 - EVENT_SALES_TEST_KIT_UNIT ) === $priced['kit_savings_cents'] );
-	event_pricing_assert( 'itens somam avulsos com desconto e kits', 156268 - 12501 + 2 * EVENT_SALES_TEST_KIT_UNIT === $priced['items_cents'] );
+	event_pricing_assert( 'itens somam avulsos com desconto e kits', 156268 - 15627 + 2 * EVENT_SALES_TEST_KIT_UNIT === $priced['items_cents'] );
 }
 
 function test_quantity_limits(): void {

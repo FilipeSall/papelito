@@ -255,6 +255,7 @@ function papelito_event_sales_quote( array $input ): array|WP_Error {
 
 	$quote = array(
 		'units'           => $priced['units'],
+		'baseCents'       => $priced['base_cents'],
 		'level'           => $priced['level'],
 		'lines'           => $priced['lines'],
 		'kit'             => $priced['kit'],

@@ -138,16 +138,16 @@ function test_quote_total_is_items_plus_kit_plus_shipping(): void {
 	event_quote_fixture();
 	$quote = papelito_event_sales_quote( event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 14 ) ), 2 ) );
 	event_quote_assert( 'cotação válida', is_array( $quote ) );
-	event_quote_assert( 'itens com desconto e kit', 156268 - 12501 + 2 * 65595 === $quote['itemsCents'] );
+	event_quote_assert( 'itens com desconto e kit', 156268 - 15627 + 2 * 65595 === $quote['itemsCents'] );
 	event_quote_assert( 'total soma o frete', $quote['itemsCents'] + 2990 === $quote['totalCents'] );
-	event_quote_assert( 'nível vem das 22 unidades', 'pdv_perfeito' === $quote['level']['key'] && 22 === $quote['units'] );
+	event_quote_assert( 'nível vem da base de R$ 3.106,08', 'lenda' === $quote['level']['key'] && 310608 === $quote['baseCents'] && 22 === $quote['units'] );
 	event_quote_assert( 'fingerprint presente', 64 === strlen( $quote['quoteFingerprint'] ) );
 	event_quote_assert( 'componentes do kit com preço cheio e do kit', array( 'product_id' => 101, 'price_cents' => 18020, 'unit_cents' => 15317 ) === $quote['kitComponents'][0] && 4 === count( $quote['kitComponents'] ) );
 
 	$call = $GLOBALS['quote_calls'][0];
 	event_quote_assert( 'cota com o vendor do evento e o CEP em dígitos', 2163 === $call[0] && '01001000' === $call[1] );
 	$declared = array_column( $call[2], 'declared_value_cents', 'product_id' );
-	event_quote_assert( 'valor declarado do avulso é o total da linha', 143767 === $declared[ EVENT_QUOTE_TEST_LOOSE ] );
+	event_quote_assert( 'valor declarado do avulso é o total da linha', 140641 === $declared[ EVENT_QUOTE_TEST_LOOSE ] );
 	event_quote_assert( 'componente do kit entra com o preço do kit', 2 * 15317 === $declared[101] );
 	event_quote_assert( 'destinatário vai no contexto', EVENT_QUOTE_TEST_CNPJ === $call[3]['recipient_cnpj'] );
 }

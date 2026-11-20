@@ -1,9 +1,11 @@
 <?php
 /**
- * Regras de preço da venda no estande: nível por unidades, desconto por linha e Kit Premium.
+ * Regras de preço da venda no estande: nível pelo valor do pedido, desconto por linha e Kit Premium.
  *
  * Tudo aqui é puro (sem banco e sem WordPress além de `WP_Error`) e trabalha em centavos inteiros.
- * A unidade é o display; um kit conta como 4. O nível vale para as linhas avulsas, arredondado no
+ * O nível sai do valor do pedido antes do desconto e antes do frete: os avulsos pelo preço do
+ * estande mais os kits pelo preço cheio. A unidade é o display e um kit conta como 4, mas ela só
+ * aparece em texto. O nível vale para as linhas avulsas, arredondado no
  * centavo por linha; o kit tem preço próprio (desconto sobre os 4 produtos, −15% por padrão e
  * configurável pelo admin em `event_sales_prices.php`) e não recebe o nível. Quem chama passa a
  * porcentagem mantida do kit; o padrão é `PAPELITO_EVENT_SALES_KIT_PCT_KEPT`.
@@ -20,7 +22,6 @@ const PAPELITO_EVENT_SALES_KIT_UNITS        = 4;
 const PAPELITO_EVENT_SALES_KIT_COMPONENTS   = 4;
 const PAPELITO_EVENT_SALES_KIT_PCT_KEPT     = 85;
 const PAPELITO_EVENT_SALES_KIT_MAX          = 3;
-const PAPELITO_EVENT_SALES_KIT_MIN_UNITS    = 10;
 const PAPELITO_EVENT_SALES_MAX_QTY          = 999;
 const PAPELITO_EVENT_SALES_BASIS_POINTS     = 10000;
 const PAPELITO_EVENT_SALES_INVALID_QUANTITY = 'papelito_event_invalid_quantity';
@@ -28,33 +29,27 @@ const PAPELITO_EVENT_SALES_INVALID_QUANTITY = 'papelito_event_invalid_quantity';
 /**
  * Níveis do evento, do menor para o maior, com a porcentagem em pontos-base.
  *
- * @return array<int,array{key:string,name:string,min_units:int,pct_bp:int}>
+ * @return array<int,array{key:string,name:string,min_cents:int,pct_bp:int}>
  */
 function papelito_event_sales_levels(): array {
 	return array(
 		array(
 			'key'       => 'lojista',
 			'name'      => 'Lojista',
-			'min_units' => 0,
+			'min_cents' => 0,
 			'pct_bp'    => 0,
 		),
 		array(
 			'key'       => 'parceiro',
 			'name'      => 'Parceiro',
-			'min_units' => 10,
+			'min_cents' => 100000,
 			'pct_bp'    => 500,
-		),
-		array(
-			'key'       => 'pdv_perfeito',
-			'name'      => 'PDV Perfeito',
-			'min_units' => 20,
-			'pct_bp'    => 800,
 		),
 		array(
 			'key'       => 'lenda',
 			'name'      => 'Lenda',
-			'min_units' => 40,
-			'pct_bp'    => 1200,
+			'min_cents' => 150000,
+			'pct_bp'    => 1000,
 		),
 	);
 }
@@ -71,21 +66,72 @@ function papelito_event_sales_units( array $qty_by_product, int $kits ): int {
 }
 
 /**
- * Maior nível cujo mínimo de unidades o pedido atinge.
+ * Maior nível cujo mínimo em centavos a base do pedido atinge.
  *
- * @param int $units Unidades do pedido.
- * @return array{key:string,name:string,min_units:int,pct_bp:int}
+ * O nome diz `_for_cents` de propósito: a escada já contou unidade, e um chamador antigo que
+ * passasse unidade aqui escolheria o nível errado em silêncio, cobrando a menos.
+ *
+ * @param int $base_cents Base da faixa, em centavos.
+ * @return array{key:string,name:string,min_cents:int,pct_bp:int}
  */
-function papelito_event_sales_level_for( int $units ): array {
+function papelito_event_sales_level_for_cents( int $base_cents ): array {
 	$current = papelito_event_sales_levels()[0];
 
 	foreach ( papelito_event_sales_levels() as $level ) {
-		if ( $units >= $level['min_units'] ) {
+		if ( $base_cents >= $level['min_cents'] ) {
 			$current = $level;
 		}
 	}
 
 	return $current;
+}
+
+/**
+ * Valor em centavos a partir do qual o Kit Premium e o brinde entram: o primeiro degrau com
+ * desconto. Fica derivado da escada para a liberação do kit não descolar da faixa quando os
+ * valores mudarem.
+ *
+ * @return int
+ */
+function papelito_event_sales_kit_min_cents(): int {
+	foreach ( papelito_event_sales_levels() as $level ) {
+		if ( $level['pct_bp'] > 0 ) {
+			return (int) $level['min_cents'];
+		}
+	}
+
+	return PHP_INT_MAX;
+}
+
+/**
+ * Base da faixa: avulsos pelo preço do estande mais os kits pelo preço cheio, antes de qualquer
+ * desconto e antes do frete. É este número que escolhe o nível e que libera o kit.
+ *
+ * @param array<int,array{price_cents:int,name:string}> $products        Catálogo por id.
+ * @param array<int|string,int>                         $qty_by_product  Quantidade por produto.
+ * @param int                                           $kits            Kits no pedido.
+ * @param array<int,int>                                $kit_product_ids Os 4 produtos do kit.
+ * @return int|WP_Error
+ */
+function papelito_event_sales_base_cents( array $products, array $qty_by_product, int $kits, array $kit_product_ids ): int|WP_Error {
+	$base = 0;
+
+	foreach ( $qty_by_product as $product_id => $qty ) {
+		if ( (int) $qty > 0 ) {
+			$base += (int) $qty * (int) $products[ (int) $product_id ]['price_cents'];
+		}
+	}
+
+	if ( 0 === $kits ) {
+		return $base;
+	}
+
+	$prices = papelito_event_sales_kit_prices( $products, $kit_product_ids );
+	if ( is_wp_error( $prices ) ) {
+		return $prices;
+	}
+
+	return $base + $kits * (int) $prices['full_unit_cents'];
 }
 
 /**
@@ -200,12 +246,12 @@ function papelito_event_sales_line( int $product_id, int $qty, int $unit_cents, 
  *
  * @param array<int,array{price_cents:int,name:string}> $products        Catálogo por id.
  * @param int                                           $kits            Kits no pedido.
- * @param int                                           $units           Unidades do pedido.
+ * @param int                                           $base_cents      Base da faixa, em centavos.
  * @param array<int,int>                                $kit_product_ids Os 4 produtos do kit.
  * @param int                                           $pct_kept        Porcentagem que o kit mantém.
  * @return array{qty:int,unit_cents:int,full_unit_cents:int,total_cents:int}|WP_Error
  */
-function papelito_event_sales_kit_block( array $products, int $kits, int $units, array $kit_product_ids, int $pct_kept = PAPELITO_EVENT_SALES_KIT_PCT_KEPT ): array|WP_Error {
+function papelito_event_sales_kit_block( array $products, int $kits, int $base_cents, array $kit_product_ids, int $pct_kept = PAPELITO_EVENT_SALES_KIT_PCT_KEPT ): array|WP_Error {
 	if ( 0 === $kits ) {
 		return array(
 			'qty'             => 0,
@@ -215,8 +261,10 @@ function papelito_event_sales_kit_block( array $products, int $kits, int $units,
 		);
 	}
 
-	if ( $units < PAPELITO_EVENT_SALES_KIT_MIN_UNITS ) {
-		return papelito_event_sales_pricing_error( 'papelito_event_kit_requires_level', 'O Kit Premium só entra com 10 unidades no pedido.', 409 );
+	$kit_min = papelito_event_sales_kit_min_cents();
+	if ( $base_cents < $kit_min ) {
+		$minimo = number_format( $kit_min / 100, 2, ',', '.' );
+		return papelito_event_sales_pricing_error( 'papelito_event_kit_requires_level', "O Kit Premium só entra a partir de R$ {$minimo} no pedido.", 409 );
 	}
 
 	$prices = papelito_event_sales_kit_prices( $products, $kit_product_ids, $pct_kept );
@@ -251,9 +299,14 @@ function papelito_event_sales_price( array $products, array $qty_by_product, int
 		return $valid;
 	}
 
+	$base = papelito_event_sales_base_cents( $products, $qty_by_product, $kits, $kit_product_ids );
+	if ( is_wp_error( $base ) ) {
+		return $base;
+	}
+
 	$units = papelito_event_sales_units( $qty_by_product, $kits );
-	$level = papelito_event_sales_level_for( $units );
-	$kit   = papelito_event_sales_kit_block( $products, $kits, $units, $kit_product_ids, $kit_pct_kept );
+	$level = papelito_event_sales_level_for_cents( $base );
+	$kit   = papelito_event_sales_kit_block( $products, $kits, $base, $kit_product_ids, $kit_pct_kept );
 	if ( is_wp_error( $kit ) ) {
 		return $kit;
 	}
@@ -269,6 +322,7 @@ function papelito_event_sales_price( array $products, array $qty_by_product, int
 
 	return array(
 		'units'             => $units,
+		'base_cents'        => $base,
 		'level'             => $level,
 		'lines'             => $lines,
 		'kit'               => $kit,
