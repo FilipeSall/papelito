@@ -63,7 +63,7 @@ mesmos de antes.
 
 Continua `422 papelito_shipping_package_exceeds_limits`: uma **unidade** que não cabe sozinha num
 volume (`data.limit` = `dimension`, `dimension_sum` ou `weight`, quase sempre cadastro errado) e um
-pedido que precisaria de mais de `PAPELITO_SHIPPING_MAX_VOLUMES` (20) caixas (`data.limit` =
+pedido que precisaria de mais de `PAPELITO_SHIPPING_MAX_VOLUMES` (35) caixas (`data.limit` =
 `volumes`). O Kit sozinho continua num volume declarado. Regressão em
 `tests/test-shipping-correios-volumes.php`.
 
