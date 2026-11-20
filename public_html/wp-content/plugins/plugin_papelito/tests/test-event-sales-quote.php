@@ -139,7 +139,9 @@ function test_quote_total_is_items_plus_kit_plus_shipping(): void {
 	$quote = papelito_event_sales_quote( event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 14 ) ), 2 ) );
 	event_quote_assert( 'cotação válida', is_array( $quote ) );
 	event_quote_assert( 'itens com desconto e kit', 156268 - 15627 + 2 * 65595 === $quote['itemsCents'] );
-	event_quote_assert( 'total soma o frete', $quote['itemsCents'] + 2990 === $quote['totalCents'] );
+	event_quote_assert( 'acima de R$ 500 o frete é abatido do total', $quote['itemsCents'] === $quote['totalCents'] );
+	event_quote_assert( 'modalidade guarda preço cheio e abatimento', 2990 === $quote['shipping']['priceCents'] && 2990 === $quote['shipping']['discountCents'] );
+	event_quote_assert( 'o abatimento vai na modalidade crua, pro pedido abater', 2990 === (int) round( $quote['shipping']['raw']['discount'] * 100 ) );
 	event_quote_assert( 'nível vem da base de R$ 3.106,08', 'lenda' === $quote['level']['key'] && 310608 === $quote['baseCents'] && 22 === $quote['units'] );
 	event_quote_assert( 'fingerprint presente', 64 === strlen( $quote['quoteFingerprint'] ) );
 	event_quote_assert( 'componentes do kit com preço cheio e do kit', array( 'product_id' => 101, 'price_cents' => 18020, 'unit_cents' => 15317 ) === $quote['kitComponents'][0] && 4 === count( $quote['kitComponents'] ) );
@@ -156,6 +158,7 @@ function test_quote_picks_cheapest_correios(): void {
 	event_quote_fixture();
 	$quote = papelito_event_sales_quote( event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 3 ) ), 0 ) );
 	event_quote_assert( 'escolhe o PAC, ignorando a Braspress mais barata', 'correios:pac' === $quote['shipping']['optionKey'] && 2990 === $quote['shipping']['priceCents'] );
+	event_quote_assert( 'abaixo de R$ 500 o frete entra no total', 0 === $quote['shipping']['discountCents'] && $quote['itemsCents'] + 2990 === $quote['totalCents'] );
 
 	$GLOBALS['quote_shipping'] = array( 'options' => array( event_quote_option( 'braspress', 'braspress:rodo', 1000 ) ) );
 	$none                      = papelito_event_sales_quote( event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 3 ) ), 0 ) );

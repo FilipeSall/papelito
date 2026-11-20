@@ -253,6 +253,13 @@ function papelito_event_sales_quote( array $input ): array|WP_Error {
 		return $shipping;
 	}
 
+	$frete_cents    = (int) $shipping['customer_price_cents'];
+	$frete_desconto = papelito_event_sales_shipping_discount_cents( (int) $priced['base_cents'], $frete_cents );
+
+	/* O desconto viaja dentro da modalidade: é o `add_shipping_item()` que abate no pedido do
+	   WooCommerce, mantendo preço cheio e assinatura intactos para a reconferência. */
+	$shipping['discount'] = $frete_desconto / 100;
+
 	$quote = array(
 		'units'           => $priced['units'],
 		'baseCents'       => $priced['base_cents'],
@@ -265,14 +272,15 @@ function papelito_event_sales_quote( array $input ): array|WP_Error {
 		'kitSavingsCents' => $priced['kit_savings_cents'],
 		'kitPctOff'       => 100 - $pct_kept,
 		'shipping'        => array(
-			'optionKey'    => (string) $shipping['option_key'],
-			'name'         => (string) ( $shipping['name'] ?? '' ),
-			'priceCents'   => (int) $shipping['customer_price_cents'],
-			'deliveryTime' => isset( $shipping['delivery_time'] ) ? (int) $shipping['delivery_time'] : null,
-			'fingerprint'  => (string) ( $shipping['fingerprint'] ?? '' ),
-			'raw'          => $shipping,
+			'optionKey'     => (string) $shipping['option_key'],
+			'name'          => (string) ( $shipping['name'] ?? '' ),
+			'priceCents'    => $frete_cents,
+			'discountCents' => $frete_desconto,
+			'deliveryTime'  => isset( $shipping['delivery_time'] ) ? (int) $shipping['delivery_time'] : null,
+			'fingerprint'   => (string) ( $shipping['fingerprint'] ?? '' ),
+			'raw'           => $shipping,
 		),
-		'totalCents'      => $priced['items_cents'] + (int) $shipping['customer_price_cents'],
+		'totalCents'      => $priced['items_cents'] + $frete_cents - $frete_desconto,
 	);
 
 	$quote['quoteFingerprint'] = papelito_event_sales_quote_fingerprint( $quote );
