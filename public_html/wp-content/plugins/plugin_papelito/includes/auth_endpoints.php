@@ -404,7 +404,7 @@ function papelito_auth_mark_email_verified( int $user_id ): void {
 function papelito_auth_credential_methods( int $user_id ): array {
 	$methods = array();
 
-	if ( '1' !== (string) get_user_meta( $user_id, PAPELITO_AUTH_PASSWORD_UNSET_META, true ) ) {
+	if ( ! papelito_auth_password_is_unset( $user_id ) ) {
 		$methods[] = 'password';
 	}
 
@@ -413,6 +413,16 @@ function papelito_auth_credential_methods( int $user_id ): array {
 	}
 
 	return $methods;
+}
+
+/**
+ * Informa se a conta nasceu com senha aleatoria (OAuth, estande do evento) e ainda nao definiu uma.
+ *
+ * @param int $user_id Usuario avaliado.
+ * @return bool
+ */
+function papelito_auth_password_is_unset( int $user_id ): bool {
+	return '1' === (string) get_user_meta( $user_id, PAPELITO_AUTH_PASSWORD_UNSET_META, true );
 }
 
 /**
@@ -1537,11 +1547,26 @@ function papelito_auth_handle_forgot_password( WP_REST_Request $request ) {
 		return new WP_REST_Response( array( 'ok' => true ), 200 );
 	}
 
-	$dispatch = papelito_auth_requires_email_verification( $user->ID )
-		? papelito_auth_maybe_resend_pending_verification( $user )
-		: papelito_auth_dispatch_password_reset_email( $user );
+	$dispatch = papelito_auth_dispatch_forgot_password_email( $user );
 
 	return is_wp_error( $dispatch ) ? $dispatch : new WP_REST_Response( array( 'ok' => true ), 200 );
+}
+
+/**
+ * Escolhe o e-mail do "esqueci minha senha". Conta pendente que escolheu senha recebe de novo a
+ * confirmacao; conta sem senha propria (lojista cadastrado no estande, convite) recebe o link de
+ * definir senha, que tambem confirma o e-mail ao ser usado. Sem isso ela confirmaria o e-mail e
+ * continuaria sem conseguir entrar.
+ *
+ * @param WP_User $user Conta do e-mail informado.
+ * @return true|WP_Error
+ */
+function papelito_auth_dispatch_forgot_password_email( WP_User $user ) {
+	if ( papelito_auth_requires_email_verification( $user->ID ) && ! papelito_auth_password_is_unset( $user->ID ) ) {
+		return papelito_auth_maybe_resend_pending_verification( $user );
+	}
+
+	return papelito_auth_dispatch_password_reset_email( $user );
 }
 
 function papelito_auth_handle_change_password( WP_REST_Request $request ) {

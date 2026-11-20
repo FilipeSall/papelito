@@ -20,9 +20,12 @@ defined( 'MINUTE_IN_SECONDS' ) || define( 'MINUTE_IN_SECONDS', 60 );
 defined( 'HOUR_IN_SECONDS' ) || define( 'HOUR_IN_SECONDS', 3600 );
 defined( 'DAY_IN_SECONDS' ) || define( 'DAY_IN_SECONDS', 86400 );
 
-const INVITATION_TEST_VALID_CPF     = '52998224725';
-const INVITATION_TEST_INVITED_EMAIL = 'convidado@test.com';
-const INVITATION_TEST_GOOGLE_EMAIL  = 'google@test.com';
+const INVITATION_TEST_VALID_CPF      = '52998224725';
+const INVITATION_TEST_INVITED_EMAIL  = 'convidado@test.com';
+const INVITATION_TEST_GOOGLE_EMAIL   = 'google@test.com';
+const INVITATION_TEST_RESET_SUBJECT  = 'Redefina sua senha - Papelito';
+const INVITATION_TEST_VERIFY_SUBJECT = 'Confirme seu e-mail - Papelito';
+const INVITATION_TEST_PENDING        = 'pending';
 
 $GLOBALS['pap_meta']             = array();
 $GLOBALS['pap_users']            = array();
@@ -84,6 +87,10 @@ function wp_remote_retrieve_response_code( mixed ...$a ): int { return 500; }
 function wp_remote_retrieve_body( mixed ...$a ): string { return ''; }
 function check_password_reset_key( mixed ...$a ): WP_Error { return new WP_Error( 'unused' ); }
 function reset_password( mixed ...$a ): void { $GLOBALS['pap_password_resets'][] = $a; }
+function get_password_reset_key( WP_User $user ): string { return 'reset-key-' . $user->ID; }
+function papelito_email_notice_html( array $view ): string { return (string) $view['headline']; }
+function papelito_email_notice_text( array $view ): string { return (string) $view['headline']; }
+function papelito_email_send( mixed ...$args ): bool { $GLOBALS['pap_sent'][] = array( $args[0], $args[1] ); return true; }
 function papelito_company_onboarding_get( int $id ): ?array { return null; }
 function papelito_company_onboarding_mark_google( int $id ): void { $GLOBALS['pap_meta'][ $id ]['papelito_onboarding_google'] = '1'; }
 function papelito_emails_match( string $a, string $b ): bool { return strtolower( trim( $a ) ) === strtolower( trim( $b ) ); }
@@ -265,6 +272,53 @@ $google_id = $google_user->ID;
 papelito_assert( 'conta Google nasce verificada, pois o tokeninfo exige email_verified', 'verified', $GLOBALS['pap_meta'][ $google_id ]['papelito_email_verification_status'] );
 papelito_assert( 'conta Google nasce sem senha propria', array( 'google' ), papelito_auth_credential_methods( $google_id ) );
 papelito_assert( 'conta Google entra no coorte B2B', '1', $GLOBALS['pap_meta'][ $google_id ]['papelito_b2b_required'] );
+
+/* ---------- 5. esqueci minha senha nunca deixa conta sem senha num beco ---------- */
+echo "Cenario 5: esqueci minha senha manda o link certo para cada conta\n";
+
+/**
+ * Cria uma conta de teste com o e-mail registrado e devolve o assunto do e-mail que o
+ * "esqueci minha senha" mandou para ela.
+ *
+ * @param int                  $id    Id da conta.
+ * @param string               $email E-mail da conta.
+ * @param array<string,string> $meta  Usermeta inicial.
+ * @return string|null
+ */
+function papelito_test_forgot_subject( int $id, string $email, array $meta ): ?string {
+	$GLOBALS['pap_users'][ $id ]             = new WP_User( $id );
+	$GLOBALS['pap_users'][ $id ]->user_email = $email;
+	$GLOBALS['pap_users'][ $id ]->user_login = $email;
+	$GLOBALS['pap_emails'][ $email ]         = $id;
+	$GLOBALS['pap_meta'][ $id ]              = $meta;
+	$GLOBALS['pap_sent']                     = array();
+	papelito_auth_handle_forgot_password( new WP_REST_Request( array( 'email' => $email ) ) );
+
+	return $GLOBALS['pap_sent'][0][1] ?? null;
+}
+
+papelito_assert(
+	'lojista do estande (pendente, sem senha) recebe o link de definir senha',
+	INVITATION_TEST_RESET_SUBJECT,
+	papelito_test_forgot_subject(
+		60,
+		'estande@test.com',
+		array(
+			'papelito_email_verification_status' => INVITATION_TEST_PENDING,
+			'papelito_auth_password_unset'       => '1',
+		)
+	)
+);
+papelito_assert(
+	'cadastro pendente com senha propria continua recebendo a confirmacao',
+	INVITATION_TEST_VERIFY_SUBJECT,
+	papelito_test_forgot_subject( 61, 'pendente@test.com', array( 'papelito_email_verification_status' => INVITATION_TEST_PENDING ) )
+);
+papelito_assert(
+	'conta verificada recebe o link de redefinir senha',
+	INVITATION_TEST_RESET_SUBJECT,
+	papelito_test_forgot_subject( 62, 'verificada@test.com', array( 'papelito_email_verification_status' => 'verified' ) )
+);
 
 echo "\n" . ( 0 === $failures ? "ALL PASS\n" : "{$failures} FAILURE(S)\n" );
 exit( 0 === $failures ? 0 : 1 );
