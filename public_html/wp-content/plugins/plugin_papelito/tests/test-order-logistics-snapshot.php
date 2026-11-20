@@ -193,20 +193,20 @@ class Logistics_Test_WPDB {
 }
 
 /**
- * Pedido WooCommerce sintético que aplica `wp_unslash` como a API real de meta.
+ * Pedido WooCommerce sintético que grava a meta como recebe, como o pedido real do WooCommerce.
  */
 class Logistics_Test_Order {
 	/** @var array<string,mixed> */
 	private array $meta = array();
 
 	/**
-	 * Grava uma meta desfazendo as barras, como o WordPress faz.
+	 * Grava uma meta sem desfazer barras: o pedido WooCommerce não chama `wp_unslash`.
 	 *
 	 * @param string $key Chave da meta.
-	 * @param mixed  $value Valor recebido já com barras.
+	 * @param mixed  $value Valor gravado.
 	 * @return void
 	 */
-	public function update_meta_data( string $key, mixed $value ): void { $this->meta[ $key ] = wp_unslash( $value ); }
+	public function update_meta_data( string $key, mixed $value ): void { $this->meta[ $key ] = $value; }
 
 	/**
 	 * Lê uma meta já gravada.

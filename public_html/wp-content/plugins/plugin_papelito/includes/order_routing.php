@@ -787,7 +787,7 @@ function papelito_order_routing_store_logistics_snapshot( object $order, ?array 
 		return;
 	}
 
-	$order->update_meta_data( '_papelito_logistics_snapshot', wp_slash( (string) wp_json_encode( $snapshot ) ) );
+	$order->update_meta_data( '_papelito_logistics_snapshot', (string) wp_json_encode( $snapshot ) );
 	$order->update_meta_data( '_papelito_logistics_physical_hash', sanitize_text_field( (string) $snapshot['physical_hash'] ) );
 }
 

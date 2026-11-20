@@ -423,6 +423,26 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
 }
 
 /**
+ * Snapshot logístico do pedido. Pedido gravado até 20/11/2026 tem o JSON com barras extras, porque o
+ * meta do pedido WooCommerce não desfaz o `wp_slash`; esses voltam pelo `wp_unslash`.
+ *
+ * @param object $order Pedido.
+ * @return array<string,mixed>|null
+ */
+function papelito_vendor_dashboard_logistics_snapshot( $order ): ?array {
+	$raw = (string) $order->get_meta( '_papelito_logistics_snapshot', true );
+
+	foreach ( array( $raw, wp_unslash( $raw ) ) as $candidate ) {
+		$snapshot = json_decode( $candidate, true );
+		if ( is_array( $snapshot ) ) {
+			return $snapshot;
+		}
+	}
+
+	return null;
+}
+
+/**
  * Caixas que o vendor precisa despachar, uma entrada por caixa, lidas do snapshot logístico gravado
  * na criação do pedido. Vazio em pedido antigo, sem snapshot.
  *
@@ -430,7 +450,7 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
  * @return array<int,array{length_cm:float,width_cm:float,height_cm:float,weight_kg:float}>
  */
 function papelito_vendor_dashboard_order_packing( $order ): array {
-	$snapshot = json_decode( (string) $order->get_meta( '_papelito_logistics_snapshot', true ), true );
+	$snapshot = papelito_vendor_dashboard_logistics_snapshot( $order );
 	$packages = is_array( $snapshot ) && is_array( $snapshot['packages'] ?? null ) ? $snapshot['packages'] : array();
 	$boxes    = array();
 

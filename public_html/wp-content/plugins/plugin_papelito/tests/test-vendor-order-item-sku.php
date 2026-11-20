@@ -64,6 +64,10 @@ function sanitize_text_field( mixed $value ): string {
 	return trim( strip_tags( (string) $value ) );
 }
 
+function wp_unslash( mixed $value ): mixed {
+	return is_string( $value ) ? stripslashes( $value ) : $value;
+}
+
 function add_action( mixed ...$args ): bool {
 	return true;
 }
@@ -185,6 +189,11 @@ item_sku_test_assert(
 	$boxes[0]
 );
 item_sku_test_assert( 'pedido sem snapshot não inventa caixa', array(), papelito_vendor_dashboard_order_packing( new Item_Sku_Test_Packed_Order( '' ) ) );
+item_sku_test_assert(
+	'pedido antigo, gravado com barras extras, ainda mostra as caixas',
+	3,
+	count( papelito_vendor_dashboard_order_packing( new Item_Sku_Test_Packed_Order( addslashes( $packed->get_meta( '_papelito_logistics_snapshot' ) ) ) ) )
+);
 
 if ( $failures > 0 ) {
 	echo "\n{$failures} falha(s).\n";
