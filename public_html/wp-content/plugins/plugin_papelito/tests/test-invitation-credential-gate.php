@@ -26,6 +26,7 @@ const INVITATION_TEST_GOOGLE_EMAIL   = 'google@test.com';
 const INVITATION_TEST_RESET_SUBJECT  = 'Redefina sua senha - Papelito';
 const INVITATION_TEST_VERIFY_SUBJECT = 'Confirme seu e-mail - Papelito';
 const INVITATION_TEST_PENDING        = 'pending';
+const INVITATION_TEST_VERIFIED       = 'verified';
 
 $GLOBALS['pap_meta']             = array();
 $GLOBALS['pap_users']            = array();
@@ -277,48 +278,79 @@ papelito_assert( 'conta Google entra no coorte B2B', '1', $GLOBALS['pap_meta'][ 
 echo "Cenario 5: esqueci minha senha manda o link certo para cada conta\n";
 
 /**
- * Cria uma conta de teste com o e-mail registrado e devolve o assunto do e-mail que o
- * "esqueci minha senha" mandou para ela.
+ * Cria uma conta de teste, chama o "esqueci minha senha" para o e-mail dela e devolve o que
+ * importa ao chamador: status HTTP, corpo da resposta e assunto do e-mail enviado.
  *
  * @param int                  $id    Id da conta.
  * @param string               $email E-mail da conta.
  * @param array<string,string> $meta  Usermeta inicial.
- * @return string|null
+ * @return array{status:int|null,body:mixed,subject:string|null}
  */
-function papelito_test_forgot_subject( int $id, string $email, array $meta ): ?string {
+function papelito_test_forgot_password( int $id, string $email, array $meta ): array {
 	$GLOBALS['pap_users'][ $id ]             = new WP_User( $id );
 	$GLOBALS['pap_users'][ $id ]->user_email = $email;
 	$GLOBALS['pap_users'][ $id ]->user_login = $email;
 	$GLOBALS['pap_emails'][ $email ]         = $id;
 	$GLOBALS['pap_meta'][ $id ]              = $meta;
 	$GLOBALS['pap_sent']                     = array();
-	papelito_auth_handle_forgot_password( new WP_REST_Request( array( 'email' => $email ) ) );
+	$response                                = papelito_auth_handle_forgot_password( new WP_REST_Request( array( 'email' => $email ) ) );
 
-	return $GLOBALS['pap_sent'][0][1] ?? null;
+	return array(
+		'status'  => $response instanceof WP_REST_Response ? $response->status : null,
+		'body'    => $response instanceof WP_REST_Response ? $response->data : null,
+		'subject' => $GLOBALS['pap_sent'][0][1] ?? null,
+	);
 }
 
-papelito_assert(
-	'lojista do estande (pendente, sem senha) recebe o link de definir senha',
-	INVITATION_TEST_RESET_SUBJECT,
-	papelito_test_forgot_subject(
-		60,
-		'estande@test.com',
-		array(
+$forgot_cases = array(
+	array(
+		'label'   => 'lojista do estande (pendente, sem senha) recebe o link de definir senha',
+		'id'      => 60,
+		'email'   => 'estande@test.com',
+		'meta'    => array(
 			'papelito_email_verification_status' => INVITATION_TEST_PENDING,
 			'papelito_auth_password_unset'       => '1',
-		)
-	)
+		),
+		'subject' => INVITATION_TEST_RESET_SUBJECT,
+	),
+	array(
+		'label'   => 'cadastro pendente com senha propria continua recebendo a confirmacao',
+		'id'      => 61,
+		'email'   => 'pendente@test.com',
+		'meta'    => array( 'papelito_email_verification_status' => INVITATION_TEST_PENDING ),
+		'subject' => INVITATION_TEST_VERIFY_SUBJECT,
+	),
+	array(
+		'label'   => 'conta verificada recebe o link de redefinir senha',
+		'id'      => 62,
+		'email'   => 'verificada@test.com',
+		'meta'    => array( 'papelito_email_verification_status' => INVITATION_TEST_VERIFIED ),
+		'subject' => INVITATION_TEST_RESET_SUBJECT,
+	),
+	array(
+		'label'   => 'conta Google verificada sem senha propria recebe o link de definir senha',
+		'id'      => 63,
+		'email'   => 'google-sem-senha@test.com',
+		'meta'    => array(
+			'papelito_email_verification_status' => INVITATION_TEST_VERIFIED,
+			'papelito_auth_password_unset'       => '1',
+			'google_sub'                         => 'sub-63',
+		),
+		'subject' => INVITATION_TEST_RESET_SUBJECT,
+	),
 );
-papelito_assert(
-	'cadastro pendente com senha propria continua recebendo a confirmacao',
-	INVITATION_TEST_VERIFY_SUBJECT,
-	papelito_test_forgot_subject( 61, 'pendente@test.com', array( 'papelito_email_verification_status' => INVITATION_TEST_PENDING ) )
-);
-papelito_assert(
-	'conta verificada recebe o link de redefinir senha',
-	INVITATION_TEST_RESET_SUBJECT,
-	papelito_test_forgot_subject( 62, 'verificada@test.com', array( 'papelito_email_verification_status' => 'verified' ) )
-);
+
+foreach ( $forgot_cases as $forgot_case ) {
+	papelito_assert(
+		$forgot_case['label'],
+		array(
+			'status'  => 200,
+			'body'    => array( 'ok' => true ),
+			'subject' => $forgot_case['subject'],
+		),
+		papelito_test_forgot_password( $forgot_case['id'], $forgot_case['email'], $forgot_case['meta'] )
+	);
+}
 
 echo "\n" . ( 0 === $failures ? "ALL PASS\n" : "{$failures} FAILURE(S)\n" );
 exit( 0 === $failures ? 0 : 1 );
