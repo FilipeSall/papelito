@@ -22,6 +22,7 @@ const PAPELITO_EVENT_SALES_KIT_UNITS        = 4;
 const PAPELITO_EVENT_SALES_KIT_COMPONENTS   = 4;
 const PAPELITO_EVENT_SALES_KIT_PCT_KEPT     = 85;
 const PAPELITO_EVENT_SALES_KIT_MAX          = 3;
+const PAPELITO_EVENT_SALES_FREE_SHIPPING    = 50000;
 const PAPELITO_EVENT_SALES_MAX_QTY          = 999;
 const PAPELITO_EVENT_SALES_BASIS_POINTS     = 10000;
 const PAPELITO_EVENT_SALES_INVALID_QUANTITY = 'papelito_event_invalid_quantity';
@@ -101,6 +102,23 @@ function papelito_event_sales_kit_min_cents(): int {
 	}
 
 	return PHP_INT_MAX;
+}
+
+/**
+ * Desconto do frete do estande: a partir de R$ 500 no pedido a Papelito paga o frete inteiro.
+ *
+ * Devolve o abatimento, nunca um preço: o valor cobrado do lojista pela modalidade é assinado e
+ * reconferido na criação do pedido, então zerá-lo faria a venda ser recusada na maquininha. Quem
+ * abate é o `papelito_order_routing_add_shipping_item()`, que guarda o preço cheio no meta.
+ *
+ * O corte vale para qualquer CEP: a promessa do evento não tem exceção de região.
+ *
+ * @param int $base_cents     Base da faixa, em centavos.
+ * @param int $shipping_cents Preço da modalidade escolhida, em centavos.
+ * @return int
+ */
+function papelito_event_sales_shipping_discount_cents( int $base_cents, int $shipping_cents ): int {
+	return $base_cents >= PAPELITO_EVENT_SALES_FREE_SHIPPING ? max( 0, $shipping_cents ) : 0;
 }
 
 /**

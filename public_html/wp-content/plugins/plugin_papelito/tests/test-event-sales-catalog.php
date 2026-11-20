@@ -152,12 +152,13 @@ function test_shelves_rules(): void {
 function test_context_shape_keys(): void {
 	event_catalog_fixture();
 	$context = papelito_event_sales_context( new WP_User( 7, 'Operadora', array( 'papelito_event_sell' => true ) ), EVENT_CATALOG_TEST_VENDOR );
-	event_catalog_assert( 'contexto tem as chaves do contrato', array( 'event', 'operator', 'terminals', 'levels', 'kit', 'categories', 'products', 'shelves' ) === array_keys( $context ) );
+	event_catalog_assert( 'contexto tem as chaves do contrato', array( 'event', 'operator', 'terminals', 'shipping', 'levels', 'kit', 'categories', 'products', 'shelves' ) === array_keys( $context ) );
 	event_catalog_assert( 'evento tem id e nome', 'expocannabis-2026' === $context['event']['id'] && 'ExpoCannabis Brasil 2026' === $context['event']['name'] );
 	event_catalog_assert( 'operador sem supervise', 'Operadora' === $context['operator']['name'] && false === $context['operator']['canSupervise'] );
 	event_catalog_assert( 'kit calculado pelos preços atuais', 65595 === $context['kit']['unitCents'] && true === $context['kit']['available'] );
 	event_catalog_assert( 'kit traz o desconto padrão', 15 === $context['kit']['pctOff'] );
 	event_catalog_assert( 'níveis em camelCase', 100000 === $context['levels'][1]['minCents'] && 500 === $context['levels'][1]['pctBp'] );
+	event_catalog_assert( 'contexto anuncia o frete grátis', 50000 === $context['shipping']['freeFromCents'] );
 	event_catalog_assert( 'categorias só as que têm produto', array( 'sedas' ) === array_column( $context['categories'], 'slug' ) );
 
 	$GLOBALS['catalog_env'] = array( 'PAPELITO_EVENT_SALES_KIT_PRODUCT_IDS' => '1,2' );

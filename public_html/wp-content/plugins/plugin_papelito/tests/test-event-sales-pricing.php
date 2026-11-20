@@ -76,6 +76,9 @@ function test_levels_boundaries(): void {
 	}
 	event_pricing_assert( 'Lenda tem 10%', 1000 === papelito_event_sales_level_for_cents( 150000 )['pct_bp'] );
 	event_pricing_assert( 'kit e brinde liberam no primeiro degrau com desconto', 100000 === papelito_event_sales_kit_min_cents() );
+	event_pricing_assert( 'abaixo de R$ 500 o frete é do lojista', 0 === papelito_event_sales_shipping_discount_cents( 49999, 2990 ) );
+	event_pricing_assert( 'a partir de R$ 500 a casa paga o frete', 2990 === papelito_event_sales_shipping_discount_cents( 50000, 2990 ) );
+	event_pricing_assert( 'sem frete não há o que abater', 0 === papelito_event_sales_shipping_discount_cents( 200000, 0 ) );
 }
 
 function test_line_discount_rounds_per_line(): void {
@@ -90,7 +93,8 @@ function test_line_discount_rounds_per_line(): void {
 }
 
 function test_kit_without_level_is_rejected(): void {
-	$result = papelito_event_sales_price( event_pricing_products(), array( EVENT_SALES_TEST_LOOSE => 5 ), 1, event_pricing_kit_ids() );
+	/* O kit conta na própria base: 1 avulso mais o kit dá R$ 883,32, abaixo do corte. */
+	$result = papelito_event_sales_price( event_pricing_products(), array( EVENT_SALES_TEST_LOOSE => 1 ), 1, event_pricing_kit_ids() );
 	event_pricing_assert( 'kit abaixo de R$ 1.000 é recusado', event_pricing_error( $result, 'papelito_event_kit_requires_level', 409 ) );
 
 	$allowed = papelito_event_sales_price( event_pricing_products(), array( EVENT_SALES_TEST_LOOSE => 6 ), 1, event_pricing_kit_ids() );
