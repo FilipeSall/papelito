@@ -301,6 +301,15 @@ foreach (
 	braspress_http_assert( 'categoria de domínio reconhece ' . $code, $category === papelito_shipping_failure_category( 'braspress', $code ) );
 }
 
+foreach (
+	array(
+		'papelito_correios_validation_rejected'    => 'validation_error',
+		'papelito_correios_configuration_rejected' => 'configuration_error',
+	) as $code => $category
+) {
+	braspress_http_assert( 'recusa dos Correios reconhece ' . $code, $category === papelito_shipping_failure_category( 'correios', $code ) );
+}
+
 putenv( 'BRASPRESS_BASE_URL' );
 echo $failures > 0 ? "FAILED: {$failures}\n" : "OK\n";
 exit( $failures > 0 ? 1 : 0 );

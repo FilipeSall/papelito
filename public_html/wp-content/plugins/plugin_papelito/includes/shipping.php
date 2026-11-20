@@ -351,6 +351,27 @@ function papelito_correios_base_url( string $environment ): string {
 }
 
 /**
+ * Código do erro conforme o status HTTP dos Correios. A recusa do pedido (CEP inexistente, medida
+ * fora da faixa) vira `validation_error` e a de credencial vira `configuration_error` na taxonomia
+ * dos providers, para não se confundir com Correios fora do ar; o resto fica com `$fallback`.
+ *
+ * @param int    $status   Status HTTP devolvido pelos Correios, ou 0 sem resposta.
+ * @param string $fallback Código para queda, limite de requisições e resposta inválida.
+ * @return string
+ */
+function papelito_correios_rejection_code( int $status, string $fallback ): string {
+	if ( 401 === $status || 403 === $status ) {
+		return 'papelito_correios_configuration_rejected';
+	}
+
+	if ( $status >= 400 && $status < 500 && 429 !== $status ) {
+		return 'papelito_correios_validation_rejected';
+	}
+
+	return $fallback;
+}
+
+/**
  * Extrai uma mensagem segura da resposta dos Correios.
  *
  * @param mixed $body Corpo decodificado.
@@ -500,7 +521,7 @@ function papelito_correios_request_json( string $method, string $url, array $arg
 		}
 
 		return new WP_Error(
-			'papelito_correios_bad_response',
+			papelito_correios_rejection_code( $status, 'papelito_correios_bad_response' ),
 			'Correios respondeu com erro durante a cotação.',
 			$error_data
 		);
@@ -1611,7 +1632,7 @@ function papelito_correios_quote_failure( $first_error ): WP_Error {
 	}
 
 	return new WP_Error(
-		'papelito_shipping_quote_failed',
+		papelito_correios_rejection_code( (int) ( $error_data['correios_status'] ?? 0 ), 'papelito_shipping_quote_failed' ),
 		'Não foi possível cotar PAC/SEDEX nos Correios.',
 		$error_data
 	);

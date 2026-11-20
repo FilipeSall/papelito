@@ -285,6 +285,14 @@ function test_validation_error_is_never_waived(): void {
 	event_quote_assert( 'erro de cadastro não vira frete grátis', event_quote_big_order() instanceof WP_Error );
 }
 
+function test_correios_rejection_is_never_waived(): void {
+	foreach ( array( 'validation_error', 'configuration_error' ) as $category ) {
+		event_quote_fixture();
+		$GLOBALS['quote_shipping'] = new WP_Error( $category, 'Não foi possível cotar o frete.', array( 'status' => 502 ) );
+		event_quote_assert( "recusa dos Correios ({$category}) não vira frete grátis", event_quote_big_order() instanceof WP_Error );
+	}
+}
+
 function test_only_other_providers_counts_as_correios_outage(): void {
 	event_quote_fixture();
 	$GLOBALS['quote_shipping'] = array( 'options' => array( event_quote_option( 'braspress', 'braspress:rodo', 1000 ) ) );
@@ -315,6 +323,7 @@ test_quote_total_is_items_plus_kit_plus_shipping();
 test_correios_outage_waives_shipping_on_free_shipping_orders();
 test_correios_outage_below_free_shipping_still_blocks();
 test_validation_error_is_never_waived();
+test_correios_rejection_is_never_waived();
 test_only_other_providers_counts_as_correios_outage();
 test_invalid_cep_is_never_waived();
 function event_quote_outage_with( string $setup_key, mixed $value ): array|WP_Error {

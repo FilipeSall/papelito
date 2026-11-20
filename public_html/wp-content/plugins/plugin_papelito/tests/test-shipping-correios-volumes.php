@@ -240,6 +240,16 @@ $late = papelito_correios_quote_volume_services(
 papelito_volumes_assert( 'nenhum servico sai pela metade', array() === $late['options'] );
 papelito_volumes_assert( 'a desistencia vira timeout', $late['first_error'] instanceof WP_Error && 'papelito_correios_timeout' === $late['first_error']->code );
 
+echo "Cenario 8: recusa dos Correios nao se confunde com Correios fora do ar\n";
+papelito_volumes_assert( 'caixa recusada com 400 vira validacao', $quoted['first_error'] instanceof WP_Error && 'papelito_correios_validation_rejected' === $quoted['first_error']->code );
+
+$failure_code = static fn( int $status ): string => papelito_correios_quote_failure( new WP_Error( 'x', 'x', array( 'correios_status' => $status ) ) )->code;
+papelito_volumes_assert( 'CEP inexistente (400) vira validacao', 'papelito_correios_validation_rejected' === $failure_code( 400 ) );
+papelito_volumes_assert( 'credencial recusada (401) vira configuracao', 'papelito_correios_configuration_rejected' === $failure_code( 401 ) );
+papelito_volumes_assert( 'limite de requisicoes (429) segue como falha', 'papelito_shipping_quote_failed' === $failure_code( 429 ) );
+papelito_volumes_assert( 'erro 503 segue como falha', 'papelito_shipping_quote_failed' === $failure_code( 503 ) );
+papelito_volumes_assert( 'sem resposta segue como falha', 'papelito_shipping_quote_failed' === papelito_correios_quote_failure( new WP_Error( 'papelito_correios_unreachable', 'x' ) )->code );
+
 if ( $failures > 0 ) {
 	echo "FAILED: {$failures}\n";
 	exit( 1 );
