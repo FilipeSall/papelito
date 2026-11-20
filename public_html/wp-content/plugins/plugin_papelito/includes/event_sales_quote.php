@@ -19,7 +19,7 @@ const PAPELITO_EVENT_SALES_SHIPPING_PROVIDER = 'correios';
 const PAPELITO_EVENT_SALES_WAIVED_SHIPPING   = 'correios:estande-frete-gratis';
 const PAPELITO_EVENT_SALES_WAIVED_META       = '_papelito_event_shipping_waived';
 const PAPELITO_EVENT_SALES_CEP_LENGTH        = 8;
-const PAPELITO_EVENT_SALES_OUTAGE_FAILURES   = array( 'configuration_error', 'timeout', 'network_error', 'rate_limited', 'provider_4xx', 'provider_5xx', 'invalid_response', 'unknown_error' );
+const PAPELITO_EVENT_SALES_OUTAGE_FAILURES   = array( 'timeout', 'network_error', 'rate_limited', 'provider_4xx', 'provider_5xx', 'invalid_response', 'unknown_error' );
 
 /**
  * Quantidade por produto a partir dos itens do tablet, somando produto repetido.
@@ -206,21 +206,43 @@ function papelito_event_sales_cheapest_correios( array|WP_Error $quote ): array|
 }
 
 /**
- * Informa se a cotação falhou porque os Correios estão fora do ar, e não por cadastro ou carrinho.
+ * Confere tudo o que, na cotação dos Correios, depende de cadastro e não da API: CEP de origem e de
+ * destino com 8 dígitos, vendor elegível, credenciais configuradas e Correios ligado para o vendor.
+ * Só com isso tudo válido uma falha da cotação pode ser lida como queda dos Correios.
  *
- * Cotação que voltou com opções mas sem nenhuma dos Correios também conta como queda: os Correios
- * falharam e outro provider respondeu. Erro de validação (produto sem medida, unidade que não cabe
- * numa caixa, rota inválida) nunca conta.
- *
- * @param array<string,mixed>|WP_Error $quoted Resultado de `papelito_shipping_quote_all_providers()`.
+ * @param int    $vendor_id Vendor do evento.
+ * @param string $cep       CEP de entrega normalizado.
  * @return bool
  */
-function papelito_event_sales_shipping_outage( array|WP_Error $quoted ): bool {
-	if ( ! is_wp_error( $quoted ) ) {
-		return true;
+function papelito_event_sales_correios_setup_ok( int $vendor_id, string $cep ): bool {
+	$origin = papelito_shipping_normalize_cep( (string) get_user_meta( $vendor_id, 'cep', true ) );
+
+	return PAPELITO_EVENT_SALES_CEP_LENGTH === strlen( $cep )
+		&& PAPELITO_EVENT_SALES_CEP_LENGTH === strlen( $origin )
+		&& ! is_wp_error( papelito_shipping_get_vendor( $vendor_id ) )
+		&& ! is_wp_error( papelito_correios_credentials() )
+		&& papelito_shipping_correios_is_regular( $vendor_id );
+}
+
+/**
+ * Informa se a cotação falhou porque os Correios estão fora do ar, e não por cadastro ou carrinho.
+ *
+ * Exige o cadastro válido (`papelito_event_sales_correios_setup_ok()`), porque o agregador de
+ * providers reduz CEP inválido e credencial ausente às mesmas categorias de uma queda. Com os
+ * Correios ligados para o vendor eles sempre entram na cotação, então voltar sem nenhuma opção dos
+ * Correios também é falha deles. Erro de validação nunca conta.
+ *
+ * @param int                          $vendor_id Vendor do evento.
+ * @param string                       $cep       CEP de entrega normalizado.
+ * @param array<string,mixed>|WP_Error $quoted    Resultado de `papelito_shipping_quote_all_providers()`.
+ * @return bool
+ */
+function papelito_event_sales_shipping_outage( int $vendor_id, string $cep, array|WP_Error $quoted ): bool {
+	if ( ! papelito_event_sales_correios_setup_ok( $vendor_id, $cep ) ) {
+		return false;
 	}
 
-	return in_array( $quoted->get_error_code(), PAPELITO_EVENT_SALES_OUTAGE_FAILURES, true );
+	return ! is_wp_error( $quoted ) || in_array( $quoted->get_error_code(), PAPELITO_EVENT_SALES_OUTAGE_FAILURES, true );
 }
 
 /**
@@ -248,7 +270,8 @@ function papelito_event_sales_waived_shipping(): array {
 /**
  * Frete do pedido do estande: a opção Correios mais barata, ou a contingência de frete grátis quando
  * os Correios estão fora do ar, o pedido já tem frete grátis (`PAPELITO_EVENT_SALES_FREE_SHIPPING`)
- * e o CEP tem 8 dígitos. Abaixo do frete grátis a falha continua travando a venda.
+ * e o cadastro está válido. Abaixo do frete grátis a falha continua travando a venda. Quem chama
+ * já validou as caixas: erro de embalagem nunca chega aqui.
  *
  * @param int                            $vendor_id      Vendor do evento.
  * @param string                         $cep            CEP de entrega normalizado.
@@ -263,22 +286,9 @@ function papelito_event_sales_resolve_shipping( int $vendor_id, string $cep, arr
 
 	$waivable = is_wp_error( $shipping )
 		&& $base_cents >= PAPELITO_EVENT_SALES_FREE_SHIPPING
-		&& PAPELITO_EVENT_SALES_CEP_LENGTH === strlen( $cep )
-		&& papelito_event_sales_shipping_outage( $quoted );
+		&& papelito_event_sales_shipping_outage( $vendor_id, $cep, $quoted );
 
 	return $waivable ? papelito_event_sales_waived_shipping() : $shipping;
-}
-
-/**
- * Caixas em que o pedido vai, as mesmas que os Correios cotaram; vazio quando não dá para montar.
- *
- * @param array<int,array<string,mixed>> $items Itens da cotação de frete.
- * @return array<int,array<string,mixed>>
- */
-function papelito_event_sales_shipping_packages( array $items ): array {
-	$packages = papelito_shipping_build_packages( $items );
-
-	return is_array( $packages ) ? $packages : array();
 }
 
 /**
@@ -322,7 +332,12 @@ function papelito_event_sales_quote( array $input ): array|WP_Error {
 	}
 
 	$shipping_items = papelito_event_sales_shipping_items( $priced, $products, $kit_ids );
-	$shipping       = papelito_event_sales_resolve_shipping(
+	$packages       = papelito_shipping_build_packages( $shipping_items );
+	if ( is_wp_error( $packages ) ) {
+		return $packages;
+	}
+
+	$shipping = papelito_event_sales_resolve_shipping(
 		$config['vendor_id'],
 		papelito_shipping_normalize_cep( (string) ( $input['cep'] ?? '' ) ),
 		$shipping_items,
@@ -333,7 +348,6 @@ function papelito_event_sales_quote( array $input ): array|WP_Error {
 		return $shipping;
 	}
 
-	$packages       = papelito_event_sales_shipping_packages( $shipping_items );
 	$frete_cents    = (int) $shipping['customer_price_cents'];
 	$frete_desconto = papelito_event_sales_shipping_discount_cents( (int) $priced['base_cents'], $frete_cents );
 

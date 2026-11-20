@@ -50,6 +50,7 @@ $GLOBALS['quote_calls']    = array();
 $GLOBALS['quote_hidden']   = array();
 $GLOBALS['quote_orphans']  = array();
 $GLOBALS['quote_packages'] = array();
+$GLOBALS['quote_setup']    = array();
 
 function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
 function add_action( mixed ...$args ): bool { return true; }
@@ -72,7 +73,11 @@ function papelito_shipping_quote_all_providers( int $vendor_id, string $destinat
 	return $GLOBALS['quote_shipping'];
 }
 
-function papelito_shipping_build_packages( array $items ): array { return $GLOBALS['quote_packages']; }
+function papelito_shipping_build_packages( array $items ): array|WP_Error { return $GLOBALS['quote_packages']; }
+function get_user_meta( int $user_id, string $key, bool $single = false ): string { return $GLOBALS['quote_setup']['origin_cep']; }
+function papelito_shipping_get_vendor( int $vendor_id ): bool|WP_Error { return $GLOBALS['quote_setup']['vendor_ok'] ? true : new WP_Error( 'papelito_shipping_vendor_invalid' ); }
+function papelito_correios_credentials(): array|WP_Error { return $GLOBALS['quote_setup']['credentials_ok'] ? array() : new WP_Error( 'papelito_correios_credentials_missing' ); }
+function papelito_shipping_correios_is_regular( int $vendor_id ): bool { return $GLOBALS['quote_setup']['correios_on']; }
 
 require_once dirname( __DIR__ ) . '/includes/payment_providers.php';
 require_once dirname( __DIR__ ) . '/includes/event_sales_config.php';
@@ -120,6 +125,12 @@ function event_quote_fixture(): void {
 	$GLOBALS['quote_orphans']  = array();
 	$GLOBALS['quote_options']  = array();
 	$GLOBALS['quote_packages'] = array( array( 'height' => 50.0 ) );
+	$GLOBALS['quote_setup']    = array(
+		'origin_cep'     => '70040010',
+		'vendor_ok'      => true,
+		'credentials_ok' => true,
+		'correios_on'    => true,
+	);
 	$GLOBALS['quote_shipping'] = array(
 		'options' => array(
 			event_quote_option( 'correios', 'correios:sedex', 4500 ),
@@ -306,7 +317,36 @@ test_correios_outage_below_free_shipping_still_blocks();
 test_validation_error_is_never_waived();
 test_only_other_providers_counts_as_correios_outage();
 test_invalid_cep_is_never_waived();
+function event_quote_outage_with( string $setup_key, mixed $value ): array|WP_Error {
+	event_quote_fixture();
+	$GLOBALS['quote_shipping']            = new WP_Error( 'invalid_response', 'Não foi possível cotar o frete.', array( 'status' => 503 ) );
+	$GLOBALS['quote_setup'][ $setup_key ] = $value;
+
+	return event_quote_big_order();
+}
+
+function test_registration_errors_are_never_waived(): void {
+	event_quote_fixture();
+	$GLOBALS['quote_shipping'] = new WP_Error( 'invalid_response', 'Não foi possível cotar o frete.', array( 'status' => 503 ) );
+	event_quote_assert( 'com cadastro válido a queda vira contingência', is_array( event_quote_big_order() ) );
+	event_quote_assert( 'CEP de origem do vendor inválido não vira frete grátis', event_quote_outage_with( 'origin_cep', '7004' ) instanceof WP_Error );
+	event_quote_assert( 'vendor inelegível não vira frete grátis', event_quote_outage_with( 'vendor_ok', false ) instanceof WP_Error );
+	event_quote_assert( 'credencial dos Correios ausente não vira frete grátis', event_quote_outage_with( 'credentials_ok', false ) instanceof WP_Error );
+	event_quote_assert( 'Correios desligado no vendor não vira frete grátis', event_quote_outage_with( 'correios_on', false ) instanceof WP_Error );
+}
+
+function test_package_errors_block_before_waiving(): void {
+	event_quote_fixture();
+	$GLOBALS['quote_shipping'] = new WP_Error( 'provider_5xx', 'Não foi possível cotar o frete.', array( 'status' => 503 ) );
+	$GLOBALS['quote_packages'] = new WP_Error( 'papelito_shipping_package_exceeds_limits', 'Não cabe.', array( 'status' => 422, 'limit' => 'dimension' ) );
+	$quote = event_quote_big_order();
+	event_quote_assert( 'unidade que não cabe numa caixa recusa mesmo com Correios fora do ar', $quote instanceof WP_Error && 'papelito_shipping_package_exceeds_limits' === $quote->code );
+	event_quote_assert( 'erro de embalagem recusa antes de chamar os Correios', array() === $GLOBALS['quote_calls'] );
+}
+
 test_quote_reports_box_count();
+test_registration_errors_are_never_waived();
+test_package_errors_block_before_waiving();
 test_products_out_of_catalog_are_refused();
 test_fingerprint_changes_with_kit_composition();
 test_quote_picks_cheapest_correios();

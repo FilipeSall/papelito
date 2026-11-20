@@ -1,5 +1,5 @@
 <?php
-// phpcs:ignoreFile -- Standalone test stubs WordPress helpers by design.
+// phpcs:disable WordPress.Files.FileName.NotHyphenatedLowercase -- Plugin tests use underscore filenames.
 /**
  * Pedido grande dos Correios dividido em várias caixas.
  *
@@ -17,13 +17,13 @@ define( 'ABSPATH', __DIR__ . '/../' );
 define( 'HOUR_IN_SECONDS', 3600 );
 define( 'MINUTE_IN_SECONDS', 60 );
 
-const VOLUMES_TEST_SMALL_PRODUCT  = 301;
-const VOLUMES_TEST_WIDE_PRODUCT   = 302;
-const VOLUMES_TEST_HEAVY_PRODUCT  = 303;
-const VOLUMES_TEST_EXCEEDS_CODE   = 'papelito_shipping_package_exceeds_limits';
-const VOLUMES_TEST_SEDEX_CODE     = '03220';
-const VOLUMES_TEST_PAC_CODE       = '03298';
-const VOLUMES_TEST_LAST_BOX_CM    = 5.0;
+const VOLUMES_TEST_SMALL_PRODUCT = 301;
+const VOLUMES_TEST_WIDE_PRODUCT  = 302;
+const VOLUMES_TEST_HEAVY_PRODUCT = 303;
+const VOLUMES_TEST_EXCEEDS_CODE  = 'papelito_shipping_package_exceeds_limits';
+const VOLUMES_TEST_SEDEX_CODE    = '03220';
+const VOLUMES_TEST_PAC_CODE      = '03298';
+const VOLUMES_TEST_LAST_BOX_CM   = 5.0;
 
 class PapelitoVolumesTestError {
 	public function __construct( public string $code = '', public string $message = '', public array $data = array() ) {}
@@ -72,22 +72,36 @@ function wc_get_product( int $product_id ): ?PapelitoVolumesTestProduct {
 }
 
 /**
+ * Resposta HTTP no formato que os stubs de `wp_remote_retrieve_*` leem.
+ *
+ * @param int    $code Status HTTP.
+ * @param string $body Corpo JSON.
+ * @return array{code:int,body:string}
+ */
+function papelito_volumes_response( int $code, string $body ): array {
+	return array(
+		'code' => $code,
+		'body' => $body,
+	);
+}
+
+/**
  * Resposta falsa dos Correios: o preço vale o peso do volume em centavos por grama e o SEDEX
  * recusa a caixa de 5 cm de altura, para provar que o serviço sai da lista se falhar em uma caixa.
  */
 function wp_safe_remote_get( string $url, array $args = array() ): array {
 	$GLOBALS['volumes_requests'][] = $url;
-	parse_str( (string) parse_url( $url, PHP_URL_QUERY ), $query );
+	parse_str( substr( (string) strstr( $url, '?' ), 1 ), $query );
 
 	if ( str_contains( $url, 'prazo/v1' ) ) {
-		return array( 'code' => 200, 'body' => '{"prazoEntrega":5}' );
+		return papelito_volumes_response( 200, '{"prazoEntrega":5}' );
 	}
 
 	if ( str_contains( $url, VOLUMES_TEST_SEDEX_CODE ) && VOLUMES_TEST_LAST_BOX_CM === (float) $query['altura'] ) {
-		return array( 'code' => 400, 'body' => '{"msgs":["recusado"]}' );
+		return papelito_volumes_response( 400, '{"msgs":["recusado"]}' );
 	}
 
-	return array( 'code' => 200, 'body' => (string) json_encode( array( 'pcFinal' => (float) $query['psObjeto'] / 100 ) ) );
+	return papelito_volumes_response( 200, sprintf( '{"pcFinal":%s}', (float) $query['psObjeto'] / 100 ) );
 }
 
 require_once __DIR__ . '/../includes/shipping.php';
@@ -112,6 +126,22 @@ function papelito_volumes_assert( string $label, bool $condition ): void {
 }
 
 /**
+ * Carrinho com um produto só.
+ *
+ * @param int $product_id Produto.
+ * @param int $qty        Quantidade.
+ * @return array<int,array{product_id:int,qty:int}>
+ */
+function papelito_volumes_cart( int $product_id, int $qty ): array {
+	return array(
+		array(
+			'product_id' => $product_id,
+			'qty'        => $qty,
+		),
+	);
+}
+
+/**
  * Volumes de um carrinho com um produto só.
  *
  * @param int $product_id Produto.
@@ -119,17 +149,17 @@ function papelito_volumes_assert( string $label, bool $condition ): void {
  * @return array<int,array<string,mixed>>|WP_Error
  */
 function papelito_volumes_of( int $product_id, int $qty ): array|WP_Error {
-	return papelito_shipping_build_packages( array( array( 'product_id' => $product_id, 'qty' => $qty ) ) );
+	return papelito_shipping_build_packages( papelito_volumes_cart( $product_id, $qty ) );
 }
 
 echo "Cenario 1: carrinho que cabe numa caixa continua em um volume\n";
 $single = papelito_volumes_of( VOLUMES_TEST_SMALL_PRODUCT, 3 );
 papelito_volumes_assert( 'um volume', is_array( $single ) && 1 === count( $single ) );
-papelito_volumes_assert( 'mesmo pacote do construtor antigo', is_array( $single ) && $single[0] === papelito_shipping_build_package( array( array( 'product_id' => VOLUMES_TEST_SMALL_PRODUCT, 'qty' => 3 ) ) ) );
+papelito_volumes_assert( 'mesmo pacote do construtor antigo', is_array( $single ) && papelito_shipping_build_package( papelito_volumes_cart( VOLUMES_TEST_SMALL_PRODUCT, 3 ) ) === $single[0] );
 
 echo "Cenario 2: altura que estoura 100 cm abre outra caixa\n";
 $tall = papelito_volumes_of( VOLUMES_TEST_SMALL_PRODUCT, 21 );
-papelito_volumes_assert( 'antes era recusado', is_wp_error( papelito_shipping_build_package( array( array( 'product_id' => VOLUMES_TEST_SMALL_PRODUCT, 'qty' => 21 ) ) ) ) );
+papelito_volumes_assert( 'antes era recusado', is_wp_error( papelito_shipping_build_package( papelito_volumes_cart( VOLUMES_TEST_SMALL_PRODUCT, 21 ) ) ) );
 papelito_volumes_assert( 'agora vira dois volumes', is_array( $tall ) && 2 === count( $tall ) );
 papelito_volumes_assert( 'primeira caixa cheia até 100 cm', is_array( $tall ) && 100.0 === $tall[0]['height'] );
 papelito_volumes_assert( 'segunda caixa com a unidade que sobrou', is_array( $tall ) && VOLUMES_TEST_LAST_BOX_CM === $tall[1]['height'] );
@@ -154,19 +184,33 @@ papelito_volumes_assert( 'exatamente no teto ainda cota', is_array( $at_limit ) 
 
 echo "Cenario 6: preco somado por servico e prazo consultado uma vez\n";
 $services = array(
-	array( 'service' => 'PAC', 'code' => VOLUMES_TEST_PAC_CODE, 'name' => 'PAC' ),
-	array( 'service' => 'SEDEX', 'code' => VOLUMES_TEST_SEDEX_CODE, 'name' => 'SEDEX' ),
+	array(
+		'service' => 'PAC',
+		'code'    => VOLUMES_TEST_PAC_CODE,
+		'name'    => 'PAC',
+	),
+	array(
+		'service' => 'SEDEX',
+		'code'    => VOLUMES_TEST_SEDEX_CODE,
+		'name'    => 'SEDEX',
+	),
 );
-$volumes = papelito_volumes_of( VOLUMES_TEST_SMALL_PRODUCT, 41 );
+
+$volumes                     = papelito_volumes_of( VOLUMES_TEST_SMALL_PRODUCT, 41 );
 $GLOBALS['volumes_requests'] = array();
+
 $quoted = papelito_correios_quote_volume_services(
-	array( 'environment' => 'production', 'contract' => '' ),
+	array(
+		'environment' => 'production',
+		'contract'    => '',
+	),
 	array( 'token' => 't' ),
 	$services,
 	'01001000',
 	'70000000',
 	$volumes
 );
+
 $pac_prices = array_values( array_filter( $quoted['options'], static fn( array $option ): bool => 'PAC' === $option['service'] ) );
 papelito_volumes_assert( 'tres caixas: duas iguais e uma com a sobra', is_array( $volumes ) && 3 === count( $volumes ) );
 papelito_volumes_assert( 'PAC soma as tres caixas', 1 === count( $pac_prices ) && 41.0 === $pac_prices[0]['price'] );
@@ -177,6 +221,24 @@ $prazo_calls = count( array_filter( $GLOBALS['volumes_requests'], static fn( str
 papelito_volumes_assert( 'prazo consultado uma vez por servico', 2 === $prazo_calls );
 $price_calls = count( array_filter( $GLOBALS['volumes_requests'], static fn( string $url ): bool => str_contains( $url, 'preco/v1' ) ) );
 papelito_volumes_assert( 'preco consultado uma vez por medida de caixa e servico', 4 === $price_calls );
+
+echo "Cenario 7: caixas extras desistem quando o tempo acaba\n";
+$GLOBALS['volumes_requests'] = array();
+
+$late = papelito_correios_quote_volume_services(
+	array(
+		'environment' => 'production',
+		'contract'    => '',
+	),
+	array( 'token' => 't' ),
+	$services,
+	'01001000',
+	'70000000',
+	$volumes,
+	microtime( true ) - 1
+);
+papelito_volumes_assert( 'nenhum servico sai pela metade', array() === $late['options'] );
+papelito_volumes_assert( 'a desistencia vira timeout', $late['first_error'] instanceof WP_Error && 'papelito_correios_timeout' === $late['first_error']->code );
 
 if ( $failures > 0 ) {
 	echo "FAILED: {$failures}\n";

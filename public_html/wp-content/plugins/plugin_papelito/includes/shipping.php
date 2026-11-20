@@ -26,6 +26,7 @@ const PAPELITO_SHIPPING_MAX_DIMENSION_SUM_CM = 200.0;
 const PAPELITO_SHIPPING_MAX_WEIGHT_G         = 30000.0;
 const PAPELITO_SHIPPING_MAX_VOLUMES          = 35;
 const PAPELITO_SHIPPING_EXCEEDS_LIMITS       = 'papelito_shipping_package_exceeds_limits';
+const PAPELITO_SHIPPING_VOLUMES_BUDGET_S     = 25.0;
 const PAPELITO_SHIPPING_MEASUREMENT_LEGACY   = 'legacy_synthetic';
 const PAPELITO_SHIPPING_MEASUREMENT_KIT      = 'kit_declared';
 const PAPELITO_SHIPPING_MEASUREMENT_PROFILE  = 'profile';
@@ -1537,17 +1538,19 @@ function papelito_correios_quote_services( array $credentials, array $token, arr
  * @param string                                  $origin_cep CEP de origem.
  * @param string                                  $destination_cep CEP de destino.
  * @param array<int, array<string, float|string>> $volumes Volumes, ao menos um.
+ * @param float|null                              $deadline Instante (microtime) a partir do qual as caixas extras desistem; padrão `PAPELITO_SHIPPING_VOLUMES_BUDGET_S` a partir de agora.
  * @return array{options: array<int, array<string, mixed>>, first_error: WP_Error|null}
  */
-function papelito_correios_quote_volume_services( array $credentials, array $token, array $services, string $origin_cep, string $destination_cep, array $volumes ): array {
-	$groups  = papelito_shipping_group_volumes( $volumes );
-	$first   = array_shift( $groups );
-	$quoted  = papelito_correios_quote_services( $credentials, $token, $services, $origin_cep, $destination_cep, $first['package'] );
-	$options = array();
-	$error   = $quoted['first_error'];
+function papelito_correios_quote_volume_services( array $credentials, array $token, array $services, string $origin_cep, string $destination_cep, array $volumes, ?float $deadline = null ): array {
+	$deadline = $deadline ?? microtime( true ) + PAPELITO_SHIPPING_VOLUMES_BUDGET_S;
+	$groups   = papelito_shipping_group_volumes( $volumes );
+	$first    = array_shift( $groups );
+	$quoted   = papelito_correios_quote_services( $credentials, $token, $services, $origin_cep, $destination_cep, $first['package'] );
+	$options  = array();
+	$error    = $quoted['first_error'];
 
 	foreach ( $quoted['options'] as $option ) {
-		$total = papelito_correios_sum_volume_prices( $credentials, $token, $option, $origin_cep, $destination_cep, $groups, (float) $option['price'] * $first['count'] );
+		$total = papelito_correios_sum_volume_prices( $credentials, $token, $option, $origin_cep, $destination_cep, $groups, (float) $option['price'] * $first['count'], $deadline );
 		if ( is_wp_error( $total ) ) {
 			$error = $error ?? $total;
 			continue;
@@ -1564,7 +1567,9 @@ function papelito_correios_quote_volume_services( array $credentials, array $tok
 }
 
 /**
- * Soma ao preço do primeiro grupo o preço das caixas restantes no mesmo serviço.
+ * Soma ao preço do primeiro grupo o preço das caixas restantes no mesmo serviço. Passado o
+ * `$deadline`, desiste com `papelito_correios_timeout`: um pedido de muitas caixas diferentes não
+ * prende o checkout nem o tablet do estande em dezenas de chamadas sequenciais.
  *
  * @param array<string, string>                                               $credentials Credenciais.
  * @param array<string, mixed>                                                $token Token dos Correios.
@@ -1573,10 +1578,15 @@ function papelito_correios_quote_volume_services( array $credentials, array $tok
  * @param string                                                              $destination_cep CEP de destino.
  * @param array<int, array{package: array<string, float|string>, count: int}> $groups Grupos restantes.
  * @param float                                                               $total Preço acumulado.
+ * @param float                                                               $deadline Instante (microtime) limite.
  * @return float|WP_Error
  */
-function papelito_correios_sum_volume_prices( array $credentials, array $token, array $option, string $origin_cep, string $destination_cep, array $groups, float $total ) {
+function papelito_correios_sum_volume_prices( array $credentials, array $token, array $option, string $origin_cep, string $destination_cep, array $groups, float $total, float $deadline ) {
 	foreach ( $groups as $group ) {
+		if ( microtime( true ) > $deadline ) {
+			return new WP_Error( 'papelito_correios_timeout', 'Os Correios demoraram demais para cotar todas as caixas.', array( 'status' => 504 ) );
+		}
+
 		$price = papelito_correios_quote_service_price( $credentials, $token, $option, $origin_cep, $destination_cep, $group['package'] );
 		if ( is_wp_error( $price ) ) {
 			return $price;

@@ -56,7 +56,7 @@ caixa e a cotação inteira falhava.
 unidades e enche caixas na ordem do carrinho, abrindo outra quando a próxima unidade estoura o limite.
 `papelito_correios_quote_volume_services()` cota cada medida de caixa uma vez — preço e prazo na
 primeira, só preço nas demais, porque o prazo não depende do volume — e devolve cada serviço com a
-soma das caixas. Serviço recusado em qualquer caixa sai da lista: o pedido vai inteiro pela mesma
+soma das caixas. As caixas extras têm teto de `PAPELITO_SHIPPING_VOLUMES_BUDGET_S` (25 s): passado o tempo, o serviço desiste com `papelito_correios_timeout`. Serviço recusado em qualquer caixa sai da lista: o pedido vai inteiro pela mesma
 modalidade. O snapshot do pedido grava uma entrada por caixa
 (`papelito_packaging_legacy_volumes_snapshot()`); com uma caixa só, snapshot e `physical_hash` são os
 mesmos de antes.
