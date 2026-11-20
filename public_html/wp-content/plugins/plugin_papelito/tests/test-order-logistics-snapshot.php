@@ -236,6 +236,7 @@ function papelito_correios_quote( int $vendor_id, string $destination_cep, array
 
 /** Devolve o pacote sintético dos Correios configurado pelo cenário. */
 function papelito_shipping_build_package( array $items ): mixed { return $GLOBALS['logistics_test_legacy_package']; }
+function papelito_shipping_build_packages( array $items ): mixed { $package = papelito_shipping_build_package( $items ); return is_array( $package ) ? array( $package ) : $package; }
 
 $GLOBALS['logistics_test_profiles'] = array();
 $GLOBALS['logistics_test_rules']    = array();

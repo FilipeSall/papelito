@@ -24,6 +24,8 @@ const PAPELITO_REST_NAMESPACE                               = 'papelito/v1';
 const PAPELITO_SHIPPING_MAX_DIMENSION_CM     = 100.0;
 const PAPELITO_SHIPPING_MAX_DIMENSION_SUM_CM = 200.0;
 const PAPELITO_SHIPPING_MAX_WEIGHT_G         = 30000.0;
+const PAPELITO_SHIPPING_MAX_VOLUMES          = 10;
+const PAPELITO_SHIPPING_EXCEEDS_LIMITS       = 'papelito_shipping_package_exceeds_limits';
 const PAPELITO_SHIPPING_MEASUREMENT_LEGACY   = 'legacy_synthetic';
 const PAPELITO_SHIPPING_MEASUREMENT_KIT      = 'kit_declared';
 const PAPELITO_SHIPPING_MEASUREMENT_PROFILE  = 'profile';
@@ -1067,7 +1069,7 @@ function papelito_shipping_guard_package_limits( array $package ) {
 	}
 
 	return new WP_Error(
-		'papelito_shipping_package_exceeds_limits',
+		PAPELITO_SHIPPING_EXCEEDS_LIMITS,
 		'Este carrinho ultrapassa o tamanho ou o peso de um único volume. Reduza a quantidade ou divida o pedido.',
 		array(
 			'status'             => 422,
@@ -1153,6 +1155,166 @@ function papelito_shipping_build_package( array $items ) {
 }
 
 /**
+ * Quebra um item em unidades de quantidade 1, para cada uma ir para a caixa em que couber.
+ *
+ * O valor declarado, quando vem no item, é rateado entre as unidades; o brinde físico se divide
+ * pela `required_quantity`.
+ *
+ * @param array<string, mixed> $item Item do carrinho.
+ * @return array<int, array<string, mixed>>
+ */
+function papelito_shipping_split_item_units( array $item ): array {
+	if ( isset( $item['merchandise'] ) && is_array( $item['merchandise'] ) ) {
+		$qty  = max( 1, (int) ( $item['merchandise']['required_quantity'] ?? 1 ) );
+		$unit = $item;
+
+		$unit['merchandise']['required_quantity'] = 1;
+
+		return array_fill( 0, $qty, $unit );
+	}
+
+	$qty  = isset( $item['qty'] ) ? max( 1, absint( $item['qty'] ) ) : 1;
+	$unit = array_merge( $item, array( 'qty' => 1 ) );
+	if ( array_key_exists( 'declared_value', $item ) ) {
+		$unit['declared_value'] = (float) $item['declared_value'] / $qty;
+	}
+
+	return array_fill( 0, $qty, $unit );
+}
+
+/**
+ * Soma uma unidade à caixa e devolve os acumuladores só se a caixa continuar dentro do limite.
+ *
+ * @param array<string, float> $totals Acumuladores da caixa aberta.
+ * @param array<string, mixed> $unit Unidade a embalar.
+ * @return array<string, float>|WP_Error Acumuladores novos, ou o erro de limite ou de cadastro.
+ */
+function papelito_shipping_place_unit( array $totals, array $unit ) {
+	$candidate = papelito_shipping_add_item_to_package( $totals, $unit );
+	if ( is_wp_error( $candidate ) ) {
+		return $candidate;
+	}
+
+	$guarded = papelito_shipping_finalize_package( $candidate );
+
+	return is_wp_error( $guarded ) ? $guarded : $candidate;
+}
+
+/**
+ * Enche caixas na ordem do carrinho: quando a próxima unidade estoura o volume único, a caixa
+ * fecha e outra abre. Só recusa quando uma unidade sozinha não cabe num volume ou quando o pedido
+ * passaria de `PAPELITO_SHIPPING_MAX_VOLUMES` caixas.
+ *
+ * @param array<int, array<string, mixed>> $units Unidades de quantidade 1.
+ * @return array<int, array<string, float|string>>|WP_Error
+ */
+function papelito_shipping_pack_units( array $units ) {
+	$volumes = array();
+	$totals  = papelito_shipping_empty_package_totals();
+	$filled  = 0;
+
+	foreach ( $units as $unit ) {
+		$placed = papelito_shipping_place_unit( $totals, $unit );
+		if ( $filled > 0 && is_wp_error( $placed ) && PAPELITO_SHIPPING_EXCEEDS_LIMITS === $placed->get_error_code() ) {
+			$volumes[] = papelito_shipping_finalize_package( $totals );
+			$totals    = papelito_shipping_empty_package_totals();
+			$filled    = 0;
+			$placed    = papelito_shipping_place_unit( $totals, $unit );
+		}
+
+		if ( is_wp_error( $placed ) ) {
+			return $placed;
+		}
+
+		$totals = $placed;
+		++$filled;
+	}
+
+	if ( $filled > 0 ) {
+		$volumes[] = papelito_shipping_finalize_package( $totals );
+	}
+
+	if ( count( $volumes ) > PAPELITO_SHIPPING_MAX_VOLUMES ) {
+		return new WP_Error(
+			PAPELITO_SHIPPING_EXCEEDS_LIMITS,
+			'Este carrinho precisa de mais caixas do que um envio comporta. Reduza a quantidade ou divida o pedido.',
+			array(
+				'status'             => 422,
+				'limit'              => 'volumes',
+				'measurement_source' => PAPELITO_SHIPPING_MEASUREMENT_LEGACY,
+			)
+		);
+	}
+
+	return $volumes;
+}
+
+/**
+ * Monta os volumes físicos de uma cotação dos Correios: o Kit sozinho continua num volume
+ * declarado; o resto é dividido em quantas caixas forem precisas para cada uma respeitar o limite
+ * de um volume único. É a autoridade da embalagem dos Correios: cotação e snapshot do pedido leem
+ * daqui, então os dois sempre veem as mesmas caixas.
+ *
+ * @param array<int, array<string, mixed>> $items Itens do carrinho.
+ * @return array<int, array<string, float|string>>|WP_Error Volumes, nunca vazio quando há itens.
+ */
+function papelito_shipping_build_packages( array $items ) {
+	if ( ! function_exists( 'wc_get_product' ) ) {
+		return new WP_Error( 'papelito_woocommerce_unavailable', 'WooCommerce não esta disponível para cotação de frete.', array( 'status' => 500 ) );
+	}
+
+	$kit_package = papelito_shipping_build_kit_package( $items );
+	if ( null !== $kit_package ) {
+		$kit_package = papelito_shipping_notify_package_built( $kit_package );
+
+		return is_wp_error( $kit_package ) ? $kit_package : array( $kit_package );
+	}
+
+	if ( function_exists( 'papelito_kit_shipping_items' ) ) {
+		$expanded_items = papelito_kit_shipping_items( $items );
+		if ( is_wp_error( $expanded_items ) ) {
+			return $expanded_items;
+		}
+		$items = $expanded_items;
+	}
+
+	$units   = array_merge( array(), ...array_map( 'papelito_shipping_split_item_units', array_values( $items ) ) );
+	$volumes = papelito_shipping_pack_units( $units );
+	if ( is_wp_error( $volumes ) ) {
+		return papelito_shipping_notify_package_built( $volumes );
+	}
+
+	if ( array() !== $volumes ) {
+		papelito_shipping_notify_package_built( $volumes[0] );
+	}
+
+	return $volumes;
+}
+
+/**
+ * Junta volumes de mesma medida para cotar cada medida uma vez só.
+ *
+ * @param array<int, array<string, float|string>> $volumes Volumes do pedido.
+ * @return array<int, array{package: array<string, float|string>, count: int}>
+ */
+function papelito_shipping_group_volumes( array $volumes ): array {
+	$groups = array();
+
+	foreach ( $volumes as $volume ) {
+		$key = implode( '|', array( $volume['weight'], $volume['length'], $volume['width'], $volume['height'] ) );
+		if ( ! isset( $groups[ $key ] ) ) {
+			$groups[ $key ] = array(
+				'package' => $volume,
+				'count'   => 0,
+			);
+		}
+		++$groups[ $key ]['count'];
+	}
+
+	return array_values( $groups );
+}
+
+/**
  * Valida se o usuario informado e um vendor elegivel para a cotacao.
  *
  * @param int $vendor_id ID do vendor.
@@ -1184,11 +1346,64 @@ function papelito_shipping_get_vendor( int $vendor_id ) {
  * @return array<string, mixed>|WP_Error
  */
 function papelito_correios_quote_service( array $credentials, array $token, array $service, string $origin_cep, string $destination_cep, array $package ) {
-	$base_url = papelito_correios_base_url( $credentials['environment'] );
-	$headers  = array(
+	$price = papelito_correios_quote_service_price( $credentials, $token, $service, $origin_cep, $destination_cep, $package );
+	if ( is_wp_error( $price ) ) {
+		return $price;
+	}
+
+	$time = papelito_correios_request_json(
+		'GET',
+		add_query_arg(
+			array(
+				'cepDestino' => $destination_cep,
+				'cepOrigem'  => $origin_cep,
+			),
+			papelito_correios_base_url( $credentials['environment'] ) . 'prazo/v1/nacional/' . rawurlencode( (string) $service['code'] )
+		),
+		array( 'headers' => papelito_correios_auth_headers( $token ) )
+	);
+
+	if ( is_wp_error( $time ) ) {
+		return $time;
+	}
+
+	$raw_time = papelito_shipping_first_value( $time, array( 'prazoEntrega', 'PrazoEntrega', 'delivery_time' ) );
+
+	return array(
+		'service'       => $service['service'],
+		'code'          => $service['code'],
+		'name'          => $service['name'],
+		'price'         => $price,
+		'delivery_time' => null === $raw_time ? null : absint( $raw_time ),
+	);
+}
+
+/**
+ * Cabeçalhos autenticados das chamadas de preço e prazo.
+ *
+ * @param array<string, mixed> $token Token dos Correios.
+ * @return array<string, string>
+ */
+function papelito_correios_auth_headers( array $token ): array {
+	return array(
 		'Authorization' => 'Bearer ' . $token['token'],
 		'Accept'        => PAPELITO_CORREIOS_JSON_CONTENT_TYPE,
 	);
+}
+
+/**
+ * Preço de um serviço para um volume. O prazo não depende do volume, por isso fica de fora: é
+ * o que permite cotar as caixas extras de um pedido sem repetir a consulta de prazo.
+ *
+ * @param array<string, string> $credentials Credenciais.
+ * @param array<string, mixed>  $token Token.
+ * @param array<string, mixed>  $service Serviço (precisa de `code`).
+ * @param string                $origin_cep CEP origem.
+ * @param string                $destination_cep CEP destino.
+ * @param array<string, mixed>  $package Volume.
+ * @return float|WP_Error
+ */
+function papelito_correios_quote_service_price( array $credentials, array $token, array $service, string $origin_cep, string $destination_cep, array $package ) {
 	$contract = ! empty( $token['cartaoPostagem']['contrato'] )
 		? (string) $token['cartaoPostagem']['contrato']
 		: $credentials['contract'];
@@ -1214,32 +1429,15 @@ function papelito_correios_quote_service( array $credentials, array $token, arra
 
 	$price = papelito_correios_request_json(
 		'GET',
-		add_query_arg( $price_args, $base_url . 'preco/v1/nacional/' . rawurlencode( (string) $service['code'] ) ),
-		array( 'headers' => $headers )
+		add_query_arg( $price_args, papelito_correios_base_url( $credentials['environment'] ) . 'preco/v1/nacional/' . rawurlencode( (string) $service['code'] ) ),
+		array( 'headers' => papelito_correios_auth_headers( $token ) )
 	);
 
 	if ( is_wp_error( $price ) ) {
 		return $price;
 	}
 
-	$time = papelito_correios_request_json(
-		'GET',
-		add_query_arg(
-			array(
-				'cepDestino' => $destination_cep,
-				'cepOrigem'  => $origin_cep,
-			),
-			$base_url . 'prazo/v1/nacional/' . rawurlencode( (string) $service['code'] )
-		),
-		array( 'headers' => $headers )
-	);
-
-	if ( is_wp_error( $time ) ) {
-		return $time;
-	}
-
 	$raw_price = papelito_shipping_first_value( $price, array( 'pcFinal', 'precoFinal', 'valor', 'Valor' ) );
-	$raw_time  = papelito_shipping_first_value( $time, array( 'prazoEntrega', 'PrazoEntrega', 'delivery_time' ) );
 
 	if ( null === $raw_price ) {
 		return new WP_Error(
@@ -1249,13 +1447,7 @@ function papelito_correios_quote_service( array $credentials, array $token, arra
 		);
 	}
 
-	return array(
-		'service'       => $service['service'],
-		'code'          => $service['code'],
-		'name'          => $service['name'],
-		'price'         => papelito_shipping_parse_money( $raw_price ),
-		'delivery_time' => null === $raw_time ? null : absint( $raw_time ),
-	);
+	return papelito_shipping_parse_money( $raw_price );
 }
 
 /**
@@ -1264,8 +1456,9 @@ function papelito_correios_quote_service( array $credentials, array $token, arra
  * Tudo que muda o preço precisa mudar a chave. A origem entra explicitamente
  * porque é derivada do cadastro do vendor: com só o `vendor_id` no hash, mudar
  * o CEP do vendor continuava servindo a cotação calculada da origem anterior.
- * O pacote entra inteiro, então o `physical_hash` do perfil viaja junto assim
- * que a embalagem deixar de ser sintética.
+ * Os volumes entram inteiros, então dividir o pedido em outra quantidade de
+ * caixas muda a chave, e o `physical_hash` do perfil viaja junto assim que a
+ * embalagem deixar de ser sintética.
  *
  * O HMAC deixa o nome do transient opaco em `wp_options` e impede que alguém de
  * fora fabrique a chave de um carrinho alheio.
@@ -1274,11 +1467,11 @@ function papelito_correios_quote_service( array $credentials, array $token, arra
  * @param string                          $origin_cep CEP de origem já normalizado.
  * @param string                          $destination_cep CEP de destino já normalizado.
  * @param array<int, array<string,mixed>> $items Itens cotados.
- * @param array<string, mixed>            $package Pacote físico resolvido.
+ * @param array<int|string, mixed>        $package Volumes físicos resolvidos.
  * @return string Chave versionada do transient.
  */
 function papelito_shipping_quote_cache_key( int $vendor_id, string $origin_cep, string $destination_cep, array $items, array $package ): string {
-	return 'papelito_shipping_quote_v4_' . papelito_shipping_cache_fingerprint(
+	return 'papelito_shipping_quote_v5_' . papelito_shipping_cache_fingerprint(
 		(string) wp_json_encode( array( $vendor_id, $origin_cep, $destination_cep, $items, $package ) )
 	);
 }
@@ -1331,6 +1524,68 @@ function papelito_correios_quote_services( array $credentials, array $token, arr
 		'options'     => $options,
 		'first_error' => $first_error,
 	);
+}
+
+/**
+ * Cota todos os volumes do pedido. O primeiro grupo de volumes cota preço e prazo de cada serviço
+ * e os demais só o preço; cada serviço sai com a soma das caixas. Serviço que falha em qualquer
+ * caixa é descartado, porque o pedido inteiro vai pela mesma modalidade.
+ *
+ * @param array<string, string>                   $credentials Credenciais.
+ * @param array<string, mixed>                    $token Token dos Correios.
+ * @param array<int, array<string, mixed>>        $services Serviços.
+ * @param string                                  $origin_cep CEP de origem.
+ * @param string                                  $destination_cep CEP de destino.
+ * @param array<int, array<string, float|string>> $volumes Volumes, ao menos um.
+ * @return array{options: array<int, array<string, mixed>>, first_error: WP_Error|null}
+ */
+function papelito_correios_quote_volume_services( array $credentials, array $token, array $services, string $origin_cep, string $destination_cep, array $volumes ): array {
+	$groups  = papelito_shipping_group_volumes( $volumes );
+	$first   = array_shift( $groups );
+	$quoted  = papelito_correios_quote_services( $credentials, $token, $services, $origin_cep, $destination_cep, $first['package'] );
+	$options = array();
+	$error   = $quoted['first_error'];
+
+	foreach ( $quoted['options'] as $option ) {
+		$total = papelito_correios_sum_volume_prices( $credentials, $token, $option, $origin_cep, $destination_cep, $groups, (float) $option['price'] * $first['count'] );
+		if ( is_wp_error( $total ) ) {
+			$error = $error ?? $total;
+			continue;
+		}
+
+		$option['price'] = round( $total, 2 );
+		$options[]       = $option;
+	}
+
+	return array(
+		'options'     => $options,
+		'first_error' => $error,
+	);
+}
+
+/**
+ * Soma ao preço do primeiro grupo o preço das caixas restantes no mesmo serviço.
+ *
+ * @param array<string, string>                                               $credentials Credenciais.
+ * @param array<string, mixed>                                                $token Token dos Correios.
+ * @param array<string, mixed>                                                $option Serviço já cotado no primeiro grupo.
+ * @param string                                                              $origin_cep CEP de origem.
+ * @param string                                                              $destination_cep CEP de destino.
+ * @param array<int, array{package: array<string, float|string>, count: int}> $groups Grupos restantes.
+ * @param float                                                               $total Preço acumulado.
+ * @return float|WP_Error
+ */
+function papelito_correios_sum_volume_prices( array $credentials, array $token, array $option, string $origin_cep, string $destination_cep, array $groups, float $total ) {
+	foreach ( $groups as $group ) {
+		$price = papelito_correios_quote_service_price( $credentials, $token, $option, $origin_cep, $destination_cep, $group['package'] );
+		if ( is_wp_error( $price ) ) {
+			return $price;
+		}
+
+		$total += $price * $group['count'];
+	}
+
+	return $total;
 }
 
 /**
@@ -1411,12 +1666,12 @@ function papelito_correios_quote( int $vendor_id, string $destination_cep, array
 		return $credentials;
 	}
 
-	$package = papelito_shipping_build_package( $items );
-	if ( is_wp_error( $package ) ) {
-		return $package;
+	$volumes = papelito_shipping_build_packages( $items );
+	if ( is_wp_error( $volumes ) ) {
+		return $volumes;
 	}
 
-	$cache_key = papelito_shipping_quote_cache_key( $vendor_id, $origin_cep, $destination_cep, $items, $package );
+	$cache_key = papelito_shipping_quote_cache_key( $vendor_id, $origin_cep, $destination_cep, $items, $volumes );
 	$cached    = papelito_correios_quote_cached_result( $cache_key );
 	if ( is_array( $cached ) ) {
 		return $cached;
@@ -1432,7 +1687,7 @@ function papelito_correios_quote( int $vendor_id, string $destination_cep, array
 		return $services;
 	}
 
-	$quoted = papelito_correios_quote_services( $credentials, $token, $services, $origin_cep, $destination_cep, $package );
+	$quoted = papelito_correios_quote_volume_services( $credentials, $token, $services, $origin_cep, $destination_cep, $volumes );
 	if ( empty( $quoted['options'] ) ) {
 		return papelito_correios_quote_failure( $quoted['first_error'] );
 	}

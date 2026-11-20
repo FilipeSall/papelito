@@ -17,11 +17,11 @@ Contrato do adapter, modos de operação, polling e credenciais. O fluxo funcion
 O token Bearer é obtido em `token/v1/autentica/cartaopostagem` e cacheado em transient até perto da expiração. A lista de serviços do contrato também é cacheada.
 
 A cotação em si também é cacheada, por **10 minutos**, em transient nomeado por
-`papelito_shipping_quote_cache_key()`. A chave é `papelito_shipping_quote_v4_` mais um HMAC de
-`(vendor_id, origin_cep, destination_cep, items, package)`. A origem entra **explicitamente**: ela é
+`papelito_shipping_quote_cache_key()`. A chave é `papelito_shipping_quote_v5_` mais um HMAC de
+`(vendor_id, origin_cep, destination_cep, items, volumes)`. A origem entra **explicitamente**: ela é
 derivada de `usermeta.cep` do vendor e, com só o `vendor_id` no hash, mudar o endereço do vendor
-continuava servindo a cotação calculada da origem anterior até o transient expirar. O pacote entra
-inteiro, então `measurement_source` e — quando a embalagem deixar de ser sintética — o
+continuava servindo a cotação calculada da origem anterior até o transient expirar. Os volumes entram
+inteiros, então `measurement_source` e — quando a embalagem deixar de ser sintética — o
 `physical_hash` do perfil viajam junto sem mudança de chave. O HMAC deixa o nome do transient opaco
 em `wp_options` e impede fabricar a chave de um carrinho alheio. O prefixo é versionado: bumpá-lo
 invalida todo o cache sem varrer a tabela.
@@ -44,6 +44,28 @@ Payload `{ vendor_id, destination_cep, items: [{ product_id, qty }] }`. O backen
 - se PAC e SEDEX falharem, **preserva o contexto da primeira falha útil** em `data.correios_status` / `data.correios_message` em vez de perdê-lo.
 
 Produto sem peso ou dimensões cadastrados gera erro claro de cadastro incompleto (`422`).
+
+### Pedido grande vai em várias caixas
+
+O pacote sintético empilha a altura de cada unidade, e um volume único dos Correios aceita no máximo
+100 cm de lado, 200 cm de soma dos lados e 30 kg (`papelito_shipping_guard_package_limits()`). Com os
+produtos do catálogo isso estoura entre 4 e 34 unidades, então um carrinho B2B normal não cabia numa
+caixa e a cotação inteira falhava.
+
+`papelito_shipping_build_packages()` é a autoridade da embalagem dos Correios: quebra os itens em
+unidades e enche caixas na ordem do carrinho, abrindo outra quando a próxima unidade estoura o limite.
+`papelito_correios_quote_volume_services()` cota cada medida de caixa uma vez — preço e prazo na
+primeira, só preço nas demais, porque o prazo não depende do volume — e devolve cada serviço com a
+soma das caixas. Serviço recusado em qualquer caixa sai da lista: o pedido vai inteiro pela mesma
+modalidade. O snapshot do pedido grava uma entrada por caixa
+(`papelito_packaging_legacy_volumes_snapshot()`); com uma caixa só, snapshot e `physical_hash` são os
+mesmos de antes.
+
+Continua `422 papelito_shipping_package_exceeds_limits`: uma **unidade** que não cabe sozinha num
+volume (`data.limit` = `dimension`, `dimension_sum` ou `weight`, quase sempre cadastro errado) e um
+pedido que precisaria de mais de `PAPELITO_SHIPPING_MAX_VOLUMES` (10) caixas (`data.limit` =
+`volumes`). O Kit sozinho continua num volume declarado. Regressão em
+`tests/test-shipping-correios-volumes.php`.
 
 ## Modos de pré-postagem
 

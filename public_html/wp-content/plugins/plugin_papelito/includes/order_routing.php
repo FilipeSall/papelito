@@ -762,13 +762,13 @@ function papelito_order_routing_provider_snapshot( string $provider, int $vendor
 			: null;
 	}
 
-	if ( ! function_exists( 'papelito_shipping_build_package' ) || ! function_exists( 'papelito_packaging_legacy_snapshot' ) ) {
+	if ( ! function_exists( 'papelito_shipping_build_packages' ) || ! function_exists( 'papelito_packaging_legacy_volumes_snapshot' ) ) {
 		return null;
 	}
 
-	$package = papelito_shipping_build_package( $items );
+	$volumes = papelito_shipping_build_packages( $items );
 
-	return is_array( $package ) ? papelito_packaging_legacy_snapshot( $vendor_id, $package, $context ) : null;
+	return is_array( $volumes ) ? papelito_packaging_legacy_volumes_snapshot( $vendor_id, $volumes, $context ) : null;
 }
 
 /**

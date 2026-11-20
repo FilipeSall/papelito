@@ -289,7 +289,7 @@ function papelito_shipping_public_error_data( string $code, mixed $data ): array
 		return $safe;
 	}
 	$allowed = array(
-		'limit'              => array( 'dimension', 'dimension_sum', 'weight' ),
+		'limit'              => array( 'dimension', 'dimension_sum', 'weight', 'volumes' ),
 		'measurement_source' => array( 'legacy_synthetic', 'kit_declared' ),
 	);
 	foreach ( $allowed as $key => $values ) {

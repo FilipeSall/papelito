@@ -20,7 +20,7 @@ const CACHE_KEY_TEST_ORIGIN      = '01310930';
 const CACHE_KEY_TEST_OTHER_ORIGIN = '70000000';
 const CACHE_KEY_TEST_DESTINATION = '22041001';
 const CACHE_KEY_TEST_SALT        = 'salt-de-teste';
-const CACHE_KEY_TEST_PREFIX      = 'papelito_shipping_quote_v4_';
+const CACHE_KEY_TEST_PREFIX      = 'papelito_shipping_quote_v5_';
 
 class WP_Error {
 	public function __construct( public string $code = '', public string $message = '', public array $data = array() ) {}

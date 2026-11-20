@@ -2161,7 +2161,26 @@ function papelito_packaging_cm_to_mm(mixed $value): int
  */
 function papelito_packaging_legacy_snapshot(int $vendor_id, array $package, array $context = array()): ?array
 {
-	$source = (string) ($package['measurement_source'] ?? PAPELITO_PACKAGING_MEASUREMENT_LEGACY);
+	return papelito_packaging_legacy_volumes_snapshot($vendor_id, array($package), $context);
+}
+
+/**
+ * Converte os volumes sintéticos de um pedido dos Correios no `LogisticsSnapshot` canônico, uma
+ * entrada por caixa. Com um volume só, o snapshot e o `physical_hash` são idênticos aos de
+ * `papelito_packaging_legacy_snapshot()`.
+ *
+ * @param int                            $vendor_id Vendor dono da remessa.
+ * @param array<int,array<string,mixed>> $packages Volumes já validados pelos limites físicos.
+ * @param array<string,mixed>            $context Contexto de cotação opcional.
+ * @return array<string,mixed>|null Snapshot canônico ou nulo quando não há volume convertível.
+ */
+function papelito_packaging_legacy_volumes_snapshot(int $vendor_id, array $packages, array $context = array()): ?array
+{
+	if (array() === $packages) {
+		return null;
+	}
+
+	$source = (string) ($packages[0]['measurement_source'] ?? PAPELITO_PACKAGING_MEASUREMENT_LEGACY);
 
 	return papelito_packaging_build_snapshot(
 		array_merge(
@@ -2170,17 +2189,27 @@ function papelito_packaging_legacy_snapshot(int $vendor_id, array $package, arra
 				'vendor_id'               => $vendor_id,
 				'merchandise_value_cents' => papelito_packaging_merchandise_value_cents($context, array()),
 				'measurement_source'      => '' === $source ? PAPELITO_PACKAGING_MEASUREMENT_LEGACY : $source,
-				'packages'                => array(
-					array(
-						'length_mm' => papelito_packaging_cm_to_mm($package['length'] ?? 0),
-						'width_mm'  => papelito_packaging_cm_to_mm($package['width'] ?? 0),
-						'height_mm' => papelito_packaging_cm_to_mm($package['height'] ?? 0),
-						'weight_g'  => (int) round((float) ($package['weight'] ?? 0)),
-						'count'     => 1,
-					),
-				),
+				'packages'                => array_map('papelito_packaging_legacy_volume_entry', array_values($packages)),
 			)
 		)
+	);
+}
+
+/**
+ * Entrada de um volume sintético no snapshot: dimensão de centímetro para milímetro e peso, que
+ * já vem em grama, só arredondado.
+ *
+ * @param array<string,mixed> $package Volume sintético.
+ * @return array{length_mm:int,width_mm:int,height_mm:int,weight_g:int,count:int}
+ */
+function papelito_packaging_legacy_volume_entry(array $package): array
+{
+	return array(
+		'length_mm' => papelito_packaging_cm_to_mm($package['length'] ?? 0),
+		'width_mm'  => papelito_packaging_cm_to_mm($package['width'] ?? 0),
+		'height_mm' => papelito_packaging_cm_to_mm($package['height'] ?? 0),
+		'weight_g'  => (int) round((float) ($package['weight'] ?? 0)),
+		'count'     => 1,
 	);
 }
 
