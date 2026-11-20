@@ -38,6 +38,9 @@ function papelito_normalize_email( string $email ): string { return strtolower( 
 function papelito_auth_normalize_phone( string $phone ): string { return preg_replace( '/\D+/', '', $phone ); }
 function papelito_cnpj_lookup( string $raw_cnpj, bool $include_evidence = false ): array { return $GLOBALS['buyer_lookup']; }
 function papelito_company_find_by_cnpj( string $raw_cnpj ): ?array { return $GLOBALS['buyer_existing'] ?? null; }
+function sanitize_user( string $username, bool $strict = false ): string { return (string) preg_replace( '/[^a-z0-9 _.\-@]/i', '', $username ); }
+function username_exists( string $username ): int|false { return in_array( $username, $GLOBALS['buyer_logins'] ?? array(), true ) ? 1 : false; }
+function get_user_by( string $field, mixed $value ): Event_Buyer_Test_User|false { return $GLOBALS['buyer_account'] ?? false; }
 
 const PAPELITO_EVENT_SALES_NAME = 'ExpoCannabis Brasil 2026';
 
@@ -48,6 +51,7 @@ class Event_Buyer_Test_User {
 	public int $ID           = 41;
 	public string $user_login = EVENT_BUYER_TEST_EMAIL;
 	public string $user_email = EVENT_BUYER_TEST_EMAIL;
+	public array $roles       = array( 'customer' );
 }
 class_alias( Event_Buyer_Test_User::class, 'WP_User' );
 
@@ -124,6 +128,9 @@ function test_upsert_validates_input(): void {
 	event_buyer_assert( 'nome curto', event_buyer_error( papelito_event_sales_validate_buyer_input( array_merge( $valid, array( 'name' => 'M' ) ) ), 'papelito_event_buyer_name', 400 ) );
 	event_buyer_assert( 'WhatsApp com 9 dígitos', event_buyer_error( papelito_event_sales_validate_buyer_input( array_merge( $valid, array( 'phone' => '987654321' ) ) ), 'papelito_event_buyer_phone', 400 ) );
 	event_buyer_assert( 'e-mail inválido', event_buyer_error( papelito_event_sales_validate_buyer_input( array_merge( $valid, array( 'email' => 'loja@' ) ) ), 'papelito_event_buyer_email', 400 ) );
+	event_buyer_assert( 'e-mail acima de 100 caracteres', event_buyer_error( papelito_event_sales_validate_buyer_input( array_merge( $valid, array( 'email' => str_repeat( 'a', 90 ) . '@exemplo.com.br' ) ) ), 'papelito_event_buyer_email', 400 ) );
+	event_buyer_assert( 'telefone só de zeros', event_buyer_error( papelito_event_sales_validate_buyer_input( array_merge( $valid, array( 'phone' => '0000000000' ) ) ), 'papelito_event_buyer_phone', 400 ) );
+	event_buyer_assert( 'fixo com DDD continua aceito', is_array( papelito_event_sales_validate_buyer_input( array_merge( $valid, array( 'phone' => '(61) 3322-4455' ) ) ) ) );
 	event_buyer_assert( 'nome separa primeiro e último', array( 'Maria', 'da Silva' ) === papelito_event_sales_split_name( EVENT_BUYER_TEST_NAME ) );
 }
 
@@ -164,7 +171,42 @@ function test_welcome_email_without_name_still_greets(): void {
 	event_buyer_assert( 'sem nome a saudação continua correta', str_starts_with( papelito_event_sales_welcome_email_view( '', 'https://x' )['lead'], 'Olá, criamos sua conta' ) );
 }
 
+function test_only_customer_accounts_become_buyers(): void {
+	$buyer   = array( 'cnpj' => EVENT_BUYER_TEST_CNPJ, 'name' => EVENT_BUYER_TEST_NAME, 'phone' => '11987654321', 'email' => EVENT_BUYER_TEST_EMAIL );
+	$account = new Event_Buyer_Test_User();
+
+	foreach ( array( 'administrator', 'seller', 'papelito_event_operator' ) as $role ) {
+		$account->roles            = array( $role );
+		$GLOBALS['buyer_account'] = $account;
+		event_buyer_assert( "conta {$role} não vira comprador", event_buyer_error( papelito_event_sales_find_or_create_user( $buyer ), 'papelito_event_buyer_email_staff', 409 ) );
+	}
+
+	$account->roles            = array( 'customer' );
+	$GLOBALS['buyer_account'] = $account;
+	$found                     = papelito_event_sales_find_or_create_user( $buyer );
+	event_buyer_assert( 'conta de cliente é reaproveitada', is_array( $found ) && 41 === $found['user_id'] && false === $found['created'] );
+	$GLOBALS['buyer_account'] = false;
+}
+
+function test_login_fits_wordpress_limits(): void {
+	$GLOBALS['buyer_logins'] = array();
+	event_buyer_assert( 'e-mail comum vira o login', EVENT_BUYER_TEST_EMAIL === papelito_event_sales_user_login( EVENT_BUYER_TEST_EMAIL ) );
+
+	$plus = papelito_event_sales_user_login( 'loja+estande@exemplo.com.br' );
+	event_buyer_assert( 'e-mail com + ganha login próprio', str_starts_with( $plus, 'lojista-' ) );
+
+	$long = papelito_event_sales_user_login( str_repeat( 'a', 55 ) . '@exemplo.com.br' );
+	event_buyer_assert( 'e-mail longo cabe nos 60 caracteres', str_starts_with( $long, 'lojista-' ) && strlen( $long ) <= 60 );
+
+	$GLOBALS['buyer_logins'] = array( EVENT_BUYER_TEST_EMAIL, $plus );
+	event_buyer_assert( 'login já usado ganha outro', ! in_array( papelito_event_sales_user_login( EVENT_BUYER_TEST_EMAIL ), $GLOBALS['buyer_logins'], true ) );
+	event_buyer_assert( 'login gerado repetido ganha sufixo', $plus . '-2' === papelito_event_sales_user_login( 'loja+estande@exemplo.com.br' ) );
+	$GLOBALS['buyer_logins'] = array();
+}
+
 test_lookup_maps_statuses();
+test_only_customer_accounts_become_buyers();
+test_login_fits_wordpress_limits();
 test_welcome_email_speaks_of_the_event();
 test_welcome_email_without_key_is_not_sent();
 test_welcome_email_without_name_still_greets();

@@ -17,8 +17,13 @@
 
 defined( 'ABSPATH' ) || exit;
 
-const PAPELITO_EVENT_SALES_CNPJ_INVALID = 'papelito_event_cnpj_invalid';
-const PAPELITO_EVENT_SALES_BAD_REQUEST  = 400;
+const PAPELITO_EVENT_SALES_CNPJ_INVALID  = 'papelito_event_cnpj_invalid';
+const PAPELITO_EVENT_SALES_BAD_REQUEST   = 400;
+const PAPELITO_EVENT_SALES_BUYER_ROLES   = array( 'customer', 'subscriber' );
+const PAPELITO_EVENT_SALES_EMAIL_MAX     = 100;
+const PAPELITO_EVENT_SALES_LOGIN_MAX     = 60;
+const PAPELITO_EVENT_SALES_PHONE_PATTERN = '/^[1-9]{2}(?:9\d{8}|[2-8]\d{7})$/';
+const PAPELITO_EVENT_SALES_EMAIL_MESSAGE = 'Confira o e-mail.';
 
 /**
  * Erro do comprador com o status HTTP no formato do REST do WordPress.
@@ -115,12 +120,12 @@ function papelito_event_sales_validate_buyer_input( array $input ): array|WP_Err
 		return papelito_event_sales_buyer_error( 'papelito_event_buyer_name', 'Informe o nome de quem compra.' );
 	}
 
-	if ( ! in_array( strlen( $phone ), array( 10, 11 ), true ) ) {
+	if ( 1 !== preg_match( PAPELITO_EVENT_SALES_PHONE_PATTERN, $phone ) ) {
 		return papelito_event_sales_buyer_error( 'papelito_event_buyer_phone', 'O WhatsApp precisa do DDD e do número.' );
 	}
 
-	if ( ! is_email( $email ) ) {
-		return papelito_event_sales_buyer_error( 'papelito_event_buyer_email', 'Confira o e-mail.' );
+	if ( strlen( $email ) > PAPELITO_EVENT_SALES_EMAIL_MAX || ! is_email( $email ) ) {
+		return papelito_event_sales_buyer_error( 'papelito_event_buyer_email', PAPELITO_EVENT_SALES_EMAIL_MESSAGE );
 	}
 
 	return array(
@@ -202,15 +207,54 @@ function papelito_event_sales_send_welcome_email( WP_User $user ): bool {
 }
 
 /**
+ * Informa se a conta pode virar comprador no estande: só cliente. Conta de administrador, vendor
+ * ou operador do evento nunca é ligada a uma empresa por um cadastro feito no tablet.
+ *
+ * @param WP_User $user Conta encontrada pelo e-mail.
+ * @return bool
+ */
+function papelito_event_sales_user_can_buy( WP_User $user ): bool {
+	return array() === array_diff( (array) $user->roles, PAPELITO_EVENT_SALES_BUYER_ROLES );
+}
+
+/**
+ * Login da conta nova. Usa o e-mail quando ele cabe no `user_login` do WordPress (60 caracteres, sem
+ * `+`); senão gera `lojista-<hash>`. O lojista entra pelo e-mail nos dois casos.
+ *
+ * @param string $email E-mail validado.
+ * @return string
+ */
+function papelito_event_sales_user_login( string $email ): string {
+	if ( strlen( $email ) <= PAPELITO_EVENT_SALES_LOGIN_MAX && sanitize_user( $email, true ) === $email && ! username_exists( $email ) ) {
+		return $email;
+	}
+
+	$base   = 'lojista-' . substr( md5( strtolower( $email ) ), 0, 12 );
+	$login  = $base;
+	$suffix = 1;
+	while ( username_exists( $login ) ) {
+		++$suffix;
+		$login = $base . '-' . $suffix;
+	}
+
+	return $login;
+}
+
+/**
  * Reaproveita o usuário do e-mail ou cria um `customer` sem senha escolhida.
  *
  * Conta nova recebe o e-mail de boas-vindas do evento para criar a senha; falha no envio não impede a venda.
+ * Conta existente que não é de cliente é recusada (`papelito_event_sales_user_can_buy()`).
  *
  * @param array{cnpj:string,name:string,phone:string,email:string} $buyer Dados validados.
  * @return array{user_id:int,created:bool}|WP_Error
  */
 function papelito_event_sales_find_or_create_user( array $buyer ): array|WP_Error {
 	$existing = get_user_by( 'email', $buyer['email'] );
+	if ( $existing instanceof WP_User && ! papelito_event_sales_user_can_buy( $existing ) ) {
+		return papelito_event_sales_buyer_error( 'papelito_event_buyer_email_staff', 'Este e-mail é de uma conta da equipe ou de vendedor. Peça outro e-mail do lojista.', 409 );
+	}
+
 	if ( $existing instanceof WP_User ) {
 		return array(
 			'user_id' => (int) $existing->ID,
@@ -222,7 +266,7 @@ function papelito_event_sales_find_or_create_user( array $buyer ): array|WP_Erro
 
 	$user_id = wp_insert_user(
 		array(
-			'user_login' => $buyer['email'],
+			'user_login' => papelito_event_sales_user_login( $buyer['email'] ),
 			'user_email' => $buyer['email'],
 			'user_pass'  => wp_generate_password( 32, true, true ),
 			'first_name' => $first,
@@ -232,7 +276,7 @@ function papelito_event_sales_find_or_create_user( array $buyer ): array|WP_Erro
 	);
 
 	if ( is_wp_error( $user_id ) ) {
-		return $user_id;
+		return papelito_event_sales_buyer_error( 'papelito_event_buyer_email', PAPELITO_EVENT_SALES_EMAIL_MESSAGE );
 	}
 
 	update_user_meta( $user_id, 'billing_phone', $buyer['phone'] );
