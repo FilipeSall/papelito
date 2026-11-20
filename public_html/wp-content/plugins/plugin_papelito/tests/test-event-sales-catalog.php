@@ -157,7 +157,7 @@ function test_context_shape_keys(): void {
 	event_catalog_assert( 'operador sem supervise', 'Operadora' === $context['operator']['name'] && false === $context['operator']['canSupervise'] );
 	event_catalog_assert( 'kit calculado pelos preços atuais', 65595 === $context['kit']['unitCents'] && true === $context['kit']['available'] );
 	event_catalog_assert( 'kit traz o desconto padrão', 15 === $context['kit']['pctOff'] );
-	event_catalog_assert( 'níveis em camelCase', 10 === $context['levels'][1]['minUnits'] && 500 === $context['levels'][1]['pctBp'] );
+	event_catalog_assert( 'níveis em camelCase', 100000 === $context['levels'][1]['minCents'] && 500 === $context['levels'][1]['pctBp'] );
 	event_catalog_assert( 'categorias só as que têm produto', array( 'sedas' ) === array_column( $context['categories'], 'slug' ) );
 
 	$GLOBALS['catalog_env'] = array( 'PAPELITO_EVENT_SALES_KIT_PRODUCT_IDS' => '1,2' );

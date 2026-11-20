@@ -237,14 +237,14 @@ function papelito_event_sales_context_kit( array $index, array $kit_ids ): array
 /**
  * Nível no formato público do contexto.
  *
- * @param array{key:string,name:string,min_units:int,pct_bp:int} $level Nível.
- * @return array{key:string,name:string,minUnits:int,pctBp:int}
+ * @param array{key:string,name:string,min_cents:int,pct_bp:int} $level Nível.
+ * @return array{key:string,name:string,minCents:int,pctBp:int}
  */
 function papelito_event_sales_public_level( array $level ): array {
 	return array(
 		'key'      => $level['key'],
 		'name'     => $level['name'],
-		'minUnits' => $level['min_units'],
+		'minCents' => $level['min_cents'],
 		'pctBp'    => $level['pct_bp'],
 	);
 }
