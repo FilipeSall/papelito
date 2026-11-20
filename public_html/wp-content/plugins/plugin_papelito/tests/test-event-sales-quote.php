@@ -49,6 +49,7 @@ $GLOBALS['quote_shipping'] = array();
 $GLOBALS['quote_calls']    = array();
 $GLOBALS['quote_hidden']   = array();
 $GLOBALS['quote_orphans']  = array();
+$GLOBALS['quote_packages'] = array();
 
 function is_wp_error( mixed $value ): bool { return $value instanceof WP_Error; }
 function add_action( mixed ...$args ): bool { return true; }
@@ -70,6 +71,8 @@ function papelito_shipping_quote_all_providers( int $vendor_id, string $destinat
 	$GLOBALS['quote_calls'][] = array( $vendor_id, $destination_cep, $items, $context );
 	return $GLOBALS['quote_shipping'];
 }
+
+function papelito_shipping_build_packages( array $items ): array { return $GLOBALS['quote_packages']; }
 
 require_once dirname( __DIR__ ) . '/includes/payment_providers.php';
 require_once dirname( __DIR__ ) . '/includes/event_sales_config.php';
@@ -116,6 +119,7 @@ function event_quote_fixture(): void {
 	$GLOBALS['quote_hidden']   = array();
 	$GLOBALS['quote_orphans']  = array();
 	$GLOBALS['quote_options']  = array();
+	$GLOBALS['quote_packages'] = array( array( 'height' => 50.0 ) );
 	$GLOBALS['quote_shipping'] = array(
 		'options' => array(
 			event_quote_option( 'correios', 'correios:sedex', 4500 ),
@@ -242,7 +246,67 @@ function test_fingerprint_changes_with_kit_composition(): void {
 	event_quote_assert( 'troca de componente do kit muda o fingerprint', $before['quoteFingerprint'] !== $swapped['quoteFingerprint'] );
 }
 
+function event_quote_big_order(): array|WP_Error {
+	return papelito_event_sales_quote( event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 14 ) ), 0 ) );
+}
+
+function test_correios_outage_waives_shipping_on_free_shipping_orders(): void {
+	event_quote_fixture();
+	$GLOBALS['quote_shipping'] = new WP_Error( 'provider_5xx', 'Não foi possível cotar o frete.', array( 'status' => 503 ) );
+	$quote = event_quote_big_order();
+	event_quote_assert( 'Correios fora do ar com frete grátis não trava a venda', is_array( $quote ) );
+	event_quote_assert( 'contingência sai com frete zero', 0 === $quote['shipping']['priceCents'] && 0 === $quote['shipping']['discountCents'] );
+	event_quote_assert( 'contingência marca a modalidade', true === $quote['shipping']['waived'] && PAPELITO_EVENT_SALES_WAIVED_SHIPPING === $quote['shipping']['optionKey'] );
+	event_quote_assert( 'total da contingência é só o dos itens', $quote['itemsCents'] === $quote['totalCents'] );
+	event_quote_assert( 'contingência dá o mesmo fingerprint entre cotação e cobrança', event_quote_big_order()['quoteFingerprint'] === $quote['quoteFingerprint'] );
+}
+
+function test_correios_outage_below_free_shipping_still_blocks(): void {
+	event_quote_fixture();
+	$GLOBALS['quote_shipping'] = new WP_Error( 'timeout', 'Não foi possível cotar o frete.', array( 'status' => 503 ) );
+	$quote = papelito_event_sales_quote( event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 1 ) ), 0 ) );
+	event_quote_assert( 'abaixo do frete grátis a queda continua travando', $quote instanceof WP_Error && 'papelito_event_shipping_unavailable' === $quote->code );
+}
+
+function test_validation_error_is_never_waived(): void {
+	event_quote_fixture();
+	$GLOBALS['quote_shipping'] = new WP_Error( 'papelito_shipping_product_dimensions_missing', 'Não foi possível cotar o frete.', array( 'status' => 422 ) );
+	event_quote_assert( 'erro de cadastro não vira frete grátis', event_quote_big_order() instanceof WP_Error );
+}
+
+function test_only_other_providers_counts_as_correios_outage(): void {
+	event_quote_fixture();
+	$GLOBALS['quote_shipping'] = array( 'options' => array( event_quote_option( 'braspress', 'braspress:rodo', 1000 ) ) );
+	$quote = event_quote_big_order();
+	event_quote_assert( 'sem opção Correios e com frete grátis a venda segue', is_array( $quote ) && true === $quote['shipping']['waived'] );
+}
+
+function test_invalid_cep_is_never_waived(): void {
+	event_quote_fixture();
+	$GLOBALS['quote_shipping'] = new WP_Error( 'provider_4xx', 'Não foi possível cotar o frete.', array( 'status' => 422 ) );
+	$input        = event_quote_input( array( array( 'productId' => EVENT_QUOTE_TEST_LOOSE, 'qty' => 14 ) ), 0 );
+	$input['cep'] = '7004';
+	event_quote_assert( 'CEP incompleto não vira frete grátis', papelito_event_sales_quote( $input ) instanceof WP_Error );
+}
+
+function test_quote_reports_box_count(): void {
+	event_quote_fixture();
+	$GLOBALS['quote_packages'] = array( array( 'height' => 100.0 ), array( 'height' => 100.0 ), array( 'height' => 20.0 ) );
+	$quote = event_quote_big_order();
+	event_quote_assert( 'cotação informa quantas caixas', 3 === $quote['shipping']['volumes'] );
+	event_quote_assert( 'cotação normal não é contingência', false === $quote['shipping']['waived'] );
+	$public = papelito_event_sales_public_quote( $quote );
+	event_quote_assert( 'tablet recebe a quantidade de caixas', 3 === $public['shipping']['volumes'] );
+	event_quote_assert( 'tablet não recebe as medidas internas', ! isset( $public['shipping']['packages'] ) );
+}
+
 test_quote_total_is_items_plus_kit_plus_shipping();
+test_correios_outage_waives_shipping_on_free_shipping_orders();
+test_correios_outage_below_free_shipping_still_blocks();
+test_validation_error_is_never_waived();
+test_only_other_providers_counts_as_correios_outage();
+test_invalid_cep_is_never_waived();
+test_quote_reports_box_count();
 test_products_out_of_catalog_are_refused();
 test_fingerprint_changes_with_kit_composition();
 test_quote_picks_cheapest_correios();

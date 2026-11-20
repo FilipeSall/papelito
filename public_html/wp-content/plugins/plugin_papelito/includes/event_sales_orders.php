@@ -418,6 +418,32 @@ function papelito_event_sales_order_quote( array $input, array $company ): array
 }
 
 /**
+ * Caixas do pedido do estande no `LogisticsSnapshot` canônico, para o vendor saber quantos volumes
+ * despachar. Nulo quando a cotação não montou caixas.
+ *
+ * @param int                  $vendor_id Vendor do evento.
+ * @param array<string,mixed>  $quote     Cotação autoritativa, com `shipping.packages`.
+ * @param array<string,string> $address   Endereço de entrega.
+ * @return array<string,mixed>|null
+ */
+function papelito_event_sales_logistics_snapshot( int $vendor_id, array $quote, array $address ): ?array {
+	$packages = is_array( $quote['shipping']['packages'] ?? null ) ? $quote['shipping']['packages'] : array();
+	if ( array() === $packages || ! function_exists( 'papelito_packaging_legacy_volumes_snapshot' ) ) {
+		return null;
+	}
+
+	return papelito_packaging_legacy_volumes_snapshot(
+		$vendor_id,
+		$packages,
+		array(
+			'origin_cep'              => papelito_shipping_normalize_cep( (string) get_user_meta( $vendor_id, 'cep', true ) ),
+			'destination_cep'         => papelito_shipping_normalize_cep( (string) ( $address['zip_code'] ?? '' ) ),
+			'merchandise_value_cents' => (int) ( $quote['itemsCents'] ?? 0 ),
+		)
+	);
+}
+
+/**
  * Cria o pedido WooCommerce do evento, grava as marcas do evento e reserva o estoque.
  *
  * @param array<string,mixed>  $input   Corpo do pedido.
@@ -439,6 +465,7 @@ function papelito_event_sales_build_order( array $input, array $buyer, array $ad
 		array(
 			'checkout_attempt_id' => (string) $input['checkoutAttemptId'],
 			'b2b_snapshot'        => papelito_event_sales_b2b_snapshot( $buyer['company'], $buyer['member'], $buyer['buyer'], $address ),
+			'logistics_snapshot'  => papelito_event_sales_logistics_snapshot( $vendor_id, $quote, $address ),
 		)
 	);
 
@@ -450,6 +477,9 @@ function papelito_event_sales_build_order( array $input, array $buyer, array $ad
 	$order->update_meta_data( PAPELITO_EVENT_SALES_EVENT_META, PAPELITO_EVENT_SALES_ID );
 	$order->update_meta_data( PAPELITO_EVENT_SALES_OPERATOR_META, get_current_user_id() );
 	$order->update_meta_data( PAPELITO_EVENT_SALES_QUOTE_META, wp_json_encode( papelito_event_sales_public_quote( $quote ) ) );
+	if ( ! empty( $quote['shipping']['waived'] ) ) {
+		$order->update_meta_data( PAPELITO_EVENT_SALES_WAIVED_META, '1' );
+	}
 	$order->save();
 
 	$reserved = papelito_pagarme_reserve_order_stock( $order, $lines );

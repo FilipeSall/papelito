@@ -157,6 +157,35 @@ $GLOBALS['item_sku_test_lookups'] = array();
 item_sku_test_assert( 'lista vazia devolvida intacta', array(), papelito_vendor_dashboard_items_with_sku( array(), ITEM_SKU_TEST_VENDOR_ID ) );
 item_sku_test_assert( 'nenhuma consulta feita', array(), $GLOBALS['item_sku_test_lookups'] );
 
+echo "Cenário 5: o vendor vê uma entrada por caixa a despachar\n";
+
+/**
+ * Pedido mínimo com o snapshot logístico gravado como meta.
+ */
+class Item_Sku_Test_Packed_Order {
+	public function __construct( private string $snapshot ) {}
+	public function get_meta( string $key, bool $single = true ): string { return '_papelito_logistics_snapshot' === $key ? $this->snapshot : ''; }
+}
+
+$packed = new Item_Sku_Test_Packed_Order(
+	(string) json_encode(
+		array(
+			'packages' => array(
+				array( 'length_mm' => 200, 'width_mm' => 150, 'height_mm' => 1000, 'weight_g' => 2000, 'count' => 2 ),
+				array( 'length_mm' => 200, 'width_mm' => 150, 'height_mm' => 50, 'weight_g' => 100, 'count' => 1 ),
+			),
+		)
+	)
+);
+$boxes  = papelito_vendor_dashboard_order_packing( $packed );
+item_sku_test_assert( 'caixas repetidas viram uma entrada cada', 3, count( $boxes ) );
+item_sku_test_assert(
+	'medidas em cm e kg',
+	array( 'length_cm' => 20.0, 'width_cm' => 15.0, 'height_cm' => 100.0, 'weight_kg' => 2.0 ),
+	$boxes[0]
+);
+item_sku_test_assert( 'pedido sem snapshot não inventa caixa', array(), papelito_vendor_dashboard_order_packing( new Item_Sku_Test_Packed_Order( '' ) ) );
+
 if ( $failures > 0 ) {
 	echo "\n{$failures} falha(s).\n";
 	exit( 1 );

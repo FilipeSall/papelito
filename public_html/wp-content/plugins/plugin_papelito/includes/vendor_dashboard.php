@@ -423,6 +423,31 @@ function papelito_vendor_dashboard_map_order( $order, ?int $vendor_id = null, bo
 }
 
 /**
+ * Caixas que o vendor precisa despachar, uma entrada por caixa, lidas do snapshot logístico gravado
+ * na criação do pedido. Vazio em pedido antigo, sem snapshot.
+ *
+ * @param object $order Pedido.
+ * @return array<int,array{length_cm:float,width_cm:float,height_cm:float,weight_kg:float}>
+ */
+function papelito_vendor_dashboard_order_packing( $order ): array {
+	$snapshot = json_decode( (string) $order->get_meta( '_papelito_logistics_snapshot', true ), true );
+	$packages = is_array( $snapshot ) && is_array( $snapshot['packages'] ?? null ) ? $snapshot['packages'] : array();
+	$boxes    = array();
+
+	foreach ( $packages as $package ) {
+		$box   = array(
+			'length_cm' => round( (int) ( $package['length_mm'] ?? 0 ) / 10, 1 ),
+			'width_cm'  => round( (int) ( $package['width_mm'] ?? 0 ) / 10, 1 ),
+			'height_cm' => round( (int) ( $package['height_mm'] ?? 0 ) / 10, 1 ),
+			'weight_kg' => round( (int) ( $package['weight_g'] ?? 0 ) / 1000, 2 ),
+		);
+		$boxes = array_merge( $boxes, array_fill( 0, max( 1, (int) ( $package['count'] ?? 1 ) ), $box ) );
+	}
+
+	return $boxes;
+}
+
+/**
  * Completa o payload de detalhe de um pedido.
  *
  * @param object                         $order           Pedido WooCommerce.
@@ -465,6 +490,7 @@ function papelito_vendor_dashboard_map_order_detail( $order, ?int $vendor_id, bo
 	} else {
 		$result['logistics'] = $logistics;
 		$result['shipments'] = $logistics['shipments'];
+		$result['packing']   = papelito_vendor_dashboard_order_packing( $order );
 	}
 	$result['tracking_code'] = ! empty( $logistics['shipments'][0]['tracking_code'] )
 		? $logistics['shipments'][0]['tracking_code']

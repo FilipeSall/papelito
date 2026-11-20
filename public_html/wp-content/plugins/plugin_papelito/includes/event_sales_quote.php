@@ -16,6 +16,10 @@
 defined( 'ABSPATH' ) || exit;
 
 const PAPELITO_EVENT_SALES_SHIPPING_PROVIDER = 'correios';
+const PAPELITO_EVENT_SALES_WAIVED_SHIPPING   = 'correios:estande-frete-gratis';
+const PAPELITO_EVENT_SALES_WAIVED_META       = '_papelito_event_shipping_waived';
+const PAPELITO_EVENT_SALES_CEP_LENGTH        = 8;
+const PAPELITO_EVENT_SALES_OUTAGE_FAILURES   = array( 'configuration_error', 'timeout', 'network_error', 'rate_limited', 'provider_4xx', 'provider_5xx', 'invalid_response', 'unknown_error' );
 
 /**
  * Quantidade por produto a partir dos itens do tablet, somando produto repetido.
@@ -202,6 +206,82 @@ function papelito_event_sales_cheapest_correios( array|WP_Error $quote ): array|
 }
 
 /**
+ * Informa se a cotação falhou porque os Correios estão fora do ar, e não por cadastro ou carrinho.
+ *
+ * Cotação que voltou com opções mas sem nenhuma dos Correios também conta como queda: os Correios
+ * falharam e outro provider respondeu. Erro de validação (produto sem medida, unidade que não cabe
+ * numa caixa, rota inválida) nunca conta.
+ *
+ * @param array<string,mixed>|WP_Error $quoted Resultado de `papelito_shipping_quote_all_providers()`.
+ * @return bool
+ */
+function papelito_event_sales_shipping_outage( array|WP_Error $quoted ): bool {
+	if ( ! is_wp_error( $quoted ) ) {
+		return true;
+	}
+
+	return in_array( $quoted->get_error_code(), PAPELITO_EVENT_SALES_OUTAGE_FAILURES, true );
+}
+
+/**
+ * Modalidade de contingência: frete zero, a casa assume o envio e o vendor posta por PAC depois.
+ *
+ * Preço e prazo fixos mantêm o `quoteFingerprint` estável entre a cotação e o "Cobrar". O pedido
+ * sai marcado com `PAPELITO_EVENT_SALES_WAIVED_META` para o custo real ser apurado na postagem.
+ *
+ * @return array<string,mixed>
+ */
+function papelito_event_sales_waived_shipping(): array {
+	return array(
+		'provider'             => PAPELITO_EVENT_SALES_SHIPPING_PROVIDER,
+		'option_key'           => PAPELITO_EVENT_SALES_WAIVED_SHIPPING,
+		'service'              => 'PAC',
+		'code'                 => '',
+		'name'                 => 'Frete grátis do estande (postar por PAC)',
+		'customer_price_cents' => 0,
+		'price'                => 0.0,
+		'delivery_time'        => null,
+		'fingerprint'          => '',
+	);
+}
+
+/**
+ * Frete do pedido do estande: a opção Correios mais barata, ou a contingência de frete grátis quando
+ * os Correios estão fora do ar, o pedido já tem frete grátis (`PAPELITO_EVENT_SALES_FREE_SHIPPING`)
+ * e o CEP tem 8 dígitos. Abaixo do frete grátis a falha continua travando a venda.
+ *
+ * @param int                            $vendor_id      Vendor do evento.
+ * @param string                         $cep            CEP de entrega normalizado.
+ * @param array<int,array<string,mixed>> $items          Itens da cotação de frete.
+ * @param string                         $recipient_cnpj CNPJ do comprador.
+ * @param int                            $base_cents     Base da faixa do pedido.
+ * @return array<string,mixed>|WP_Error
+ */
+function papelito_event_sales_resolve_shipping( int $vendor_id, string $cep, array $items, string $recipient_cnpj, int $base_cents ): array|WP_Error {
+	$quoted   = papelito_shipping_quote_all_providers( $vendor_id, $cep, $items, array( 'recipient_cnpj' => $recipient_cnpj ) );
+	$shipping = papelito_event_sales_cheapest_correios( $quoted );
+
+	$waivable = is_wp_error( $shipping )
+		&& $base_cents >= PAPELITO_EVENT_SALES_FREE_SHIPPING
+		&& PAPELITO_EVENT_SALES_CEP_LENGTH === strlen( $cep )
+		&& papelito_event_sales_shipping_outage( $quoted );
+
+	return $waivable ? papelito_event_sales_waived_shipping() : $shipping;
+}
+
+/**
+ * Caixas em que o pedido vai, as mesmas que os Correios cotaram; vazio quando não dá para montar.
+ *
+ * @param array<int,array<string,mixed>> $items Itens da cotação de frete.
+ * @return array<int,array<string,mixed>>
+ */
+function papelito_event_sales_shipping_packages( array $items ): array {
+	$packages = papelito_shipping_build_packages( $items );
+
+	return is_array( $packages ) ? $packages : array();
+}
+
+/**
  * Assina o que define o valor cobrado e o que vai na caixa: linhas, kit e seus componentes, frete
  * escolhido e total. Trocar um produto do kit por outro de mesmo preço também muda a assinatura.
  *
@@ -241,18 +321,19 @@ function papelito_event_sales_quote( array $input ): array|WP_Error {
 		return $stock;
 	}
 
-	$shipping = papelito_event_sales_cheapest_correios(
-		papelito_shipping_quote_all_providers(
-			$config['vendor_id'],
-			papelito_shipping_normalize_cep( (string) ( $input['cep'] ?? '' ) ),
-			papelito_event_sales_shipping_items( $priced, $products, $kit_ids ),
-			array( 'recipient_cnpj' => papelito_normalize_cnpj( (string) ( $input['recipientCnpj'] ?? '' ) ) )
-		)
+	$shipping_items = papelito_event_sales_shipping_items( $priced, $products, $kit_ids );
+	$shipping       = papelito_event_sales_resolve_shipping(
+		$config['vendor_id'],
+		papelito_shipping_normalize_cep( (string) ( $input['cep'] ?? '' ) ),
+		$shipping_items,
+		papelito_normalize_cnpj( (string) ( $input['recipientCnpj'] ?? '' ) ),
+		(int) $priced['base_cents']
 	);
 	if ( is_wp_error( $shipping ) ) {
 		return $shipping;
 	}
 
+	$packages       = papelito_event_sales_shipping_packages( $shipping_items );
 	$frete_cents    = (int) $shipping['customer_price_cents'];
 	$frete_desconto = papelito_event_sales_shipping_discount_cents( (int) $priced['base_cents'], $frete_cents );
 
@@ -278,7 +359,10 @@ function papelito_event_sales_quote( array $input ): array|WP_Error {
 			'discountCents' => $frete_desconto,
 			'deliveryTime'  => isset( $shipping['delivery_time'] ) ? (int) $shipping['delivery_time'] : null,
 			'fingerprint'   => (string) ( $shipping['fingerprint'] ?? '' ),
+			'waived'        => PAPELITO_EVENT_SALES_WAIVED_SHIPPING === $shipping['option_key'],
+			'volumes'       => count( $packages ),
 			'raw'           => $shipping,
+			'packages'      => $packages,
 		),
 		'totalCents'      => $priced['items_cents'] + $frete_cents - $frete_desconto,
 	);
@@ -295,7 +379,7 @@ function papelito_event_sales_quote( array $input ): array|WP_Error {
  * @return array<string,mixed>
  */
 function papelito_event_sales_public_quote( array $quote ): array {
-	unset( $quote['shipping']['raw'] );
+	unset( $quote['shipping']['raw'], $quote['shipping']['packages'] );
 	$quote['level'] = papelito_event_sales_public_level( $quote['level'] );
 
 	return $quote;
